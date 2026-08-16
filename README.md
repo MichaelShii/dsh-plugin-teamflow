@@ -40,6 +40,35 @@ AGENTS.md 会被 harness 无条件注入每个会话，是**团队资产**。Tea
 - **已有项目接入**：检测到 AGENTS.md 已存在 → 绝不重写/重排/覆盖，仅在文末追加托管块（若没有）；团队原有约定一行不动。
 - **退出干净**：团队停用 TeamFlow 后，删除托管块与 `docs/teamflow/` 即完全复原，AGENTS.md 无残留账本。
 
+## 架构决策记录（ADR）
+
+### ADR-001：断点续跑自研 journal，不引入 LangGraph（v0.4.0）
+
+**背景**：需要"进程重启后流水线可恢复"。候选：自研 journal checkpoint vs 引入 `@langchain/langgraph`。
+
+**决策**：自研（`store.js` 的 journal 三件套，LangGraph checkpointer 语义的务实子集）。
+
+**理由**：
+- **LLM 编排不可重放**：LangGraph 的恢复 = 从 checkpoint 重放节点代码产生相同结果，对纯函数节点成立；我们的节点是子代理（LLM 调用），重放 = 重新烧 token 且结果不同。"跳过已完成阶段复用产物"（我们的 resume）两种方案都得自己写——checkpoint 的核心价值对我们失效一半。
+- **分发风险**：LangGraph JS 开箱持久化 checkpointer 用 `better-sqlite3`（原生模块，Windows 安装可能失败）；纯 JS 文件版要么自写 `BaseCheckpointSaver`（回到自研），要么依赖尚不成熟的 node:sqlite 适配。DSH 插件分发要求薄依赖。
+- **替换率 ~30%**：子代理编排、token 计量、backlog 落盘、文档归档都是 LangGraph 不管的；它只替换"编排骨架 + checkpoint"，而面板/工具/测试已按自研写好。迁移 = 重写 + 回归。
+- **状态 schema 化成本**：LangGraph 要求 zod schema + 严格 JSON state；我们的 backlog/journal 自由 JSON 更灵活。
+
+**已对齐的概念**（将来迁移概念兼容）：thread=runId、checkpoint=runs/<runId>.json、interrupt=needs-human、resume=从断点重跑、durable execution=启动扫描标记 interrupted。
+
+**触发迁移的信号**：
+- 编排复杂度显著上升（动态分支、`Send` 级扇出、多层循环）
+- 需要 time travel / 历史版本重放 / 审计回滚
+- 团队拥抱 LangChain 生态（LangSmith、LangGraph Platform）
+
+**若迁移的选型要点**：checkpointer 用 node:sqlite 适配而非 better-sqlite3；子代理调用包成幂等节点（state 带产物缓存 + 节点入口检查缓存）；锁 LangGraph 版本；store.js 保留做 backlog（与 checkpoint 是两层，不冲突）。
+
+### ADR-002：AGENTS.md 最小侵入（v0.3.0）
+
+**决策**：AGENTS.md 只放稳定共识层 + `<!-- teamflow:begin/end -->` 托管区（仅指针）；产品记忆/待办放 `docs/teamflow/memory.md`；已有项目绝不重写。
+
+**理由**：AGENTS.md 被 harness 无条件注入每次会话，是团队资产。高频运营数据（记忆/待办）写进去 = 覆写风险 + token 注入成本随迭代膨胀 + 停用后死数据残留。
+
 ## 架构（阶段 3）
 
 ```
