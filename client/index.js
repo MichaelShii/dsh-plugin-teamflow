@@ -33,7 +33,7 @@ const PHASE_ICON = {
   'PRD 产品需求': '📋', 'UI/UX 设计': '🎨', '架构规划': '🏗️', '技术方案': '📐',
   开发: '💻', 'QA 测试': '🧪', '产品验收': '✅',
 }
-const RUN_STATUS_TEXT = { pending: '等待中', running: '进行中', completed: '已完成', failed: '失败', cancelled: '已取消' }
+const RUN_STATUS_TEXT = { pending: '等待中', running: '进行中', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '⚠ 已中断', superseded: '已取代' }
 const COLUMNS = {
   req: ['created', 'in-progress', 'pending-acceptance', 'accepted', 'needs-human'],
   task: ['pending', 'running', 'testable', 'testing', 'pending-acceptance', 'accepted', 'rework', 'needs-human'],
@@ -240,6 +240,12 @@ function TeamFlowView(props) {
     }
   }
   const activeRun = runs.find((r) => r.id === runId) || runs[0]
+  const canResume = activeRun && (activeRun.status === 'interrupted' || activeRun.status === 'failed' || activeRun.status === 'cancelled')
+  const onResume = async () => {
+    if (!api || !activeRun) return
+    try { await api.resume(activeRun.id, props.sessionId); refresh() }
+    catch (e) { setState((s) => ({ ...s, err: String((e && e.message) || e) })) }
+  }
 
   return h('div', { style: { fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif', fontSize: 13, color: '#1f2328', display: 'flex', flexDirection: 'column', gap: 8, padding: '2px 0' } },
     /* 顶部工具条 */
@@ -273,8 +279,12 @@ function TeamFlowView(props) {
       h('button', { onClick: () => setTab('pipeline'), style: tabBtn(tab === 'pipeline') }, '🔄 流水线'),
       h('button', { onClick: () => setTab('board'), style: tabBtn(tab === 'board') }, '📋 Backlog 看板'),
       h('span', { style: { marginLeft: 'auto' } },
-        activeRun ? h('span', { style: { fontSize: 12, color: '#57606a' } },
+        activeRun ? h('span', { style: { fontSize: 12, color: activeRun.status === 'interrupted' ? '#cf222e' : '#57606a' } },
           `#${String(activeRun.id).slice(-8)} · ${RUN_STATUS_TEXT[activeRun.status] || activeRun.status}`) : null,
+        canResume ? h('button', {
+          onClick: onResume,
+          style: { ...btn, marginLeft: 8, background: '#cf222e', color: '#fff', border: 'none' },
+        }, '↻ 从断点重跑') : null,
       ),
       total > 0 ? h('span', { style: { fontSize: 12, color: '#57606a', fontFamily: 'ui-monospace, monospace' } }, `∑ ${fmtTokens(total)} tok`) : null,
     ),

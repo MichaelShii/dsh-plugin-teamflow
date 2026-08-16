@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-teamflow",
-  "version": "0.3.1",
-  "description": "TeamFlow 团队研发流水线：需求→PRD→设计→架构→技术方案→并行开发→QA→验收；backlog 持久化到 $DSH_HOME/teamflow；Web 团队工作台（conversation.view tab + 拖拽看板）",
+  "version": "0.4.0",
+  "description": "TeamFlow 团队研发流水线：需求→PRD→设计→架构→技术方案→并行开发→QA→验收；backlog 持久化 $DSH_HOME/teamflow + 断点续跑（journal checkpoint）；Web 团队工作台（conversation.view tab + 拖拽看板）",
   "type": "module",
   "main": "./host/index.js",
   "exports": {
@@ -28,7 +28,7 @@
   "scripts": {
     "bundle": "tsdown",
     "watch": "tsdown --watch",
-    "test": "node test/smoke.js"
+    "test": "node test/smoke.js && node test/journal.test.js"
   },
   "dependencies": {
     "react": "^18.2.0"

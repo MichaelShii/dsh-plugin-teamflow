@@ -18,7 +18,7 @@ const ok = (cond, msg) => {
 const assert = (cond, msg) => { if (!cond) { throw new Error(`assert failed: ${msg}`) } }
 
 console.log('── 1) descriptors 校验（typert validateInvocation 规则）──')
-assert(Array.isArray(TEAMFLOW_DESCRIPTORS) && TEAMFLOW_DESCRIPTORS.length === 7, '应有 7 个 Remote 描述符')
+assert(Array.isArray(TEAMFLOW_DESCRIPTORS) && TEAMFLOW_DESCRIPTORS.length === 8, '应有 8 个 Remote 描述符')
 const endpoints = new Set()
 const ids = new Set()
 for (const d of TEAMFLOW_DESCRIPTORS) {
@@ -42,7 +42,7 @@ for (const d of TEAMFLOW_DESCRIPTORS) {
     assert(p.codec && p.codec.mode === 'src-json', `参数 codec src-json: ${p.name}`)
   }
 }
-ok(true, '7 个描述符全部通过规则校验')
+ok(true, `${TEAMFLOW_DESCRIPTORS.length} 个描述符全部通过规则校验`)
 
 console.log('── 2) client 模块结构 ──')
 const here = dirname(fileURLToPath(import.meta.url))
@@ -59,26 +59,38 @@ const hostSrc = readFileSync(join(here, '../host/index.js'), 'utf8')
 ok(/class TeamflowService extends TypertRemoteService/.test(hostSrc), 'TeamflowService extends TypertRemoteService')
 ok(/static inject = \['agents', 'subagents', 'tokenMeter', 'typert', 'tools'\]/.test(hostSrc), 'static inject 完整')
 ok(/ctx\.typert\.register\(\{[\s\S]*invocations: TEAMFLOW_DESCRIPTORS/.test(hostSrc), 'typert.register 注册 strict descriptors')
-for (const m of ['ping', 'list', 'snapshot', 'start', 'cancel', 'backlog', 'backlogUpdate']) {
+for (const m of ['ping', 'list', 'snapshot', 'start', 'cancel', 'backlog', 'backlogUpdate', 'resume']) {
   ok(new RegExp(`\\n  ${m}\\(`).test(hostSrc), `Remote 方法 ${m}()`)
 }
 ok(/export default TeamflowService/.test(hostSrc), '默认导出 TeamflowService')
-ok(/dsh-plugin-teamflow[\\/]descriptors\.js/.test(hostSrc) || /from '\.\.\/descriptors\.js'/.test(hostSrc), 'import descriptors.js')
+ok(/from '\.\.\/descriptors\.js'/.test(hostSrc), 'import descriptors.js')
+ok(/from '\.\.\/store\.js'/.test(hostSrc), 'import store.js（持久化层独立）')
+
+console.log('── 3b) 断点续跑（v0.4.0）──')
+ok(/loadJournals\(\)/.test(hostSrc), '构造时加载磁盘 journal')
+ok(/interruptedCount/.test(hostSrc), '中断残留计数提示')
+ok(/persistJournal\(journal\)/.test(hostSrc), 'checkpoint 落盘')
+ok(/resumeRun\(/.test(hostSrc) && /interruptedPhaseOf\(/.test(hostSrc) && /buildResumeProducts\(/.test(hostSrc), 'resume 逻辑（起点/产物重建）')
+ok(/resumed\(/.test(hostSrc) && /logSkip\(/.test(hostSrc), 'executePipeline 阶段跳过')
+ok(/stage\.output = clip\(text, 50000\)/.test(hostSrc), '阶段产物全文记录（续跑重建上下文）')
+const storeSrc = readFileSync(join(here, '../store.js'), 'utf8')
+ok(/export function loadJournals/.test(storeSrc) && /export function persistJournal/.test(storeSrc) && /export function serializeJournal/.test(storeSrc), 'store.js 导出 journal 三件套')
+ok(/status === 'running' \|\| j\.status === 'pending'/.test(storeSrc), 'loadJournals 中断标记逻辑（store.js）')
 
 console.log('── 4) 其他文件 ──')
-for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../descriptors.js', '../client/index.js', '../host/index.js']) {
+for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../descriptors.js', '../client/index.js', '../host/index.js', '../store.js']) {
   ok(existsSync(join(here, f)), `存在 ${f}`)
 }
 
-console.log('── 5) 安全加固（v0.3.1）──')
+console.log('── 5) 安全加固（v0.3.1，持久化逻辑位于 store.js）──')
 const patchSrc = readFileSync(join(here, '../cordis.patch.yml'), 'utf8')
 ok(!/teamflow-client/.test(patchSrc), 'cordis.patch.yml 不再声明 client host row（自动扫描）')
 ok(/teamflow-host/.test(patchSrc), 'cordis.patch.yml 保留 teamflow-host')
 ok(/s\.includes\('\.\.'\)/.test(hostSrc), 'normalizeRoot 拒绝 .. 穿越段')
 ok(/s\.startsWith\('\/'\)/.test(hostSrc) && /\^\[a-zA-Z\]:/.test(hostSrc), 'normalizeRoot 拒绝绝对路径/盘符')
-ok(/copyFileSync\(file, file \+ '\.bak'\)/.test(hostSrc), '写前保留 .bak 备份')
-ok(/renameSync\(tmp, file\)/.test(hostSrc), '原子写（.tmp → rename）')
-ok(/从 \.bak 恢复/.test(hostSrc), '主文件损坏自动从 .bak 恢复')
+ok(/copyFileSync\(file, file \+ '\.bak'\)/.test(storeSrc), '写前保留 .bak 备份')
+ok(/renameSync\(tmp, file\)/.test(storeSrc), '原子写（.tmp → rename）')
+ok(/从 \.bak 恢复/.test(storeSrc), '主文件损坏自动从 .bak 恢复')
 
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

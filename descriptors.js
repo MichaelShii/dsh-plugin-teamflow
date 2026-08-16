@@ -80,6 +80,15 @@ export const TEAMFLOW_DESCRIPTORS = Object.freeze([
     parameters: [p('kind'), p('id'), p('to'), p('product'), p('reason')],
     result: json,
   },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/resume',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'resume',
+    invocation: { kind: 'direct' },
+    parameters: [p('runId'), p('sessionId')],
+    result: json,
+  },
 ])
 
 /** client 端 $mount 使用的贡献对象。 */

@@ -11,81 +11,13 @@
  * 运行环境：宿主组合（web profile）的真实 Node 进程。
  */
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
-import { resolve, join, dirname } from 'node:path'
-import { mkdirSync, readFileSync, writeFileSync, existsSync, copyFileSync, renameSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { TEAMFLOW_DESCRIPTORS } from '../descriptors.js'
+import {
+  dshHome, teamflowRoot, productDir, fileFor,
+  readJson, writeJson, persistJournal, loadJournals,
+} from '../store.js'
 
 const RETRY_LIMIT = 2
-
-function dshHome() {
-  return process.env.DSH_HOME || join(homedir(), '.dsh')
-}
-function teamflowRoot() {
-  return join(dshHome(), 'teamflow')
-}
-function productDir(product) {
-  // 双保险：即使调用方绕过 normalizeRoot，这里也拒绝危险路径，退化到 default。
-  let safe = String(product || 'default').replace(/\\/g, '/').trim() || 'default'
-  if (safe.startsWith('/') || safe.startsWith('.') || /^[a-zA-Z]:/.test(safe) || safe.includes('..')) safe = 'default'
-  if (!safe.split('/').every((seg) => /^[a-zA-Z0-9_-]+$/.test(seg))) safe = 'default'
-  return join(teamflowRoot(), safe)
-}
-function fileFor(product, name) {
-  return join(productDir(product), 'backlog', name)
-}
-
-/* ── 小型持久化 store（原子写 + 备份 + 损坏自动恢复） ─────────────── */
-/**
- * 读取 JSON 数组；主文件损坏时自动尝试 .bak 恢复。
- * 恢复闭环：readJson 从 .bak 取回数据 → 内存 store 持有 → 下次 persist 原子覆盖主文件。
- */
-function readJson(file, fallback) {
-  try {
-    if (!existsSync(file)) return fallback
-    const v = JSON.parse(readFileSync(file, 'utf8'))
-    return Array.isArray(v) ? v : fallback
-  } catch (e) {
-    console.error('[teamflow] readJson 主文件损坏', file, e?.message)
-    try {
-      if (existsSync(file + '.bak')) {
-        const b = JSON.parse(readFileSync(file + '.bak', 'utf8'))
-        if (Array.isArray(b)) {
-          console.warn('[teamflow] 已从 .bak 恢复', file)
-          return b
-        }
-      }
-    } catch (e2) { /* 备份也损坏 */ }
-    console.error('[teamflow] .bak 也损坏，返回空（数据可能丢失）', file)
-    return fallback
-  }
-}
-
-/**
- * 原子写 JSON 数组：先写 .tmp 再 rename 覆盖（崩溃不产生半截文件）。
- * 备份规则：只把「可解析的完整数组」复制为 .bak（上一份完整快照）；
- * 若主文件已损坏，不污染备份——改名 .corrupt-<ts> 保留现场供人工排查，再写新数据。
- */
-function writeJson(file, value) {
-  try {
-    mkdirSync(dirname(file), { recursive: true })
-    if (existsSync(file)) {
-      try {
-        const cur = JSON.parse(readFileSync(file, 'utf8'))
-        if (Array.isArray(cur)) copyFileSync(file, file + '.bak')
-      } catch (e) {
-        try { renameSync(file, `${file}.corrupt-${Date.now()}`) } catch (e2) { /* 保留现场失败可忽略 */ }
-      }
-    }
-    const tmp = file + '.tmp'
-    writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8')
-    renameSync(tmp, file)
-    return true
-  } catch (e) {
-    console.error('[teamflow] writeJson failed', file, e?.message)
-    return false
-  }
-}
 
 /* ── 状态机 ───────────────────────────────────────────────────────── */
 const STATUS = {
@@ -434,9 +366,10 @@ const measureTokens = (run) => {
 }
 
 async function runAgent(journal, parent, label, phase, prompt, signal) {
+  const maxSeq = journal.stages.length ? Math.max(...journal.stages.map((s) => s.seq)) : 0
   const stage = {
-    seq: journal.stages.length + 1, label, phase, status: 'running', outcome: null,
-    childId: null, startedAt: Date.now(), endedAt: null, summary: null, tokens: null,
+    seq: maxSeq + 1, label, phase, status: 'running', outcome: null,
+    childId: null, startedAt: Date.now(), endedAt: null, summary: null, tokens: null, output: null,
   }
   journal.stages.push(stage)
   journal.agentsStarted += 1
@@ -466,6 +399,7 @@ async function runAgent(journal, parent, label, phase, prompt, signal) {
     }
     if (stop === 'completed' && text) {
       stage.status = 'done'; stage.outcome = 'completed'
+      stage.output = clip(text, 50000) // 阶段产物全文（断点续跑重建上下文）
       return text
     }
     stage.status = 'failed'
@@ -567,116 +501,211 @@ function advanceTask(journal, type, to, summary, reason) {
   store.pushEvent(task, task.status, to, reason || '')
   task.summary = summary ? clip(summary, 300) : task.summary
   store.persist()
+  persistJournal(journal) // 阶段状态变化 → checkpoint
 }
 
-async function executePipeline(journal, parent, requirement, options, signal) {
+const PHASE_ORDER = ['PRD 产品需求', 'UI/UX 设计', '架构规划', '技术方案', '开发', 'QA 测试', '产品验收']
+const PHASE_KEY_OF = { prd: 'PRD 产品需求', design: 'UI/UX 设计', scaffold: '架构规划', tech: '技术方案', dev: '开发', qa: 'QA 测试', acceptance: '产品验收' }
+const PHASE_KEY_BY_NAME = { 'PRD 产品需求': 'prd', 'UI/UX 设计': 'design', '架构规划': 'scaffold', '技术方案': 'tech', '开发': 'dev', 'QA 测试': 'qa', '产品验收': 'acceptance' }
+
+/** 从 journal 已完成阶段重建断点续跑产物（prd/design/scaffold/tech/qa/acceptance/dev）。 */
+function buildResumeProducts(journal) {
+  const products = {}
+  for (const s of journal.stages) {
+    if (s.status !== 'done' || !s.output) continue
+    const key = PHASE_KEY_BY_NAME[s.phase]
+    if (!key) continue
+    if (key === 'dev') {
+      products.dev = journal.stages
+        .filter((x) => x.phase === '开发' && x.status === 'done' && x.output)
+        .map((x) => ({ title: x.label.replace(/^开发 · /, ''), failed: false, output: x.output }))
+    } else {
+      products[key] = s.output
+    }
+  }
+  return products
+}
+
+/**
+ * 断点续跑起点：journal 中第一个未完成阶段（磁盘上 interrupted/running 所在阶段）。
+ * 全部完成仍被中断（理论极端）→ 从产品验收继续。
+ */
+function interruptedPhaseOf(journal) {
+  const stage = (journal.stages || []).find((s) => s.status !== 'done')
+  if (stage && PHASE_ORDER.indexOf(stage.phase) !== -1) return stage.phase
+  return '产品验收'
+}
+
+/**
+ * 执行流水线。resume = null 全新运行；resume = { phase, products } 从断点续跑：
+ * phase 之前的阶段直接复用 products 产物（跳过执行），从 phase 阶段开始重跑。
+ */
+async function executePipeline(journal, parent, requirement, options, signal, resume = null) {
   journal.status = 'running'
-  journal.startedAt = Date.now()
+  if (!resume) journal.startedAt = Date.now()
   const root = options.productRoot || null
   journal.product = root
   const tasks = normalizeTasks(options.tasks)
   const maxConcurrency = Number.isFinite(options.maxConcurrency) && options.maxConcurrency > 0 ? Math.min(options.maxConcurrency, 8) : 3
   const timeline = {}
+  // 断点续跑：跳过 resume.phase 之前的阶段
+  const resumed = (phase) => !!resume && PHASE_ORDER.indexOf(phase) < PHASE_ORDER.indexOf(resume.phase)
+  const logSkip = (phase) => journal.logs.push({ t: Date.now(), level: 'warn', message: `跳过已完成阶段：${phase}（断点续跑）` })
   try {
-    const init = initPipelineBacklog(journal, requirement, options)
-    journal.reqId = init.reqId
-    journal.logs.push({ t: Date.now(), level: 'info', message: `backlog 已建立需求 ${init.reqId}（产品 ${root || 'unknown'}，并发 ${maxConcurrency}）` })
+    if (resume) {
+      journal.logs.push({ t: Date.now(), level: 'info', message: `断点续跑：复用 backlog（req=${journal.reqId}），从「${resume.phase}」继续` })
+    } else {
+      const init = initPipelineBacklog(journal, requirement, options)
+      journal.reqId = init.reqId
+      journal.logs.push({ t: Date.now(), level: 'info', message: `backlog 已建立需求 ${init.reqId}（产品 ${root || 'unknown'}，并发 ${maxConcurrency}）` })
+    }
+    persistJournal(journal)
 
-    journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：PRD 产品需求' })
-    advanceTask(journal, 'prd', 'running', null, '进入流水线')
-    const prdR = await withRetry(journal, parent, '产品经理 · 梳理 PRD', 'PRD 产品需求', prdPrompt(requirement, root), signal)
-    if (!prdR.text) { advanceTask(journal, 'prd', 'needs-human', null, 'PRD 失败'); throw new Error(`PRD 阶段失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
-    const prd = prdR.text
-    timeline.prd = prd
-    advanceTask(journal, 'prd', 'accepted', clip(prd, 300), 'PRD 完成')
-    if (journal.cancelled) return
+    /* ── PRD 阶段 ── */
+    let prd = null
+    if (resumed('PRD 产品需求')) {
+      prd = resume.products.prd
+      timeline.prd = prd
+      logSkip('PRD 产品需求')
+    } else {
+      journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：PRD 产品需求' })
+      advanceTask(journal, 'prd', 'running', null, '进入流水线')
+      const prdR = await withRetry(journal, parent, '产品经理 · 梳理 PRD', 'PRD 产品需求', prdPrompt(requirement, root), signal)
+      if (!prdR.text) { advanceTask(journal, 'prd', 'needs-human', null, 'PRD 失败'); throw new Error(`PRD 阶段失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
+      prd = prdR.text
+      timeline.prd = prd
+      advanceTask(journal, 'prd', 'accepted', clip(prd, 300), 'PRD 完成')
+      if (journal.cancelled) return
+    }
 
+    /* ── UI/UX 设计阶段 ── */
     let design = null
     if (options.needDesign) {
-      journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：UI/UX 设计' })
-      advanceTask(journal, 'design', 'running', null, '进入流水线')
-      const designR = await withRetry(journal, parent, 'UI/UX 设计师 · 设计说明', 'UI/UX 设计', designPrompt(prd, root), signal)
-      if (!designR.text) { advanceTask(journal, 'design', 'needs-human', null, 'UI 设计失败'); throw new Error(`UI/UX 设计失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
-      design = designR.text
-      timeline.design = design
-      advanceTask(journal, 'design', 'accepted', clip(design, 300), 'UI 设计完成')
-      if (journal.cancelled) return
+      if (resumed('UI/UX 设计')) {
+        design = resume.products.design
+        timeline.design = design
+        logSkip('UI/UX 设计')
+      } else {
+        journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：UI/UX 设计' })
+        advanceTask(journal, 'design', 'running', null, '进入流水线')
+        const designR = await withRetry(journal, parent, 'UI/UX 设计师 · 设计说明', 'UI/UX 设计', designPrompt(prd, root), signal)
+        if (!designR.text) { advanceTask(journal, 'design', 'needs-human', null, 'UI 设计失败'); throw new Error(`UI/UX 设计失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
+        design = designR.text
+        timeline.design = design
+        advanceTask(journal, 'design', 'accepted', clip(design, 300), 'UI 设计完成')
+        if (journal.cancelled) return
+      }
     }
 
+    /* ── 架构规划阶段 ── */
     let scaffold = null
     if (options.needScaffold) {
-      journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：架构规划' })
-      advanceTask(journal, 'arch', 'running', null, '进入流水线')
-      const scR = await withRetry(journal, parent, '架构师 · 脚手架规划与落地', '架构规划', scaffoldPrompt(requirement, design, root), signal)
-      if (!scR.text) { advanceTask(journal, 'arch', 'needs-human', null, '架构规划失败'); throw new Error(`架构规划失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
-      scaffold = scR.text
-      timeline.scaffold = scaffold
-      advanceTask(journal, 'arch', 'accepted', clip(scaffold, 300), '架构完成')
+      if (resumed('架构规划')) {
+        scaffold = resume.products.scaffold
+        timeline.scaffold = scaffold
+        logSkip('架构规划')
+      } else {
+        journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：架构规划' })
+        advanceTask(journal, 'arch', 'running', null, '进入流水线')
+        const scR = await withRetry(journal, parent, '架构师 · 脚手架规划与落地', '架构规划', scaffoldPrompt(requirement, design, root), signal)
+        if (!scR.text) { advanceTask(journal, 'arch', 'needs-human', null, '架构规划失败'); throw new Error(`架构规划失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
+        scaffold = scR.text
+        timeline.scaffold = scaffold
+        advanceTask(journal, 'arch', 'accepted', clip(scaffold, 300), '架构完成')
+        if (journal.cancelled) return
+      }
+    }
+
+    /* ── 技术方案阶段 ── */
+    let tech = null
+    if (resumed('技术方案')) {
+      tech = resume.products.tech
+      timeline.tech = tech
+      logSkip('技术方案')
+    } else {
+      journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：技术方案' })
+      advanceTask(journal, 'tech', 'running', null, '进入流水线')
+      const techR = await withRetry(journal, parent, '高级全栈工程师 · 技术方案', '技术方案', techPrompt(prd, design, scaffold, tasks, root), signal)
+      if (!techR.text) { advanceTask(journal, 'tech', 'needs-human', null, '技术方案失败'); throw new Error(`技术方案失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
+      tech = techR.text
+      timeline.tech = tech
+      advanceTask(journal, 'tech', 'accepted', clip(tech, 300), '技术方案完成')
       if (journal.cancelled) return
     }
 
-    journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：技术方案' })
-    advanceTask(journal, 'tech', 'running', null, '进入流水线')
-    const techR = await withRetry(journal, parent, '高级全栈工程师 · 技术方案', '技术方案', techPrompt(prd, design, scaffold, tasks, root), signal)
-    if (!techR.text) { advanceTask(journal, 'tech', 'needs-human', null, '技术方案失败'); throw new Error(`技术方案失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
-    const tech = techR.text
-    timeline.tech = tech
-    advanceTask(journal, 'tech', 'accepted', clip(tech, 300), '技术方案完成')
-    if (journal.cancelled) return
-
-    journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：开发' })
-    const devTaskDefs = tasks.length > 0 ? tasks : [{ title: '整体开发', spec: '按技术方案实现全部需求' }]
-    journal.logs.push({ t: Date.now(), level: 'info', message: `开发阶段开始，任务数：${devTaskDefs.length}（并发 ${maxConcurrency}）` })
-    const store = storeFor(root)
-    const devResults = await runPool(devTaskDefs, maxConcurrency, async (task) => {
-      const devId = journal.taskMap[`dev_${task.title}`]
-      const devTask = devId ? store.find('task', devId) : null
-      if (devTask) store.pushEvent(devTask, devTask.status, 'running', '开发开始')
-      const devR = await withRetry(journal, parent, `开发 · ${task.title}`, '开发', devPrompt(task, tech, prd, root), signal)
-      const ok = !!devR.text
-      if (devTask) {
-        if (ok) {
-          store.pushEvent(devTask, 'running', 'accepted', '开发完成')
-          devTask.summary = clip(devR.text, 300)
-        } else {
-          devTask.retries = (devTask.retries || 0) + (devR.attempts || 1)
-          devTask.humanIntervention = devTask.retries >= RETRY_LIMIT
-          store.pushEvent(devTask, 'running', devTask.humanIntervention ? 'needs-human' : 'rework', '开发失败')
-          const req = store.find('req', journal.reqId)
-          if (req && devTask.humanIntervention) req.humanIntervention = true
-        }
-        store.persist()
-      }
-      return { title: task.title, failed: !ok, output: devR.text || '开发失败（Agent 未产出结果）' }
-    })
-    timeline.dev = devResults
-    const failedCount = devResults.filter((r) => r && r.failed).length
-    journal.logs.push({ t: Date.now(), level: 'info', message: `开发完成，失败任务数：${failedCount}` })
-    if (journal.cancelled) return
-
-    journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：QA 测试' })
-    advanceTask(journal, 'qa', 'running', null, '进入流水线')
-    const qaR = await withRetry(journal, parent, 'QA 测试工程师 · 功能测试', 'QA 测试', qaPrompt(prd, JSON.stringify(timeline.dev), root), signal)
-    if (!qaR.text) { advanceTask(journal, 'qa', 'needs-human', null, 'QA 失败'); throw new Error(`QA 失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
-    const qa = qaR.text
-    timeline.qa = qa
-    advanceTask(journal, 'qa', 'accepted', clip(qa, 300), 'QA 完成')
-    const defects = parseDefects(qa)
-    if (defects.length > 0) {
-      const req = store.find('req', journal.reqId)
-      defects.slice(0, 8).forEach((d) => {
-        const id = store.nextId('bug')
-        const b = { id, reqId: journal.reqId, taskId: journal.taskMap['qa'] || null, severity: d.severity, title: `QA 缺陷：${d.module || d.id}`, reproduce: '', expected: '', actual: '', ac: '', status: 'open', owner: null, retries: 0, humanIntervention: false, createdAt: Date.now(), updatedAt: Date.now(), events: [] }
-        store.bugs.push(b)
-        if (req) { req.bugIds.push(id); req.status = 'pending-acceptance'; req.updatedAt = Date.now() }
-      })
-      store.persist()
-      journal.logs.push({ t: Date.now(), level: 'warn', message: `QA 发现 ${defects.length} 个缺陷，已登记到 backlog（需开发认领）` })
+    /* ── 开发阶段（并发池；resume 到 QA/验收时复用旧结果） ── */
+    let devResults = null
+    if (resumed('开发')) {
+      devResults = resume.products.dev || []
+      timeline.dev = devResults
+      logSkip('开发')
     } else {
-      journal.logs.push({ t: Date.now(), level: 'info', message: 'QA 未发现 P0/P1/P2 缺陷（未登记 Bug）' })
+      journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：开发' })
+      const devTaskDefs = tasks.length > 0 ? tasks : [{ title: '整体开发', spec: '按技术方案实现全部需求' }]
+      journal.logs.push({ t: Date.now(), level: 'info', message: `开发阶段开始，任务数：${devTaskDefs.length}（并发 ${maxConcurrency}）` })
+      const store = storeFor(root)
+      devResults = await runPool(devTaskDefs, maxConcurrency, async (task) => {
+        const devId = journal.taskMap[`dev_${task.title}`]
+        const devTask = devId ? store.find('task', devId) : null
+        if (devTask) store.pushEvent(devTask, devTask.status, 'running', '开发开始')
+        const devR = await withRetry(journal, parent, `开发 · ${task.title}`, '开发', devPrompt(task, tech, prd, root), signal)
+        const ok = !!devR.text
+        if (devTask) {
+          if (ok) {
+            store.pushEvent(devTask, 'running', 'accepted', '开发完成')
+            devTask.summary = clip(devR.text, 300)
+          } else {
+            devTask.retries = (devTask.retries || 0) + (devR.attempts || 1)
+            devTask.humanIntervention = devTask.retries >= RETRY_LIMIT
+            store.pushEvent(devTask, 'running', devTask.humanIntervention ? 'needs-human' : 'rework', '开发失败')
+            const req = store.find('req', journal.reqId)
+            if (req && devTask.humanIntervention) req.humanIntervention = true
+          }
+          store.persist()
+        }
+        return { title: task.title, failed: !ok, output: devR.text || '开发失败（Agent 未产出结果）' }
+      })
+      timeline.dev = devResults
+      const failedCount = devResults.filter((r) => r && r.failed).length
+      journal.logs.push({ t: Date.now(), level: 'info', message: `开发完成，失败任务数：${failedCount}` })
+      if (journal.cancelled) return
     }
-    if (journal.cancelled) return
+    persistJournal(journal)
 
+    /* ── QA 测试阶段 ── */
+    let qa = null
+    if (resumed('QA 测试')) {
+      qa = resume.products.qa
+      timeline.qa = qa
+      logSkip('QA 测试')
+    } else {
+      journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：QA 测试' })
+      advanceTask(journal, 'qa', 'running', null, '进入流水线')
+      const qaR = await withRetry(journal, parent, 'QA 测试工程师 · 功能测试', 'QA 测试', qaPrompt(prd, JSON.stringify(timeline.dev), root), signal)
+      if (!qaR.text) { advanceTask(journal, 'qa', 'needs-human', null, 'QA 失败'); throw new Error(`QA 失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
+      qa = qaR.text
+      timeline.qa = qa
+      advanceTask(journal, 'qa', 'accepted', clip(qa, 300), 'QA 完成')
+      const store = storeFor(root)
+      const defects = parseDefects(qa)
+      if (defects.length > 0) {
+        const req = store.find('req', journal.reqId)
+        defects.slice(0, 8).forEach((d) => {
+          const id = store.nextId('bug')
+          const b = { id, reqId: journal.reqId, taskId: journal.taskMap['qa'] || null, severity: d.severity, title: `QA 缺陷：${d.module || d.id}`, reproduce: '', expected: '', actual: '', ac: '', status: 'open', owner: null, retries: 0, humanIntervention: false, createdAt: Date.now(), updatedAt: Date.now(), events: [] }
+          store.bugs.push(b)
+          if (req) { req.bugIds.push(id); req.status = 'pending-acceptance'; req.updatedAt = Date.now() }
+        })
+        store.persist()
+        journal.logs.push({ t: Date.now(), level: 'warn', message: `QA 发现 ${defects.length} 个缺陷，已登记到 backlog（需开发认领）` })
+      } else {
+        journal.logs.push({ t: Date.now(), level: 'info', message: 'QA 未发现 P0/P1/P2 缺陷（未登记 Bug）' })
+      }
+      if (journal.cancelled) return
+    }
+    persistJournal(journal)
+
+    /* ── 产品验收阶段（总是执行） ── */
     journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：产品验收' })
     advanceTask(journal, 'acceptance', 'running', null, '进入流水线')
     const accR = await withRetry(journal, parent, '产品经理 · 最终验收', '产品验收', acceptancePrompt(prd, qa, JSON.stringify(timeline.dev), root), signal)
@@ -684,6 +713,7 @@ async function executePipeline(journal, parent, requirement, options, signal) {
     const acceptance = accR.text
     timeline.acceptance = acceptance
     advanceTask(journal, 'acceptance', 'accepted', clip(acceptance, 300), '验收完成')
+    const store = storeFor(root)
     const req = store.find('req', journal.reqId)
     if (req) {
       const openBugs = store.bugs.filter((b) => b.reqId === req.id && b.status !== 'verified' && b.status !== 'closed')
@@ -707,6 +737,7 @@ async function executePipeline(journal, parent, requirement, options, signal) {
     journal.endedAt = Date.now()
     inFlight.delete(journal.id)
     journal.result = { requirement, options: sanitizeSnapOptions(options), timeline }
+    persistJournal(journal) // 终态 checkpoint
     console.log(`[teamflow] 运行结束 ${journal.id} → ${journal.status}`)
   }
 }
@@ -727,12 +758,14 @@ function startPipeline(agent, requirement, options, signal) {
     },
     startedAt: null, endedAt: null, agentsStarted: 0,
     stages: [], logs: [], result: null, error: null, cancelled: false, humanIntervention: false,
+    interrupted: false, interruptedAt: null, supersededBy: null,
   }
   runs.set(journal.id, journal)
   if (runs.size > 30) {
     const firstKey = runs.keys().next().value
     if (firstKey !== undefined) runs.delete(firstKey)
   }
+  persistJournal(journal) // 首次 checkpoint（断点续跑基座）
   executePipeline(journal, agent, journal.requirement, journal.options, signal)
   return journal.id
 }
@@ -743,7 +776,40 @@ function cancelRun(runId) {
   j.cancelled = true
   const entry = inFlight.get(runId)
   if (entry && entry.run) { try { entry.run.dispose() } catch (e) { /* ignore */ } }
+  persistJournal(j)
   return true
+}
+
+/** 从断点续跑：跳过已完成阶段，从第一个未完成阶段重跑（service 与工具共用）。 */
+function resumeRun(runId, sessionId) {
+  const id = typeof runId === 'string' ? runId : null
+  if (!id) return { ok: false, error: '缺少 runId' }
+  const j = runs.get(id)
+  if (!j) return { ok: false, error: `未找到运行：${id}` }
+  if (j.status !== 'interrupted' && j.status !== 'failed' && j.status !== 'cancelled') {
+    return { ok: false, error: `只有 interrupted/failed/cancelled 可续跑（当前 ${j.status}）` }
+  }
+  const sid = typeof sessionId === 'string' ? sessionId : null
+  const agent = sid && ACTIVE.agents ? ACTIVE.agents.get(sid) : undefined
+  if (agent === undefined) return { ok: false, error: `找不到会话对应的 Agent：${sid}` }
+  try {
+    const resumePhase = interruptedPhaseOf(j)
+    const products = buildResumeProducts(j)
+    j.status = 'running'
+    j.cancelled = false
+    j.interrupted = false
+    j.interruptedAt = null
+    j.error = null
+    j.endedAt = null
+    j.logs = (j.logs || []).slice(-200)
+    j.logs.push({ t: Date.now(), level: 'warn', message: `断点续跑：从「${resumePhase}」继续（已完成阶段复用产物）` })
+    j.stages = (j.stages || []).filter((s) => s.status === 'done') // 清理未完成 stage
+    persistJournal(j)
+    executePipeline(j, agent, j.requirement, j.options, undefined, { phase: resumePhase, products })
+    return { ok: true, runId: id, resumedFrom: resumePhase }
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) }
+  }
 }
 
 function listRuns() {
@@ -926,6 +992,21 @@ function registerTools(ctx) {
       return { ok: id ? cancelRun(id) : false }
     },
   })
+
+  T({
+    name: 'teamflow_resume',
+    description: '从断点续跑一条中断/失败/已取消的团队研发流水线：跳过已完成阶段（复用产物），从第一个未完成阶段重跑。用于进程重启后发现 interrupted 运行、或阶段失败需要重试的场景。',
+    parameters: {
+      runId: { type: 'string', required: true, description: '流水线运行 ID' },
+    },
+    output: { schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean', required: true }, runId: { type: 'string' }, resumedFrom: { type: 'string' }, error: { type: 'string' } } }, render: (args, value) => [{ type: 'text', text: value.ok ? `流水线 ${value.runId} 已从断点「${value.resumedFrom}」续跑` : `续跑失败：${value.error || '未知错误'}` }] },
+    async execute(args, exec) {
+      const parent = exec && exec.agent
+      if (!parent) throw new Error('teamflow_resume 需要由会话内的 Agent 调用')
+      const id = args && typeof args.runId === 'string' ? args.runId : null
+      return resumeRun(id, parent.session.id)
+    },
+  })
 }
 
 /* ── Teamflow Service（宿主 Cordis service + Remote 方法）────────── */
@@ -939,6 +1020,16 @@ export class TeamflowService extends TypertRemoteService {
       subagents: ctx.get('subagents'),
       tokenMeter: ctx.get('tokenMeter'),
     }
+    // 断点续跑基座：加载磁盘 journal；running/pending 残留 → 标记 interrupted
+    let interruptedCount = 0
+    try {
+      for (const { journal, wasInterrupted } of loadJournals()) {
+        runs.set(journal.id, journal)
+        if (wasInterrupted) interruptedCount++
+      }
+    } catch (e) {
+      console.error('[teamflow] 启动加载 journal 失败', e?.message)
+    }
     ctx.typert.register({
       package: 'dsh-plugin-teamflow',
       face: 'host',
@@ -947,7 +1038,10 @@ export class TeamflowService extends TypertRemoteService {
       invocations: TEAMFLOW_DESCRIPTORS,
     })
     registerTools(ctx)
-    console.log(`[teamflow] host 就绪：backlog 根 ${teamflowRoot()}，Remote 7 个，工具 6 个`)
+    console.log(
+      `[teamflow] host 就绪：backlog 根 ${teamflowRoot()}，Remote ${TEAMFLOW_DESCRIPTORS.length} 个，`
+      + `工具 6 个${interruptedCount > 0 ? `，⚠ 发现 ${interruptedCount} 条中断的流水线（可用 teamflow_resume 从断点重跑）` : ''}`,
+    )
   }
 
   /* ── Remote 方法（client 经 ctx.remote.teamflow.* 调用） ─────────── */
@@ -1002,6 +1096,11 @@ export class TeamflowService extends TypertRemoteService {
     const t = String(to || '')
     if (!k || !i || !t) return { ok: false, error: '缺少 kind/id/to' }
     return transitionBacklog(normalizeRoot(product), k, i, t, reason ? String(reason) : '人工流转')
+  }
+
+  /** 从断点续跑：跳过已完成阶段，从第一个未完成阶段重跑。 */
+  resume(runId, sessionId) {
+    return resumeRun(runId, sessionId)
   }
 }
 

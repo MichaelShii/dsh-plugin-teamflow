@@ -16,6 +16,7 @@ TeamFlow 团队研发流水线 —— DeepSeek Harness 可分发插件（`dsh pl
 
 ## 核心特性
 
+- **断点续跑（v0.4.0）**：每阶段 checkpoint 落盘 `$DSH_HOME/teamflow/runs/<runId>.json`（LangGraph checkpointer 语义）；进程崩溃/重启后自动标记 `interrupted`，可用 `teamflow_resume` / 面板「↻ 从断点重跑」从第一个未完成阶段继续（跳过已完成阶段，复用阶段产物全文）。
 - **backlog 持久化到 `$DSH_HOME/teamflow/<product>/backlog/`**
   `requirements.json` / `tasks.json` / `bugs.json`，跨重启不丢、对每个安装用户可移植。
 - **状态机 + 事件日志**：需求（立项→进行中→待验收→已验收）、任务（待办→开发中→待测试→测试中→待验收→完成|打回|需人工）、缺陷（待认领→处理中→已修复待验→已关闭）。
@@ -67,11 +68,13 @@ Node `fs`，能把 backlog 落到 `$DSH_HOME`，且 client 能注册独立 tab�
 ```
 dsh-plugin-teamflow/
   package.json        # dsh.bundle.patch + dsh.client 声明
-  cordis.patch.yml    # 宿主组合补丁：teamflow-host / teamflow-client 两行
+  cordis.patch.yml    # 宿主组合补丁：teamflow-host（client 自动扫描，无 patch 行）
   descriptors.js      # Remote 描述符（纯数据，host/client 共用）
-  host/index.js       # TeamflowService（真实 Node fs → $DSH_HOME/teamflow）
-  client/index.js     # 团队工作台（conversation.view tab + 拖拽看板）
-  test/smoke.js       # 无依赖 smoke 测试（node test/smoke.js）
+  store.js            # 持久化层：原子写/备份/损坏自愈 + journal 序列化/加载（可独立测试）
+  host/index.js       # TeamflowService（真实 Node fs → $DSH_HOME/teamflow；断点续跑）
+  client/index.js     # 团队工作台（conversation.view tab + 拖拽看板 + 断点重跑）
+  test/smoke.js       # 无依赖 smoke 测试（描述符/模块结构/安全加固）
+  test/journal.test.js # journal 行为测试（写入→崩溃→中断标记→重建）
   tsdown.config.ts    # 发布前构建 client 用（参考 @deepseek-ai/dsh-client-ui-*）
 ```
 
@@ -93,8 +96,8 @@ dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 ## 开发与验证
 
 ```bash
-node test/smoke.js      # 描述符规则 + 模块结构校验（无需任何依赖）
-node --check host/index.js client/index.js descriptors.js
+npm test                # smoke（描述符/结构/安全）+ journal（断点续跑行为）
+node --check host/index.js client/index.js store.js descriptors.js
 npm run bundle          # 发布前构建 client（tsdown；产物 lib/client.js）
 ```
 
@@ -115,3 +118,4 @@ npm publish
 | `teamflow_claim` | 认领任务或缺陷 |
 | `teamflow_update` / `teamflow.backlogUpdate(kind, id, to, product, reason)` | 人工流转状态（处理 needs-human） |
 | `teamflow_cancel` / `teamflow.cancel(runId)` | 取消运行 |
+| `teamflow_resume` / `teamflow.resume(runId, sessionId)` | 断点续跑（从第一个未完成阶段重跑） |
