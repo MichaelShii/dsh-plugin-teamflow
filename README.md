@@ -42,32 +42,12 @@ AGENTS.md 会被 harness 无条件注入每个会话，是**团队资产**。Tea
 
 ## 架构决策记录（ADR）
 
-### ADR-001：断点续跑自研 journal，不引入 LangGraph（v0.4.0）
+关键设计决策独立存档于 `docs/adr/`，README 只留索引：
 
-**背景**：需要"进程重启后流水线可恢复"。候选：自研 journal checkpoint vs 引入 `@langchain/langgraph`。
+- [ADR-0001 断点续跑自研 journal，不引入 LangGraph](docs/adr/0001-self-hosted-journal-vs-langgraph.md)
+- [ADR-0002 AGENTS.md 最小侵入（共识层/运营数据分离）](docs/adr/0002-agents-md-minimal-invasion.md)
 
-**决策**：自研（`store.js` 的 journal 三件套，LangGraph checkpointer 语义的务实子集）。
-
-**理由**：
-- **LLM 编排不可重放**：LangGraph 的恢复 = 从 checkpoint 重放节点代码产生相同结果，对纯函数节点成立；我们的节点是子代理（LLM 调用），重放 = 重新烧 token 且结果不同。"跳过已完成阶段复用产物"（我们的 resume）两种方案都得自己写——checkpoint 的核心价值对我们失效一半。
-- **分发风险**：LangGraph JS 开箱持久化 checkpointer 用 `better-sqlite3`（原生模块，Windows 安装可能失败）；纯 JS 文件版要么自写 `BaseCheckpointSaver`（回到自研），要么依赖尚不成熟的 node:sqlite 适配。DSH 插件分发要求薄依赖。
-- **替换率 ~30%**：子代理编排、token 计量、backlog 落盘、文档归档都是 LangGraph 不管的；它只替换"编排骨架 + checkpoint"，而面板/工具/测试已按自研写好。迁移 = 重写 + 回归。
-- **状态 schema 化成本**：LangGraph 要求 zod schema + 严格 JSON state；我们的 backlog/journal 自由 JSON 更灵活。
-
-**已对齐的概念**（将来迁移概念兼容）：thread=runId、checkpoint=runs/<runId>.json、interrupt=needs-human、resume=从断点重跑、durable execution=启动扫描标记 interrupted。
-
-**触发迁移的信号**：
-- 编排复杂度显著上升（动态分支、`Send` 级扇出、多层循环）
-- 需要 time travel / 历史版本重放 / 审计回滚
-- 团队拥抱 LangChain 生态（LangSmith、LangGraph Platform）
-
-**若迁移的选型要点**：checkpointer 用 node:sqlite 适配而非 better-sqlite3；子代理调用包成幂等节点（state 带产物缓存 + 节点入口检查缓存）；锁 LangGraph 版本；store.js 保留做 backlog（与 checkpoint 是两层，不冲突）。
-
-### ADR-002：AGENTS.md 最小侵入（v0.3.0）
-
-**决策**：AGENTS.md 只放稳定共识层 + `<!-- teamflow:begin/end -->` 托管区（仅指针）；产品记忆/待办放 `docs/teamflow/memory.md`；已有项目绝不重写。
-
-**理由**：AGENTS.md 被 harness 无条件注入每次会话，是团队资产。高频运营数据（记忆/待办）写进去 = 覆写风险 + token 注入成本随迭代膨胀 + 停用后死数据残留。
+新增决策时：`docs/adr/NNNN-<kebab-name>.md`（背景/决策/理由/影响/触发信号），并在本索引追加一行。
 
 ## 架构（阶段 3）
 
@@ -102,6 +82,7 @@ dsh-plugin-teamflow/
   store.js            # 持久化层：原子写/备份/损坏自愈 + journal 序列化/加载（可独立测试）
   host/index.js       # TeamflowService（真实 Node fs → $DSH_HOME/teamflow；断点续跑）
   client/index.js     # 团队工作台（conversation.view tab + 拖拽看板 + 断点重跑）
+  docs/adr/           # 架构决策记录（ADR-0001/0002…）
   test/smoke.js       # 无依赖 smoke 测试（描述符/模块结构/安全加固）
   test/journal.test.js # journal 行为测试（写入→崩溃→中断标记→重建）
   tsdown.config.ts    # 发布前构建 client 用（参考 @deepseek-ai/dsh-client-ui-*）
