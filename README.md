@@ -30,6 +30,15 @@ TeamFlow 团队研发流水线 —— DeepSeek Harness 可分发插件（`dsh pl
   - 人工介入中心（needs-human 项聚合 + 一键终态）
   - 历史 run 切换 + 产品切换
 
+## AGENTS.md 最小侵入原则（重要）
+
+AGENTS.md 会被 harness 无条件注入每个会话，是**团队资产**。TeamFlow 遵循职责分离：
+
+- **AGENTS.md 只放稳定共识层**：团队角色流程、工程约定、文档索引、`<!-- teamflow:begin/end -->` 托管区（仅指针）。
+- **产品记忆/待办放独立活文档** `docs/teamflow/memory.md`（按需读取，不注入每次会话 → 省 token）。
+- **已有项目接入**：检测到 AGENTS.md 已存在 → 绝不重写/重排/覆盖，仅在文末追加托管块（若没有）；团队原有约定一行不动。
+- **退出干净**：团队停用 TeamFlow 后，删除托管块与 `docs/teamflow/` 即完全复原，AGENTS.md 无残留账本。
+
 ## 架构（阶段 3）
 
 ```

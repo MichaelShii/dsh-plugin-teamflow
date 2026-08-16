@@ -148,10 +148,16 @@ function normalizeSignal(s) {
 }
 
 /* ── 提示词模板（与动态插件版一致）────────────────────────────────── */
-const AGENTS_TEMPLATE = `# AGENTS.md — 团队协作守则与产品记忆锚点（{{PRODUCT}} 产品线）
+/**
+ * AGENTS.md 模板 v2 —— 共识层 + TeamFlow 托管区。
+ * 原则：AGENTS.md 是团队资产（会被所有 Agent 无条件注入），只放稳定共识层与文档索引；
+ * 产品记忆/待办等高频运营数据放 docs/teamflow/memory.md（按需读取），绝不写进本文件。
+ * TeamFlow 只维护 <!-- teamflow:begin/end --> 托管区；其余内容团队所有，不得改写。
+ */
+const AGENTS_TEMPLATE = `# AGENTS.md — 团队协作守则与文档索引（{{PRODUCT}} 产品线）
 
 > 任何新加入本产品的 Agent（团队成员）必须先通读本文件，再按 §2 文档索引读取相关文档与任务卡片，不要自行全量探索项目。
-> 维护者：TeamFlow 研发流水线（架构师起草与更新；产品经理每次迭代核对 §5 产品记忆与 §6 待办）。
+> 维护者：团队本身 + TeamFlow 研发流水线（TeamFlow 仅维护文末 <!-- teamflow --> 托管区，其余内容为团队资产，不得改写）。
 
 ## 1. 产品是什么
 
@@ -170,8 +176,8 @@ const AGENTS_TEMPLATE = `# AGENTS.md — 团队协作守则与产品记忆锚点
 | 架构 | docs/architecture/ARCHITECTURE.md | 工程方案与脚手架说明 |
 | 技术方案 | docs/technical/TECHNICAL.md | 模块契约与任务拆分 |
 | QA | docs/qa/QA-REPORT.md | 测试报告 + 人工补测清单 |
+| 产品记忆/待办 | docs/teamflow/memory.md | TeamFlow 维护：迭代历史与下一批待办（按需读取） |
 | 历史归档 | docs/history/<版本>/ | 已发布版本快照（日常不读） |
-| 待办 | 本文件 §6 | 下一批需求与遗留事项 |
 
 ## 3. 团队角色与标准流程
 
@@ -179,7 +185,7 @@ const AGENTS_TEMPLATE = `# AGENTS.md — 团队协作守则与产品记忆锚点
 
 **标准流程**：需求 → PRD →（UI 改造时）UI/UX 设计 →（新项目时）架构规划 → 技术方案 → 并行开发 → QA 测试 → 产品验收。
 
-**产出物落盘约定**：PRD → docs/prd/；设计 → docs/design/；架构 → docs/architecture/；技术方案 → docs/technical/；QA 报告 → docs/qa/；产品现状 → 更新本文件 §1/§5/§6。
+**产出物落盘约定**：PRD → docs/prd/；设计 → docs/design/；架构 → docs/architecture/；技术方案 → docs/technical/；QA 报告 → docs/qa/；产品记忆 → docs/teamflow/memory.md。
 
 **完成度自查**：每个环节交付前对照职责清单自查，未完成不得流转；架构师对新项目必须实际初始化脚手架文件与 AGENTS.md 草稿。
 
@@ -189,26 +195,47 @@ const AGENTS_TEMPLATE = `# AGENTS.md — 团队协作守则与产品记忆锚点
 
 （架构师按实际技术栈填写：代码形态、契约、验证命令、风格约定）
 
-## 5. 产品记忆（迭代历史）
+<!-- teamflow:begin -->
+## TeamFlow 托管区（本块由 TeamFlow 自动维护，团队请勿手改）
 
-| 版本 | 日期 | 需求 | 结果 |
-|---|---|---|---|
-| {{VERSION}} | {{DATE}} | {{REQUIREMENT_SUMMARY}} | 交付中 |
+- 产品记忆（迭代历史）与待办：docs/teamflow/memory.md
+- 需求/任务/缺陷 backlog：backlog/（持久化镜像位于 $DSH_HOME/teamflow/<product>/）
+- 规则：TeamFlow 只维护本块与 docs/teamflow/ 目录；本文件其余内容为团队资产。
+<!-- teamflow:end -->
 
-## 6. 已知待办（下一批）
+## 5. 变更记录
 
-（产品经理与 QA 每次迭代后更新）
+- {{DATE}}：创建本文件（TeamFlow 脚手架）。
+`
 
-## 7. 变更记录
+const MEMORY_TEMPLATE = `# {{PRODUCT}} 产品记忆与待办（TeamFlow 维护）
 
-- {{DATE}}：创建本文件。
+> 由 TeamFlow 流水线的产品经理在每次验收后追加；按需读取，不注入每次会话（AGENTS.md 只放指针）。
+> 这是团队资产的活文档：团队可自行增删，TeamFlow 只追加迭代记录与待办。
+
+## 迭代历史
+
+| 版本 | 日期 | 需求 | 结果 | runId |
+|---|---|---|---|---|
+|（验收后由产品经理追加一行）|
+
+## 已知待办（下一批）
+
+- （验收后由产品经理更新：划掉已完成、补充新发现）
+
+## 说明
+
+- backlog（需求/任务/缺陷）事实源：backlog/*.json（持久化镜像 $DSH_HOME/teamflow/<product>/）
+- 本文件与 AGENTS.md 的 <!-- teamflow --> 托管区共同构成 TeamFlow 的记忆层
 `
 
 function productCtx(root) {
   const base = root || 'products/<product>'
   return `【产品线约定】本需求属于产品 ${base}。
-开工前先读 ${base}/AGENTS.md（团队守则与产品记忆）与 ${base}/docs/SUMMARY.md（文档摘要索引，先读摘要、按需精读，不要无目的全量通读）；
-若目录尚不存在，按约定创建 ${base}/ 结构（docs/<职责>/、backlog/）。
+开工前先读 ${base}/AGENTS.md（团队守则与文档索引）与 ${base}/docs/SUMMARY.md（文档摘要索引，先读摘要、按需精读，不要无目的全量通读）；
+产品记忆（迭代历史）与待办在 ${base}/docs/teamflow/memory.md（按需读取）；
+【AGENTS.md 边界】AGENTS.md 是团队资产：除文末 <!-- teamflow:begin/end --> 托管区外，任何环节都不得改写、重排或覆盖其中的内容（产品记忆请写入 docs/teamflow/memory.md）；
+若目录尚不存在，按约定创建 ${base}/ 结构（docs/<职责>/、docs/teamflow/、backlog/）。
 `
 }
 const TOKEN_HYGIENE = `【token 卫生】上下文很贵：禁止用 read 全量读取超过 200 行的文件（改用 grep 定位 + 分段读取）；
@@ -221,11 +248,11 @@ ${productCtx(root)}【原始需求】
 ${requirement}
 【要求】
 1. 先检查工作区中是否已有 PRD 模板、需求文档或既有开发模式（如 docs/、README、历史文档等），若有必须遵循其结构与规范（基于现有模式开发）。
-2. 若本产品已有历史 PRD（docs/prd/PRD.md）或 AGENTS.md §5 产品记忆：这是迭代需求——先读 docs/SUMMARY.md、历史 PRD 修订记录与产品记忆，输出增量 PRD（保留既有 AC 编号与语义，压缩旧 AC 的冗长表述，显式标注本次变更），并升级版本号。
+2. 若本产品已有历史 PRD（docs/prd/PRD.md）或 docs/teamflow/memory.md 产品记忆：这是迭代需求——先读 docs/SUMMARY.md、历史 PRD 修订记录与产品记忆，输出增量 PRD（保留既有 AC 编号与语义，压缩旧 AC 的冗长表述，显式标注本次变更），并升级版本号。
 3. 【文档归档】更新活文档之前，先把当前 PRD 快照复制到 docs/history/<旧版本号>/（目录不存在则创建），再写新版；历史快照日常不读。
 4. 输出完整 PRD（Markdown）：背景与目标、用户故事（含逐条可测试的验收标准）、功能范围与非目标、交互流程概述、优先级(P0/P1/P2)、依赖与风险、里程碑建议。
 5. 验收标准必须可测试、可量化；文档精炼优先，避免无限膨胀。
-6. 产出写入 docs/prd/PRD.md；若 AGENTS.md 存在，同步在 §5/§6 更新产品记忆与待办。`
+6. 产出写入 docs/prd/PRD.md；同步更新 docs/teamflow/memory.md 的产品记忆（新迭代需求、目标版本）。【边界】不得改写 AGENTS.md 除 teamflow 托管区以外的内容。`
 
 const designPrompt = (prd, root) => `你是资深 UI/UX 设计师。当前工作区即为目标项目。
 ${productCtx(root)}【PRD（本次变更与相关章节）】
@@ -245,15 +272,24 @@ ${clip(design, 10000)}
 1. 推荐技术栈（优先团队常用全栈栈，如 TypeScript + React + Node），说明取舍。
 2. 输出完整脚手架方案：目录结构树、核心模块划分、依赖清单、构建/测试/CI 配置要点。
 3. 【落地要求】除方案文档外必须实际执行初始化（工作区允许范围内）：
-   a) 若产品根尚不存在，创建目录结构（docs/<职责>/、backlog/ 等）；
+   a) 若产品根尚不存在，创建目录结构（docs/<职责>/、docs/teamflow/、backlog/ 等）；
    b) 初始化脚手架文件（package.json、配置、入口等按方案实际创建，不得只写方案不落地）；
-   c) 基于下方 AGENTS.md 模板起草产品 AGENTS.md（替换 {{占位符}} 为实际内容，填写 §4 工程约定），并创建 docs/SUMMARY.md（摘要索引）；
+   c) 【AGENTS.md 处理】二选一：
+      - 产品根已有 AGENTS.md（团队已有约定）：**绝不重写、不重排、不覆盖**。若文件末尾没有
+        <!-- teamflow:begin --> 块，则原样保留全部内容，仅在文末追加一个
+        <!-- teamflow:begin -->…<!-- teamflow:end --> 托管块（含指向 docs/teamflow/memory.md
+        与 backlog/ 的索引行）；若已有托管块，跳过。其余内容一行不动。
+      - 产品根尚无 AGENTS.md：基于下方模板创建（共识层 + 文档索引 + teamflow 托管区），
+        并创建 docs/SUMMARY.md（摘要索引）与 docs/teamflow/memory.md（按下方的 memory.md 骨架，替换 {{占位符}}）；
    d) 输出完成度自查清单：已落地项 / 未落地项及原因——未完成项必须显式列出，不得宣称全部完成。
 4. 若工作区已有部分文件，先阅读并尊重现状。
 5. 输出中文 Markdown，精炼完整；方案文档写入 docs/architecture/ARCHITECTURE.md。
 
 【AGENTS.md 模板】
-${AGENTS_TEMPLATE}`
+${AGENTS_TEMPLATE}
+
+【memory.md 骨架】
+${MEMORY_TEMPLATE}`
 
 const techPrompt = (prd, design, scaffold, tasks, root) => `你是高级全栈工程师。当前工作区即为目标项目，请基于已有项目产出技术方案。
 ${productCtx(root)}【PRD（本次变更与相关章节）】
@@ -306,7 +342,7 @@ ${clip(devSummary, 8000)}
 【要求】
 1. 逐条核对 PRD 验收标准达成情况。
 2. 输出验收结论（正文 ≤80 行）：✅ 通过 / ⚠️ 有条件通过 / ❌ 不通过，附逐条核对表、意见与遗留事项。
-3. 若 AGENTS.md 存在：在 §5 追加本次迭代记录（版本/日期/需求/结果），更新 §6 待办（划掉已完成、补充新发现）；若 PRD 结构变化，同步更新 docs/SUMMARY.md。
+3. 【记忆回写】产品记忆写入 docs/teamflow/memory.md：在「迭代历史」表追加一行（版本/日期/需求/结果/runId），更新「已知待办」（划掉已完成、补充新发现）；若 PRD 结构变化，同步更新 docs/SUMMARY.md。【边界】不得改写 AGENTS.md 除 <!-- teamflow --> 托管区以外的内容（托管区也不放流水账，只放指针）。
 4. 输出中文 Markdown。`
 
 /* ── 并发池 ──────────────────────────────────────────────────────── */
