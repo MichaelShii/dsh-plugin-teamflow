@@ -1,0 +1,34 @@
+{
+  "name": "dsh-plugin-teamflow",
+  "version": "0.1.0",
+  "description": "TeamFlow 团队研发流水线：需求→PRD→设计→架构→技术方案→并行开发→QA→验收，backlog 持久化到 $DSH_HOME/teamflow",
+  "type": "module",
+  "main": "./host/index.js",
+  "exports": {
+    ".": "./host/index.js",
+    "./host": "./host/index.js",
+    "./client": "./client/index.tsx",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": ["@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-runtime", "@deepseek-ai/dsh-client-ui-conversation"],
+      "immediately": false
+    }
+  },
+  "scripts": {
+    "bundle": "tsdown",
+    "watch": "tsdown --watch"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-base": "*",
+    "@deepseek-ai/dsh-client-locale": "*",
+    "@deepseek-ai/dsh-client-runtime": "*",
+    "@deepseek-ai/dsh-client-ui-conversation": "*"
+  },
+  "license": "MIT"
+}

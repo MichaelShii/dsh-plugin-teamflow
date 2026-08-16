@@ -1,0 +1,21 @@
+# 依赖
+node_modules/
+
+# 构建产物
+lib/
+dist/
+*.tsbuildinfo
+
+# 日志与临时文件
+*.log
+.tmp-*/
+.DS_Store
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+
+# npm
+package-lock.json
+npm-debug.log*

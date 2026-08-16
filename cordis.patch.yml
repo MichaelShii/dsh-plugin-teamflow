@@ -1,0 +1,10 @@
+# dsh-plugin-teamflow bundle patch
+# Adds the TeamFlow host data layer (backlog → $DSH_HOME/teamflow) to the web profile.
+# Rows here live in the HOST plane: the service is shared across sessions and
+# persists through the real Node fs (not the dynamic-plugin sandbox).
+
+- id: teamflow-host
+  name: 'dsh-plugin-teamflow/host'
+
+- id: teamflow-client
+  name: 'dsh-plugin-teamflow/client'
