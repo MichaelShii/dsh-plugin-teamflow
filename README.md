@@ -48,8 +48,8 @@ web profile 宿主组合
 │           ├── ctx.typert.register(strict descriptors)   ← 7 个 Remote 方法
 │           ├── ctx.tools.register(teamflow_*)            ← 6 个模型工具
 │           └── node:fs → $DSH_HOME/teamflow/...
-└── teamflow-client (dsh-plugin-teamflow/client)
-      └── ctx.remote.$mount(TEAMFLOW_REMOTE_CONTRIBUTION) ← 与 host 同一份 descriptors
+└── teamflow-client (dsh-plugin-teamflow/client，自动扫描)  ← package.json 声明 dsh.client，
+      └── ctx.remote.$mount(TEAMFLOW_REMOTE_CONTRIBUTION)     无需 patch 行，clientModules 自动注册
             └── conversation.view tab「🏭 团队工作台」
 ```
 

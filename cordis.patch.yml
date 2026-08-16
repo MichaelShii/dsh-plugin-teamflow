@@ -2,9 +2,10 @@
 # Adds the TeamFlow host data layer (backlog → $DSH_HOME/teamflow) to the web profile.
 # Rows here live in the HOST plane: the service is shared across sessions and
 # persists through the real Node fs (not the dynamic-plugin sandbox).
+#
+# 注意：只声明 host 行。client 半由 clientModules 自动扫描——本包的 package.json
+# 声明了 dsh.client，loader 发现包后浏览器端自动注册「🏭 团队工作台」tab；
+# 不要把 client 包写成 host row（host 端没有 ctx.remote，会挂载失败）。
 
 - id: teamflow-host
   name: 'dsh-plugin-teamflow/host'
-
-- id: teamflow-client
-  name: 'dsh-plugin-teamflow/client'

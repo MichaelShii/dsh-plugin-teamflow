@@ -12,7 +12,7 @@
  */
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { resolve, join, dirname } from 'node:path'
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync, existsSync, copyFileSync, renameSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { TEAMFLOW_DESCRIPTORS } from '../descriptors.js'
 
@@ -25,28 +25,61 @@ function teamflowRoot() {
   return join(dshHome(), 'teamflow')
 }
 function productDir(product) {
-  const safe = String(product || 'default').replace(/[\\/]+/g, '/').replace(/^\.+/, '').trim() || 'default'
+  // 双保险：即使调用方绕过 normalizeRoot，这里也拒绝危险路径，退化到 default。
+  let safe = String(product || 'default').replace(/\\/g, '/').trim() || 'default'
+  if (safe.startsWith('/') || safe.startsWith('.') || /^[a-zA-Z]:/.test(safe) || safe.includes('..')) safe = 'default'
+  if (!safe.split('/').every((seg) => /^[a-zA-Z0-9_-]+$/.test(seg))) safe = 'default'
   return join(teamflowRoot(), safe)
 }
 function fileFor(product, name) {
   return join(productDir(product), 'backlog', name)
 }
 
-/* ── 小型持久化 store ─────────────────────────────────────────────── */
+/* ── 小型持久化 store（原子写 + 备份 + 损坏自动恢复） ─────────────── */
+/**
+ * 读取 JSON 数组；主文件损坏时自动尝试 .bak 恢复。
+ * 恢复闭环：readJson 从 .bak 取回数据 → 内存 store 持有 → 下次 persist 原子覆盖主文件。
+ */
 function readJson(file, fallback) {
   try {
     if (!existsSync(file)) return fallback
     const v = JSON.parse(readFileSync(file, 'utf8'))
     return Array.isArray(v) ? v : fallback
   } catch (e) {
-    console.error('[teamflow] readJson failed', file, e?.message)
+    console.error('[teamflow] readJson 主文件损坏', file, e?.message)
+    try {
+      if (existsSync(file + '.bak')) {
+        const b = JSON.parse(readFileSync(file + '.bak', 'utf8'))
+        if (Array.isArray(b)) {
+          console.warn('[teamflow] 已从 .bak 恢复', file)
+          return b
+        }
+      }
+    } catch (e2) { /* 备份也损坏 */ }
+    console.error('[teamflow] .bak 也损坏，返回空（数据可能丢失）', file)
     return fallback
   }
 }
+
+/**
+ * 原子写 JSON 数组：先写 .tmp 再 rename 覆盖（崩溃不产生半截文件）。
+ * 备份规则：只把「可解析的完整数组」复制为 .bak（上一份完整快照）；
+ * 若主文件已损坏，不污染备份——改名 .corrupt-<ts> 保留现场供人工排查，再写新数据。
+ */
 function writeJson(file, value) {
   try {
     mkdirSync(dirname(file), { recursive: true })
-    writeFileSync(file, JSON.stringify(value, null, 2), 'utf8')
+    if (existsSync(file)) {
+      try {
+        const cur = JSON.parse(readFileSync(file, 'utf8'))
+        if (Array.isArray(cur)) copyFileSync(file, file + '.bak')
+      } catch (e) {
+        try { renameSync(file, `${file}.corrupt-${Date.now()}`) } catch (e2) { /* 保留现场失败可忽略 */ }
+      }
+    }
+    const tmp = file + '.tmp'
+    writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8')
+    renameSync(tmp, file)
     return true
   } catch (e) {
     console.error('[teamflow] writeJson failed', file, e?.message)
@@ -112,9 +145,22 @@ function extractText(blocks) {
   if (!Array.isArray(blocks)) return ''
   return blocks.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n')
 }
+/**
+ * 产品名白名单归一化：只允许 [a-zA-Z0-9_-] 组成的路径段（可含 / 分隔）。
+ * 拒绝：绝对路径、盘符、. / .. 段、空段、空白字符 —— 防止穿越 $DSH_HOME 写任意目录。
+ * @returns {string|null} 归一化后的安全产品名，非法输入返回 null。
+ */
 function normalizeRoot(v) {
   if (typeof v !== 'string' || !v.trim()) return null
-  return v.trim().replace(/[\\/]+$/, '').replace(/^[\\/]+/, '')
+  const s = v.trim().replace(/\\/g, '/')
+  if (s.startsWith('/') || s.startsWith('.')) return null // 绝对路径、./、../、..
+  if (/^[a-zA-Z]:/.test(s)) return null // 盘符（C:\x）
+  if (s.includes('//') || s.includes('..')) return null // 空段、穿越段
+  const segments = s.split('/')
+  for (const seg of segments) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(seg)) return null // 每段仅字母数字下划线连字符
+  }
+  return segments.join('/')
 }
 function normalizeTasks(tasks) {
   if (!Array.isArray(tasks)) return []

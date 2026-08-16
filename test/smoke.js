@@ -70,5 +70,15 @@ for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../d
   ok(existsSync(join(here, f)), `存在 ${f}`)
 }
 
+console.log('── 5) 安全加固（v0.3.1）──')
+const patchSrc = readFileSync(join(here, '../cordis.patch.yml'), 'utf8')
+ok(!/teamflow-client/.test(patchSrc), 'cordis.patch.yml 不再声明 client host row（自动扫描）')
+ok(/teamflow-host/.test(patchSrc), 'cordis.patch.yml 保留 teamflow-host')
+ok(/s\.includes\('\.\.'\)/.test(hostSrc), 'normalizeRoot 拒绝 .. 穿越段')
+ok(/s\.startsWith\('\/'\)/.test(hostSrc) && /\^\[a-zA-Z\]:/.test(hostSrc), 'normalizeRoot 拒绝绝对路径/盘符')
+ok(/copyFileSync\(file, file \+ '\.bak'\)/.test(hostSrc), '写前保留 .bak 备份')
+ok(/renameSync\(tmp, file\)/.test(hostSrc), '原子写（.tmp → rename）')
+ok(/从 \.bak 恢复/.test(hostSrc), '主文件损坏自动从 .bak 恢复')
+
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)
