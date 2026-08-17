@@ -14,7 +14,9 @@
 import React from 'react'
 import { TEAMFLOW_REMOTE_CONTRIBUTION } from '../descriptors.js'
 
-export const inject = ['remote', 'slots', 'sessions', 'locale']
+// 注意：访问 ctx.remote.teamflow 需要显式注入 'remote.teamflow'（ui-goal 同款：
+// 注入 ['remote', 'remote.goals'] 才能用 ctx.remote.goals.*）。
+export const inject = ['remote', 'remote.teamflow', 'slots', 'sessions', 'locale']
 
 const STATUS_TEXT = {
   created: '立项', 'in-progress': '进行中', 'pending-acceptance': '待验收', accepted: '已验收', closed: '已关闭',
