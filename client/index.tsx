@@ -354,7 +354,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
   })
   const input = { font: 'inherit', fontSize: 12, padding: '4px 9px', borderRadius: 8, border: `1px solid ${T.border2}`, background: T.layer1, color: T.text, outline: 'none' }
 
-  return h('div', { style: { fontFamily: SANS, fontSize: 13, color: T.text, display: 'flex', flexDirection: 'column', gap: 10, padding: '2px 0' } },
+  return h('div', { style: { fontFamily: SANS, fontSize: 13, color: T.text, display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 16px' } },
     /* 顶部品牌条 */
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
       h('div', {
