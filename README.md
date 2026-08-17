@@ -112,9 +112,15 @@ dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 
 ```bash
 npm test                # smoke（描述符/结构/安全）+ journal（断点续跑行为）
+npm run typecheck       # tsc --noEmit 类型检查（VSCode 同源，不飘红）
 node --check host/index.js client/index.js store.js descriptors.js
 npm run bundle          # 构建 client（tsdown → lib/client.js，__ModuleLoader__.load 注册）
 ```
+
+**类型解析说明**：`@deepseek-ai/dsh-*` 是宿主私有包（不在公共 registry，运行时由 dsh profile
+注入），类型取自本机已安装的宿主副本 `~/.dsh/profiles/node_modules/@deepseek-ai/*`——
+`tsconfig.json` 的 `paths` 已映射（跨机器时把路径中的用户名改成自己的即可）。
+构建（tsdown）不依赖此映射：host 构建对 `@deepseek-ai/*` 保持 external，client 不引用宿主包。
 
 改完代码的生效链路：`npm run bundle` → profile 重装（`pnpm update dsh-plugin-teamflow`，在
 `~/.dsh/profiles/web/` 下，若显示 Already up to date 先删

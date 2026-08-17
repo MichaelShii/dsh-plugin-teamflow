@@ -1,0 +1,12 @@
+# pnpm 11 项目级配置（.npmrc 中非 registry/认证设置已被 pnpm 11 弃用，必须放这里）
+#
+# verifyDepsBeforeRun: pnpm 11 默认 install——跑任何脚本前自动执行 pnpm install，
+#   会把 peerDependencies 里的 @deepseek-ai/dsh-*（宿主私有包，不在公共 registry）拉取失败。
+#   本项目已统一 pnpm（lockfile 提交锁定版本），关闭自动安装仅跑本地 tsdown 构建。
+verifyDepsBeforeRun: false
+# 不自动安装 peer 依赖（@deepseek-ai/dsh-* 由 dsh profile 提供）
+autoInstallPeers: false
+# nodeLinker: hoisted —— Windows 上符号链接创建受限（symlink 报 UNKNOWN error）
+#   时使用扁平布局（类似 npm），无需 SeCreateSymbolicLinkPrivilege；
+#   仍是 pnpm 管理 + 同一 pnpm-lock.yaml，可无缝切回默认（删除本行即可）。
+nodeLinker: hoisted

@@ -37,6 +37,7 @@ interface BacklogItem {
   severity?: string
   owner?: string | null
   summary?: string | null
+  events?: Array<{ at: number; by: string; from: string | null; to: string; reason: string }>
   [key: string]: unknown
 }
 /** 流水线启动选项。 */
@@ -439,7 +440,7 @@ const measureTokens = (run) => {
 }
 
 async function runAgent(
-  journal: Journal, parent: unknown, label: string, phase: string, prompt: string, signal: unknown,
+  journal: Journal, parent: ParentAgentLike, label: string, phase: string, prompt: string, signal: unknown,
 ): Promise<string | null> {
   const maxSeq = journal.stages.length ? Math.max(...journal.stages.map((s) => s.seq)) : 0
   const stage = {
@@ -610,7 +611,7 @@ const PHASE_KEY_BY_NAME = { 'PRD 产品需求': 'prd', 'UI/UX 设计': 'design',
 
 /** 从 journal 已完成阶段重建断点续跑产物（prd/design/scaffold/tech/qa/acceptance/dev）。 */
 function buildResumeProducts(journal) {
-  const products = {}
+  const products: Record<string, unknown> = {}
   for (const s of journal.stages) {
     if (s.status !== 'done' || !s.output) continue
     const key = PHASE_KEY_BY_NAME[s.phase]
@@ -660,7 +661,7 @@ async function executePipeline(
   activeProducts.set(productKey, journal.id)
   const tasks = normalizeTasks(options.tasks)
   const maxConcurrency = Number.isFinite(options.maxConcurrency) && options.maxConcurrency > 0 ? Math.min(options.maxConcurrency, 8) : 3
-  const timeline = {}
+  const timeline: Record<string, unknown> = {}
   // 断点续跑：跳过 resume.phase 之前的阶段
   const resumed = (phase) => !!resume && PHASE_ORDER.indexOf(phase) < PHASE_ORDER.indexOf(resume.phase)
   const logSkip = (phase) => journal.logs.push({ t: Date.now(), level: 'warn', message: `跳过已完成阶段：${phase}（断点续跑）` })
@@ -915,13 +916,21 @@ function cancelRun(runId) {
   return true
 }
 
+/** 父 Agent 句柄的鸭子类型（deliverCompletion / runAgent 共用）。 */
+interface ParentAgentLike {
+  inject?: (m: unknown) => void
+  followup?: (m: unknown) => void
+  status?: string
+  session?: { append?: Function }
+}
+
 /**
  * 流水线结束汇总投递：把结果通知给发起会话的 Agent（主线程）。
  * - idle Agent → followup（唤醒新 turn，模型可见汇报）
  * - running Agent → inject（注入下一个 step 的上下文，不打断）
  * 投递失败静默（Agent 已销毁/会话关闭等场景）。
  */
-function deliverCompletion(journal: Journal, parent: unknown): void {
+function deliverCompletion(journal: Journal, parent: ParentAgentLike): void {
   try {
     if (!parent || typeof parent.inject !== 'function' || typeof parent.followup !== 'function') return
     const stages = journal.stages || []
@@ -973,7 +982,7 @@ function resumeRun(runId: string | null | undefined, sessionId: string | null | 
   // 从磁盘加载完整 journal（内存版已裁剪 output，磁盘保留阶段产物全文）
   let j = null
   try {
-    const disk = readJsonAny(journalFile(id), null)
+    const disk = readJsonAny(journalFile(id), null) as JournalRecord | null
     if (disk && typeof disk === 'object' && disk.id === id) j = disk
   } catch (e) { /* 落到内存版 */ }
   if (!j) j = runs.get(id)
@@ -1276,7 +1285,7 @@ export class TeamflowService extends TypertRemoteService {
     if (agent === undefined) return { ok: false, error: `找不到会话对应的 Agent：${sid}` }
     try {
       const opts = (options && typeof options === 'object') ? options : {}
-      const runId = startPipeline(agent, req, opts)
+      const runId = startPipeline(agent, req, opts, undefined)
       return { ok: true, runId, product: opts.productRoot ? normalizeRoot(opts.productRoot) : null }
     } catch (e) {
       return { ok: false, error: String((e && e.message) || e) }

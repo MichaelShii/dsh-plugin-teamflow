@@ -78,7 +78,7 @@ export function journalFile(runId: string): string {
 
 /* ── 原子读/写（备份 + 损坏自愈） ────────────────────────────────── */
 /** 通用 JSON 读取（对象或数组），主文件损坏自动 .bak 恢复。 */
-export function readJsonAny<T>(file: string, fallback: T): T | unknown {
+export function readJsonAny<T>(file: string, fallback: T): T {
   try {
     if (!existsSync(file)) return fallback
     return JSON.parse(readFileSync(file, 'utf8')) as T

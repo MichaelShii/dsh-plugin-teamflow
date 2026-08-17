@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM"],
+    "jsx": "react-jsx",
+    // TS 6 起不再自动收集 node_modules/@types，需显式声明（node:fs/process 等）
+    "types": ["node"],
+    // 存量代码无类型标注，逐项补类型是后续工作；先保证不误报（VSCode 不飘红）
+    "strict": false,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "paths": {
+      // @deepseek-ai/* 是宿主私有包，运行时由 dsh profile 注入，类型取自已安装的宿主副本。
+      // 跨机器时把路径中的用户名改成自己的（DSH 目录结构一致）。
+      "@deepseek-ai/*": ["C:/Users/gyech/.dsh/profiles/node_modules/@deepseek-ai/*"]
+    }
+  },
+  "include": [
+    "host",
+    "client",
+    "store.ts",
+    "descriptors.ts",
+    "tsdown.config.ts",
+    "tsdown.host.config.ts"
+  ]
+}

@@ -38,6 +38,9 @@ const skipBuild = process.argv.includes('--sync')
 if (!skipBuild) {
   console.log('📦 构建...')
   try {
+    // pnpm 11 默认 verifyDepsBeforeRun=install（跑脚本前自动 pnpm install），
+    // 会把 peerDeps 的 @deepseek-ai/dsh-*（宿主私有包）拉到 404 ——
+    // 已通过 pnpm-workspace.yaml（verifyDepsBeforeRun:false + autoInstallPeers:false）解决。
     execSync('pnpm bundle', { stdio: 'inherit', cwd: ROOT })
   } catch (e) {
     console.error('\n⚠ 构建失败（可能是 peerDep 或 tsdown 问题）。')

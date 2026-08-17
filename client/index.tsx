@@ -65,7 +65,7 @@ const SANS = '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Mic
 const flexRow = { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }
 
 /** 状态徽章：半透明底 + 状态色文字 + 圆角 pill。 */
-const chip = (text, color, opts = {}) => h('span', {
+const chip = (text, color, opts: { style?: Record<string, string>; dot?: boolean } = {}) => h('span', {
   style: {
     display: 'inline-flex', alignItems: 'center', gap: 4,
     padding: '1px 8px', borderRadius: 999, fontSize: 11, fontWeight: 500, lineHeight: '16px',
@@ -298,7 +298,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
     try {
       const lr = await api.list()
       const id = runId || (lr.runs && lr.runs[0] && lr.runs[0].id)
-      const snap = id ? await api.snapshot(id) : null
+      const snap = id ? (await api.snapshot(id) as { options?: { productRoot?: string | null } } | null) : null
       const p = product || (snap && snap.options && snap.options.productRoot) || null
       const bo = await api.backlog(p)
       setState({ runs: (lr.runs || []).slice(0, 12), active: snap, backlog: bo, err: null })

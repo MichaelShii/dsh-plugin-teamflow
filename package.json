@@ -35,22 +35,26 @@
     "bundle:client": "tsdown",
     "watch": "tsdown --watch",
     "deploy": "node deploy.mjs",
+    "typecheck": "tsc --noEmit",
     "test": "node test/smoke.js && node test/journal.test.js"
   },
   "dependencies": {
     "react": "^18.2.0"
   },
   "devDependencies": {
-    "tsdown": "^0.22.2"
+    "@types/node": "^26.2.0",
+    "@types/react": "^18.3.31",
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.3"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-base": "*",
-    "@deepseek-ai/dsh-typert-protocol": "*",
-    "@deepseek-ai/dsh-llm": "*",
-    "@deepseek-ai/dsh-tools": "*",
     "@deepseek-ai/dsh-client-locale": "*",
     "@deepseek-ai/dsh-client-runtime": "*",
-    "@deepseek-ai/dsh-client-ui-conversation": "*"
+    "@deepseek-ai/dsh-client-ui-conversation": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-tools": "*",
+    "@deepseek-ai/dsh-typert-protocol": "*"
   },
   "license": "MIT"
 }

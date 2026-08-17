@@ -19,3 +19,6 @@ dist/
 # npm
 package-lock.json
 npm-debug.log*
+
+# WorkBuddy 工作区数据
+.workbuddy/
