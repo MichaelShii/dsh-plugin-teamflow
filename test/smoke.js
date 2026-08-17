@@ -86,6 +86,14 @@ ok(/kind: 'plugin',[\s\S]*plugin: 'dsh-plugin-teamflow',[\s\S]*form: 'notice'/.t
 ok(/deliverCompletion\(journal, parent\)/.test(hostSrc), 'finally 中投递')
 ok(/teamflow_resume/.test(hostSrc), '汇报文本引导断点重跑')
 
+console.log('── 3d) 防恶心人加固（v0.6.0）──')
+ok(/function hasSubstance/.test(hostSrc) && /REFUSAL_PATTERN/.test(hostSrc), '假阳性检测（拒绝词 + 长度下限）')
+ok(/STAGE_TOKEN_BUDGET = 60000/.test(hostSrc), '阶段 token 熔断预算 60k')
+ok(/function isUnretryable/.test(hostSrc), 'context-limit 类失败不重试')
+ok(/activeProducts/.test(hostSrc) && /已有流水线/.test(hostSrc), '产品级并发限制（防 req 状态互踩）')
+ok(/summarizeTimeline\(/.test(hostSrc) && /delete s\.output/.test(hostSrc), '内存裁剪（timeline 摘要 + stage 删 output）')
+ok(/readJsonAny\(journalFile\(id\)/.test(hostSrc), 'resume 从磁盘加载完整 journal')
+
 console.log('── 4) 其他文件 ──')
 for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../descriptors.js', '../client/index.js', '../host/index.js', '../store.js']) {
   ok(existsSync(join(here, f)), `存在 ${f}`)

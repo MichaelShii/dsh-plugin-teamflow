@@ -15,10 +15,30 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { TEAMFLOW_DESCRIPTORS } from '../descriptors.js'
 import {
   dshHome, teamflowRoot, productDir, fileFor,
-  readJson, writeJson, persistJournal, loadJournals,
+  readJson, readJsonAny, writeJson, persistJournal, loadJournals, journalFile,
 } from '../store.js'
 
 const RETRY_LIMIT = 2
+/** 单阶段 token 熔断预算（子代理会话上下文压力估算累计）。 */
+const STAGE_TOKEN_BUDGET = 60000
+/** 假阳性完成检测：明确拒绝/放弃模式的输出视为未产出。 */
+const REFUSAL_PATTERN = /(无法完成|不能完成|无法继续|抱歉|对不起|我(无法|不能)|无法执行|cannot complete|unable to)/i
+/** 各阶段最小产出长度（防"假完成"：空话/一句话冒充交付）。 */
+const STAGE_MIN_LENGTH = { prd: 400, design: 250, arch: 250, tech: 350, dev: 60, qa: 250, acceptance: 150 }
+
+/** 产出物实质校验：非空 + 无拒绝词 + 达到阶段长度下限。 */
+function hasSubstance(phase, text) {
+  if (!text || !text.trim()) return false
+  if (REFUSAL_PATTERN.test(text)) return false
+  const min = STAGE_MIN_LENGTH[phase] ?? 100
+  return text.trim().length >= min
+}
+
+/** 不可重试的失败原因（上下文耗尽/超长等——重试同一 prompt 大概率复现）。 */
+function isUnretryable(reason, outcome) {
+  const r = String(reason || outcome || '')
+  return /context|limit|max-token|token|tool-error/i.test(r)
+}
 
 /* ── 状态机 ───────────────────────────────────────────────────────── */
 const STATUS = {
@@ -342,6 +362,8 @@ async function runPool(items, max, fn) {
 const runs = new Map()
 const inFlight = new Map()
 const stores = new Map()
+/** 产品级并发限制：product → 活跃 runId（同一产品同时只允许一条流水线，防 req 状态互踩）。 */
+const activeProducts = new Map()
 let ACTIVE = { agents: undefined, subagents: undefined, tokenMeter: undefined }
 
 const storeFor = (product) => {
@@ -398,15 +420,20 @@ async function runAgent(journal, parent, label, phase, prompt, signal) {
       stage.status = 'cancelled'; stage.outcome = 'cancelled'
       return null
     }
-    if (stop === 'completed' && text) {
+    if (stop === 'completed' && text && hasSubstance(phase, text)) {
       stage.status = 'done'; stage.outcome = 'completed'
       stage.output = clip(text, 50000) // 阶段产物全文（断点续跑重建上下文）
       return text
     }
     stage.status = 'failed'
-    stage.outcome = stop || 'error'
-    stage.summary = `未产出有效结果（stopReason=${stop || 'unknown'}）`
-    journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 未产出有效结果（stopReason=${stop || 'unknown'}）` })
+    stage.outcome = (stop === 'completed' && text) ? 'insubstantial' : (stop || 'error')
+    if (stage.outcome === 'insubstantial') {
+      stage.summary = '产出未通过实质校验（含拒绝措辞或内容过短），视为未交付'
+      journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 产出未通过实质校验（拒绝措辞/内容过短）` })
+    } else {
+      stage.summary = `未产出有效结果（stopReason=${stop || 'unknown'}）`
+      journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 未产出有效结果（stopReason=${stop || 'unknown'}）` })
+    }
     return null
   } catch (e) {
     stage.status = journal.cancelled ? 'cancelled' : 'failed'
@@ -424,12 +451,30 @@ async function runAgent(journal, parent, label, phase, prompt, signal) {
 
 async function withRetry(journal, parent, label, phase, prompt, signal) {
   let attempts = 0
+  let stageTokens = 0
   for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
     attempts = attempt
     const labelNow = attempt > 1 ? `${label}（第 ${attempt} 次重试）` : label
     const result = await runAgent(journal, parent, labelNow, phase, prompt, signal)
-    if (result) return { text: result, attempts }
-    if (journal.cancelled) return { text: null, attempts }
+    // 累计本阶段各次尝试的 token 用量（熔断预算）
+    const lastStage = journal.stages[journal.stages.length - 1]
+    if (lastStage && lastStage.phase === phase && typeof lastStage.tokens === 'number') {
+      stageTokens += lastStage.tokens
+    }
+    if (result) return { text: result, attempts, stageTokens }
+    if (journal.cancelled) return { text: null, attempts, stageTokens }
+    // 不可重试失败（上下文耗尽等）：重试同一 prompt 大概率复现 → 直接需人工
+    if (lastStage && isUnretryable(lastStage.outcome, lastStage.outcome)) {
+      journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 失败原因不可重试（${lastStage.outcome}），跳过重试，需人工介入` })
+      journal.humanIntervention = true
+      return { text: null, attempts, stageTokens }
+    }
+    // token 熔断：本阶段累计用量超预算 → 停止重试
+    if (stageTokens >= STAGE_TOKEN_BUDGET) {
+      journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 累计 token ${Math.round(stageTokens / 1000)}k 超出阶段预算 ${Math.round(STAGE_TOKEN_BUDGET / 1000)}k，熔断，需人工介入` })
+      journal.humanIntervention = true
+      return { text: null, attempts, stageTokens }
+    }
     if (attempt < RETRY_LIMIT) {
       journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 第 ${attempt} 次尝试未成功，自动重试…` })
     } else {
@@ -437,7 +482,7 @@ async function withRetry(journal, parent, label, phase, prompt, signal) {
       journal.humanIntervention = true
     }
   }
-  return { text: null, attempts }
+  return { text: null, attempts, stageTokens }
 }
 
 function parseDefects(qaText) {
@@ -546,6 +591,16 @@ async function executePipeline(journal, parent, requirement, options, signal, re
   if (!resume) journal.startedAt = Date.now()
   const root = options.productRoot || null
   journal.product = root
+  const productKey = root || 'default'
+  // 产品级并发限制（防御：正常入口 startPipeline/resumeRun 已预检）
+  if (activeProducts.has(productKey) && activeProducts.get(productKey) !== journal.id) {
+    journal.status = 'failed'
+    journal.error = `产品 ${productKey} 已有流水线 ${activeProducts.get(productKey)} 运行中`
+    journal.endedAt = Date.now()
+    persistJournal(journal)
+    return
+  }
+  activeProducts.set(productKey, journal.id)
   const tasks = normalizeTasks(options.tasks)
   const maxConcurrency = Number.isFinite(options.maxConcurrency) && options.maxConcurrency > 0 ? Math.min(options.maxConcurrency, 8) : 3
   const timeline = {}
@@ -737,16 +792,37 @@ async function executePipeline(journal, parent, requirement, options, signal, re
   } finally {
     journal.endedAt = Date.now()
     inFlight.delete(journal.id)
-    journal.result = { requirement, options: sanitizeSnapOptions(options), timeline }
+    activeProducts.delete(productKey) // 释放产品级并发锁
+    journal.result = { requirement, options: sanitizeSnapOptions(options), timeline: summarizeTimeline(timeline) }
+    for (const s of journal.stages) delete s.output // 内存只留摘要（磁盘 journal 已持久化全文）
     persistJournal(journal) // 终态 checkpoint
     deliverCompletion(journal, parent) // 汇总投递回发起会话（主线程）
     console.log(`[teamflow] 运行结束 ${journal.id} → ${journal.status}`)
   }
 }
 
+/** 结果 timeline 摘要化（内存只留 2k 级摘要，全文在磁盘 journal/backlog）。 */
+function summarizeTimeline(timeline) {
+  const out = {}
+  for (const key of Object.keys(timeline || {})) {
+    const val = timeline[key]
+    if (Array.isArray(val)) {
+      out[key] = val.map((x) => (x && typeof x === 'object'
+        ? { title: x.title, failed: !!x.failed, output: clip(x.output || '', 2000) }
+        : clip(x, 2000)))
+    } else {
+      out[key] = clip(val, 2000)
+    }
+  }
+  return out
+}
+
 function startPipeline(agent, requirement, options, signal) {
   const provider = providerName()
   if (!provider) throw new Error('没有可用的子代理提供者（subagents 注册表为空）')
+  const productKey = normalizeRoot(options.productRoot) || 'default'
+  const active = activeProducts.get(productKey)
+  if (active) throw new Error(`产品 ${productKey} 已有流水线 ${active} 运行中——请等待完成、取消（teamflow_cancel）或先处理中断（teamflow_resume）`)
   const journal = {
     id: `tf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     name: 'teamflow-pipeline', status: 'pending',
@@ -834,12 +910,23 @@ function deliverCompletion(journal, parent) {
 }
 
 /** 从断点续跑：跳过已完成阶段，从第一个未完成阶段重跑（service 与工具共用）。 */
-function resumeRun(runId, sessionId) {  const id = typeof runId === 'string' ? runId : null
+function resumeRun(runId, sessionId) {
+  const id = typeof runId === 'string' ? runId : null
   if (!id) return { ok: false, error: '缺少 runId' }
-  const j = runs.get(id)
+  // 从磁盘加载完整 journal（内存版已裁剪 output，磁盘保留阶段产物全文）
+  let j = null
+  try {
+    const disk = readJsonAny(journalFile(id), null)
+    if (disk && typeof disk === 'object' && disk.id === id) j = disk
+  } catch (e) { /* 落到内存版 */ }
+  if (!j) j = runs.get(id)
   if (!j) return { ok: false, error: `未找到运行：${id}` }
   if (j.status !== 'interrupted' && j.status !== 'failed' && j.status !== 'cancelled') {
     return { ok: false, error: `只有 interrupted/failed/cancelled 可续跑（当前 ${j.status}）` }
+  }
+  const productKey = j.product || 'default'
+  if (activeProducts.has(productKey) && activeProducts.get(productKey) !== id) {
+    return { ok: false, error: `产品 ${productKey} 已有流水线 ${activeProducts.get(productKey)} 运行中` }
   }
   const sid = typeof sessionId === 'string' ? sessionId : null
   const agent = sid && ACTIVE.agents ? ACTIVE.agents.get(sid) : undefined
@@ -856,6 +943,7 @@ function resumeRun(runId, sessionId) {  const id = typeof runId === 'string' ? r
     j.logs = (j.logs || []).slice(-200)
     j.logs.push({ t: Date.now(), level: 'warn', message: `断点续跑：从「${resumePhase}」继续（已完成阶段复用产物）` })
     j.stages = (j.stages || []).filter((s) => s.status === 'done') // 清理未完成 stage
+    runs.set(id, j) // 内存换用磁盘完整版（含 output 全文）
     persistJournal(j)
     executePipeline(j, agent, j.requirement, j.options, undefined, { phase: resumePhase, products })
     return { ok: true, runId: id, resumedFrom: resumePhase }

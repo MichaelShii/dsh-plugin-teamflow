@@ -16,6 +16,7 @@ TeamFlow 团队研发流水线 —— DeepSeek Harness 可分发插件（`dsh pl
 
 ## 核心特性
 
+- **防假交付（v0.6.0）**：① 实质校验——拒绝措辞（"我无法完成"等）或低于阶段长度下限的输出视为未交付，走重试/需人工；② token 熔断——单阶段累计 60k 预算，超限停止重试；③ 上下文耗尽类失败不重试（重试同一 prompt 大概率复现）；④ 产品级并发锁——同一产品同时只允许一条活跃流水线，防需求状态互踩；⑤ 内存裁剪——timeline 摘要化 + 阶段产物内存删除（磁盘保留，resume 时从磁盘加载全文）。
 - **完成汇总自动汇报主线程（v0.5.0）**：流水线结束（成功/失败/取消/中断）后自动把汇总（状态/阶段统计/token 总计/backlog/后续操作指引）投递给发起会话的 Agent——空闲时唤醒（followup），忙碌时注入下一步上下文（inject），与 DSH 后台任务通知同款机制（tool-jobs 模式，但独立实现，不依赖 web 面被禁用的 tool-jobs）。用户无需盯面板，模型会转述结果或按指引继续（认领缺陷/流转/断点重跑）。
 - **断点续跑（v0.4.0）**：每阶段 checkpoint 落盘 `$DSH_HOME/teamflow/runs/<runId>.json`（LangGraph checkpointer 语义）；进程崩溃/重启后自动标记 `interrupted`，可用 `teamflow_resume` / 面板「↻ 从断点重跑」从第一个未完成阶段继续（跳过已完成阶段，复用阶段产物全文）。
 - **backlog 持久化到 `$DSH_HOME/teamflow/<product>/backlog/`**
