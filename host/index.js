@@ -11,6 +11,7 @@
  * 运行环境：宿主组合（web profile）的真实 Node 进程。
  */
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { TEAMFLOW_DESCRIPTORS } from '../descriptors.js'
 import {
   dshHome, teamflowRoot, productDir, fileFor,
@@ -738,6 +739,7 @@ async function executePipeline(journal, parent, requirement, options, signal, re
     inFlight.delete(journal.id)
     journal.result = { requirement, options: sanitizeSnapOptions(options), timeline }
     persistJournal(journal) // 终态 checkpoint
+    deliverCompletion(journal, parent) // 汇总投递回发起会话（主线程）
     console.log(`[teamflow] 运行结束 ${journal.id} → ${journal.status}`)
   }
 }
@@ -780,9 +782,59 @@ function cancelRun(runId) {
   return true
 }
 
+/**
+ * 流水线结束汇总投递：把结果通知给发起会话的 Agent（主线程）。
+ * - idle Agent → followup（唤醒新 turn，模型可见汇报）
+ * - running Agent → inject（注入下一个 step 的上下文，不打断）
+ * 投递失败静默（Agent 已销毁/会话关闭等场景）。
+ */
+function deliverCompletion(journal, parent) {
+  try {
+    if (!parent || typeof parent.inject !== 'function' || typeof parent.followup !== 'function') return
+    const stages = journal.stages || []
+    const done = stages.filter((s) => s.status === 'done').length
+    const failed = stages.filter((s) => s.status === 'failed' || s.status === 'needs-human').length
+    const cancelledStages = stages.filter((s) => s.status === 'cancelled').length
+    const totalTokens = stages.reduce((a, s) => a + (typeof s.tokens === 'number' ? s.tokens : 0), 0)
+    const statusLine = {
+      completed: '✅ 已完成',
+      failed: '❌ 失败',
+      cancelled: '⏹ 已取消',
+      interrupted: '⚠ 中断（可用 teamflow_resume 从断点重跑）',
+    }[journal.status] || journal.status
+    const stagesLine = stages.length === 0
+      ? '尚未进入任何阶段'
+      : `${stages.length} 个阶段 · ${done} 完成${failed > 0 ? ` · ${failed} 失败` : ''}${cancelledStages > 0 ? ` · ${cancelledStages} 取消` : ''}`
+    const text = [
+      `【团队研发流水线汇报】runId=${journal.id}`,
+      `状态：${statusLine}${journal.error ? `（${clip(journal.error, 300)}）` : ''}`,
+      `阶段：${stagesLine}`,
+      `Agent：共启动 ${journal.agentsStarted || 0} 个子代理`,
+      totalTokens > 0 ? `Token：∑ ${(totalTokens / 1000).toFixed(1)}k（上下文压力估算）` : 'Token：—',
+      journal.product ? `产品：${journal.product}` : '',
+      `backlog：需求 ${journal.reqId || '—'}（$DSH_HOME/teamflow/ 持久化）`,
+      '用户可打开「🏭 团队工作台」tab 查看阶段泳道、拖拽看板与 token 明细。',
+      '如需继续处理：可认领缺陷（teamflow_claim）、人工流转（teamflow_update）、断点重跑（teamflow_resume）。',
+      '若用户在场请简明转述以上要点；若无人值守仅记录即可，不必长篇回复。',
+    ].filter(Boolean).join('\n')
+    const message = createUserMessage({
+      content: [{ type: 'text', text }],
+      source: {
+        kind: 'plugin',
+        plugin: 'dsh-plugin-teamflow',
+        form: 'notice',
+        summary: `团队研发流水线 ${journal.status === 'completed' ? '已完成' : journal.status}（runId=${journal.id}）`,
+      },
+    })
+    if (parent.status === 'idle') parent.followup(message)
+    else parent.inject(message)
+  } catch (e) {
+    console.warn('[teamflow] 完成汇报投递失败（忽略）', e?.message)
+  }
+}
+
 /** 从断点续跑：跳过已完成阶段，从第一个未完成阶段重跑（service 与工具共用）。 */
-function resumeRun(runId, sessionId) {
-  const id = typeof runId === 'string' ? runId : null
+function resumeRun(runId, sessionId) {  const id = typeof runId === 'string' ? runId : null
   if (!id) return { ok: false, error: '缺少 runId' }
   const j = runs.get(id)
   if (!j) return { ok: false, error: `未找到运行：${id}` }

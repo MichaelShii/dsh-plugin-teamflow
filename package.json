@@ -1,7 +1,7 @@
 {
   "name": "dsh-plugin-teamflow",
-  "version": "0.4.0",
-  "description": "TeamFlow 团队研发流水线：需求→PRD→设计→架构→技术方案→并行开发→QA→验收；backlog 持久化 $DSH_HOME/teamflow + 断点续跑（journal checkpoint）；Web 团队工作台（conversation.view tab + 拖拽看板）",
+  "version": "0.5.0",
+  "description": "TeamFlow 团队研发流水线：需求→PRD→设计→架构→技术方案→并行开发→QA→验收；backlog 持久化 + 断点续跑 + 完成汇总自动汇报主线程；Web 团队工作台（conversation.view tab + 拖拽看板）",
   "type": "module",
   "main": "./host/index.js",
   "exports": {
@@ -36,6 +36,7 @@
   "peerDependencies": {
     "@deepseek-ai/dsh-base": "*",
     "@deepseek-ai/dsh-typert-protocol": "*",
+    "@deepseek-ai/dsh-llm": "*",
     "@deepseek-ai/dsh-client-locale": "*",
     "@deepseek-ai/dsh-client-runtime": "*",
     "@deepseek-ai/dsh-client-ui-conversation": "*"

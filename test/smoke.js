@@ -77,6 +77,15 @@ const storeSrc = readFileSync(join(here, '../store.js'), 'utf8')
 ok(/export function loadJournals/.test(storeSrc) && /export function persistJournal/.test(storeSrc) && /export function serializeJournal/.test(storeSrc), 'store.js 导出 journal 三件套')
 ok(/status === 'running' \|\| j\.status === 'pending'/.test(storeSrc), 'loadJournals 中断标记逻辑（store.js）')
 
+console.log('── 3c) 完成汇总投递（v0.5.0）──')
+ok(/from '@deepseek-ai\/dsh-llm'/.test(hostSrc), 'import createUserMessage（dsh-llm）')
+ok(/function deliverCompletion/.test(hostSrc), 'deliverCompletion 函数')
+ok(/parent\.status === 'idle'\) parent\.followup\(message\)/.test(hostSrc), 'idle → followup 唤醒')
+ok(/else parent\.inject\(message\)/.test(hostSrc), 'running → inject 注入')
+ok(/kind: 'plugin',[\s\S]*plugin: 'dsh-plugin-teamflow',[\s\S]*form: 'notice'/.test(hostSrc), 'notice 来源标记（与 tool-jobs 同款）')
+ok(/deliverCompletion\(journal, parent\)/.test(hostSrc), 'finally 中投递')
+ok(/teamflow_resume/.test(hostSrc), '汇报文本引导断点重跑')
+
 console.log('── 4) 其他文件 ──')
 for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../descriptors.js', '../client/index.js', '../host/index.js', '../store.js']) {
   ok(existsSync(join(here, f)), `存在 ${f}`)
