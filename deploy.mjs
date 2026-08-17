@@ -1,9 +1,15 @@
 #!/usr/bin/env node
 /**
- * deploy.mjs — 构建 + 同步到 web profile 副本。
+ * deploy.mjs — 一条龙：构建 + 测试 + 同步到 web profile 副本。
  *
- * 用法：node deploy.mjs         — 重建并同步
- *       node deploy.mjs --sync  — 仅同步（跳过构建，需先手动 pnpm bundle）
+ * 用法：
+ *   node deploy.mjs          — 构建(client+host) → 测试 → 同步   （推荐）
+ *   node deploy.mjs --sync   — 仅同步（跳过构建与测试，复用现有 lib/）
+ *   node deploy.mjs --no-test— 构建 → 同步（跳过测试）
+ *
+ * 构建直接用 npx tsdown（client + host 两个 config），不走 pnpm 脚本，
+ * 从而避开 pnpm 11 的 verifyDepsBeforeRun 把 @deepseek-ai/dsh-* 私有
+ * peerDeps 拉到 registry 404 的问题。
  */
 import { execSync } from 'node:child_process'
 import { copyFileSync, mkdirSync, existsSync } from 'node:fs'
@@ -34,42 +40,59 @@ if (!existsSync(PROFILE)) {
 }
 
 const skipBuild = process.argv.includes('--sync')
+const skipTest = skipBuild || process.argv.includes('--no-test')
 
-if (!skipBuild) {
-  console.log('📦 构建...')
+function sh(cmd) {
+  console.log(`▶ ${cmd}`)
   try {
-    // pnpm 11 默认 verifyDepsBeforeRun=install（跑脚本前自动 pnpm install），
-    // 会把 peerDeps 的 @deepseek-ai/dsh-*（宿主私有包）拉到 404 ——
-    // 已通过 pnpm-workspace.yaml（verifyDepsBeforeRun:false + autoInstallPeers:false）解决。
-    execSync('pnpm bundle', { stdio: 'inherit', cwd: ROOT })
+    execSync(cmd, { stdio: 'inherit', cwd: ROOT })
   } catch (e) {
-    console.error('\n⚠ 构建失败（可能是 peerDep 或 tsdown 问题）。')
-    if (!existsSync(join(ROOT, 'lib', 'host.mjs'))) {
-      console.error('❌ lib/ 产物不存在，无法同步。')
-      process.exit(1)
-    }
-    console.log('   lib/ 已有上次构建产物，继续同步...\n')
-  }
-} else {
-  if (!existsSync(join(ROOT, 'lib', 'host.mjs'))) {
-    console.error('❌ lib/ 产物不存在。请先运行：pnpm bundle')
-    process.exit(1)
+    console.error(`\n✗ 命令失败（exit ${e.status}）：${cmd}`)
   }
 }
 
-console.log('📂 同步到 profile...')
-let count = 0
+/* ── 1) 构建 ─────────────────────────────────────────────────── */
+if (skipBuild) {
+  if (!existsSync(join(ROOT, 'lib', 'host.mjs'))) {
+    console.error('❌ lib/ 产物不存在。去掉 --sync 先构建。')
+    process.exit(1)
+  }
+  console.log('⏭ 跳过构建（--sync）。\n')
+} else {
+  console.log('1/3 📦 构建 client + host ...\n')
+  sh(`npx tsdown`)
+  sh(`npx tsdown -c tsdown.host.config.ts`)
+  console.log('')
+}
+
+/* ── 2) 测试 ─────────────────────────────────────────────────── */
+if (skipTest) {
+  console.log('⏭ 跳过测试。\n')
+} else {
+  console.log('2/3 🧪 运行测试 ...\n')
+  sh(`node test/smoke.js`)
+  sh(`node test/journal.test.js`)
+  console.log('')
+}
+
+/* ── 3) 同步 ─────────────────────────────────────────────────── */
+console.log('3/3 📂 同步到 profile ...')
+let count = 0, failed = []
 for (const f of FILES) {
   const src = join(ROOT, f)
   const dst = join(PROFILE, f)
-  if (!existsSync(src)) { console.error(`  ⚠ 源文件不存在：${f}`); continue }
+  if (!existsSync(src)) { failed.push(f); continue }
   try {
     mkdirSync(dirname(dst), { recursive: true })
     copyFileSync(src, dst)
     count++
   } catch (e) {
-    console.error(`  ✗ ${f}: ${e.message}`)
+    failed.push(`${f} (${e.message})`)
   }
 }
 
-console.log(`✅ 完成（${count} 个文件）。重启 dsh --profile web 生效。`)
+console.log(`✅ 完成：${count} 个文件已同步。`)
+if (failed.length) {
+  console.log(`⚠ 以下文件未同步（需更高权限或源缺失）：\n  ${failed.join('\n  ')}`)
+}
+console.log('重启 dsh --profile web 生效。')
