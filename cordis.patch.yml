@@ -5,9 +5,11 @@
 #
 # 注意 1：新增行必须写在 `insert:` 块里——顶层 `- id:` 是「替换现有行」语义，
 # 找不到目标行会被 loader 静默跳过（warn: patch entry not found）。
-# 注意 2：只声明 host 行。client 半由 clientModules 自动扫描——本包的 package.json
-# 声明了 dsh.client，loader 发现包后浏览器端自动注册「🏭 团队工作台」tab。
+# 注意 2：name 必须用包根 'dsh-plugin-teamflow'（exports["."] = ./host/index.js）——
+# 不要写成 'dsh-plugin-teamflow/host'：clientModules 按 entry 名解析 <pkg>/package.json
+# 判定 dsh.client，子路径行（subpath row）解析不到 package.json 会被判定为
+# 「无 client 声明」而跳过扫描（浏览器端 tab 永不出现）。
 
 - insert:
     - id: teamflow-host
-      name: 'dsh-plugin-teamflow/host'
+      name: 'dsh-plugin-teamflow'

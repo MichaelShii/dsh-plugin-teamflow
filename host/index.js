@@ -12,6 +12,7 @@
  */
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { parameterSchemaSpecToJsonSchema } from '@deepseek-ai/dsh-tools'
 import { TEAMFLOW_DESCRIPTORS } from '../descriptors.js'
 import {
   dshHome, teamflowRoot, productDir, fileFor,
@@ -1013,7 +1014,13 @@ const simple = { type: 'object', additionalProperties: true }
 const simpleRender = (args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2).slice(0, 4000) }]
 
 function registerTools(ctx) {
-  const T = (tool) => ctx.tools.register(tool)
+  // ctx.tools.register() 把 parameters 原样送到 wire：必须先编译成
+  // { type: 'object', properties, required } 完整 JSON Schema，否则提供方
+  // 以「schema 缺 type: object」拒绝（如 teamflow_backlog invalid_request_error）。
+  const T = (tool) => ctx.tools.register({
+    ...tool,
+    parameters: parameterSchemaSpecToJsonSchema(tool.parameters),
+  })
 
   T({
     name: 'teamflow_start',
@@ -1037,7 +1044,7 @@ function registerTools(ctx) {
       },
     },
     output: {
-      schema: { type: 'object', additionalProperties: false, properties: { runId: { type: 'string', required: true }, status: { type: 'string', required: true } } },
+      schema: { type: 'object', additionalProperties: false, required: ['runId', 'status'], properties: { runId: { type: 'string' }, status: { type: 'string' } } },
       render: (args, value) => [{ type: 'text', text: `团队研发流水线已启动（runId=${value.runId}，${value.status}）。可看面板或 teamflow_status 查询进度/阶段 token；backlog 已持久化到 $DSH_HOME/teamflow。` }],
     },
     async execute(args, exec) {
@@ -1139,7 +1146,7 @@ function registerTools(ctx) {
     parameters: {
       runId: { type: 'string', required: true, description: '流水线运行 ID' },
     },
-    output: { schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean', required: true }, runId: { type: 'string' }, resumedFrom: { type: 'string' }, error: { type: 'string' } } }, render: (args, value) => [{ type: 'text', text: value.ok ? `流水线 ${value.runId} 已从断点「${value.resumedFrom}」续跑` : `续跑失败：${value.error || '未知错误'}` }] },
+    output: { schema: { type: 'object', additionalProperties: false, required: ['ok'], properties: { ok: { type: 'boolean' }, runId: { type: 'string' }, resumedFrom: { type: 'string' }, error: { type: 'string' } } }, render: (args, value) => [{ type: 'text', text: value.ok ? `流水线 ${value.runId} 已从断点「${value.resumedFrom}」续跑` : `续跑失败：${value.error || '未知错误'}` }] },
     async execute(args, exec) {
       const parent = exec && exec.agent
       if (!parent) throw new Error('teamflow_resume 需要由会话内的 Agent 调用')
