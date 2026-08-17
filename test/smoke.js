@@ -8,7 +8,7 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { TEAMFLOW_DESCRIPTORS } from '../descriptors.js'
+import { TEAMFLOW_DESCRIPTORS } from '../descriptors.ts'
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -46,7 +46,7 @@ ok(true, `${TEAMFLOW_DESCRIPTORS.length} 个描述符全部通过规则校验`)
 
 console.log('── 2) client 模块结构 ──')
 const here = dirname(fileURLToPath(import.meta.url))
-const clientSrc = readFileSync(join(here, '../client/index.js'), 'utf8')
+const clientSrc = readFileSync(join(here, '../client/index.tsx'), 'utf8')
 ok(/export const inject = \['remote', 'slots', 'sessions', 'locale'\]/.test(clientSrc), '导出 inject（remote/slots/sessions/locale）')
 ok(/export async function apply/.test(clientSrc), '导出 async apply')
 ok(/ctx\.remote\.\$mount\(TEAMFLOW_REMOTE_CONTRIBUTION\)/.test(clientSrc), 'apply 中 $mount Remote 贡献')
@@ -55,7 +55,7 @@ ok(/conversation\.view'[\s\S]*id: 'teamflow'/.test(clientSrc), 'tab id=teamflow'
 ok(/onDrop/.test(clientSrc) && /draggable/.test(clientSrc), '看板包含拖拽（onDrop/draggable）')
 
 console.log('── 3) host 模块结构 ──')
-const hostSrc = readFileSync(join(here, '../host/index.js'), 'utf8')
+const hostSrc = readFileSync(join(here, '../host/index.ts'), 'utf8')
 ok(/class TeamflowService extends TypertRemoteService/.test(hostSrc), 'TeamflowService extends TypertRemoteService')
 ok(/static inject = \['agents', 'subagents', 'tokenMeter', 'typert', 'tools'\]/.test(hostSrc), 'static inject 完整')
 ok(/ctx\.typert\.register\(\{[\s\S]*invocations: TEAMFLOW_DESCRIPTORS/.test(hostSrc), 'typert.register 注册 strict descriptors')
@@ -63,8 +63,8 @@ for (const m of ['ping', 'list', 'snapshot', 'start', 'cancel', 'backlog', 'back
   ok(new RegExp(`\\n  ${m}\\(`).test(hostSrc), `Remote 方法 ${m}()`)
 }
 ok(/export default TeamflowService/.test(hostSrc), '默认导出 TeamflowService')
-ok(/from '\.\.\/descriptors\.js'/.test(hostSrc), 'import descriptors.js')
-ok(/from '\.\.\/store\.js'/.test(hostSrc), 'import store.js（持久化层独立）')
+ok(/from '\.\.\/descriptors\.ts'/.test(hostSrc), 'import descriptors.ts')
+ok(/from '\.\.\/store\.ts'/.test(hostSrc), 'import store.ts（持久化层独立）')
 
 console.log('── 3b) 断点续跑（v0.4.0）──')
 ok(/loadJournals\(\)/.test(hostSrc), '构造时加载磁盘 journal')
@@ -73,7 +73,7 @@ ok(/persistJournal\(journal\)/.test(hostSrc), 'checkpoint 落盘')
 ok(/resumeRun\(/.test(hostSrc) && /interruptedPhaseOf\(/.test(hostSrc) && /buildResumeProducts\(/.test(hostSrc), 'resume 逻辑（起点/产物重建）')
 ok(/resumed\(/.test(hostSrc) && /logSkip\(/.test(hostSrc), 'executePipeline 阶段跳过')
 ok(/stage\.output = clip\(text, 50000\)/.test(hostSrc), '阶段产物全文记录（续跑重建上下文）')
-const storeSrc = readFileSync(join(here, '../store.js'), 'utf8')
+const storeSrc = readFileSync(join(here, '../store.ts'), 'utf8')
 ok(/export function loadJournals/.test(storeSrc) && /export function persistJournal/.test(storeSrc) && /export function serializeJournal/.test(storeSrc), 'store.js 导出 journal 三件套')
 ok(/status === 'running' \|\| j\.status === 'pending'/.test(storeSrc), 'loadJournals 中断标记逻辑（store.js）')
 
@@ -96,7 +96,7 @@ ok(/summarizeTimeline\(/.test(hostSrc) && /delete s\.output/.test(hostSrc), '内
 ok(/readJsonAny\(journalFile\(id\)/.test(hostSrc), 'resume 从磁盘加载完整 journal')
 
 console.log('── 4) 其他文件 ──')
-for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../descriptors.js', '../client/index.js', '../host/index.js', '../store.js']) {
+for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../descriptors.ts', '../client/index.tsx', '../host/index.ts', '../store.ts']) {
   ok(existsSync(join(here, f)), `存在 ${f}`)
 }
 

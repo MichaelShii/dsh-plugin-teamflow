@@ -1,6 +1,6 @@
 /**
  * dsh-plugin-teamflow — journal（断点续跑）行为测试。
- * 直接 import store.js（纯 node:fs 依赖），验证：
+ * 直接 import store.ts（纯 node:fs 依赖），验证：
  * 1) journal 写入 → 原子持久化
  * 2) 模拟进程崩溃（running 残留）→ loadJournals 标记 interrupted
  * 3) 已完成阶段产物保留（output）→ 断点续跑重建可用
@@ -11,7 +11,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   journalFile, runsDir, persistJournal, loadJournals, serializeJournal, readJson,
-} from '../store.js'
+} from '../store.ts'
 
 let failed = 0
 const ok = (cond, msg) => {

@@ -14,21 +14,28 @@
  * host 侧 decode 仍会做 JSON 安全性检查，参数缺省语义与 src-json 一致）。
  */
 
+import type { InvocationDescriptor } from '@deepseek-ai/dsh-typert-protocol'
+
 /** 恒等 parse：接受任意 JSON 值，原样返回。 */
-const JSON_SCHEMA = { parse: (value) => value }
+const JSON_SCHEMA: { parse(value: unknown): unknown } = { parse: (value) => value }
 /** 统一 strict codec（本插件所有参数/结果均为自由 JSON）。 */
 const strict = {
-  mode: 'strict',
+  mode: 'strict' as const,
   typeSymbol: 'dsh-plugin-teamflow/types#Json',
   schema: JSON_SCHEMA,
 }
+type StrictCodec = typeof strict
 
-const p = (name) => ({ name, wire: name, source: 'json', codec: strict })
+const p = (name: string): InvocationParameter => ({ name, wire: name, source: 'json', codec: strict })
 
-/**
- * @type {readonly import('@deepseek-ai/dsh-typert-protocol').InvocationDescriptor[]}
- */
-export const TEAMFLOW_DESCRIPTORS = Object.freeze([
+interface InvocationParameter {
+  readonly name: string
+  readonly wire: string
+  readonly source: 'json'
+  readonly codec: StrictCodec
+}
+
+export const TEAMFLOW_DESCRIPTORS: readonly InvocationDescriptor[] = Object.freeze([
   {
     id: 'dsh-plugin-teamflow#teamflow/ping',
     service: 'teamflow',
@@ -104,7 +111,10 @@ export const TEAMFLOW_DESCRIPTORS = Object.freeze([
 ])
 
 /** client 端 $mount 使用的贡献对象。 */
-export const TEAMFLOW_REMOTE_CONTRIBUTION = Object.freeze({
+export const TEAMFLOW_REMOTE_CONTRIBUTION: {
+  readonly package: string
+  readonly descriptors: readonly InvocationDescriptor[]
+} = Object.freeze({
   package: 'dsh-plugin-teamflow',
   descriptors: TEAMFLOW_DESCRIPTORS,
 })

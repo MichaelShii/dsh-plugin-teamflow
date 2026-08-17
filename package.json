@@ -1,15 +1,19 @@
 {
   "name": "dsh-plugin-teamflow",
-  "version": "0.6.0",
-  "description": "TeamFlow 团队研发流水线：需求→PRD→设计→架构→技术方案→并行开发→QA→验收；backlog 持久化 + 断点续跑 + 完成汇报 + 防假交付（实质校验/token 熔断/并发锁）；Web 团队工作台（conversation.view tab + 拖拽看板）",
+  "version": "0.7.0",
+  "description": "TeamFlow 团队研发流水线（TypeScript）：需求→PRD→设计→架构→技术方案→并行开发→QA→验收；backlog 持久化 + 断点续跑 + 完成汇报 + 防假交付；Web 团队工作台（conversation.view tab + 拖拽看板）",
   "type": "module",
-  "main": "./host/index.js",
+  "main": "./lib/host.mjs",
   "exports": {
-    ".": "./host/index.js",
-    "./host": "./host/index.js",
+    ".": "./lib/host.mjs",
+    "./host": "./lib/host.mjs",
     "./client": "./lib/client.js",
-    "./descriptors": "./descriptors.js",
+    "./store": "./lib/store.mjs",
+    "./descriptors": "./lib/descriptors.mjs",
     "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=22.18"
   },
   "dsh": {
     "bundle": {
@@ -26,7 +30,9 @@
     }
   },
   "scripts": {
-    "bundle": "tsdown",
+    "bundle": "tsdown && tsdown -c tsdown.host.config.ts",
+    "bundle:host": "tsdown -c tsdown.host.config.ts",
+    "bundle:client": "tsdown",
     "watch": "tsdown --watch",
     "test": "node test/smoke.js && node test/journal.test.js"
   },

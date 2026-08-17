@@ -271,8 +271,22 @@ function BoardPanel({ backlog, api, onRefresh }) {
 }
 
 /* ── 主视图 ──────────────────────────────────────────────────────── */
-function TeamFlowView(props) {
-  const api = props.remote // $mount 后的 teamflow 服务实例（ctx.get 取得，普通对象）
+/** teamflow 服务实例的调用面（$mount 后由 ctx.get 取得）。 */
+interface TeamflowRemote {
+  list(): Promise<{ runs?: Array<Record<string, unknown>> }>
+  snapshot(runId?: string | null): Promise<Record<string, unknown> | null>
+  backlog(product?: string | null): Promise<Record<string, unknown>>
+  backlogUpdate(kind: string, id: string, to: string, product?: string | null, reason?: string): Promise<unknown>
+  resume(runId: string, sessionId: string): Promise<unknown>
+}
+
+interface TeamFlowViewProps {
+  sessionId: string
+  remote: unknown
+}
+
+function TeamFlowView(props: TeamFlowViewProps) {
+  const api = props.remote as TeamflowRemote // $mount 后的 teamflow 服务实例（ctx.get 取得，普通对象）
   const [state, setState] = React.useState({ runs: [], active: null, backlog: null, err: null })
   const [runId, setRunId] = React.useState(null)
   const [tab, setTab] = React.useState('pipeline')

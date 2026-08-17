@@ -78,17 +78,20 @@ Node `fs`，能把 backlog 落到 `$DSH_HOME`，且 client 能注册独立 tab�
 
 ```
 dsh-plugin-teamflow/
-  package.json        # dsh.bundle.patch + dsh.client 声明
-  cordis.patch.yml    # 宿主组合补丁：teamflow-host（client 自动扫描，无 patch 行）
-  descriptors.js      # Remote 描述符（纯数据，host/client 共用）
-  store.js            # 持久化层：原子写/备份/损坏自愈 + journal 序列化/加载（可独立测试）
-  host/index.js       # TeamflowService（真实 Node fs → $DSH_HOME/teamflow；断点续跑）
-  client/index.js     # 团队工作台（conversation.view tab + 拖拽看板 + 断点重跑）
+  package.json        # dsh.bundle.patch + dsh.client 声明；exports 指向 lib/ 构建产物
+  cordis.patch.yml    # insert 块；entry 名用包根（clientModules 才能扫到 dsh.client）
+  tsdown.config.ts    # client 构建（ModuleLoader bundle → lib/client.js）
+  tsdown.host.config.ts # host/store/descriptors 构建（ESM → lib/*.mjs）
+  descriptors.ts      # Remote 描述符（纯数据，host/client 共用）
+  store.ts            # 持久化层：原子写/备份/损坏自愈 + journal 序列化/加载（可独立测试）
+  host/index.ts       # TeamflowService（TS；构建为 lib/host.mjs 供宿主加载）
+  client/index.tsx    # 团队工作台（TSX；构建为 lib/client.js）
   docs/adr/           # 架构决策记录（ADR-0001/0002…）
   test/smoke.js       # 无依赖 smoke 测试（描述符/模块结构/安全加固）
-  test/journal.test.js # journal 行为测试（写入→崩溃→中断标记→重建）
-  tsdown.config.ts    # 发布前构建 client 用（参考 @deepseek-ai/dsh-client-ui-*）
+  test/journal.test.js # journal 行为测试（直跑 store.ts 源码）
 ```
+
+**TypeScript 说明**：全仓 TS/TSX。host 之所以**必须构建**（不能靠 Node strip-types 直跑）——Node 22 的 type stripping 对 `node_modules` 下的文件不生效（"unsupported for files under node_modules"），而宿主组合从 profile/node_modules 加载插件。与 DSH 生态一致（`@deepseek-ai/dsh-*` 宿主包 exports 均指向 lib/*.js）。改动源码后需 `pnpm bundle` 重建并同步 profile 副本的 `lib/`。
 
 ## 安装（对使用者）
 

@@ -13,11 +13,52 @@
 import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { parameterSchemaSpecToJsonSchema } from '@deepseek-ai/dsh-tools'
-import { TEAMFLOW_DESCRIPTORS } from '../descriptors.js'
+import { TEAMFLOW_DESCRIPTORS } from '../descriptors.ts'
 import {
   dshHome, teamflowRoot, productDir, fileFor,
   readJson, readJsonAny, writeJson, persistJournal, loadJournals, journalFile,
-} from '../store.js'
+} from '../store.ts'
+import type { JournalRecord, JournalStage } from '../store.ts'
+
+/* ── 核心类型（strip-types 可剥离：无 enum/namespace/装饰器） ─────── */
+/** 流水线运行日志（运行时对象，含 result 等非持久化字段）。 */
+interface Journal extends JournalRecord {
+  result?: { requirement?: string; options?: unknown; timeline?: Record<string, unknown> } | null
+  stages: JournalStage[]
+  logs: Array<{ t: number; level: string; message: string }>
+}
+/** backlog 记录（需求/任务/缺陷通用形状）。 */
+interface BacklogItem {
+  id: string
+  status: string
+  title?: string
+  humanIntervention?: boolean
+  retries?: number
+  severity?: string
+  owner?: string | null
+  summary?: string | null
+  [key: string]: unknown
+}
+/** 流水线启动选项。 */
+interface PipelineOptions {
+  needDesign?: boolean
+  needScaffold?: boolean
+  tasks?: unknown
+  productRoot?: string | null
+  maxConcurrency?: number
+}
+/** 断点续跑上下文。 */
+interface ResumeContext {
+  phase: string
+  products: Record<string, unknown>
+}
+/** 子代理运行句柄的鸭子类型（避免强依赖内部类型）。 */
+interface SubagentRunLike {
+  id: string
+  result: Promise<unknown>
+  dispose(): Promise<void> | void
+  localAgent?: { session?: unknown }
+}
 
 const RETRY_LIMIT = 2
 /** 单阶段 token 熔断预算（子代理会话上下文压力估算累计）。 */
@@ -28,7 +69,7 @@ const REFUSAL_PATTERN = /(无法完成|不能完成|无法继续|抱歉|对不�
 const STAGE_MIN_LENGTH = { prd: 400, design: 250, arch: 250, tech: 350, dev: 60, qa: 250, acceptance: 150 }
 
 /** 产出物实质校验：非空 + 无拒绝词 + 达到阶段长度下限。 */
-function hasSubstance(phase, text) {
+function hasSubstance(phase: string, text: string | null | undefined): boolean {
   if (!text || !text.trim()) return false
   if (REFUSAL_PATTERN.test(text)) return false
   const min = STAGE_MIN_LENGTH[phase] ?? 100
@@ -36,7 +77,7 @@ function hasSubstance(phase, text) {
 }
 
 /** 不可重试的失败原因（上下文耗尽/超长等——重试同一 prompt 大概率复现）。 */
-function isUnretryable(reason, outcome) {
+function isUnretryable(reason: unknown, outcome: unknown): boolean {
   const r = String(reason || outcome || '')
   return /context|limit|max-token|token|tool-error/i.test(r)
 }
@@ -49,7 +90,15 @@ const STATUS = {
 }
 
 class BacklogStore {
-  constructor(product) {
+  product: string
+  fileReq: string
+  fileTask: string
+  fileBug: string
+  requirements: BacklogItem[]
+  tasks: BacklogItem[]
+  bugs: BacklogItem[]
+
+  constructor(product: string | null | undefined) {
     this.product = product || 'default'
     this.fileReq = fileFor(this.product, 'requirements.json')
     this.fileTask = fileFor(this.product, 'tasks.json')
@@ -58,12 +107,12 @@ class BacklogStore {
     this.tasks = readJson(this.fileTask, [])
     this.bugs = readJson(this.fileBug, [])
   }
-  persist() {
+  persist(): void {
     writeJson(this.fileReq, this.requirements)
     writeJson(this.fileTask, this.tasks)
     writeJson(this.fileBug, this.bugs)
   }
-  nextId(prefix) {
+  nextId(prefix: string): string {
     const used = new Set()
     for (const r of this.requirements) used.add(r.id)
     for (const t of this.tasks) used.add(t.id)
@@ -72,11 +121,11 @@ class BacklogStore {
     while (used.has(`${prefix}-${n}`)) n++
     return `${prefix}-${n}`
   }
-  find(kind, id) {
+  find(kind: string, id: string): BacklogItem | undefined {
     const list = kind === 'req' ? this.requirements : kind === 'task' ? this.tasks : this.bugs
     return list.find((x) => x.id === id)
   }
-  pushEvent(item, from, to, reason) {
+  pushEvent(item: BacklogItem, from: string | null, to: string, reason: string | null | undefined): void {
     item.status = to
     item.updatedAt = Date.now()
     item.events = item.events || []
@@ -104,7 +153,7 @@ function extractText(blocks) {
  * 拒绝：绝对路径、盘符、. / .. 段、空段、空白字符 —— 防止穿越 $DSH_HOME 写任意目录。
  * @returns {string|null} 归一化后的安全产品名，非法输入返回 null。
  */
-function normalizeRoot(v) {
+function normalizeRoot(v: unknown): string | null {
   if (typeof v !== 'string' || !v.trim()) return null
   const s = v.trim().replace(/\\/g, '/')
   if (s.startsWith('/') || s.startsWith('.')) return null // 绝对路径、./、../、..
@@ -116,7 +165,7 @@ function normalizeRoot(v) {
   }
   return segments.join('/')
 }
-function normalizeTasks(tasks) {
+function normalizeTasks(tasks: unknown): Array<{ title: string; spec: string }> {
   if (!Array.isArray(tasks)) return []
   const out = []
   for (const t of tasks) {
@@ -389,7 +438,9 @@ const measureTokens = (run) => {
   } catch (e) { return null }
 }
 
-async function runAgent(journal, parent, label, phase, prompt, signal) {
+async function runAgent(
+  journal: Journal, parent: unknown, label: string, phase: string, prompt: string, signal: unknown,
+): Promise<string | null> {
   const maxSeq = journal.stages.length ? Math.max(...journal.stages.map((s) => s.seq)) : 0
   const stage = {
     seq: maxSeq + 1, label, phase, status: 'running', outcome: null,
@@ -450,7 +501,9 @@ async function runAgent(journal, parent, label, phase, prompt, signal) {
   }
 }
 
-async function withRetry(journal, parent, label, phase, prompt, signal) {
+async function withRetry(
+  journal: Journal, parent: unknown, label: string, phase: string, prompt: string, signal: unknown,
+): Promise<{ text: string | null; attempts: number; stageTokens: number }> {
   let attempts = 0
   let stageTokens = 0
   for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
@@ -587,7 +640,10 @@ function interruptedPhaseOf(journal) {
  * 执行流水线。resume = null 全新运行；resume = { phase, products } 从断点续跑：
  * phase 之前的阶段直接复用 products 产物（跳过执行），从 phase 阶段开始重跑。
  */
-async function executePipeline(journal, parent, requirement, options, signal, resume = null) {
+async function executePipeline(
+  journal: Journal, parent: unknown, requirement: string, options: PipelineOptions,
+  signal: unknown, resume: ResumeContext | null = null,
+): Promise<void> {
   journal.status = 'running'
   if (!resume) journal.startedAt = Date.now()
   const root = options.productRoot || null
@@ -818,7 +874,7 @@ function summarizeTimeline(timeline) {
   return out
 }
 
-function startPipeline(agent, requirement, options, signal) {
+function startPipeline(agent: unknown, requirement: string, options: PipelineOptions, signal: unknown): string {
   const provider = providerName()
   if (!provider) throw new Error('没有可用的子代理提供者（subagents 注册表为空）')
   const productKey = normalizeRoot(options.productRoot) || 'default'
@@ -865,7 +921,7 @@ function cancelRun(runId) {
  * - running Agent → inject（注入下一个 step 的上下文，不打断）
  * 投递失败静默（Agent 已销毁/会话关闭等场景）。
  */
-function deliverCompletion(journal, parent) {
+function deliverCompletion(journal: Journal, parent: unknown): void {
   try {
     if (!parent || typeof parent.inject !== 'function' || typeof parent.followup !== 'function') return
     const stages = journal.stages || []
@@ -911,7 +967,7 @@ function deliverCompletion(journal, parent) {
 }
 
 /** 从断点续跑：跳过已完成阶段，从第一个未完成阶段重跑（service 与工具共用）。 */
-function resumeRun(runId, sessionId) {
+function resumeRun(runId: string | null | undefined, sessionId: string | null | undefined): { ok: boolean; runId?: string; resumedFrom?: string; error?: string } {
   const id = typeof runId === 'string' ? runId : null
   if (!id) return { ok: false, error: '缺少 runId' }
   // 从磁盘加载完整 journal（内存版已裁剪 output，磁盘保留阶段产物全文）

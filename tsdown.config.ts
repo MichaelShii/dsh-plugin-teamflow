@@ -16,7 +16,7 @@ const ID = 'dsh-plugin-teamflow'
 
 export default defineConfig({
   name: `${ID}/client`,
-  entry: { client: 'client/index.js' },
+  entry: { client: 'client/index.tsx' },
   outDir: 'lib',
   format: 'cjs',
   platform: 'browser',
