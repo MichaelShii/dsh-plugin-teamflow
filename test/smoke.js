@@ -27,7 +27,7 @@ for (const d of TEAMFLOW_DESCRIPTORS) {
   assert(/^[A-Za-z0-9_$.-]+$/.test(d.namespace), `namespace 合法: ${d.namespace}`)
   assert(/^[A-Za-z0-9_$.-]+$/.test(d.method), `method 合法: ${d.method}`)
   assert(d.invocation && d.invocation.kind === 'direct', `direct invocation: ${d.method}`)
-  assert(d.result && d.result.mode === 'src-json', `src-json result: ${d.method}`)
+  assert(d.result && d.result.mode === 'strict' && typeof d.result.schema.parse === 'function', `strict result codec: ${d.method}`)
   const endpoint = `${d.namespace}/${d.method}`
   assert(!endpoints.has(endpoint), `endpoint 唯一: ${endpoint}`)
   assert(!ids.has(d.id), `id 唯一: ${d.id}`)
@@ -39,7 +39,7 @@ for (const d of TEAMFLOW_DESCRIPTORS) {
     assert(!wires.has(p.wire), `wire 不重复: ${p.wire}`)
     wires.add(p.wire)
     assert(p.source === 'json', `参数为 json: ${p.name}`)
-    assert(p.codec && p.codec.mode === 'src-json', `参数 codec src-json: ${p.name}`)
+    assert(p.codec && p.codec.mode === 'strict' && typeof p.codec.schema.parse === 'function', `参数 codec strict: ${p.name}`)
   }
 }
 ok(true, `${TEAMFLOW_DESCRIPTORS.length} 个描述符全部通过规则校验`)

@@ -110,8 +110,15 @@ dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 ```bash
 npm test                # smoke（描述符/结构/安全）+ journal（断点续跑行为）
 node --check host/index.js client/index.js store.js descriptors.js
-npm run bundle          # 发布前构建 client（tsdown；产物 lib/client.js）
+npm run bundle          # 构建 client（tsdown → lib/client.js，__ModuleLoader__.load 注册）
 ```
+
+改完代码的生效链路：`npm run bundle` → profile 重装（`pnpm update dsh-plugin-teamflow`，在
+`~/.dsh/profiles/web/` 下，若显示 Already up to date 先删
+`node_modules/dsh-plugin-teamflow` 再 update）→ 重启 `dsh --profile web`。
+
+注意：`lib/` 被 `.gitignore` 排除，但 `.npmignore` 不排除——`file:` 安装与 npm 发布
+都必须带上构建产物（`exports["./client"]` 指向 `./lib/client.js`）。
 
 ## 发布
 

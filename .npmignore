@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.tsbuildinfo
+*.log
+.tmp-*/
+.DS_Store
+.idea/
+.vscode/
+*.swp
+package-lock.json
+npm-debug.log*

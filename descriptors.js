@@ -5,13 +5,25 @@
  * client 侧：通过 ctx.remote.$mount() 生成 `ctx.remote.teamflow.<method>` 调用面。
  * 两边使用同一份描述符，保证 endpoint（namespace/method）与 wire 参数一致。
  *
- * 参数规则：全部 src-json codec（宽松 JSON），wire 字段名 = host 方法参数名，
- * client 端按位置传参。src-json 参数允许省略（host 方法收到 undefined）。
+ * 参数规则：全部宽松 JSON，wire 字段名 = host 方法参数名，client 端按位置传参；
+ * 参数允许省略（host 方法收到 undefined）。
+ *
+ * codec 为什么用 strict：client 的 $mount 只接受 mode: 'strict' 描述符
+ * （requireStrictDescriptor），src-json 会被拒（"field has no strict codec"）。
+ * 本插件载荷本就是自由 JSON，因此 strict schema 用恒等 parse（不做形状校验；
+ * host 侧 decode 仍会做 JSON 安全性检查，参数缺省语义与 src-json 一致）。
  */
 
-const json = { mode: 'src-json' }
+/** 恒等 parse：接受任意 JSON 值，原样返回。 */
+const JSON_SCHEMA = { parse: (value) => value }
+/** 统一 strict codec（本插件所有参数/结果均为自由 JSON）。 */
+const strict = {
+  mode: 'strict',
+  typeSymbol: 'dsh-plugin-teamflow/types#Json',
+  schema: JSON_SCHEMA,
+}
 
-const p = (name) => ({ name, wire: name, source: 'json', codec: json })
+const p = (name) => ({ name, wire: name, source: 'json', codec: strict })
 
 /**
  * @type {readonly import('@deepseek-ai/dsh-typert-protocol').InvocationDescriptor[]}
@@ -24,7 +36,7 @@ export const TEAMFLOW_DESCRIPTORS = Object.freeze([
     method: 'ping',
     invocation: { kind: 'direct' },
     parameters: [],
-    result: json,
+    result: strict,
   },
   {
     id: 'dsh-plugin-teamflow#teamflow/list',
@@ -33,7 +45,7 @@ export const TEAMFLOW_DESCRIPTORS = Object.freeze([
     method: 'list',
     invocation: { kind: 'direct' },
     parameters: [],
-    result: json,
+    result: strict,
   },
   {
     id: 'dsh-plugin-teamflow#teamflow/snapshot',
@@ -42,7 +54,7 @@ export const TEAMFLOW_DESCRIPTORS = Object.freeze([
     method: 'snapshot',
     invocation: { kind: 'direct' },
     parameters: [p('runId')],
-    result: json,
+    result: strict,
   },
   {
     id: 'dsh-plugin-teamflow#teamflow/start',
@@ -51,7 +63,7 @@ export const TEAMFLOW_DESCRIPTORS = Object.freeze([
     method: 'start',
     invocation: { kind: 'direct' },
     parameters: [p('sessionId'), p('requirement'), p('options')],
-    result: json,
+    result: strict,
   },
   {
     id: 'dsh-plugin-teamflow#teamflow/cancel',
@@ -60,7 +72,7 @@ export const TEAMFLOW_DESCRIPTORS = Object.freeze([
     method: 'cancel',
     invocation: { kind: 'direct' },
     parameters: [p('runId')],
-    result: json,
+    result: strict,
   },
   {
     id: 'dsh-plugin-teamflow#teamflow/backlog',
@@ -69,7 +81,7 @@ export const TEAMFLOW_DESCRIPTORS = Object.freeze([
     method: 'backlog',
     invocation: { kind: 'direct' },
     parameters: [p('product')],
-    result: json,
+    result: strict,
   },
   {
     id: 'dsh-plugin-teamflow#teamflow/backlogUpdate',
@@ -78,7 +90,7 @@ export const TEAMFLOW_DESCRIPTORS = Object.freeze([
     method: 'backlogUpdate',
     invocation: { kind: 'direct' },
     parameters: [p('kind'), p('id'), p('to'), p('product'), p('reason')],
-    result: json,
+    result: strict,
   },
   {
     id: 'dsh-plugin-teamflow#teamflow/resume',
@@ -87,7 +99,7 @@ export const TEAMFLOW_DESCRIPTORS = Object.freeze([
     method: 'resume',
     invocation: { kind: 'direct' },
     parameters: [p('runId'), p('sessionId')],
-    result: json,
+    result: strict,
   },
 ])
 

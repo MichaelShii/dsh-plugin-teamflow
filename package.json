@@ -7,7 +7,7 @@
   "exports": {
     ".": "./host/index.js",
     "./host": "./host/index.js",
-    "./client": "./client/index.js",
+    "./client": "./lib/client.js",
     "./descriptors": "./descriptors.js",
     "./package.json": "./package.json"
   },
@@ -32,6 +32,9 @@
   },
   "dependencies": {
     "react": "^18.2.0"
+  },
+  "devDependencies": {
+    "tsdown": "^0.22.2"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-base": "*",
