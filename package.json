@@ -34,6 +34,7 @@
     "bundle:host": "tsdown -c tsdown.host.config.ts",
     "bundle:client": "tsdown",
     "watch": "tsdown --watch",
+    "deploy": "node deploy.mjs",
     "test": "node test/smoke.js && node test/journal.test.js"
   },
   "dependencies": {
