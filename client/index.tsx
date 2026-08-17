@@ -271,13 +271,28 @@ function BoardPanel({ backlog, api, onRefresh }) {
 }
 
 /* ── 主视图 ──────────────────────────────────────────────────────── */
-/** teamflow 服务实例的调用面（$mount 后由 ctx.get 取得）。 */
+/** Typert remote 的标准 RPC 信封：client 拿到的是 { ok, value }（或 { ok, error }），必须解包 .value。 */
+interface RpcEnvelope {
+  ok: boolean
+  value?: unknown
+  error?: { code?: string; message?: string }
+}
+
+/** 解包 remote 信封：失败抛错；成功返回 value。 */
+function unwrap(res: RpcEnvelope | undefined | null, what?: string): any {
+  if (!res || !res.ok) {
+    throw new Error(`${what || 'remote'} 调用失败：${(res && res.error && (res.error.message || res.error.code)) || '未知错误'}`)
+  }
+  return res.value
+}
+
+/** teamflow 服务实例的调用面（$mount 后由 ctx.get 取得，方法返回 RPC 信封）。 */
 interface TeamflowRemote {
-  list(): Promise<{ runs?: Array<Record<string, unknown>> }>
-  snapshot(runId?: string | null): Promise<Record<string, unknown> | null>
-  backlog(product?: string | null): Promise<Record<string, unknown>>
-  backlogUpdate(kind: string, id: string, to: string, product?: string | null, reason?: string): Promise<unknown>
-  resume(runId: string, sessionId: string): Promise<unknown>
+  list(): Promise<RpcEnvelope>
+  snapshot(runId?: string | null): Promise<RpcEnvelope>
+  backlog(product?: string | null): Promise<RpcEnvelope>
+  backlogUpdate(kind: string, id: string, to: string, product?: string | null, reason?: string): Promise<RpcEnvelope>
+  resume(runId: string, sessionId: string): Promise<RpcEnvelope>
 }
 
 interface TeamFlowViewProps {
@@ -296,12 +311,14 @@ function TeamFlowView(props: TeamFlowViewProps) {
   const refresh = React.useCallback(async () => {
     if (!api) { setState((s) => ({ ...s, err: 'remote 未就绪' })); return }
     try {
-      const lr = await api.list()
-      const id = runId || (lr.runs && lr.runs[0] && lr.runs[0].id)
-      const snap = id ? (await api.snapshot(id) as { options?: { productRoot?: string | null } } | null) : null
+      const lr = unwrap(await api.list(), 'list') as { runs?: Array<Record<string, unknown>> }
+      const runsList = (lr && lr.runs) || []
+      const id = runId || (runsList[0] && (runsList[0].id as string | undefined))
+      const snapWrap = id ? await api.snapshot(id) : null
+      const snap = snapWrap ? (unwrap(snapWrap, 'snapshot') as { options?: { productRoot?: string | null } } | null) : null
       const p = product || (snap && snap.options && snap.options.productRoot) || null
-      const bo = await api.backlog(p)
-      setState({ runs: (lr.runs || []).slice(0, 12), active: snap, backlog: bo, err: null })
+      const bo = unwrap(await api.backlog(p), 'backlog') as Record<string, unknown>
+      setState({ runs: (runsList || []).slice(0, 12), active: snap, backlog: bo, err: null })
       if (!product && p) setProduct(p)
     } catch (e) {
       setState((s) => ({ ...s, err: String((e && e.message) || e) }))
