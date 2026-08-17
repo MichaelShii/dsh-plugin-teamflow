@@ -89,7 +89,20 @@ function fmtDur(a, b) {
 }
 function fmtTokens(n) {
   if (n === null || n === undefined) return ''
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n)
+  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return String(n)
+}
+function stageTokenNum(s) {
+  return typeof s.costTokens === 'number' ? s.costTokens : (typeof s.tokens === 'number' ? s.tokens : null)
+}
+function usageDetail(s) {
+  const k = (n) => (n === null || n === undefined ? '—' : fmtTokens(n))
+  if (s.usage) {
+    const u = s.usage
+    return `累计 in ${k(u.input)} / cacheRead ${k(u.cacheRead)} / out ${k(u.output)} · ${u.calls} 次调用 · 上下文压力 ${k(s.tokens ?? null)}`
+  }
+  return s.tokens != null ? `上下文压力 ${fmtTokens(s.tokens)}（无 usage 明细）` : ''
 }
 const stText = (s) => STATUS_TEXT[s] || s
 const stColor = (s) => STATUS_COLOR[s] || T.text2
@@ -105,7 +118,7 @@ function PipelinePanel({ active }) {
     if (!g || g.phase !== st.phase) { g = { phase: st.phase, stages: [] }; groups.push(g) }
     g.stages.push(st)
   }
-  const total = (active.stages || []).reduce((a, s) => a + (typeof s.tokens === 'number' ? s.tokens : 0), 0)
+  const total = (active.stages || []).reduce((a, s) => a + (stageTokenNum(s) || 0), 0)
   const cols = groups.map((g, i) => {
     const anyRun = g.stages.some((s) => s.status === 'running')
     const anyFail = g.stages.some((s) => s.status === 'failed' || s.status === 'needs-human' || s.status === 'cancelled')
@@ -150,7 +163,7 @@ function PipelinePanel({ active }) {
             h('div', { style: { ...flexRow, marginTop: 5, color: T.text2, fontSize: 11 } },
               chip(stText(s.status), color, { dot: true }),
               s.startedAt ? h('span', { style: { fontVariantNumeric: 'tabular-nums', fontFamily: MONO } }, fmtDur(s.startedAt, s.endedAt)) : null,
-              typeof s.tokens === 'number' ? h('span', { style: { fontFamily: MONO, fontVariantNumeric: 'tabular-nums', marginLeft: 'auto' } }, `${fmtTokens(s.tokens)} tok`) : null,
+              (stageTokenNum(s) !== null) ? h('span', { title: usageDetail(s), style: { fontFamily: MONO, fontVariantNumeric: 'tabular-nums', marginLeft: 'auto' } }, `${fmtTokens(stageTokenNum(s))} tok`) : null,
             ),
             running ? h('div', { style: { marginTop: 6, height: 2, borderRadius: 2, overflow: 'hidden', background: `color-mix(in srgb, ${color} 18%, transparent)` } },
               h('div', { style: { height: '100%', width: '40%', borderRadius: 2, background: color, animation: 'tf-shimmer 1.1s linear infinite' } }),
@@ -332,7 +345,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
   }, [refresh])
 
   const { runs, active, backlog, err } = state
-  const total = (active && active.stages) ? active.stages.reduce((a, s) => a + (typeof s.tokens === 'number' ? s.tokens : 0), 0) : 0
+  const total = (active && active.stages) ? active.stages.reduce((a, s) => a + (stageTokenNum(s) || 0), 0) : 0
   const needHuman = []
   if (backlog) {
     for (const item of [...(backlog.requirements || []), ...(backlog.tasks || []), ...(backlog.bugs || [])]) {
@@ -442,7 +455,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
             border: `1px solid ${T.border}`,
           },
         }, `#${String(activeRun.id).slice(-8)} · ${RUN_STATUS_TEXT[activeRun.status] || activeRun.status}`) : null,
-        total > 0 ? h('span', { style: { fontSize: 11.5, fontFamily: MONO, color: T.text2 } }, `∑ ${fmtTokens(total)} tok`) : null,
+        total > 0 ? h('span', { style: { fontSize: 11.5, fontFamily: MONO, color: T.text2, cursor: 'help' }, title: '累计计费当量（cacheRead ×0.1 折算，优先统计；悬浮阶段卡片看明细）' }, `∑ ${fmtTokens(total)} tok`) : null,
       ),
     ),
 

@@ -25,7 +25,9 @@ TeamFlow 团队研发流水线 —— DeepSeek Harness 可分发插件（`dsh pl
 - **打回阈值**：单阶段连续 2 次 Agent 失败自动重试，仍失败 → `needs-human`，需人工介入。
 - **并发池**：开发任务按 `maxConcurrency`（默认 3，最大 8）并行执行。
 - **QA 缺陷登记**：QA 报告按固定表格输出 → 自动解析成 Bug 进入 backlog。
-- **token 计量**：每阶段记录 token 用量（上下文压力估算）。
+- **token 计量（v0.8.0 双口径）**：每阶段记录**真实累计 usage**（in/cacheRead/cacheWrite/out + 调用数，由子代理会话逐事件累计）+ **上下文压力快照**（原有 measure）+ **计费当量**（cacheRead×0.1 折算）；汇总汇报同时给出双口径，避免把"尾声上下文"误当真实成本（实测低估约 26 倍）。详见 ADR-0003。
+- **lite 模式（v0.8.0）**：微功能轻量——`teamflow_start(lite:true)` 跳过 UI/UX 设计与独立技术方案文档阶段（PRD 即契约），直接 **PRD → 开发 → QA → 验收** 4 段；实测较完整 7 段省 ~64% 时间、~88% token。
+- **成本观测线**：单阶段计费当量超 `COST_BUDGET_TOKENS`（默认 250k）时**仅记录 warn、不打断**，用于暴露高成本阶段。
 - **🏭 团队工作台（Web tab）**：与 chat / 轨迹并列的会话头部 tab，含：
   - 流水线图形工作流（阶段泳道 + 节点卡片：状态/耗时/token/子代理会话，2s 实时刷新）
   - **Backlog 拖拽看板**（需求/任务/缺陷三组状态泳道，卡片拖拽流转，原生 HTML5 DnD 零依赖）
@@ -48,6 +50,8 @@ AGENTS.md 会被 harness 无条件注入每个会话，是**团队资产**。Tea
 
 - [ADR-0001 断点续跑自研 journal，不引入 LangGraph](docs/adr/0001-self-hosted-journal-vs-langgraph.md)
 - [ADR-0002 AGENTS.md 最小侵入（共识层/运营数据分离）](docs/adr/0002-agents-md-minimal-invasion.md)
+- [ADR-0003 部署生效契约 + token 计量口径（真实累计/当量/观测线）](docs/adr/0003-release-deploy-and-token-metering.md)
+- [ADR-0004 需求分诊路由 + 共享状态分层（full/lite/tech + context bundle）](docs/adr/0004-triage-and-shared-state.md)
 
 新增决策时：`docs/adr/NNNN-<kebab-name>.md`（背景/决策/理由/影响/触发信号），并在本索引追加一行。
 
@@ -122,9 +126,10 @@ npm run bundle          # 构建 client（tsdown → lib/client.js，__ModuleLoa
 `tsconfig.json` 的 `paths` 已映射（跨机器时把路径中的用户名改成自己的即可）。
 构建（tsdown）不依赖此映射：host 构建对 `@deepseek-ai/*` 保持 external，client 不引用宿主包。
 
-改完代码的生效链路：`npm run bundle` → profile 重装（`pnpm update dsh-plugin-teamflow`，在
-`~/.dsh/profiles/web/` 下，若显示 Already up to date 先删
-`node_modules/dsh-plugin-teamflow` 再 update）→ 重启 `dsh --profile web`。
+改完代码的生效链路（推荐）：`node deploy.mjs`（构建 + 测试 + 同步 profile 副本 + 检测运行中 web 并提示重启）→ 重启 `dsh --profile web`。
+改完代码的生效链路（备用）：`npm run bundle` → profile 副本更新（`pnpm update dsh-plugin-teamflow`，在 `~/.dsh/profiles/web/` 下，若 Already up to date 先删 `node_modules/dsh-plugin-teamflow` 再 update）→ 重启 `dsh --profile web`。
+
+**⚠ 生效前提（易踩坑，详见 ADR-0003）**：运行中的 web **从 profile 部署副本**（`~/.dsh/profiles/web/node_modules/dsh-plugin-teamflow/lib/`）加载 host，不是源码 `plugins/.../lib/`。只构建源码不在 profile 生效；必须 deploy 同步 + 重启进程，否则跑旧逻辑（如 lite 参数被静默忽略）。
 
 注意：`lib/` 被 `.gitignore` 排除，但 `.npmignore` 不排除——`file:` 安装与 npm 发布
 都必须带上构建产物（`exports["./client"]` 指向 `./lib/client.js`）。

@@ -23,9 +23,21 @@ const PROFILE = join(DSH_HOME, 'profiles', 'web', 'node_modules', 'dsh-plugin-te
 const FILES = [
   'package.json',
   'cordis.patch.yml',
+  'AGENTS.md',
   'descriptors.ts',
   'store.ts',
   'host/index.ts',
+  'host/types.ts',
+  'host/constants.ts',
+  'host/util.ts',
+  'host/prompts/index.ts',
+  'host/core/context.ts',
+  'host/core/backlog.ts',
+  'host/core/metering.ts',
+  'host/core/runner.ts',
+  'host/core/report.ts',
+  'host/core/pipeline.ts',
+  'host/core/triage.ts',
   'client/index.tsx',
   'lib/host.mjs', 'lib/host.mjs.map',
   'lib/store.mjs', 'lib/store.mjs.map',
@@ -95,4 +107,23 @@ console.log(`✅ 完成：${count} 个文件已同步。`)
 if (failed.length) {
   console.log(`⚠ 以下文件未同步（需更高权限或源缺失）：\n  ${failed.join('\n  ')}`)
 }
+
+/* ── 4) 生效提示：检测运行中的 web（改 host 侧必须重启进程才加载新 lib） ── */
+try {
+  const out = execSync('netstat -ano | findstr :3080', { encoding: 'utf8', windowsHide: true })
+  const listen = out.split('\n').find((l) => l.includes('LISTENING'))
+  if (listen) {
+    const parts = listen.trim().split(/\s+/)
+    const pid = parts[parts.length - 1]
+    let msg = `⚠ 检测到 web 正在运行（端口 3080，PID=${pid || '?'}）`
+    if (pid && /^\d+$/.test(pid)) {
+      try {
+        const st = execSync(`powershell -NoProfile -Command "(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).StartTime.ToString('yyyy-MM-dd HH:mm:ss')"`, { encoding: 'utf8', windowsHide: true }).trim()
+        if (st) msg += `（进程启动于 ${st}）`
+      } catch (e) { /* 拿不到启动时间可忽略 */ }
+    }
+    msg += '——新 host 由该进程加载；不重启则仍跑旧逻辑。'
+    console.log(msg)
+  }
+} catch (e) { /* 平台无 netstat/findstr 时静默 */ }
 console.log('重启 dsh --profile web 生效。')

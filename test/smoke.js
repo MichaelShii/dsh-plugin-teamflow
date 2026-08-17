@@ -55,7 +55,15 @@ ok(/conversation\.view'[\s\S]*id: 'teamflow'/.test(clientSrc), 'tab id=teamflow'
 ok(/onDrop/.test(clientSrc) && /draggable/.test(clientSrc), '看板包含拖拽（onDrop/draggable）')
 
 console.log('── 3) host 模块结构 ──')
-const hostSrc = readFileSync(join(here, '../host/index.ts'), 'utf8')
+const hostSrc = [
+  readFileSync(join(here, '../host/index.ts'), 'utf8'),
+  readFileSync(join(here, '../host/util.ts'), 'utf8'),
+  readFileSync(join(here, '../host/constants.ts'), 'utf8'),
+  readFileSync(join(here, '../host/prompts/index.ts'), 'utf8'),
+  ...['context', 'backlog', 'metering', 'runner', 'report', 'pipeline'].map((f) => readFileSync(join(here, `../host/core/${f}.ts`), 'utf8')),
+].join('\n//#region host-pool\n')
+const utilSrc = readFileSync(join(here, '../host/util.ts'), 'utf8')
+const constantsSrc = readFileSync(join(here, '../host/constants.ts'), 'utf8')
 ok(/class TeamflowService extends TypertRemoteService/.test(hostSrc), 'TeamflowService extends TypertRemoteService')
 ok(/static inject = \['agents', 'subagents', 'tokenMeter', 'typert', 'tools'\]/.test(hostSrc), 'static inject 完整')
 ok(/ctx\.typert\.register\(\{[\s\S]*invocations: TEAMFLOW_DESCRIPTORS/.test(hostSrc), 'typert.register 注册 strict descriptors')
@@ -88,9 +96,9 @@ ok(/teamflow_resume/.test(hostSrc), '汇报文本引导断点重跑')
 
 console.log('── 3d) 防恶心人加固（v0.6.0）──')
 ok(/parameterSchemaSpecToJsonSchema/.test(hostSrc), '工具 parameters 经 schema 编译（wire 带 type: object）')
-ok(/function hasSubstance/.test(hostSrc) && /REFUSAL_PATTERN/.test(hostSrc), '假阳性检测（拒绝词 + 长度下限）')
-ok(/STAGE_TOKEN_BUDGET = 60000/.test(hostSrc), '阶段 token 熔断预算 60k')
-ok(/function isUnretryable/.test(hostSrc), 'context-limit 类失败不重试')
+ok(/function hasSubstance/.test(utilSrc) && /REFUSAL_PATTERN/.test(constantsSrc), '假阳性检测（拒绝词 + 长度下限）')
+ok(/STAGE_TOKEN_BUDGET = 60000/.test(constantsSrc), '阶段 token 熔断预算 60k')
+ok(/function isUnretryable/.test(utilSrc), 'context-limit 类失败不重试')
 ok(/activeProducts/.test(hostSrc) && /已有流水线/.test(hostSrc), '产品级并发限制（防 req 状态互踩）')
 ok(/summarizeTimeline\(/.test(hostSrc) && /delete s\.output/.test(hostSrc), '内存裁剪（timeline 摘要 + stage 删 output）')
 ok(/readJsonAny\(journalFile\(id\)/.test(hostSrc), 'resume 从磁盘加载完整 journal')
@@ -105,8 +113,8 @@ const patchSrc = readFileSync(join(here, '../cordis.patch.yml'), 'utf8')
 ok(!/teamflow-client/.test(patchSrc), 'cordis.patch.yml 不再声明 client host row（自动扫描）')
 ok(/- insert:/.test(patchSrc), 'patch 用 insert 块（顶层 - id: 是替换语义会静默跳过）')
 ok(/name: 'dsh-plugin-teamflow'/.test(patchSrc) && !/name: 'dsh-plugin-teamflow\/host'/.test(patchSrc), 'entry 名用包根（子路径行导致 clientModules 扫不到 dsh.client）')
-ok(/s\.includes\('\.\.'\)/.test(hostSrc), 'normalizeRoot 拒绝 .. 穿越段')
-ok(/s\.startsWith\('\/'\)/.test(hostSrc) && /\^\[a-zA-Z\]:/.test(hostSrc), 'normalizeRoot 拒绝绝对路径/盘符')
+ok(/s\.includes\('\.\.'\)/.test(utilSrc), 'normalizeRoot 拒绝 .. 穿越段')
+ok(/s\.startsWith\('\/'\)/.test(utilSrc) && /\^\[a-zA-Z\]:/.test(utilSrc), 'normalizeRoot 拒绝绝对路径/盘符')
 ok(/copyFileSync\(file, file \+ '\.bak'\)/.test(storeSrc), '写前保留 .bak 备份')
 ok(/renameSync\(tmp, file\)/.test(storeSrc), '原子写（.tmp → rename）')
 ok(/从 \.bak 恢复/.test(storeSrc), '主文件损坏自动从 .bak 恢复')

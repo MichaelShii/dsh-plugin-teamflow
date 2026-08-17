@@ -24,6 +24,9 @@ export interface JournalStage {
   startedAt?: number | null
   endedAt?: number | null
   tokens?: number | null
+  usage?: { input: number; cacheRead: number; cacheWrite: number; output: number; calls: number } | null
+  costTokens?: number | null
+  handoff?: string | null
   summary?: string | null
   output?: string | null
 }
@@ -166,6 +169,9 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
       startedAt: s.startedAt,
       endedAt: s.endedAt,
       tokens: typeof s.tokens === 'number' ? s.tokens : null,
+      usage: s.usage || null,
+      costTokens: s.costTokens || null,
+      handoff: clip(s.handoff || '', 2000),
       summary: clip(s.summary || '', 3000),
       output: clip(s.output || s.summary || '', STAGE_OUTPUT_CLIP),
     })),
