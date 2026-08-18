@@ -671,14 +671,16 @@ function TeamFlowView(props: TeamFlowViewProps) {
         h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 } },
           (workspace && workspace.path) ? String(workspace.path).split(/[\\/]/).filter(Boolean).pop() : 'ungrouped'),
       ),
-      h('div', { style: { display: 'flex', alignItems: 'center', gap: 5 } },
+      /* 历史 run 切换：仅流水线 tab 下有意义（Backlog 看板是工作区级，不随 run 变化，
+         展示在这里点击无反应还会误导 —— 故只看板 tab 时隐藏） */
+      tab === 'pipeline' ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 5 } },
         h('span', { style: { color: T.text2 } }, '历史'),
         runs.length ? runs.map((r) => {
           const sel = r.id === (runId || (runs[0] && runs[0].id))
           return h('button', { key: r.id, onClick: () => setRunId(r.id), style: chipBtn(sel), title: r.requirement },
             `#${String(r.id).slice(-6)}`)
         }) : h('span', { style: { color: T.text2, fontSize: 11.5 } }, '（暂无）'),
-      ),
+      ) : null,
     ),
 
     tab === 'pipeline' ? h(PipelinePanel, { active }) : h(BoardPanel, { backlog, api, onRefresh: refresh, sessionId: props.sessionId }),
