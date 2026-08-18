@@ -153,45 +153,52 @@ function totalUsage(stages) {
 const stText = (s) => STATUS_TEXT[s] || s
 const stColor = (s) => STATUS_COLOR[s] || T.text2
 
-/* ── 流水线面板：纵向蛇形流程画布（从上至下 · 弧线连接 · 流动动画 · 画布拖动/缩放） ── */
+/* ── 流水线面板：横向蛇形流程画布（从左至右 · 弧线连接 · 流动动画 · 画布拖动/缩放） ── */
 const NODE_W = 300        // 节点宽度
-const COL_OFF = 176       // 相邻相位水平错位半径（蛇形走线）
-const V_GAP = 122         // 相位间弧线垂直高度
+const PHASE_GAP = 88      // 相位间水平间距（连接线长度）
+const WAVE = 56           // 相邻相位垂直错位幅度（产生上下弧线）
 const CARD_H = 54         // 阶段卡固定高度
 const CARD_H_RUN = 64     // 运行中卡略高（含进度条）
 const HEAD_H = 38         // 相位头高度
-const PAD_T = 54
-const PAD_B = 78
+const PAD_L = 46
+const PAD_R = 72
+const PAD_T = 42
+const PAD_B = 46
 const cardH = (s) => (s.status === 'running' ? CARD_H_RUN : CARD_H)
 
-/** 纵向布局：蛇形错位 + 绝对定位节点 + 弧线连接锚点。返回 nodes/conns/worldW/worldH。 */
+/** 横向布局：相位从左至右一排，上下轻微波浪错位（弧线自然成形）+ 绝对定位节点 + 连接锚点。
+ *  返回 nodes/conns/worldW/worldH。 */
 function layoutFlow(groups, viewW) {
-  const cx = viewW / 2
-  let y = PAD_T
   const nodes = []
   const conns = []
+  let maxH = 0
   groups.forEach((g, i) => {
-    const off = (i % 2 === 0 ? -1 : 1) * COL_OFF
     const anyRun = g.stages.some((s) => s.status === 'running')
     const anyFail = g.stages.some((s) => s.status === 'failed' || s.status === 'needs-human' || s.status === 'cancelled')
     const allDone = g.stages.length > 0 && g.stages.every((s) => s.status === 'done')
     const headColor = anyRun ? T.brand : anyFail ? T.error : allDone ? T.success : T.text2
     const h = HEAD_H + 10 + g.stages.reduce((a, s) => a + cardH(s), 0) + Math.max(0, g.stages.length - 1) * 7
-    const node = { i, phase: g.phase, stages: g.stages, left: cx + off - NODE_W / 2, top: y, h, headColor }
-    if (i > 0) {
-      const prev = nodes[i - 1]
-      conns.push({ x1: prev.left + NODE_W / 2, y1: prev.top + prev.h, x2: node.left + NODE_W / 2, y2: node.top, color: node.headColor })
-    }
-    nodes.push(node)
-    y += h + V_GAP
+    maxH = Math.max(maxH, h)
+    nodes.push({ i, phase: g.phase, stages: g.stages, left: PAD_L + i * (NODE_W + PHASE_GAP), h, headColor })
   })
-  return { nodes, conns, worldW: viewW, worldH: y - V_GAP + PAD_B }
+  const axisY = PAD_T + WAVE / 2 + maxH / 2 // 垂直中心轴（两侧各留波浪余量）
+  nodes.forEach((n) => {
+    n.top = axisY + (n.i % 2 === 0 ? -1 : 1) * (WAVE / 2) - n.h / 2
+    n.centerY = n.top + n.h / 2
+  })
+  for (let i = 1; i < nodes.length; i++) {
+    const p = nodes[i - 1], n = nodes[i]
+    conns.push({ x1: p.left + NODE_W, y1: p.centerY, x2: n.left, y2: n.centerY, color: n.headColor })
+  }
+  const worldW = PAD_L + nodes.length * (NODE_W + PHASE_GAP) - PHASE_GAP + PAD_R
+  const worldH = PAD_T + WAVE + maxH + PAD_B
+  return { nodes, conns, worldW, worldH }
 }
 
-/** S 形弧线路径（自上而下，前后锚点沿垂直方向缓进出）。 */
+/** S 形弧线路径（从左至右，前后锚点沿水平方向缓进出、垂直方向呈现波浪弧）。 */
 function connPath(c) {
-  const dy = 44
-  return `M ${c.x1} ${c.y1} C ${c.x1} ${c.y1 + dy}, ${c.x2} ${c.y2 - dy}, ${c.x2} ${c.y2}`
+  const dx = Math.max(48, (c.x2 - c.x1) / 2)
+  return `M ${c.x1} ${c.y1} C ${c.x1 + dx} ${c.y1}, ${c.x2 - dx} ${c.y2}, ${c.x2} ${c.y2}`
 }
 
 function FlowStageCard(s, key) {
