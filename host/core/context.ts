@@ -1,6 +1,6 @@
 /**
  * dsh-plugin-teamflow core — 运行期共享状态（进程单例）。
- * - runtime（agents/subagents/tokenMeter/workspaceRegistry）：由 index=TeamflowService 的 static inject 注入（setRuntime）。
+ * - runtime（agents/subagents/tokenMeter/workspaceRegistry/agentDefaultModel）：由 index=TeamflowService 的 static inject 注入（setRuntime）。
  * - runs/inFlight/activeProducts：流水线运行期 Map（跨 runner/pipeline/report/服务共享）。
  * 这是 ADR-0004「共享状态」在编排层的落点：共享对象集中、单向被 core 各模块 import（不反向）。
  */
@@ -12,13 +12,15 @@ export const runtime: {
   subagents?: any
   tokenMeter?: any
   workspaceRegistry?: any
+  agentDefaultModel?: any
 } = {}
 
-export function setRuntime(agents: unknown, subagents: unknown, tokenMeter: unknown, workspaceRegistry?: unknown): void {
+export function setRuntime(agents: unknown, subagents: unknown, tokenMeter: unknown, workspaceRegistry?: unknown, agentDefaultModel?: unknown): void {
   runtime.agents = agents
   runtime.subagents = subagents
   runtime.tokenMeter = tokenMeter
   runtime.workspaceRegistry = workspaceRegistry
+  runtime.agentDefaultModel = agentDefaultModel
 }
 
 /** 运行期 run 注册表（runId → Journal）。 */

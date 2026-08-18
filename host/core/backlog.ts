@@ -83,8 +83,7 @@ export function backlogSummary(product: string | null | undefined) {
       reqId: t.reqId || null, bugId: t.bugId || null, owner: t.owner || null,
       devAssign: t.devAssign || null, qaAssign: t.qaAssign || null, acceptBy: t.acceptBy || null,
       retries: t.retries || 0, humanIntervention: !!t.humanIntervention,
-      usage: t.usage || null, costTokens: t.costTokens || 0, contextTokens: t.contextTokens || null,
-      byRole: t.byRole || {},
+      usage: t.usage || null, byRole: t.byRole || {},
       subtaskIds: t.subtaskIds || [],
       parentId: t.parentId || null,
       failed: !!t.failed, childId: t.childId || null,
@@ -145,7 +144,7 @@ export function initPipelineBacklog(journal, requirement, options) {
     title: `需求任务 · ${clip(requirement, 40)}`,
     status: 'pending', owner: null, devAssign: null, qaAssign: null, acceptBy: null,
     retries: 0, humanIntervention: false, createdAt: Date.now(), updatedAt: Date.now(),
-    events: [], bugIds: [], usage: null, costTokens: 0, contextTokens: null, byRole: {},
+    events: [], bugIds: [], usage: null, byRole: {},
     subtaskIds: [],
   }
   store.tasks.push(task)
@@ -187,8 +186,6 @@ function applyStageUsage(task, role, stage) {
     task.byRole = task.byRole || {}
     task.byRole[role] = merge(task.byRole[role] || { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 })
   }
-  if (typeof stage.costTokens === 'number') task.costTokens = (task.costTokens || 0) + stage.costTokens
-  if (typeof stage.tokens === 'number') task.contextTokens = stage.tokens // 上下文压力快照（最近一次）
 }
 
 /**
@@ -203,7 +200,7 @@ export function noteTaskStageUsage(journal) {
   const stages = (journal.stages || []).filter((s) => (s.seq || 0) > from)
   let touched = false
   for (const s of stages) {
-    if (!s.usage && typeof s.costTokens !== 'number' && typeof s.tokens !== 'number') continue
+    if (!s.usage) continue
     applyStageUsage(task, ROLE_OF_PHASE[s.phase] || 'other', s)
     if ((s.seq || 0) > from) from = s.seq
     touched = true
@@ -260,7 +257,7 @@ export function createSubtask(journal, title, spec) {
     type: 'subtask', title: `开发 · ${title}`, spec: spec || '',
     status: 'pending', devAssign: null, owner: null,
     retries: 0, humanIntervention: false, createdAt: Date.now(), updatedAt: Date.now(),
-    events: [], bugIds: [], usage: null, costTokens: 0, contextTokens: null, byRole: {},
+    events: [], bugIds: [], usage: null, byRole: {},
     startedAt: null, endedAt: null, summary: null, childId: null, failed: false,
   }
   store.tasks.push(sub)

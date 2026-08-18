@@ -22,13 +22,12 @@ import type { JournalRecord, JournalStage } from '../store.ts'
 import type {
   Journal, BacklogItem, PipelineOptions, ResumeContext, SubagentRunLike, ParentAgentLike, UsageBuckets,
 } from './types.ts'
-import { RETRY_LIMIT, STAGE_TOKEN_BUDGET, STATUS, COST_BUDGET_TOKENS, PHASE_ORDER, PHASE_KEY_OF, PHASE_KEY_BY_NAME } from './constants.ts'
+import { RETRY_LIMIT, STAGE_TOKEN_BUDGET, STATUS, PHASE_ORDER, PHASE_KEY_OF, PHASE_KEY_BY_NAME } from './constants.ts'
 import { toText, clip, extractText, normalizeRoot, normalizeTasks, sanitizeSnapOptions, normalizeSignal, hasSubstance, isUnretryable, handoffBrief } from './util.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, devPrompt, qaPrompt, acceptancePrompt } from './prompts/index.ts'
 import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, workspaceScopeOf } from './core/context.ts'
 import { backlogSummary, transitionBacklog, assignTask } from './core/backlog.ts'
 import { loadTeams, findTeam, type TeamConfig } from './core/teams.ts'
-import { measureTokens, accumulateSessionUsage, costTokensOf } from './core/metering.ts'
 import { runPool, runAgent, withRetry } from './core/runner.ts'
 import { deliverCompletion } from './core/report.ts'
 import { executePipeline, summarizeTimeline, startPipeline, cancelRun, resumeRun } from './core/pipeline.ts'
@@ -76,7 +75,7 @@ function snapshotOf(j) {
     id: j.id, name: j.name, status: j.status, startedAt: j.startedAt, endedAt: j.endedAt,
     requirement: clip(j.requirement, 2000), options: sanitizeSnapOptions(j.options), agentsStarted: j.agentsStarted,
     humanIntervention: j.humanIntervention === true,
-    stages: j.stages.map((s) => ({ seq: s.seq, label: s.label, phase: s.phase, status: s.status, outcome: s.outcome, childId: s.childId, startedAt: s.startedAt, endedAt: s.endedAt, tokens: s.tokens, summary: clip(s.summary || '', 3000) })),
+    stages: j.stages.map((s) => ({ seq: s.seq, label: s.label, phase: s.phase, status: s.status, outcome: s.outcome, childId: s.childId, startedAt: s.startedAt, endedAt: s.endedAt, usage: s.usage, summary: clip(s.summary || '', 3000) })),
     logs: j.logs.slice(-200).map((l) => ({ t: l.t, level: l.level, message: clip(l.message, 500) })),
     error: j.error, resultPreview: j.result ? clip(JSON.stringify(j.result), 6000) : null,
   }
@@ -336,7 +335,7 @@ export class TeamflowService extends TypertRemoteService {
 
   constructor(ctx) {
     super(ctx, 'teamflow')
-    setRuntime(ctx.get('agents'), ctx.get('subagents'), ctx.get('tokenMeter'), ctx.get('workspaceRegistry'))
+    setRuntime(ctx.get('agents'), ctx.get('subagents'), ctx.get('tokenMeter'), ctx.get('workspaceRegistry'), ctx.get('agentDefaultModel'))
     // 断点续跑基座：加载磁盘 journal；running/pending 残留 → 标记 interrupted
     let interruptedCount = 0
     try {

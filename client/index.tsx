@@ -93,34 +93,62 @@ function fmtTokens(n) {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
   return String(n)
 }
-function stageTokenNum(s) {
-  return typeof s.costTokens === 'number' ? s.costTokens : (typeof s.tokens === 'number' ? s.tokens : null)
+/** 官方口径工具函数（与 DeepSeek usage 账单对齐，零额外概念）：
+ *  - u.input       : 输入（缓存未命中）
+ *  - u.cacheRead   : 输入（缓存命中）
+ *  - u.cacheWrite  : 输入写入缓存
+ *  - u.output      : 输出
+ *  billed input = input + cacheRead + cacheWrite；命中率 = cacheRead / (input + cacheRead)。
+ */
+function hitRate(u) {
+  const total = (u.input || 0) + (u.cacheRead || 0)
+  return total > 0 ? Math.round(((u.cacheRead || 0) / total) * 100) : null
 }
 function usageDetail(s) {
   const k = (n) => (n === null || n === undefined ? '—' : fmtTokens(n))
   if (s.usage) {
     const u = s.usage
-    return `累计 in ${k(u.input)} / cacheRead ${k(u.cacheRead)} / out ${k(u.output)} · ${u.calls} 次调用 · 上下文压力 ${k(s.tokens ?? null)}`
+    const hit = hitRate(u)
+    return `输入(未命中) ${k(u.input)} / 输入(命中) ${k(u.cacheRead)} / 写缓存 ${k(u.cacheWrite)} / 输出 ${k(u.output)} · ${u.calls} 次调用${hit !== null ? ` · 缓存命中 ${hit}%` : ''}`
   }
-  return s.tokens != null ? `上下文压力 ${fmtTokens(s.tokens)}（无 usage 明细）` : ''
+  return '无 usage 明细'
 }
-/** 节点卡主 token 行：优先展示真实累计 usage（双口径），退化为上下文压力快照。 */
+/** 节点卡主 token 行：官方口径 —— 输入(未命中)/输入(命中)/输出 + 缓存命中率。 */
 function stageUsageLine(s) {
-  if (s.usage && (s.usage.input + s.usage.output + s.usage.cacheRead + s.usage.cacheWrite) > 0) {
-    const u = s.usage
-    return `⬇ ${fmtTokens(u.input)} / ⬆ ${fmtTokens(u.output)} · ${u.calls}次`
+  const u = s && s.usage
+  if (u && (u.input || u.cacheRead || u.cacheWrite || u.output)) {
+    const hit = hitRate(u)
+    return `⇅${fmtTokens(u.input)} ⇅${fmtTokens(u.cacheRead)} ⬆${fmtTokens(u.output)}${hit !== null ? ` ·${hit}%` : ''}`
   }
-  return s.tokens != null ? `${fmtTokens(s.tokens)} ctx` : null
+  return null
 }
 const ROLE_NAME = { pm: '产品', design: '设计', arch: '架构', tech: '方案', dev: '开发', qa: '测试', acceptance: '验收', other: '其他' }
-const roleUsage = (u) => (u ? fmtTokens(u.input + u.output + u.cacheWrite + u.cacheRead * 0.1) : '')
-/** 任务卡按角色累计的真实 token 摘要（dev/qa/验收…）。 */
+const roleUsage = (u) => {
+  if (!u) return ''
+  const hit = hitRate(u)
+  return `⇅${fmtTokens(u.input || 0)}/${fmtTokens(u.cacheRead || 0)}·⬆${fmtTokens(u.output || 0)}${hit !== null ? `·${hit}%` : ''}`
+}
+/** 任务卡按角色累计的真实 token 摘要（官方口径：未命中/命中输入 + 输出 + 命中率）。 */
 function byRoleLine(task) {
   const roles = (task && task.byRole) || {}
   const parts = Object.keys(roles)
     .filter((k) => roles[k] && (roles[k].input + roles[k].output + roles[k].cacheRead + roles[k].cacheWrite) > 0)
     .map((k) => `${ROLE_NAME[k] || k} ${roleUsage(roles[k])}`)
   return parts.join(' · ')
+}
+/** 多阶段 usage 汇总（官方口径）。 */
+function totalUsage(stages) {
+  const t = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 }
+  for (const s of (stages || [])) {
+    const u = s && s.usage
+    if (!u) continue
+    t.input += u.input || 0
+    t.cacheRead += u.cacheRead || 0
+    t.cacheWrite += u.cacheWrite || 0
+    t.output += u.output || 0
+    t.calls += u.calls || 0
+  }
+  return t
 }
 const stText = (s) => STATUS_TEXT[s] || s
 const stColor = (s) => STATUS_COLOR[s] || T.text2
@@ -136,7 +164,7 @@ function PipelinePanel({ active }) {
     if (!g || g.phase !== st.phase) { g = { phase: st.phase, stages: [] }; groups.push(g) }
     g.stages.push(st)
   }
-  const total = (active.stages || []).reduce((a, s) => a + (stageTokenNum(s) || 0), 0)
+  const total = totalUsage(active.stages)
   const cols = groups.map((g, i) => {
     const anyRun = g.stages.some((s) => s.status === 'running')
     const anyFail = g.stages.some((s) => s.status === 'failed' || s.status === 'needs-human' || s.status === 'cancelled')
@@ -515,7 +543,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
   }, [refresh])
 
   const { runs, active, backlog, err, workspace } = state
-  const total = (active && active.stages) ? active.stages.reduce((a, s) => a + (stageTokenNum(s) || 0), 0) : 0
+  const total = totalUsage(active && active.stages)
   const needHuman = []
   if (backlog) {
     for (const item of [...(backlog.requirements || []), ...(backlog.tasks || []), ...(backlog.bugs || [])]) {
@@ -624,7 +652,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
             border: `1px solid ${T.border}`,
           },
         }, `#${String(activeRun.id).slice(-8)} · ${RUN_STATUS_TEXT[activeRun.status] || activeRun.status}`) : null,
-        total > 0 ? h('span', { style: { fontSize: 11.5, fontFamily: MONO, color: T.text2, cursor: 'help' }, title: '累计计费当量（cacheRead ×0.1 折算，优先统计；悬浮阶段卡片看明细）' }, `∑ ${fmtTokens(total)} tok`) : null,
+        total && (total.input + total.cacheRead + total.cacheWrite + total.output) > 0 ? h('span', { style: { fontSize: 11.5, fontFamily: MONO, color: T.text2, cursor: 'help' }, title: '输入(未命中)/输入(命中)/输出 全部阶段合计' }, `∑ ⇅${fmtTokens(total.input)}/⇅${fmtTokens(total.cacheRead)}·⬆${fmtTokens(total.output)}`) : null,
       ),
     ),
 
@@ -643,7 +671,6 @@ function TeamFlowView(props: TeamFlowViewProps) {
         h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 } },
           (workspace && workspace.path) ? String(workspace.path).split(/[\\/]/).filter(Boolean).pop() : 'ungrouped'),
       ),
-      h('span', { style: { color: T.text2, fontSize: 11.5 } }, `workspace=${(workspace && workspace.slug) || '—'}`),
       h('div', { style: { display: 'flex', alignItems: 'center', gap: 5 } },
         h('span', { style: { color: T.text2 } }, '历史'),
         runs.length ? runs.map((r) => {

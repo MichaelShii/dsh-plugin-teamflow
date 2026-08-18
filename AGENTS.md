@@ -13,7 +13,7 @@
 - **运行环境**：web profile 宿主组合真实 Node 进程；`file:` 安装 + 从 profile 副本加载。
 - **当前状态**（2026-08 大版本线）：
   - ✅ **领域化重构完成**：1418 行单文件 → 11 个领域文件（见 §3）
-  - ✅ **token 双口径**（真实累计 usage + 上下文压力 + 计费当量，ADR-0003）
+  - ✅ **token 官方口径计量**（usage = 输入未命中/命中/写缓存/输出/调用数 + 缓存命中率，ADR-0003）
   - ✅ **lite 模式 / mode 5 档 + 模型驱动 triage**（ADR-0004，`teamflow_triage`）
   - ⏳ 进行中：**full/medium 阶段集差异执行**（lite/tech/patch 档已成型并端到端验证；full/medium 仍为既有 if 语义）——见 §6
 
@@ -32,15 +32,15 @@
 host/
 ├── index.ts            # 门面：TeamflowService + 工具注册(teamflow_*) + ACTIVE 注入
 ├── types.ts            # 公共类型（Journal/BacklogItem/PipelineOptions/PipelineMode…）
-├── constants.ts        # 常量/阶段映射/预算（STATUS/PHASE_*/COST_BUDGET_TOKENS/MODE…）
+├── constants.ts        # 常量/阶段映射/预算（STATUS/PHASE_*/STAGE_TOKEN_BUDGET/MODE…）
 ├── util.ts             # 通用工具（clip/normalize*/suggest 辅助…）
 ├── prompts/index.ts    # 全部 Prompt（prd/design/scaffold/tech/dev/qa/acceptance + TRIAGE_PROMPT + 模板）
 └── core/
     ├── context.ts      # 运行期共享状态单例（runtime + runs/inFlight/activeProducts + providerName）
     ├── backlog.ts      # Backlog 数据层 + storeFor + 缺陷解析 + 立项建卡 + 任务流转 + 视图/流转
-    ├── metering.ts     # token 双口径计量（measure/accumulate/costTokensOf）
-    ├── runner.ts       # 子代理执行（runPool/runAgent/withRetry + 重试/熔断/成本观测）
-    ├── report.ts       # 完成汇总投递（deliverCompletion，双口径汇报）
+    ├── metering.ts     # token 官方口径计量（accumulate/summary 三桶+calls+命中率）
+    ├── runner.ts       # 子代理执行（runPool/runAgent/withRetry + 重试/熔断）
+    ├── report.ts       # 完成汇总投递（deliverCompletion，官方口径汇报）
     ├── pipeline.ts     # 编排中枢（executePipeline/start/cancel/resume + MODE 归一；【mode 路由挂载点】）
     └── triage.ts       # 需求分诊（MODE_REGISTRY 策略表 + 正则预筛 + runTriage 模型驱动）
 store.ts  # 持久化层（原子写/.bak/损坏自愈 + journal 序列化），独立 lib entry
@@ -59,7 +59,7 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 - **类型**：全 TS；host 必须构建（`node_modules` 下 strip-types 不生效）；`peerDeps`(@deepseek-ai/*) 宿主注入。
 - **运行时**：零新增运行时依赖（依赖 `store.ts` 的 `node:fs` 与宿主 `ctx`）。
 - **数据**：backlog/journal 持久化于 `$DSH_HOME/teamflow/<product>/`；`stores`/`runs`/`activeProducts` 走 `core/context.ts`（进程单例）。
-- **token 口径**：stage 记 `usage`（真实累计 4 桶+calls）、`costTokens`（当量 cacheRead×0.1）、`tokens`（上下文压力快照）；汇报双口径（ADR-0003）。
+- **token 口径**（官方口径）：stage 记 `usage` = `{ input(未命中), cacheRead(命中), cacheWrite, output, calls }`；billed input = input+cacheRead+cacheWrite，缓存命中率 = cacheRead/(input+cacheRead)。熔断预算用官方总消耗（input+cacheRead+cacheWrite+output 累计）。汇报与工作台卡片均按官方口径展示。
 
 ## 5. 产品记忆（功能演进）
 
@@ -68,19 +68,17 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 | v0.3~0.6 | journal 断点续跑（ADR-0001）/ AGENTS 最小侵入（ADR-0002）/ 防假交付(实质校验+熔断)/ 并发池 / QA 缺陷登记 / 完成汇报 |
 | v0.8.0 | token 双口径 + 成本观测线 + lite 模式 + 部署契约（ADR-0003/0004） |
 | v0.8.x(进行) | 领域化重构（11 文件）+ triage 5 档(model 驱动)+ lite/tech/patch 端到端 + 需求无效拦截（ADR-0004/0005 落地） |
+| v0.10(进行) | 多团队架构(teams.json)+UI"+团队"触发+workspace 级隔离(UUID)+单任务轮转+dev 子卡+官方口径 token 展示+会话暂停/resume+state.json 预编译索引+版本切片/一次成型纪律+子代理路由跟随主线程 |
 
 ## 6. 已知待办
 
 - 🔜 **full/medium 阶段集差异执行**：`core/pipeline.ts` 按 `MODE_REGISTRY` 的 `PipelineSpec` 差异执行（lite/tech/patch 已成型；medium 应强制设计/技术方案、full 应含 PM 前置评估；取代散落 if/else）。
 - **需求有效性前置拦截**（ADR-0005 触发信号）：在 PRD/确认单阶段判别"需求与现状不符"即停，避免走完开发/验收。
 - **deploy.mjs FILES** 未含 `host/core/**`、`host/util.ts`、`host/constants.ts`、`host/prompts/**` 源码（运行时只看 lib，不影响功能；补上保持 profile 工作副本一致，非阻断）。
-- `COST_BUDGET_TOKENS=250k` 硬编码 → 可升级为 service Config（观测线可调）。
+- `STAGE_TOKEN_BUDGET=60k` 硬编码 → 可升级为 service Config（熔断阈值可调）。
 - smoke.js 的源码断言依赖 host 目录聚合（`#region host-pool`）：新增领域文件需同步加入。
 
 ## 7. 变更记录（近期）
 
-- 2026-08-18：领域化重构完成（11 领域文件，index 收门面）；smoke 改 host-pool 聚合断言；deploy.mjs 加运行 web 检测提示。
-- 2026-08-18：triage 5 档（`MODE_REGISTRY` + `suggestMode` 正则 + `runTriage` 模型驱动 + `teamflow_triage` 工具 + `mode` 透传/归一）；许可共识：护栏角色(mode)不折叠、契约文档按档折叠、patch 档折叠独立 QA。
-- 2026-08-18：`TRIAGE_PROMPT` 归入 `prompts/index.ts`（所有 prompt 统一）；本 AGENTS.md 建立（插件自身产品记忆锚点）。
-- 2026-08-18：mode 路由落地（tech 技术变更单 / patch 单点确认+跳独立 QA）+ **模式透明化**（start 缺省自动模型分诊，使用者无需知道 mode）。
-- 2026-08-18：端到端复验暴露三问题并修复——dev 执行纪律（任务卡唯一契约、禁核查既有功能）、patchConfirm 需求核对、验收结论解析（❌→rework / rework / 需求无效→needs-human，ADR-0005）。
+- 2026-08-19：token 计量收敛为官方口径（去除计费当量/上下文压力自定义概念）：`usage` = 输入未命中/命中/写缓存/输出/调用数 + 缓存命中率；熔断预算用官方总消耗；工作台卡片/任务卡/汇报均按官方口径展示。
+- 2026-08-19：dev 子卡模型（一个需求一张轮转主卡 + 并行 dev 子卡）、assign 与 status 分离（teamflow_assign）、workspace 级隔离（DSH workspace UUID）、UI"+团队"触发 + teamflow_pause/resume、子代理路由跟随主线程、state.json 预编译索引 + 版本切片/一次成型纪律、backlogUpdate 参数对齐修复。

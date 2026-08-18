@@ -27,9 +27,9 @@ TeamFlow 团队研发流水线 —— DeepSeek Harness 可分发插件（`dsh pl
 - **打回阈值**：单阶段连续 2 次 Agent 失败自动重试，仍失败 → `needs-human`，需人工介入。
 - **并发池**：开发任务按 `maxConcurrency`（默认 3，最大 8）并行执行。
 - **QA 缺陷登记**：QA 报告按固定表格输出 → 自动解析成 Bug 进入 backlog。
-- **token 计量（v0.8.0 双口径）**：每阶段记录**真实累计 usage**（in/cacheRead/cacheWrite/out + 调用数，由子代理会话逐事件累计）+ **上下文压力快照**（原有 measure）+ **计费当量**（cacheRead×0.1 折算）；汇总汇报同时给出双口径，避免把"尾声上下文"误当真实成本（实测低估约 26 倍）。详见 ADR-0003。
+- **token 计量（官方口径）**：每阶段记录 `usage` = **输入(缓存未命中)/输入(缓存命中)/写缓存/输出 + 调用数**（由子代理会话逐事件累计）+ **缓存命中率**（cacheRead/(input+cacheRead)）。工作台卡片/任务卡/完成汇报均按此口径展示，模型无关、与官方账单一致。
 - **lite 模式（v0.8.0）**：微功能轻量——`teamflow_start(lite:true)` 跳过 UI/UX 设计与独立技术方案文档阶段（PRD 即契约），直接 **PRD → 开发 → QA → 验收** 4 段；实测较完整 7 段省 ~64% 时间、~88% token。
-- **成本观测线**：单阶段计费当量超 `COST_BUDGET_TOKENS`（默认 250k）时**仅记录 warn、不打断**，用于暴露高成本阶段。
+- **token 熔断**：单阶段官方总消耗（input+cacheRead+cacheWrite+output 累计）超 `STAGE_TOKEN_BUDGET`（默认 60k）时停止重试、需人工介入。
 - **🏭 团队工作台（Web tab）**：与 chat / 轨迹并列的会话头部 tab，含：
   - 流水线图形工作流（阶段泳道 + 节点卡片：状态/耗时/token/子代理会话，2s 实时刷新）
   - **Backlog 拖拽看板**（需求/任务/缺陷三组状态泳道，卡片拖拽流转，原生 HTML5 DnD 零依赖）

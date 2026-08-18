@@ -16,6 +16,7 @@ import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext } from '../types.ts'
 import { normalizeMode, runTriage } from './triage.ts'
 import { loadTeams, findTeam, getActiveStages } from './teams.ts'
+import { loadState, extractStateBlock, mergeStateBlock, noteRun } from './state.ts'
 
 /** 从 journal 已完成阶段重建断点续跑产物（prd/design/scaffold/tech/qa/acceptance/dev）。 */
 export function buildResumeProducts(journal) {
@@ -109,6 +110,13 @@ export async function executePipeline(
     }
     persistJournal(journal)
 
+    // 预编译 state（跨 run 累积索引）：各阶段 prompt 注入 slice；结束后提取/合并 state 块
+    const state = loadState(journal.workspace || 'default')
+    const mergeStageState = (phaseKey, output) => {
+      const block = extractStateBlock(output)
+      if (block) mergeStateBlock(journal.workspace || 'default', block, phaseKey)
+    }
+
     /* ── PRD 阶段 ── */
     let prd = null
     if (resumed('PRD 产品需求')) {
@@ -122,10 +130,11 @@ export async function executePipeline(
         : options.mode === 'patch'
           ? { label: '工程师 · 单点确认', fn: patchConfirmPrompt }
           : { label: '产品经理 · 梳理 PRD', fn: prdPrompt }
-      const prdR = await withRetry(journal, parent, pForm.label, 'PRD 产品需求', pForm.fn(requirement, root, journal.id), signal)
+      const prdR = await withRetry(journal, parent, pForm.label, 'PRD 产品需求', pForm.fn(requirement, root, journal.id, state), signal)
       if (!prdR.text) { throw new Error(`PRD 阶段失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
       prd = prdR.text
       timeline.prd = prd
+      mergeStageState('prd', prd)
       noteTaskStageUsage(journal) // PRD 角色的真实 token 累计到任务卡
       if (journal.cancelled) return
     }
@@ -139,10 +148,11 @@ export async function executePipeline(
         logSkip('UI/UX 设计')
       } else {
         journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：UI/UX 设计' })
-        const designR = await withRetry(journal, parent, 'UI/UX 设计师 · 设计说明', 'UI/UX 设计', designPrompt(prd, root, journal.id), signal)
+        const designR = await withRetry(journal, parent, 'UI/UX 设计师 · 设计说明', 'UI/UX 设计', designPrompt(prd, root, journal.id, state), signal)
         if (!designR.text) { throw new Error(`UI/UX 设计失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
         design = designR.text
         timeline.design = design
+        mergeStageState('design', design)
         noteTaskStageUsage(journal)
         if (journal.cancelled) return
       }
@@ -157,10 +167,11 @@ export async function executePipeline(
         logSkip('架构规划')
       } else {
         journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：架构规划' })
-        const scR = await withRetry(journal, parent, '架构师 · 脚手架规划与落地', '架构规划', scaffoldPrompt(requirement, design, root, journal.id), signal)
+        const scR = await withRetry(journal, parent, '架构师 · 脚手架规划与落地', '架构规划', scaffoldPrompt(requirement, design, root, journal.id, state), signal)
         if (!scR.text) { throw new Error(`架构规划失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
         scaffold = scR.text
         timeline.scaffold = scaffold
+        mergeStageState('scaffold', scaffold)
         noteTaskStageUsage(journal)
         if (journal.cancelled) return
       }
@@ -177,10 +188,11 @@ export async function executePipeline(
       logSkip('技术方案')
     } else {
       journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：技术方案' })
-      const techR = await withRetry(journal, parent, '高级全栈工程师 · 技术方案', '技术方案', techPrompt(prd, design, scaffold, tasks, root, journal.id), signal)
+      const techR = await withRetry(journal, parent, '高级全栈工程师 · 技术方案', '技术方案', techPrompt(prd, design, scaffold, tasks, root, journal.id, state), signal)
       if (!techR.text) { throw new Error(`技术方案失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
       tech = techR.text
       timeline.tech = tech
+      mergeStageState('tech', tech)
       noteTaskStageUsage(journal)
       if (journal.cancelled) return
     }
@@ -206,7 +218,7 @@ export async function executePipeline(
           const subLive = store.find('task', sub.id)
           if (subLive) { subLive.status = 'running'; subLive.startedAt = Date.now(); store.persist(); persistJournal(journal) }
         }
-        const devR = await withRetry(journal, parent, `开发 · ${task.title}`, '开发', devPrompt(task, tech, prd, root, journal.id), signal)
+        const devR = await withRetry(journal, parent, `开发 · ${task.title}`, '开发', devPrompt(task, tech, prd, root, journal.id, state), signal)
         const ok = !!devR.text
         // 完成子卡：记录状态 + childId + 摘要
         if (sub) {
@@ -218,6 +230,10 @@ export async function executePipeline(
         return { title: task.title, failed: !ok, output: devR.text || '开发失败（Agent 未产出结果）' }
       })
       timeline.dev = devResults
+      // dev 阶段 state 沉淀：汇总各 dev 产出中提取的 state 块
+      for (const r of devResults) {
+        if (r && r.output) mergeStageState('dev', r.output)
+      }
       // 累计全部 dev stage usage 到主卡（汇总）
       noteTaskStageUsage(journal)
       const devStages = journal.stages.filter((s) => s.phase === '开发')
@@ -249,10 +265,11 @@ export async function executePipeline(
     } else {
       journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：QA 测试' })
       advanceTask(journal, 'testing', null, 'QA 开始（待测试 → 测试中）', { by: 'qa' })
-      const qaR = await withRetry(journal, parent, 'QA 测试工程师 · 功能测试', 'QA 测试', qaPrompt(prd, JSON.stringify(timeline.dev), root, journal.id), signal)
+      const qaR = await withRetry(journal, parent, 'QA 测试工程师 · 功能测试', 'QA 测试', qaPrompt(prd, JSON.stringify(timeline.dev), root, journal.id, state), signal)
       if (!qaR.text) { advanceTask(journal, 'needs-human', null, 'QA 失败', { by: 'qa' }); throw new Error(`QA 失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
       qa = qaR.text
       timeline.qa = qa
+      mergeStageState('qa', qa)
       noteTaskStageUsage(journal) // QA 角色的真实 usage 累计
       const qaStages = journal.stages.filter((s) => s.phase === 'QA 测试')
       noteTaskAssign(journal, 'qa', qaStages.map((s) => s.childId).filter(Boolean).join(',') || '测试组')
@@ -285,11 +302,12 @@ export async function executePipeline(
         advanceTask(journal, 'pending-acceptance', null, '进入验收（待验收）', { by: 'pm' })
       }
     }
-    const accR = await withRetry(journal, parent, '产品经理 · 最终验收', '产品验收', acceptancePrompt(prd, qa, JSON.stringify(timeline.dev), root, journal.id), signal)
+    const accR = await withRetry(journal, parent, '产品经理 · 最终验收', '产品验收', acceptancePrompt(prd, qa, JSON.stringify(timeline.dev), root, journal.id, state), signal)
     if (!accR.text) { advanceTask(journal, 'needs-human', null, '验收失败', { by: 'pm' }); throw new Error(`验收失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
     const acceptance = accR.text
     timeline.acceptance = acceptance
     noteTaskStageUsage(journal) // 验收角色的真实 usage 累计
+    mergeStageState('acceptance', acceptance)
     // 结论解析（顺序重要：reject 先于 rework——验收核对表里逐条的 ❌ 标记不能抢先判成 rework；
     // 「📝 需求不适用」等是验收负责人的整体结论，是更强的信号）
     const accVerdict = /📝\s*需求不适用|需求与实际不符|需求站不住|无需改动|无需修改|需求无效/.test(acceptance) ? 'reject'
@@ -336,6 +354,7 @@ export async function executePipeline(
     journal.result = { requirement, options: sanitizeSnapOptions(options), timeline: summarizeTimeline(timeline) }
     for (const s of journal.stages) delete s.output // 内存只留摘要（磁盘 journal 已持久化全文）
     persistJournal(journal) // 终态 checkpoint（含日志刷新）
+    noteRun(journal.workspace || 'default', { id: journal.id, requirement: journal.requirement, verdict: journal.status })
     deliverCompletion(journal, parent) // 汇总投递回发起会话（主线程）
     console.log(`[teamflow] 运行结束 ${journal.id} → ${journal.status}（工作区 ${scopeKey}）`)
   }

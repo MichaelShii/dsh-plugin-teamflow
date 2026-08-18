@@ -3,9 +3,9 @@
  * 依赖：util/constants/types + core(context/metering)。
  */
 import { runtime, inFlight, providerName } from './context.ts'
-import { measureTokens, accumulateSessionUsage, costTokensOf } from './metering.ts'
+import { accumulateSessionUsage, totalTokensOf } from './metering.ts'
 import { clip, extractText, normalizeSignal, hasSubstance, isUnretryable, handoffBrief } from '../util.ts'
-import { RETRY_LIMIT, STAGE_TOKEN_BUDGET, COST_BUDGET_TOKENS } from '../constants.ts'
+import { RETRY_LIMIT, STAGE_TOKEN_BUDGET } from '../constants.ts'
 import type { Journal, ParentAgentLike } from '../types.ts'
 
 /** 并发池：按 max 个 worker 消费 items，返回同序结果。 */
@@ -22,6 +22,56 @@ export async function runPool(items, max, fn) {
   return results
 }
 
+/**
+ * 解析父 agent 当前生效的模型路由（provider/model）。
+ *
+ * 背景：子代理默认继承 `parent.options`（创建时快照），主线程在 UI 切换模型后
+ * `parent.options` 不会更新，导致子代理仍打旧 provider（如已停的代理端口）。
+ *
+ * 三级回退，取「当前生效」而非「创建快照」：
+ * 1. parent.session.requestHeader()?.config —— 主线程最近一次请求实际生效的路由（含切换后）
+ * 2. runtime.agentDefaultModel?.currentSelection() —— 全局默认模型当前选择（切换即更新，可选注入）
+ * 3. parent.options —— 创建快照（兜底）
+ */
+function resolveChildRoute(parent: ParentAgentLike): { provider?: string; model?: string; maxTokens?: number } {
+  const out: { provider?: string; model?: string; maxTokens?: number } = {}
+  try {
+    // 1. 最近生效路由（request header config）
+    const session = (parent as { session?: { requestHeader?: () => { config?: { provider?: string; model?: string; maxTokens?: number } } | undefined } }).session
+    const header = session && typeof session.requestHeader === 'function' ? session.requestHeader() : undefined
+    const cfg = header && header.config
+    if (cfg && typeof cfg.provider === 'string' && cfg.provider) {
+      out.provider = cfg.provider
+      if (typeof cfg.model === 'string' && cfg.model) out.model = cfg.model
+      if (typeof cfg.maxTokens === 'number') out.maxTokens = cfg.maxTokens
+    }
+  } catch (e) { /* 回退下一级 */ }
+  if (!out.provider) {
+    // 2. 全局默认模型当前选择（切换即更新）
+    const defaultModel = runtime.agentDefaultModel as { currentSelection?: () => { provider?: string; model?: string; maxTokens?: number } } | undefined
+    if (defaultModel && typeof defaultModel.currentSelection === 'function') {
+      try {
+        const sel = defaultModel.currentSelection()
+        if (sel && typeof sel.provider === 'string' && sel.provider) {
+          out.provider = sel.provider
+          if (typeof sel.model === 'string' && sel.model) out.model = sel.model
+          if (typeof sel.maxTokens === 'number') out.maxTokens = sel.maxTokens
+        }
+      } catch (e) { /* 回退下一级 */ }
+    }
+  }
+  if (!out.provider) {
+    // 3. 创建快照兜底
+    const po = (parent as { options?: { provider?: string; model?: string; maxTokens?: number } }).options
+    if (po && typeof po.provider === 'string' && po.provider) {
+      out.provider = po.provider
+      if (typeof po.model === 'string' && po.model) out.model = po.model
+      if (typeof po.maxTokens === 'number') out.maxTokens = po.maxTokens
+    }
+  }
+  return out
+}
+
 /** 运行单个阶段子代理：执行 + 产出实质校验 + token 双口径计量 + stage 状态流转。 */
 export async function runAgent(
   journal: Journal, parent: ParentAgentLike, label: string, phase: string, prompt: string, signal: unknown,
@@ -31,16 +81,24 @@ export async function runAgent(
   const stage = {
     seq: maxSeq + 1, label, phase, status: 'running', outcome: null,
     childId: null, startedAt: Date.now(), endedAt: null, summary: null,
-    tokens: null, usage: null, costTokens: null, handoff: null, output: null,
+    usage: null, handoff: null, output: null,
   }
   journal.stages.push(stage)
   journal.agentsStarted += 1
   let run = null
   try {
+    // 显式传当前生效路由，避免继承过期的 parent.options 快照（主线程已切换代理的情况）
+    const route = resolveChildRoute(parent)
+    const agentOptions = (route.provider || route.model) ? {
+      ...(route.provider ? { provider: route.provider } : {}),
+      ...(route.model ? { model: route.model } : {}),
+      ...(route.maxTokens ? { maxTokens: route.maxTokens } : {}),
+    } : undefined
     run = await runtime.subagents.start(providerName(), {
       label,
       prompt: [{ type: 'text', text: prompt }],
       parent,
+      ...(agentOptions ? { agentOptions } : {}),
       signal: normalizeSignal(signal),
     })
     stage.childId = run.id
@@ -82,10 +140,7 @@ export async function runAgent(
     journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 启动/执行失败：${String((e && e.message) || e)}` })
     return null
   } finally {
-    const usage = accumulateSessionUsage(run)
-    stage.usage = usage
-    stage.costTokens = usage ? costTokensOf(usage) : null
-    stage.tokens = measureTokens(run) // 兼容字段：上下文压力快照
+    stage.usage = accumulateSessionUsage(run)
     stage.handoff = stageText ? handoffBrief(stageText) : null
     stage.endedAt = Date.now()
     if (inFlight.get(journal.id) && inFlight.get(journal.id).stage === stage) inFlight.delete(journal.id)
@@ -93,40 +148,34 @@ export async function runAgent(
   }
 }
 
-/** 单阶段重试 + token 熔断（上下文压力）+ 成本观测（当量，仅记录不打断）。 */
+/** 单阶段重试 + token 熔断（官方口径：input+cacheRead+cacheWrite+output 累计）。 */
 export async function withRetry(
   journal: Journal, parent: unknown, label: string, phase: string, prompt: string, signal: unknown,
-): Promise<{ text: string | null; attempts: number; stageTokens: number; stageCost: number }> {
+): Promise<{ text: string | null; attempts: number; stageTokens: number }> {
   let attempts = 0
   let stageTokens = 0
-  let stageCost = 0
   for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
     attempts = attempt
     const labelNow = attempt > 1 ? `${label}（第 ${attempt} 次重试）` : label
     const result = await runAgent(journal, parent, labelNow, phase, prompt, signal)
-    // 累计本阶段各次尝试的 token 用量（熔断预算）与计费当量（成本观测）
+    // 累计本阶段各次尝试的总消耗（官方口径：input+cacheRead+cacheWrite+output）
     const lastStage = journal.stages[journal.stages.length - 1]
     if (lastStage && lastStage.phase === phase) {
-      if (typeof lastStage.tokens === 'number') stageTokens += lastStage.tokens
-      if (typeof lastStage.costTokens === 'number') stageCost += lastStage.costTokens
+      stageTokens += totalTokensOf(lastStage.usage)
     }
-    if (result) return { text: result, attempts, stageTokens, stageCost }
-    // 成本观测：计费当量超阈值 → 仅记录 warn，不打断（本次目标为观测修正）
-    if (stageCost >= COST_BUDGET_TOKENS) {
-      journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 累计计费当量 ${Math.round(stageCost / 1000)}k 超出成本观测阈值 ${Math.round(COST_BUDGET_TOKENS / 1000)}k（仅记录，不打断）` })
-    }
-    if (journal.cancelled) return { text: null, attempts, stageTokens, stageCost }
+    if (result) return { text: result, attempts, stageTokens }
+    if (journal.cancelled) return { text: null, attempts, stageTokens }
     // 不可重试失败（上下文耗尽等）：重试同一 prompt 大概率复现 → 直接需人工
     if (lastStage && isUnretryable(lastStage.outcome, lastStage.outcome)) {
       journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 失败原因不可重试（${lastStage.outcome}），跳过重试，需人工介入` })
       journal.humanIntervention = true
-      return { text: null, attempts, stageTokens, stageCost }
+      return { text: null, attempts, stageTokens }
     }
-    // token 熔断：本阶段累计用量超预算 → 停止重试
+    // token 熔断：本阶段累计总消耗超预算 → 停止重试
     if (stageTokens >= STAGE_TOKEN_BUDGET) {
       journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 累计 token ${Math.round(stageTokens / 1000)}k 超出阶段预算 ${Math.round(STAGE_TOKEN_BUDGET / 1000)}k，熔断，需人工介入` })
       journal.humanIntervention = true
-      return { text: null, attempts, stageTokens, stageCost }
+      return { text: null, attempts, stageTokens }
     }
     if (attempt < RETRY_LIMIT) {
       journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 第 ${attempt} 次尝试未成功，自动重试…` })
@@ -135,5 +184,5 @@ export async function withRetry(
       journal.humanIntervention = true
     }
   }
-  return { text: null, attempts, stageTokens, stageCost }
+  return { text: null, attempts, stageTokens }
 }

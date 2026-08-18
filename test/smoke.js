@@ -60,7 +60,7 @@ const hostSrc = [
   readFileSync(join(here, '../host/util.ts'), 'utf8'),
   readFileSync(join(here, '../host/constants.ts'), 'utf8'),
   readFileSync(join(here, '../host/prompts/index.ts'), 'utf8'),
-  ...['context', 'backlog', 'metering', 'runner', 'report', 'pipeline', 'teams'].map((f) => readFileSync(join(here, `../host/core/${f}.ts`), 'utf8')),
+  ...['context', 'backlog', 'metering', 'runner', 'report', 'pipeline', 'teams', 'state'].map((f) => readFileSync(join(here, `../host/core/${f}.ts`), 'utf8')),
 ].join('\n//#region host-pool\n')
 const utilSrc = readFileSync(join(here, '../host/util.ts'), 'utf8')
 const constantsSrc = readFileSync(join(here, '../host/constants.ts'), 'utf8')
@@ -133,6 +133,16 @@ ok(/listTeams/.test(clientSrc) && /selectTeam/.test(clientSrc), 'client：团队
 ok(!/systemPrompt\.section/.test(hostSrc), 'host：prompt 注入已移除（触发改由 UI 驱动）')
 ok(/pausedSessions/.test(hostSrc) && /teamflow_pause/.test(hostSrc) && /teamflow_resume_session/.test(hostSrc), 'host：会话级暂停/恢复（pausedSessions + 两个工具）')
 ok(/activeTeams/.test(hostSrc) && /listTeams/.test(hostSrc) && /selectTeam/.test(hostSrc) && /clearTeam/.test(hostSrc), 'host：团队管理（activeTeams + listTeams/selectTeam/getActiveTeam/clearTeam）')
+// 6) token 优化：state.json 预编译索引 + 一次成型纪律 + 版本切片
+ok(/loadState/.test(hostSrc) && /mergeStateBlock/.test(hostSrc) && /extractStateBlock/.test(hostSrc), 'host：state.json 预编译索引（loadState/merge/extract）')
+ok(/stateSliceFor/.test(hostSrc) && /STATE_BLOCK_INSTRUCTION/.test(hostSrc), 'host：state slice 按角色注入 prompt + 产出 state 块')
+ok(/noteRun/.test(hostSrc) && /stateFile/.test(hostSrc), 'host：run 结束更新 state.json')
+ok(/ONCE_DISCIPLINE/.test(hostSrc) && /write 1 次完整新版/.test(hostSrc), 'prompt：一次成型纪律（write≤1 + 禁 read-edit 循环）')
+ok(/VERSION_SLICE_BLOCK/.test(hostSrc) && /v<旧版本号>/.test(hostSrc), 'prompt：版本切片（活文档只存当前版本，旧版归档）')
+// 7) 子代理模型路由修复：主线程切换模型后子代理不沿用废弃 provider
+ok(/resolveChildRoute/.test(hostSrc) && /requestHeader\(\)/.test(hostSrc), 'runner：子代理路由解析（requestHeader 最近生效路由）')
+ok(/agentDefaultModel/.test(hostSrc) && /currentSelection/.test(hostSrc), 'runner：回退全局默认模型当前选择（切换即更新）')
+ok(/agentOptions/.test(hostSrc) && /subagents\.start/.test(hostSrc), 'runner：显式传 agentOptions 给子代理（不再依赖过期快照）')
 
 console.log('── 4) 其他文件 ──')
 for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../descriptors.ts', '../client/index.tsx', '../host/index.ts', '../store.ts']) {

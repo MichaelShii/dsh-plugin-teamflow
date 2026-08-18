@@ -96,7 +96,7 @@ export const TEAMFLOW_DESCRIPTORS: readonly InvocationDescriptor[] = Object.free
     namespace: 'teamflow',
     method: 'backlogUpdate',
     invocation: { kind: 'direct' },
-    parameters: [p('kind'), p('id'), p('to'), p('sessionId'), p('reason'), p('meta')],
+    parameters: [p('kind'), p('id'), p('to'), p('sessionId'), p('reason')],
     result: strict,
   },
   {

@@ -1,25 +1,20 @@
 /**
- * dsh-plugin-teamflow core — token 计量（双口径：真实累计 usage + 上下文压力快照 + 计费当量）。
+ * dsh-plugin-teamflow core — token 计量（官方口径）。
  * 依赖：types.ts、context.ts（runtime.tokenMeter）。
- * 口径详见 ADR-0003。
+ *
+ * 口径与模型 provider 账单一致（模型无关）：
+ *  - input      : 输入（缓存未命中）
+ *  - cacheRead  : 输入（缓存命中）
+ *  - cacheWrite : 输入写入缓存
+ *  - output     : 输出
+ *  billed input = input + cacheRead + cacheWrite。
+ * 缓存命中率 = cacheRead / (input + cacheRead)。
  */
 import type { SubagentRunLike, UsageBuckets } from '../types.ts'
-import { runtime } from './context.ts'
-
-/** 上下文压力快照（原 tokenMeter.measure：尾声上下文大小，非累计）。 */
-export const measureTokens = (run: unknown): number | null => {
-  const tokenMeter = runtime.tokenMeter as { measure?: (session: unknown) => { totalTokens?: number } } | undefined
-  if (!tokenMeter || !run || !(run as { localAgent?: unknown }).localAgent) return null
-  try {
-    const m = tokenMeter.measure((run as { localAgent: { session: unknown } }).localAgent.session)
-    return (m && typeof m.totalTokens === 'number') ? m.totalTokens : null
-  } catch (e) { return null }
-}
 
 /**
- * 累计子代理会话中所有 LLM 调用的真实 usage（input/cacheRead/cacheWrite/output + 调用数）。
- * 与「measure 快照」不同：这是生命周期累计 API token，能如实反映 loop 重放的成本。
- * 返回 null 表示拿不到 usage（会话未暴露 events / 无数据），调用方回退到上下文压力。
+ * 累计子代理会话中所有 LLM 调用的真实 usage（官方三桶 + 调用数）。
+ * 返回 null 表示拿不到 usage（会话未暴露 events / 无数据）。
  */
 export function accumulateSessionUsage(run: SubagentRunLike | null | undefined): UsageBuckets | null {
   const local = run && run.localAgent
@@ -48,8 +43,8 @@ export function accumulateSessionUsage(run: SubagentRunLike | null | undefined):
   return buckets
 }
 
-/** 计费当量：cacheRead 按 1/10 折算（DeepSeek cache hit 成本约 input 的 1/10），用于成本观测。 */
-export function costTokensOf(buckets: UsageBuckets | null): number {
-  if (!buckets) return 0
-  return Math.round(buckets.input + buckets.cacheWrite + buckets.output + buckets.cacheRead * 0.1)
+/** 官方口径总消耗（billed input + output，含 cacheRead/cacheWrite）。 */
+export function totalTokensOf(usage: UsageBuckets | null | undefined): number {
+  if (!usage) return 0
+  return (usage.input || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0) + (usage.output || 0)
 }
