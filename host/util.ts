@@ -86,3 +86,23 @@ export function handoffBrief(text: string | null | undefined): string {
   const brief = (m && m[1] ? m[1] : String(text)).trim()
   return clip(brief, 2000)
 }
+
+/**
+ * 验收结论解析：只以显式「验收结论 / 整体结论」行为准（acceptancePrompt 强制 4 档固定话术），
+ * 不做正文散文朴素子串匹配。历史误报实锤（run tf-msytlok5）：验收报告 ✅ 通过，其记忆回写段一句
+ * 「SUMMARY.md 结构无需改动」（= 结构无需变更）被旧正则「无需改动」子串命中 → 误判 reject →
+ * 整条流水线置 failed。reject 词在正文里常以否定/引用/对照形式出现，故：
+ *  - 「📝 需求不适用」是验收负责人专用的强结论词，允许全文命中；
+ *  - 其余 reject 词（需求与实际不符/站不住/无效/无需改动等）仅在结论行且该行不含「通过/✅/⚠️」时才算；
+ *  - rework 词仅认结论行（且不与「✅ 通过」同现）。
+ * @param {unknown} text 验收报告全文
+ * @returns {'accepted'|'rework'|'reject'}
+ */
+export function parseAcceptanceVerdict(text) {
+  const acc = String(text || '')
+  const accLine = (acc.split('\n').find((l) => /验收结论|整体结论/.test(l)) || '').replace(/\|.*/, '').trim()
+  if (/❌\s*不通过|需返工|未通过/.test(accLine) && !/✅\s*通过/.test(accLine)) return 'rework'
+  if (/📝\s*需求不适用/.test(acc)) return 'reject'
+  if (!/通过|✅|⚠️/.test(accLine) && /需求不适用|需求与实际不符|需求站不住|需求无效|无需改动|无需修改/.test(accLine)) return 'reject'
+  return 'accepted'
+}

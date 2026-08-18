@@ -9,7 +9,7 @@ import { initPipelineBacklog, advanceTask, storeFor, parseDefects, noteTaskStage
 import { withRetry, runPool } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
-import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions } from '../util.ts'
+import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict } from '../util.ts'
 import { RETRY_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
@@ -308,11 +308,8 @@ export async function executePipeline(
     timeline.acceptance = acceptance
     noteTaskStageUsage(journal) // 验收角色的真实 usage 累计
     mergeStageState('acceptance', acceptance)
-    // 结论解析（顺序重要：reject 先于 rework——验收核对表里逐条的 ❌ 标记不能抢先判成 rework；
-    // 「📝 需求不适用」等是验收负责人的整体结论，是更强的信号）
-    const accVerdict = /📝\s*需求不适用|需求与实际不符|需求站不住|无需改动|无需修改|需求无效/.test(acceptance) ? 'reject'
-      : /❌|不通过|需返工|未通过/.test(acceptance) ? 'rework'
-      : 'accepted'
+    // 结论解析：见 parseAcceptanceVerdict（只认结论行，避免正文「无需改动」等否定/引用话术误杀整条流水线）
+    const accVerdict = parseAcceptanceVerdict(acceptance)
     if (accVerdict === 'reject') {
       // 需求与现状不符（无有效变更）→ 拦截：task needs-human、req needs-human、流水线中断（非 accepted）
       advanceTask(journal, 'needs-human', clip(acceptance, 300), '需求与现状不符（无需改动），需人工决定调整或取消需求', { by: 'pm' })
