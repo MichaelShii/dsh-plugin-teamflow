@@ -283,10 +283,14 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
   const st = det.stage
   const d = det.data
   const color = (st && st.status) ? stColor(st.status) : T.text2
-  const hasChild = !!(d && d.childId && sessions && typeof sessions.openSubagent === 'function')
+  // 跨会话判定：该 run 由另一会话发起（ownerSession ≠ 当前会话）→ 禁用跳转（DSH 目录按父会话加载，跨父导航暂不支持）
+  const ownerSession = (d && d.ownerSession) ? String(d.ownerSession) : null
+  const mySession = sessionId ? String(sessionId) : null
+  const crossSession = !!ownerSession && !!mySession && ownerSession !== mySession
+  const hasChild = !!(!crossSession && d && d.childId && sessions && typeof sessions.openSubagent === 'function')
   const openChild = () => {
-    if (!hasChild) return
-    try { sessions.openSubagent({ parentSessionId: sessionId, childSessionId: d.childId, mode: 'one-shot' }) } catch (e) { /* 会话跳转失败忽略 */ }
+    if (crossSession || !hasChild) return
+    try { sessions.openSubagent({ parentSessionId: (ownerSession || sessionId), childSessionId: d.childId, mode: 'one-shot' }) } catch (e) { /* 会话跳转失败忽略 */ }
   }
   const outText = d && d.output ? d.output
     : d && d.summary ? `（该 run 未保存完整正文，展示摘要）\n\n${d.summary}`
@@ -339,7 +343,9 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
       h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
         h('button', {
           onClick: openChild, disabled: !hasChild,
-          title: hasChild ? '跳转到该阶段子代理会话（完整推理与工具调用轨迹）；跳转后请切换「对话」tab 查看' : '该阶段无可用子代理会话',
+          title: crossSession
+            ? `该子代理由会话 ${ownerSession.slice(-6)} 发起，跨会话跳转暂不支持——请打开其发起会话的团队工作台查看`
+            : hasChild ? '跳转到该阶段子代理会话（完整推理与工具调用轨迹）；跳转后请切换「对话」tab 查看' : '该阶段无可用子代理会话',
           style: {
             font: 'inherit', fontSize: 12, fontWeight: 600, padding: '8px 12px', borderRadius: 9, cursor: 'pointer',
             display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center',
@@ -348,8 +354,11 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
             opacity: hasChild ? 1 : 0.45,
           },
         }, '🎬 跳转子代理会话'),
-        hasChild ? h('div', { style: { fontSize: 10.5, color: T.text2, textAlign: 'center', lineHeight: 1.55 } },
-          '跳转成功后，请切「对话」tab 查看该子代理的完整会话轨迹') : null,
+        crossSession
+          ? h('div', { style: { fontSize: 10.5, color: T.text2, textAlign: 'center', lineHeight: 1.55 } },
+            `跨会话暂不支持：该子代理由会话 ${ownerSession ? ownerSession.slice(-6) : ''} 发起。如需查看轨迹，请打开其发起会话的团队工作台。`)
+          : hasChild ? h('div', { style: { fontSize: 10.5, color: T.text2, textAlign: 'center', lineHeight: 1.55 } },
+            '跳转成功后，请切「对话」tab 查看该子代理的完整会话轨迹') : null,
       ),
       /* 产物全文 */
       h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },

@@ -382,12 +382,15 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
   if (active) throw new Error(`工作区 ${ws.path || ws.projectKey} 已有流水线 ${active} 运行中——请等待完成、取消（teamflow_cancel）或先处理中断（teamflow_resume）`)
   // mode：显式指定 / lite 兼容 / 否则留空 → 由 executePipeline 自动分诊（对调用方透明）
   const mode = normalizeMode(options.mode) ?? (options.lite ? 'lite' : undefined)
+  // 发起会话 id：阶段子代理的直接 parent（跨会话跳转子代理时据此判定/兜底）
+  const ownerSession = ((agent as { session?: { id?: string } } | null | undefined)?.session?.id) || null
   const journal = {
     id: `tf-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
     name: 'teamflow-pipeline', status: 'pending',
     requirement: clip(requirement, 8000),
     workspace: ws.projectKey,
     workspacePath: ws.path,
+    ownerSession,
     product: normalizeRoot(options.productRoot),
     options: {
       needDesign: !!options.needDesign,

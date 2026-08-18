@@ -41,6 +41,8 @@ export interface JournalRecord {
   workspace?: string | null
   /** 工作区绝对路径（发起会话 cwd；docs/logs 落点与看板展示用）。 */
   workspacePath?: string | null
+  /** 发起会话 id（阶段子代理的直接 parent；跨会话跳转判定用）。 */
+  ownerSession?: string | null
   product?: string | null
   reqId?: string | null
   /** 单任务模型：需求关联的唯一（轮转）任务 id。 */
@@ -172,6 +174,7 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     options: journal.options,
     workspace: journal.workspace || null,
     workspacePath: journal.workspacePath || null,
+    ownerSession: journal.ownerSession || null,
     product: journal.product || null,
     reqId: journal.reqId || null,
     taskId: journal.taskId || null,

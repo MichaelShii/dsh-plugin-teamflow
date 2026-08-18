@@ -79,8 +79,11 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 - `STAGE_TOKEN_BUDGET=60k` 硬编码 → 可升级为 service Config（熔断阈值可调）。
 - smoke.js 的源码断言依赖 host 目录聚合（`#region host-pool`）：新增领域文件需同步加入。
 - 🔜 **给官方提交 PR（低侵入原则下不自改 DSH）**：`conversation` 服务增加 `setView(viewId)`（复用内部 `store.actions.setView`），使「查看子代理会话」可一键跳转并自动切到「对话」tab；PR 合并前暂用 B 方案（按钮加引导文案：「跳转后请切「对话」tab 查看轨迹」）。
+- 🔜 **跨会话跳转子代理（同 PR 范畴）**：DSH 子代理目录按父会话加载，`selectSubagent` 不支持跨父导航。已记录 `journal.ownerSession`（发起会话，下发于 stageDetail），跳转按钮在 ownerSession≠当前会话时**禁用 + title/文案提示**；待官方支持跨父会话导航后再解锁（数据已备好）。
 
 ## 7. 变更记录（近期）
+
+- 2026-08-19：`journal.ownerSession` 溯源（发起会话 id，下发于 stageDetail）；跳转子代理按钮增加跨会话判定——ownerSession≠当前会话时禁用并 title/文案提示（DSH 目录按父会话加载、跨父导航待官方 PR）。
 
 - 2026-08-19：token 计量收敛为官方口径（去除计费当量/上下文压力自定义概念）：`usage` = 输入未命中/命中/写缓存/输出/调用数 + 缓存命中率；熔断预算用官方总消耗；工作台卡片/任务卡/汇报均按官方口径展示。
 - 2026-08-19：流水线视图重设计 —— 横向蛇形流程（相位从左至右、上下波浪错位 + SVG 弧线连接 + 沿路径流动高亮虚线 + 箭头终点），整块画布默认可拖拽平移 + 滚轮缩放 + 适应/± 控制簇，点阵网格背景与步骤序号徽标提升质感；历史 run 选择器门控到流水线 tab。验收结论解析修复为只认「验收结论」行（parseAcceptanceVerdict，误报实锤 tf-msytlok5）。

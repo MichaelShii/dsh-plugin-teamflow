@@ -405,6 +405,7 @@ export class TeamflowService extends TypertRemoteService {
     return {
       seq: s.seq, label: s.label, phase: s.phase, status: s.status, outcome: s.outcome,
       childId: s.childId || null, startedAt: s.startedAt, endedAt: s.endedAt,
+      ownerSession: j.ownerSession || null,
       usage: s.usage || null,
       summary: clip(s.summary || '', 3000),
       output: clip(toText(s.output) || toText(s.handoff) || '', 24000),
