@@ -153,7 +153,120 @@ function totalUsage(stages) {
 const stText = (s) => STATUS_TEXT[s] || s
 const stColor = (s) => STATUS_COLOR[s] || T.text2
 
-/* ── 流水线面板：阶段泳道 + 节点卡片 ─────────────────────────────── */
+/* ── 流水线面板：纵向蛇形流程画布（从上至下 · 弧线连接 · 流动动画 · 画布拖动/缩放） ── */
+const NODE_W = 300        // 节点宽度
+const COL_OFF = 176       // 相邻相位水平错位半径（蛇形走线）
+const V_GAP = 122         // 相位间弧线垂直高度
+const CARD_H = 54         // 阶段卡固定高度
+const CARD_H_RUN = 64     // 运行中卡略高（含进度条）
+const HEAD_H = 38         // 相位头高度
+const PAD_T = 54
+const PAD_B = 78
+const cardH = (s) => (s.status === 'running' ? CARD_H_RUN : CARD_H)
+
+/** 纵向布局：蛇形错位 + 绝对定位节点 + 弧线连接锚点。返回 nodes/conns/worldW/worldH。 */
+function layoutFlow(groups, viewW) {
+  const cx = viewW / 2
+  let y = PAD_T
+  const nodes = []
+  const conns = []
+  groups.forEach((g, i) => {
+    const off = (i % 2 === 0 ? -1 : 1) * COL_OFF
+    const anyRun = g.stages.some((s) => s.status === 'running')
+    const anyFail = g.stages.some((s) => s.status === 'failed' || s.status === 'needs-human' || s.status === 'cancelled')
+    const allDone = g.stages.length > 0 && g.stages.every((s) => s.status === 'done')
+    const headColor = anyRun ? T.brand : anyFail ? T.error : allDone ? T.success : T.text2
+    const h = HEAD_H + 10 + g.stages.reduce((a, s) => a + cardH(s), 0) + Math.max(0, g.stages.length - 1) * 7
+    const node = { i, phase: g.phase, stages: g.stages, left: cx + off - NODE_W / 2, top: y, h, headColor }
+    if (i > 0) {
+      const prev = nodes[i - 1]
+      conns.push({ x1: prev.left + NODE_W / 2, y1: prev.top + prev.h, x2: node.left + NODE_W / 2, y2: node.top, color: node.headColor })
+    }
+    nodes.push(node)
+    y += h + V_GAP
+  })
+  return { nodes, conns, worldW: viewW, worldH: y - V_GAP + PAD_B }
+}
+
+/** S 形弧线路径（自上而下，前后锚点沿垂直方向缓进出）。 */
+function connPath(c) {
+  const dy = 44
+  return `M ${c.x1} ${c.y1} C ${c.x1} ${c.y1 + dy}, ${c.x2} ${c.y2 - dy}, ${c.x2} ${c.y2}`
+}
+
+function FlowStageCard(s, key) {
+  const color = stColor(s.status)
+  const running = s.status === 'running'
+  const usage = stageUsageLine(s)
+  return h('div', {
+    key,
+    title: s.label,
+    style: {
+      boxSizing: 'border-box', height: cardH(s), borderRadius: 10, position: 'relative', overflow: 'hidden',
+      display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 3, padding: '6px 11px 6px 13px',
+      background: `linear-gradient(135deg, color-mix(in srgb, ${color} 8%, ${T.layer1}), ${T.layer1} 64%)`,
+      border: `1px solid ${T.border}`, borderLeft: `3px solid ${color}`,
+      opacity: s.status === 'pending' ? 0.56 : 1,
+      transition: 'transform .12s ease, box-shadow .12s ease',
+      boxShadow: running ? `0 0 0 1px color-mix(in srgb, ${color} 32%, transparent), 0 6px 18px color-mix(in srgb, ${color} 15%, transparent)` : '0 1px 2px rgba(0,0,0,.05)',
+    },
+  },
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+      running ? h('span', { style: { width: 7, height: 7, borderRadius: 999, background: color, animation: 'tf-pulse 1.15s ease-in-out infinite' } })
+        : h('span', { style: { width: 6, height: 6, borderRadius: 2, background: color } }),
+      h('span', { style: { flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, s.label),
+      chip(stText(s.status), color, { dot: true }),
+    ),
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 13, fontSize: 10.5, color: T.text2, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' } },
+      s.startedAt ? h('span', {}, fmtDur(s.startedAt, s.endedAt)) : h('span', {}, '—'),
+      usage ? h('span', { title: usageDetail(s), style: { marginLeft: 'auto', color } }, usage) : null,
+    ),
+    running ? h('div', { style: { position: 'absolute', left: 5, right: 5, bottom: 3, height: 2, borderRadius: 2, overflow: 'hidden', background: `color-mix(in srgb, ${color} 20%, transparent)` } },
+      h('div', { style: { height: '100%', width: '42%', borderRadius: 2, background: color, animation: 'tf-shimmer 1.1s linear infinite' } }),
+    ) : null,
+  )
+}
+
+function FlowNode(node) {
+  const g = node
+  const running = g.stages.some((s) => s.status === 'running')
+  return h('div', {
+    key: 'n' + g.i,
+    style: { position: 'absolute', left: g.left, top: g.top, width: NODE_W, height: g.h, boxSizing: 'border-box', display: 'flex', flexDirection: 'column' },
+  },
+    /* 步骤序号徽标（悬在左上角，突出编号与次序） */
+    h('div', {
+      style: {
+        position: 'absolute', top: -8, left: 12, width: 22, height: 22, borderRadius: 7, zIndex: 2,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontFamily: MONO, fontSize: 10.5, fontWeight: 800, color: g.headColor,
+        background: `color-mix(in srgb, ${g.headColor} 16%, ${T.layer1})`,
+        border: `1px solid color-mix(in srgb, ${g.headColor} 36%, transparent)`,
+        boxShadow: '0 2px 8px rgba(0,0,0,.14)',
+      },
+    }, String(g.i + 1).padStart(2, '0')),
+    /* 相位头 */
+    h('div', {
+      style: {
+        height: HEAD_H, boxSizing: 'border-box', borderRadius: 11, padding: '0 11px',
+        display: 'flex', alignItems: 'center', gap: 7,
+        color: g.headColor, fontSize: 12.5, fontWeight: 700,
+        background: `linear-gradient(90deg, color-mix(in srgb, ${g.headColor} 13%, transparent), color-mix(in srgb, ${g.headColor} 5%, transparent))`,
+        border: `1px solid color-mix(in srgb, ${g.headColor} 30%, transparent)`,
+      },
+    },
+      h('span', { style: { fontSize: 13.5 } }, PHASE_ICON[g.phase] || '⚙️'),
+      h('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, g.phase),
+      g.stages.length > 1 ? h('span', { style: { fontFamily: MONO, fontSize: 10, fontWeight: 800, background: `color-mix(in srgb, ${g.headColor} 16%, transparent)`, borderRadius: 999, padding: '0 7px', lineHeight: '16px' } }, `×${g.stages.length}`) : null,
+      running ? h('span', { style: { width: 8, height: 8, borderRadius: 999, background: g.headColor, animation: 'tf-pulse 1.4s ease-in-out infinite' } }) : null,
+    ),
+    /* 卡片列 */
+    h('div', { style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 7, paddingTop: 10 } },
+      g.stages.map((s) => FlowStageCard(s, s.seq)),
+    ),
+  )
+}
+
 function PipelinePanel({ active }) {
   if (!active) return h('div', { style: { color: T.text2, fontSize: 13, padding: '28px 20px', textAlign: 'center' } },
     h('div', { style: { fontSize: 28, marginBottom: 8 } }, '🏭'),
@@ -164,75 +277,127 @@ function PipelinePanel({ active }) {
     if (!g || g.phase !== st.phase) { g = { phase: st.phase, stages: [] }; groups.push(g) }
     g.stages.push(st)
   }
-  const total = totalUsage(active.stages)
-  const cols = groups.map((g, i) => {
-    const anyRun = g.stages.some((s) => s.status === 'running')
-    const anyFail = g.stages.some((s) => s.status === 'failed' || s.status === 'needs-human' || s.status === 'cancelled')
-    const allDone = g.stages.length > 0 && g.stages.every((s) => s.status === 'done')
-    const headColor = anyRun ? T.brand : anyFail ? T.error : allDone ? T.success : T.text2
-    return h('div', { key: i, style: { minWidth: 158, maxWidth: 190, flex: '0 0 auto' } },
-      /* 泳道头 */
-      h('div', {
-        style: {
-          display: 'flex', alignItems: 'center', gap: 6, padding: '6px 10px', marginBottom: 8,
-          borderRadius: 8, fontSize: 12, fontWeight: 600,
-          background: `color-mix(in srgb, ${headColor} 9%, transparent)`,
-          border: `1px solid color-mix(in srgb, ${headColor} 30%, transparent)`,
-          color: headColor,
-        },
-      },
-        h('span', { style: { fontSize: 13 } }, PHASE_ICON[g.phase] || '⚙️'),
-        h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, g.phase),
-        g.stages.length > 1 ? h('span', {
-          style: { marginLeft: 'auto', fontSize: 10, fontWeight: 700, background: 'rgba(0,0,0,.08)', borderRadius: 999, padding: '0 6px', lineHeight: '16px' },
-        }, `×${g.stages.length}`) : null,
-      ),
-      /* 节点卡片 */
-      h('div', { style: { display: 'flex', flexDirection: 'column', gap: 7 } },
-        g.stages.map((s) => {
-          const color = stColor(s.status)
-          const running = s.status === 'running'
-          return h('div', {
-            key: s.seq,
-            style: {
-              position: 'relative', background: T.layer1, border: `1px solid ${T.border}`,
-              borderLeft: `3px solid ${color}`, borderRadius: 8, padding: '7px 9px 7px 10px',
-              opacity: s.status === 'pending' ? .62 : 1,
-              transition: 'transform .12s ease, box-shadow .12s ease',
-              boxShadow: running ? `0 0 0 1px color-mix(in srgb, ${color} 35%, transparent), 0 2px 8px color-mix(in srgb, ${color} 12%, transparent)` : '0 1px 2px rgba(0,0,0,.04)',
-            },
-            title: s.label,
-          },
-            h('div', { style: { display: 'flex', alignItems: 'center', gap: 5, fontWeight: 600, fontSize: 12 } },
-              h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, s.label),
-            ),
-            h('div', { style: { ...flexRow, marginTop: 5, color: T.text2, fontSize: 11 } },
-              chip(stText(s.status), color, { dot: true }),
-              s.startedAt ? h('span', { style: { fontVariantNumeric: 'tabular-nums', fontFamily: MONO } }, fmtDur(s.startedAt, s.endedAt)) : null,
-              (stageUsageLine(s) !== null) ? h('span', { title: usageDetail(s), style: { fontFamily: MONO, fontVariantNumeric: 'tabular-nums', marginLeft: 'auto' } }, stageUsageLine(s)) : null,
-            ),
-            running ? h('div', { style: { marginTop: 6, height: 2, borderRadius: 2, overflow: 'hidden', background: `color-mix(in srgb, ${color} 18%, transparent)` } },
-              h('div', { style: { height: '100%', width: '40%', borderRadius: 2, background: color, animation: 'tf-shimmer 1.1s linear infinite' } }),
-            ) : null,
-          )
-        }),
-      ),
-    )
-  })
-  return h('div', { style: { display: 'flex', alignItems: 'flex-start', gap: 0, overflowX: 'auto', padding: '4px 2px 8px' } },
-    cols.reduce((acc, col, i) => {
-      if (i > 0) {
-        acc.push(h('div', {
-          key: `a${i}`, style: {
-            alignSelf: 'center', flex: '0 0 auto', width: 22, height: 2, margin: '0 2px',
-            borderRadius: 2, opacity: .5,
-            background: `linear-gradient(90deg, ${stColor(groups[i - 1].stages[0].status)}, ${stColor(groups[i].stages[0].status)})`,
-          },
-        }))
+  const wrapRef = React.useRef(null)
+  const [vw, setVw] = React.useState(900)
+  const [view, setView] = React.useState({ x: 0, y: 44, s: 1 })
+  const [grabbing, setGrabbing] = React.useState(false)
+  const dragRef = React.useRef(null)
+  const fittedRef = React.useRef(false)
+
+  React.useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const doFit = () => {
+      const W = el.clientWidth, H = el.clientHeight
+      if (W <= 0) return
+      if (W !== vw) setVw(W)
+      if (!fittedRef.current) {
+        const lay = layoutFlow(groups, W)
+        const raw = Math.min((H - 46) / lay.worldH, (W - 40) / lay.worldW, 1)
+        const s = Math.max(0.5, raw)
+        setView({ x: (W - lay.worldW * s) / 2, y: (H - lay.worldH * s) / 2, s })
+        fittedRef.current = true
       }
-      acc.push(col)
-      return acc
-    }, []),
+    }
+    doFit()
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(doFit) : null
+    if (ro) ro.observe(el)
+    return () => { if (ro) ro.disconnect() }
+  }, [active])
+
+  React.useEffect(() => {
+    const el = wrapRef.current
+    if (!el) return
+    const onWheel = (e) => {
+      e.preventDefault()
+      const rect = el.getBoundingClientRect()
+      const px = e.clientX - rect.left, py = e.clientY - rect.top
+      setView((v) => {
+        const ns = Math.min(1.65, Math.max(0.5, v.s * (e.deltaY < 0 ? 1.12 : 0.89)))
+        const k = ns / v.s
+        return { s: ns, x: px - (px - v.x) * k, y: py - (py - v.y) * k }
+      })
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [])
+
+  const layout = layoutFlow(groups, vw)
+  const fitNow = () => {
+    const el = wrapRef.current
+    if (!el) return
+    const W = el.clientWidth, H = el.clientHeight
+    const raw = Math.min((H - 46) / layout.worldH, (W - 40) / layout.worldW, 1)
+    const s = Math.max(0.5, raw)
+    setView({ x: (W - layout.worldW * s) / 2, y: (H - layout.worldH * s) / 2, s })
+  }
+  const zoomBy = (f) => {
+    setView((v) => {
+      const ns = Math.min(1.65, Math.max(0.5, v.s * f))
+      const k = ns / v.s
+      const el = wrapRef.current
+      const px = el ? el.clientWidth / 2 : layout.worldW / 2
+      const py = el ? el.clientHeight / 2 : 64
+      return { s: ns, x: px - (px - v.x) * k, y: py - (py - v.y) * k }
+    })
+  }
+  const zoomStyle = { font: 'inherit', fontSize: 13, width: 26, height: 24, borderRadius: 7, cursor: 'pointer', border: `1px solid ${T.border}`, background: T.layer1, color: T.text, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }
+  const onDown = (e) => {
+    if (e.button !== 0) return
+    dragRef.current = { sx: e.clientX, sy: e.clientY, ox: view.x, oy: view.y }
+    setGrabbing(true)
+    e.preventDefault()
+  }
+  const onMove = (e) => {
+    const d = dragRef.current
+    if (!d) return
+    setView((v) => ({ ...v, x: d.ox + (e.clientX - d.sx), y: d.oy + (e.clientY - d.sy) }))
+  }
+  const onUp = () => { dragRef.current = null; setGrabbing(false) }
+
+  return h('div', {
+    ref: wrapRef,
+    onMouseDown: onDown, onMouseMove: onMove, onMouseUp: onUp, onMouseLeave: onUp,
+    style: {
+      position: 'relative', height: 460, borderRadius: 12, overflow: 'hidden', touchAction: 'none',
+      border: `1px solid ${T.border}`, userSelect: 'none',
+      cursor: grabbing ? 'grabbing' : 'grab',
+      background: `radial-gradient(circle, ${T.border2} 1px, transparent 1px) 0 0 / 24px 24px, ${T.layer1}`,
+      backgroundBlendMode: 'overlay',
+    },
+  },
+    /* 世界层（整体可拖动/缩放的画布） */
+    h('div', {
+      style: { position: 'absolute', left: 0, top: 0, width: layout.worldW, height: layout.worldH, transform: `translate(${view.x}px, ${view.y}px) scale(${view.s})`, transformOrigin: '0 0' },
+    },
+      /* 连接弧线 SVG 层（置于节点之下） */
+      h('svg', { width: layout.worldW, height: layout.worldH, style: { position: 'absolute', left: 0, top: 0, overflow: 'visible', zIndex: 0 } },
+        h('defs', {}, layout.conns.map((c) => h('marker', { key: 'm' + c.x1 + '-' + c.y1, id: 'tfm-' + c.x1 + '-' + c.y1, viewBox: '0 0 10 10', refX: 8, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: c.color })))),
+        layout.conns.map((c) => h('g', { key: 'c' + c.x1 + '-' + c.y1 },
+          h('path', { d: connPath(c), fill: 'none', stroke: `color-mix(in srgb, ${c.color} 12%, transparent)`, strokeWidth: 7, strokeLinecap: 'round' }),
+          h('path', { d: connPath(c), fill: 'none', stroke: `color-mix(in srgb, ${c.color} 45%, transparent)`, strokeWidth: 2.5, markerEnd: `url(#tfm-${c.x1}-${c.y1})` }),
+          h('path', { d: connPath(c), fill: 'none', stroke: c.color, strokeWidth: 2, strokeLinecap: 'round', strokeDasharray: '5 9', animation: 'tf-flow .75s linear infinite' }),
+        )),
+      ),
+      /* 节点层 */
+      h('div', { style: { position: 'absolute', left: 0, top: 0, zIndex: 1 } },
+        layout.nodes.map((n) => FlowNode(n)),
+      ),
+    ),
+    layout.nodes.length === 0 ? h('div', { style: { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.text2, fontSize: 13 } }, '流水线还没有开始执行节点') : null,
+    /* 浮层控制簇（不参与画布拖拽） */
+    h('div', {
+      onMouseDown: (e) => e.stopPropagation(),
+      style: { position: 'absolute', top: 10, right: 12, zIndex: 6, display: 'flex', alignItems: 'center', gap: 6, padding: 5, borderRadius: 11, border: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.layer1} 82%, transparent)`, backdropFilter: 'blur(8px)', boxShadow: '0 6px 20px rgba(0,0,0,.16)' },
+    },
+      h('button', { title: '缩小', onClick: () => zoomBy(0.86), style: zoomStyle }, '−'),
+      h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2, minWidth: 34, textAlign: 'center' } }, `${Math.round(view.s * 100)}%`),
+      h('button', { title: '放大', onClick: () => zoomBy(1.16), style: zoomStyle }, '+'),
+      h('span', { style: { width: 1, height: 14, background: T.border } }),
+      h('button', { title: '适应画布', onClick: fitNow, style: { ...zoomStyle, fontSize: 13 } }, '⤢'),
+      h('span', { style: { width: 1, height: 14, background: T.border } }),
+      h('span', { style: { fontSize: 10.5, color: T.text2, paddingRight: 4, opacity: 0.85 } }, '✥ 拖动画布 · 滚轮缩放'),
+    ),
   )
 }
 
@@ -692,7 +857,8 @@ if (typeof document !== 'undefined') {
   const styleEl = document.createElement('style')
   styleEl.textContent = `
 @keyframes tf-pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.8); } }
-@keyframes tf-shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(350%); } }`
+@keyframes tf-shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(350%); } }
+@keyframes tf-flow { from { stroke-dashoffset: 0 } to { stroke-dashoffset: -28 } }`
   document.head.appendChild(styleEl)
 }
 
