@@ -8,6 +8,7 @@
  */
 
 import { join, dirname } from 'node:path'
+import { createHash } from 'node:crypto'
 import {
   mkdirSync, readFileSync, writeFileSync, existsSync, copyFileSync, renameSync, readdirSync,
 } from 'node:fs'
@@ -38,8 +39,14 @@ export interface JournalRecord {
   status: string
   requirement?: string
   options?: Record<string, unknown>
+  /** 工作区作用域：安全槽位（用作 $DSH_HOME/teamflow/<workspace>/ 目录键，backlog 按此隔离）。 */
+  workspace?: string | null
+  /** 工作区绝对路径（发起会话 cwd；docs/logs 落点与看板展示用）。 */
+  workspacePath?: string | null
   product?: string | null
   reqId?: string | null
+  /** 单任务模型：需求关联的唯一（轮转）任务 id。 */
+  taskId?: string | null
   taskMap?: Record<string, string>
   agentsStarted?: number
   humanIntervention?: boolean
@@ -61,6 +68,24 @@ export function dshHome(): string {
 }
 export function teamflowRoot(): string {
   return join(dshHome(), 'teamflow')
+}
+
+/**
+ * 工作区 → 稳定安全槽位：以路径 basename 为可读前缀 + sha1 短哈希，保证同路径稳定、
+ * 跨路径唯一，且只含 [a-zA-Z0-9_-]（可安全作目录段，不穿越 $DSH_HOME）。
+ * 例：C:\...\tetris → ws-tetris-3f9a2c7b
+ */
+export function slugPath(p: string | null | undefined): string {
+  const raw = String(p || '').replace(/\\/g, '/')
+  const base = raw.split('/').filter(Boolean).pop() || 'root'
+  const tag = base.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 24) || 'ws'
+  const hash = createHash('sha1').update(raw || 'default').digest('hex').slice(0, 8)
+  return `ws-${tag}-${hash}`
+}
+
+/** 工作区绝对路径 → 该工作区的 `$DSH_HOME/teamflow/<slug>/backlog` 等目录基座。 */
+export function workspaceDir(workspacePath: string | null | undefined): string {
+  return join(teamflowRoot(), slugPath(workspacePath || null))
 }
 export function productDir(product: string | null | undefined): string {
   // 双保险：危险路径退化到 default（与 host normalizeRoot 白名单一致）。
@@ -147,8 +172,11 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     status: journal.status,
     requirement: journal.requirement,
     options: journal.options,
+    workspace: journal.workspace || null,
+    workspacePath: journal.workspacePath || null,
     product: journal.product || null,
     reqId: journal.reqId || null,
+    taskId: journal.taskId || null,
     taskMap: journal.taskMap || {},
     agentsStarted: journal.agentsStarted || 0,
     humanIntervention: journal.humanIntervention === true,
@@ -179,39 +207,115 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
   }
 }
 
-/** 原子写 journal 文件。 */
+/** 通用文本写（原子写 + 递归建目录），供 run 日志等使用。 */
+export function writeText(file: string, text: string): boolean {
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    const tmp = file + '.tmp'
+    writeFileSync(tmp, text, 'utf8')
+    renameSync(tmp, file)
+    return true
+  } catch (e) {
+    console.error('[teamflow] writeText failed', file, (e as Error)?.message)
+    return false
+  }
+}
+
+/** 工作区下日志落点：<工作区>/logs/teamflow/<runId>.log（存在 workspacePath 时才落）。 */
+export function runLogFile(journal: JournalRecord): string | null {
+  if (!journal.workspacePath) return null
+  return join(journal.workspacePath, 'logs', 'teamflow', `${journal.id}.log`)
+}
+
+/** 把运行事件日志聚合写到 <工作区>/logs/teamflow/<runId>.log（logs 收口，防止污染宿主）。 */
+export function persistRunLog(journal: JournalRecord): boolean {
+  const file = runLogFile(journal)
+  if (!file) return false
+  const lines = [
+    `# TeamFlow 运行日志（${journal.name}）`,
+    `runId=${journal.id}`,
+    `workspace=${journal.workspacePath || ''}`,
+    `product=${journal.product || ''}`,
+    `status=${journal.status}`,
+    `startedAt=${journal.startedAt ? new Date(journal.startedAt).toISOString() : ''}`,
+    `endedAt=${journal.endedAt ? new Date(journal.endedAt).toISOString() : ''}`,
+    `requirement=${journal.requirement || ''}`,
+    '',
+  ]
+  for (const l of (journal.logs || []).slice(-300)) {
+    lines.push(`[${l.t ? new Date(l.t).toISOString() : ''}] ${l.level}: ${l.message}`)
+  }
+  if (journal.error) lines.push('', `ERROR: ${journal.error}`)
+  return writeText(file, lines.join('\n') + '\n')
+}
+
+/** 原子写 journal 文件（新 journal 写 per-project runs/，旧 journal 写全局 runs/）。 */
 export function persistJournal(journal: JournalRecord): boolean {
-  return writeJson(journalFile(journal.id), serializeJournal(journal))
+  // 有 workspace 字段的新 journal → 写到 per-project runs/
+  if (journal.workspace && journal.workspace !== 'default') {
+    const projectDir = join(teamflowRoot(), journal.workspace, 'runs')
+    const file = join(projectDir, `${journal.id}.json`)
+    const ok = writeJson(file, serializeJournal(journal))
+    if (ok && journal.workspacePath) persistRunLog(journal)
+    return ok
+  }
+  // 旧格式 / 兜底 → 写到全局 runs/
+  const ok = writeJson(journalFile(journal.id), serializeJournal(journal))
+  if (ok && journal.workspacePath) persistRunLog(journal)
+  return ok
 }
 
 /**
  * 启动时扫描磁盘 journal：
- * - 正常状态（completed/failed/cancelled/interrupted）原样载入；
- * - running/pending → 标记 interrupted（进程崩溃/重启残留），并就地持久化。
+ * - 全局 $DSH_HOME/teamflow/runs/（兼容旧格式）
+ * - 各 per-project $DSH_HOME/teamflow/<project>/runs/（新格式）
+ * - 正常状态原样载入；running/pending → 标记 interrupted（进程崩溃/重启残留）。
  * @returns 全部历史 run（含是否本次被标记中断）。
  */
 export function loadJournals(): Array<{ journal: JournalRecord; wasInterrupted: boolean }> {
   const out: Array<{ journal: JournalRecord; wasInterrupted: boolean }> = []
-  try {
-    if (!existsSync(runsDir())) return out
-    for (const f of readdirSync(runsDir())) {
-      if (!f.endsWith('.json') || f.includes('.bak') || f.includes('.tmp') || f.includes('.corrupt')) continue
-      const j = readJsonAny<JournalRecord | null>(join(runsDir(), f), null)
-      if (!j || typeof j !== 'object' || typeof j.id !== 'string') continue
-      let wasInterrupted = false
-      if (j.status === 'running' || j.status === 'pending') {
-        j.status = 'interrupted'
-        j.interrupted = true
-        j.interruptedAt = Date.now()
-        j.endedAt = j.endedAt || Date.now()
-        for (const s of (j.stages || [])) {
-          if (s.status === 'running') { s.status = 'interrupted'; s.endedAt = s.endedAt || Date.now() }
+  const seen = new Set<string>() // 去重（同一 journal 不要重复加载）
+  const loadDir = (dir: string) => {
+    try {
+      if (!existsSync(dir)) return
+      for (const f of readdirSync(dir)) {
+        if (!f.endsWith('.json') || f.includes('.bak') || f.includes('.tmp') || f.includes('.corrupt')) continue
+        const j = readJsonAny<JournalRecord | null>(join(dir, f), null)
+        if (!j || typeof j !== 'object' || typeof j.id !== 'string') continue
+        if (seen.has(j.id)) continue
+        seen.add(j.id)
+        let wasInterrupted = false
+        if (j.status === 'running' || j.status === 'pending') {
+          j.status = 'interrupted'
+          j.interrupted = true
+          j.interruptedAt = Date.now()
+          j.endedAt = j.endedAt || Date.now()
+          for (const s of (j.stages || [])) {
+            if (s.status === 'running') { s.status = 'interrupted'; s.endedAt = s.endedAt || Date.now() }
+          }
+          writeJson(join(dir, f), j)
+          wasInterrupted = true
+          out.push({ journal: j, wasInterrupted })
+        } else {
+          out.push({ journal: j, wasInterrupted })
         }
-        writeJson(journalFile(j.id), j)
-        wasInterrupted = true
-        out.push({ journal: j, wasInterrupted })
-      } else {
-        out.push({ journal: j, wasInterrupted })
+      }
+    } catch (e) { /* 单目录失败不影响其他 */ }
+  }
+  try {
+    // 1. 全局 runs/（兼容旧格式 journal）
+    loadDir(runsDir())
+    // 2. per-project runs/（新格式 journal）
+    const root = teamflowRoot()
+    if (existsSync(root)) {
+      for (const entry of readdirSync(root)) {
+        const sub = join(root, entry)
+        try {
+          if (entry === 'runs') continue // 全局已扫描
+          if (existsSync(sub) && readdirSync(sub).includes('runs')) {
+            loadDir(join(sub, 'runs'))
+          }
+        } catch (e) { /* 跳过非目录 */ }
       }
     }
   } catch (e) {

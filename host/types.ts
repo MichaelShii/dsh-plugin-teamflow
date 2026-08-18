@@ -37,6 +37,8 @@ export interface PipelineOptions {
   lite?: boolean
   /** 需求分诊路由（ADR-0004）；缺省由 triage 自动判定。 */
   mode?: PipelineMode
+  /** 团队 id：指定走哪个团队的流水线（从 teams.json 读取阶段配置）。 */
+  teamId?: string
 }
 /** 断点续跑上下文。 */
 export interface ResumeContext {

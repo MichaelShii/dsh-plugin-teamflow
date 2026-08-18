@@ -6,7 +6,7 @@ import { fileFor, readJson, writeJson, teamflowRoot, persistJournal } from '../.
 import type { BacklogItem } from '../types.ts'
 import { stores } from './context.ts'
 import { STATUS } from '../constants.ts'
-import { clip, normalizeTasks } from '../util.ts'
+import { clip } from '../util.ts'
 
 export class BacklogStore {
   product: string
@@ -78,19 +78,27 @@ export function backlogSummary(product: string | null | undefined) {
       },
     },
     requirements: store.requirements.slice(-20).map((r) => ({ id: r.id, title: r.title, status: r.status, humanIntervention: !!r.humanIntervention, taskIds: (r.taskIds || []).slice(-20), bugIds: (r.bugIds || []).slice(-20), createdAt: r.createdAt, updatedAt: r.updatedAt })).reverse(),
-    tasks: store.tasks.slice(-40).map((t) => ({
+    tasks: store.tasks.slice(-80).map((t) => ({
       id: t.id, type: t.type || 'task', title: t.title, status: t.status,
       reqId: t.reqId || null, bugId: t.bugId || null, owner: t.owner || null,
+      devAssign: t.devAssign || null, qaAssign: t.qaAssign || null, acceptBy: t.acceptBy || null,
       retries: t.retries || 0, humanIntervention: !!t.humanIntervention,
-      startedAt: t.startedAt || null, updatedAt: t.updatedAt || null,
+      usage: t.usage || null, costTokens: t.costTokens || 0, contextTokens: t.contextTokens || null,
+      byRole: t.byRole || {},
+      subtaskIds: t.subtaskIds || [],
+      parentId: t.parentId || null,
+      failed: !!t.failed, childId: t.childId || null,
+      spec: t.spec || null,
+      startedAt: t.startedAt || null, endedAt: t.endedAt || null, updatedAt: t.updatedAt || null,
       summary: clip(t.summary || '', 300),
     })).reverse(),
     bugs: store.bugs.slice(-30).map((b) => ({ id: b.id, reqId: b.reqId || null, severity: b.severity || null, title: b.title, status: b.status, owner: b.owner || null, retries: b.retries || 0, humanIntervention: !!b.humanIntervention, updatedAt: b.updatedAt })).reverse(),
   }
 }
 
-/** backlog 状态流转（校验目标状态合法性，合法的终态自动清 needs-human）。 */
-export function transitionBacklog(product: string | null | undefined, kind, id: string, to: string, reason: string | null | undefined) {
+/** backlog 状态流转（校验目标状态合法性，合法的终态自动清 needs-human）。
+ *  只做 status + humanIntervention，不碰 assign——assign 是独立操作，由 teamflow_assign 工具或 noteTaskAssign 处理。 */
+export function transitionBacklog(product: string | null | undefined, kind, id: string, to: string, reason: string | null | undefined, _meta?) {
   const store = storeFor(product)
   const item = store.find(kind, id)
   if (!item) return { ok: false, error: `找不到 ${kind} #${id}` }
@@ -118,64 +126,199 @@ export function parseDefects(qaText: string) {
   return defects
 }
 
-/** 流水线启动时建立需求 backlog（req + 各阶段任务卡；lite 模式不建 design/tech）。 */
+/** 流水线启动时建立需求 backlog（req + 唯一轮转任务卡；任务不再按角色拆分）。 */
 export function initPipelineBacklog(journal, requirement, options) {
-  const store = storeFor(options.productRoot)
+  const key = journal.workspace || 'default'
+  const store = storeFor(key)
   const reqId = store.nextId('req')
   const req = {
-    id: reqId, product: options.productRoot || null, title: clip(requirement, 120), status: 'created',
+    id: reqId, product: key, productRoot: options.productRoot || null,
+    title: clip(requirement, 120), status: 'created',
     createdAt: Date.now(), updatedAt: Date.now(), events: [], taskIds: [], bugIds: [], humanIntervention: false,
   }
   store.requirements.push(req)
   store.pushEvent(req, null, 'created', '流水线立项')
+  // 单任务模型：一个需求 = 一个轮转任务（dev/qa/验收 在同一张卡上流转）
+  const taskId = store.nextId('task')
+  const task = {
+    id: taskId, reqId, product: key, type: 'task',
+    title: `需求任务 · ${clip(requirement, 40)}`,
+    status: 'pending', owner: null, devAssign: null, qaAssign: null, acceptBy: null,
+    retries: 0, humanIntervention: false, createdAt: Date.now(), updatedAt: Date.now(),
+    events: [], bugIds: [], usage: null, costTokens: 0, contextTokens: null, byRole: {},
+    subtaskIds: [],
+  }
+  store.tasks.push(task)
+  req.taskIds = [taskId]
   journal.reqId = reqId
-  journal.taskMap = {}
-  const mkTask = (type, title) => {
-    const id = store.nextId('task')
-    const t = { id, reqId, type, title, status: 'pending', owner: null, retries: 0, humanIntervention: false, createdAt: Date.now(), updatedAt: Date.now(), events: [], summary: null }
-    store.tasks.push(t)
-    req.taskIds.push(id)
-    journal.taskMap[type] = id
-    return t
-  }
-  const light = options.lite || options.mode === 'lite' || options.mode === 'tech' || options.mode === 'patch'
-  mkTask('prd', 'PRD 产品需求')
-  if (options.needDesign && !light) mkTask('design', 'UI/UX 设计')
-  if (options.needScaffold && !light) mkTask('arch', '架构规划与落地')
-  if (!light) mkTask('tech', '技术方案')
-  const devTasks = normalizeTasks(options.tasks)
-  const devTitles = devTasks.length > 0 ? devTasks.map((t) => t.title) : ['整体开发']
-  devTitles.forEach((t) => {
-    const id = store.nextId('task')
-    const task = { id, reqId, type: 'dev', title: `开发 · ${t}`, status: 'pending', owner: null, retries: 0, humanIntervention: false, createdAt: Date.now(), updatedAt: Date.now(), events: [], summary: null }
-    store.tasks.push(task)
-    req.taskIds.push(id)
-    journal.taskMap[`dev_${t}`] = id
-  })
-  mkTask('qa', 'QA 功能测试')
-  if (options.mode === 'patch') {
-    // patch 档无独立QA：移除 QA 卡（开发自测兜底）；验收卡仍在
-    const qaTask = store.find('task', journal.taskMap['qa'])
-    if (qaTask) {
-      req.taskIds = req.taskIds.filter((x) => x !== qaTask.id)
-      store.tasks = store.tasks.filter((t) => t.id !== qaTask.id)
-      delete journal.taskMap['qa']
-    }
-  }
-  mkTask('acceptance', '产品验收')
+  journal.taskId = taskId
+  journal.taskMap = {} // 保留字段（单任务模型下为空；兼容旧序列化）
   store.pushEvent(req, 'created', 'in-progress', '流水线启动')
   store.persist()
-  return { reqId, req }
+  return { reqId, req, taskId }
 }
 
-/** 阶段任务卡流转 + journal checkpoint（阶段状态变化立即落盘）。 */
-export function advanceTask(journal, type, to, summary, reason) {
-  const store = storeFor(journal.product)
-  const id = journal.taskMap && journal.taskMap[type]
-  const task = id ? store.find('task', id) : null
+/** 阶段 → 角色键（任务卡按角色累计 token 用）。 */
+const ROLE_OF_PHASE = {
+  'PRD 产品需求': 'pm',
+  'UI/UX 设计': 'design',
+  '架构规划': 'arch',
+  '技术方案': 'tech',
+  '开发': 'dev',
+  'QA 测试': 'qa',
+  '产品验收': 'acceptance',
+}
+
+/** 把单次 stage 的真实 usage 累计到任务卡（按角色拆分；单任务模型下所有阶段都属于该任务）。 */
+function applyStageUsage(task, role, stage) {
+  if (!task || !stage) return
+  const u = stage && stage.usage
+  if (u && (u.input || u.cacheRead || u.cacheWrite || u.output)) {
+    const merge = (acc) => {
+      acc.input += u.input || 0
+      acc.cacheRead += u.cacheRead || 0
+      acc.cacheWrite += u.cacheWrite || 0
+      acc.output += u.output || 0
+      acc.calls += u.calls || 0
+      return acc
+    }
+    if (!task.usage) task.usage = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 }
+    task.usage = merge(task.usage)
+    task.byRole = task.byRole || {}
+    task.byRole[role] = merge(task.byRole[role] || { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 })
+  }
+  if (typeof stage.costTokens === 'number') task.costTokens = (task.costTokens || 0) + stage.costTokens
+  if (typeof stage.tokens === 'number') task.contextTokens = stage.tokens // 上下文压力快照（最近一次）
+}
+
+/**
+ * 把 journal 中「新出现」的已完成阶段 usage 累计到唯一任务卡（按角色拆分）。
+ * 幂等：task.accruedSeq 记录已累计的最大 stage.seq，断点续跑不会重复累计。
+ */
+export function noteTaskStageUsage(journal) {
+  const store = storeFor(journal.workspace || 'default')
+  const task = journal.taskId ? store.find('task', journal.taskId) : null
   if (!task) return
-  store.pushEvent(task, task.status, to, reason || '')
-  task.summary = summary ? clip(summary, 300) : task.summary
+  let from = typeof task.accruedSeq === 'number' ? task.accruedSeq : 0
+  const stages = (journal.stages || []).filter((s) => (s.seq || 0) > from)
+  let touched = false
+  for (const s of stages) {
+    if (!s.usage && typeof s.costTokens !== 'number' && typeof s.tokens !== 'number') continue
+    applyStageUsage(task, ROLE_OF_PHASE[s.phase] || 'other', s)
+    if ((s.seq || 0) > from) from = s.seq
+    touched = true
+  }
+  if (touched) {
+    task.accruedSeq = from
+    store.persist()
+    persistJournal(journal)
+  }
+}
+
+/**
+ * 阶段任务卡流转 + journal checkpoint（阶段状态变化立即落盘）。
+ * 单任务模型：按 journal.taskId 定位唯一轮转任务；token 累计走 noteTaskStageUsage。
+ * 只做 status + summary + humanIntervention，不碰 assign——assign 由 noteTaskAssign 独立处理。
+ * meta: { by: 'dev'|'qa'|'pm' }（仅用于事件日志标注）
+ */
+export function advanceTask(journal, to, summary, reason, meta) {
+  const store = storeFor(journal.workspace || 'default')
+  const task = journal.taskId ? store.find('task', journal.taskId) : null
+  if (!task) { persistJournal(journal); return }
+  const from = task.status
+  store.pushEvent(task, from, to, reason || '')
+  if (summary) task.summary = clip(summary, 300)
+  if (to === 'needs-human') task.humanIntervention = true
+  if (to === 'accepted') task.humanIntervention = false
   store.persist()
   persistJournal(journal) // 阶段状态变化 → checkpoint
+}
+
+/** 为唯一任务卡记录某角色的分配人（只写 assign 字段，不碰 status）。
+ *  role='dev' → devAssign；role='qa' → qaAssign；role='accept'/'pm' → acceptBy。 */
+export function noteTaskAssign(journal, role, assignee) {
+  const store = storeFor(journal.workspace || 'default')
+  const task = journal.taskId ? store.find('task', journal.taskId) : null
+  if (!task) return
+  if (role === 'dev' && assignee) task.devAssign = String(assignee)
+  if (role === 'qa' && assignee) task.qaAssign = String(assignee)
+  if ((role === 'accept' || role === 'pm') && assignee) task.acceptBy = String(assignee)
+  store.persist()
+  persistJournal(journal)
+}
+
+/* ── Dev 子卡（每个并行 dev agent 一张） ───────────────────────────── */
+
+/** 创建 dev 子卡：流水线 dev 阶段开始时，为每个 devTaskDef 建一张子卡。 */
+export function createSubtask(journal, title, spec) {
+  const store = storeFor(journal.workspace || 'default')
+  const mainTask = journal.taskId ? store.find('task', journal.taskId) : null
+  if (!mainTask) return null
+  const id = store.nextId('dev')
+  const sub = {
+    id, reqId: journal.reqId, parentId: journal.taskId, product: journal.workspace || 'default',
+    type: 'subtask', title: `开发 · ${title}`, spec: spec || '',
+    status: 'pending', devAssign: null, owner: null,
+    retries: 0, humanIntervention: false, createdAt: Date.now(), updatedAt: Date.now(),
+    events: [], bugIds: [], usage: null, costTokens: 0, contextTokens: null, byRole: {},
+    startedAt: null, endedAt: null, summary: null, childId: null, failed: false,
+  }
+  store.tasks.push(sub)
+  mainTask.subtaskIds = mainTask.subtaskIds || []
+  mainTask.subtaskIds.push(id)
+  store.persist()
+  persistJournal(journal)
+  return sub
+}
+
+/** 完成 dev 子卡：设置 status=done/failed、时间戳、摘要、childId。 */
+export function completeSubtask(journal, subId, failed, summary, childId) {
+  const store = storeFor(journal.workspace || 'default')
+  const sub = store.find('task', subId)
+  if (!sub) return
+  sub.status = failed ? 'failed' : 'done'
+  sub.failed = !!failed
+  sub.endedAt = Date.now()
+  if (summary) sub.summary = clip(summary, 300)
+  if (childId) sub.childId = childId
+  sub.updatedAt = Date.now()
+  store.persist()
+  persistJournal(journal)
+}
+
+/** 累计 dev 子卡的 token usage（从对应的 journal stage 累计）。 */
+export function noteSubtaskUsage(journal, subId, stage) {
+  const store = storeFor(journal.workspace || 'default')
+  const sub = store.find('task', subId)
+  if (!sub || !stage) return
+  applyStageUsage(sub, 'dev', stage)
+  sub.updatedAt = Date.now()
+  store.persist()
+  persistJournal(journal)
+}
+
+/** 获取某需求下所有子卡。 */
+export function getSubtasks(journal) {
+  const store = storeFor(journal.workspace || 'default')
+  const mainTask = journal.taskId ? store.find('task', journal.taskId) : null
+  if (!mainTask || !mainTask.subtaskIds) return []
+  return mainTask.subtaskIds.map((id) => store.find('task', id)).filter(Boolean)
+}
+
+/** 独立的分配操作（teamflow_assign 工具的后端）：只写 assign 字段，不碰 status。 */
+export function assignTask(product: string | null | undefined, kind: string, id: string, role: string, assignee: string) {
+  const store = storeFor(product)
+  const item = store.find(kind, id)
+  if (!item) return { ok: false, error: `找不到 ${kind} #${id}` }
+  if (kind === 'task') {
+    if (role === 'dev') item.devAssign = assignee
+    else if (role === 'qa') item.qaAssign = assignee
+    else if (role === 'accept' || role === 'pm') item.acceptBy = assignee
+    else return { ok: false, error: `未知角色 ${role}（支持 dev/qa/accept）` }
+  } else {
+    item.owner = assignee
+  }
+  item.updatedAt = Date.now()
+  store.persist()
+  return { ok: true, item: { id: item.id, devAssign: item.devAssign || null, qaAssign: item.qaAssign || null, acceptBy: item.acceptBy || null, owner: item.owner || null } }
 }

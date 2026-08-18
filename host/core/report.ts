@@ -34,6 +34,12 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
     const hctxTotal = stages.reduce((a, s) => a + (typeof s.tokens === 'number' ? s.tokens : 0), 0)
     const tok = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n))
     const hasUsage = (usageAgg.input + usageAgg.cacheRead + usageAgg.cacheWrite + usageAgg.output) > 0
+    // 每个角色的真实 token（label 前缀即角色，如「产品经理」「QA 测试工程师」）
+    const roleLine = stages
+      .filter((s) => s.usage && (s.usage.input + s.usage.output + s.usage.cacheRead + s.usage.cacheWrite) > 0)
+      .slice(-8)
+      .map((s) => `${String(s.label || '').split('·')[0].trim()} ${tok(s.usage.input + s.usage.output + s.usage.cacheWrite + s.usage.cacheRead * 0.1)}`)
+      .join('，')
     const tokenLine = hasUsage
       ? `Token：∑ ${tok(costTotal)} 当量（in ${tok(usageAgg.input)} / cacheRead ${tok(usageAgg.cacheRead)} / out ${tok(usageAgg.output)} · ${usageAgg.calls} 次调用）· 上下文压力 ${tok(hctxTotal)}`
       : hctxTotal > 0 ? `Token：∑ ${tok(hctxTotal)}（上下文压力估算）` : 'Token：—'
@@ -52,6 +58,7 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
       `阶段：${stagesLine}`,
       `Agent：共启动 ${journal.agentsStarted || 0} 个子代理`,
       tokenLine,
+      hasUsage && roleLine ? `真实 token（按角色）：${roleLine}` : '',
       journal.product ? `产品：${journal.product}` : '',
       (() => {
         const m = journal.options && journal.options.mode

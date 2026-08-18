@@ -104,6 +104,24 @@ function usageDetail(s) {
   }
   return s.tokens != null ? `上下文压力 ${fmtTokens(s.tokens)}（无 usage 明细）` : ''
 }
+/** 节点卡主 token 行：优先展示真实累计 usage（双口径），退化为上下文压力快照。 */
+function stageUsageLine(s) {
+  if (s.usage && (s.usage.input + s.usage.output + s.usage.cacheRead + s.usage.cacheWrite) > 0) {
+    const u = s.usage
+    return `⬇ ${fmtTokens(u.input)} / ⬆ ${fmtTokens(u.output)} · ${u.calls}次`
+  }
+  return s.tokens != null ? `${fmtTokens(s.tokens)} ctx` : null
+}
+const ROLE_NAME = { pm: '产品', design: '设计', arch: '架构', tech: '方案', dev: '开发', qa: '测试', acceptance: '验收', other: '其他' }
+const roleUsage = (u) => (u ? fmtTokens(u.input + u.output + u.cacheWrite + u.cacheRead * 0.1) : '')
+/** 任务卡按角色累计的真实 token 摘要（dev/qa/验收…）。 */
+function byRoleLine(task) {
+  const roles = (task && task.byRole) || {}
+  const parts = Object.keys(roles)
+    .filter((k) => roles[k] && (roles[k].input + roles[k].output + roles[k].cacheRead + roles[k].cacheWrite) > 0)
+    .map((k) => `${ROLE_NAME[k] || k} ${roleUsage(roles[k])}`)
+  return parts.join(' · ')
+}
 const stText = (s) => STATUS_TEXT[s] || s
 const stColor = (s) => STATUS_COLOR[s] || T.text2
 
@@ -163,7 +181,7 @@ function PipelinePanel({ active }) {
             h('div', { style: { ...flexRow, marginTop: 5, color: T.text2, fontSize: 11 } },
               chip(stText(s.status), color, { dot: true }),
               s.startedAt ? h('span', { style: { fontVariantNumeric: 'tabular-nums', fontFamily: MONO } }, fmtDur(s.startedAt, s.endedAt)) : null,
-              (stageTokenNum(s) !== null) ? h('span', { title: usageDetail(s), style: { fontFamily: MONO, fontVariantNumeric: 'tabular-nums', marginLeft: 'auto' } }, `${fmtTokens(stageTokenNum(s))} tok`) : null,
+              (stageUsageLine(s) !== null) ? h('span', { title: usageDetail(s), style: { fontFamily: MONO, fontVariantNumeric: 'tabular-nums', marginLeft: 'auto' } }, stageUsageLine(s)) : null,
             ),
             running ? h('div', { style: { marginTop: 6, height: 2, borderRadius: 2, overflow: 'hidden', background: `color-mix(in srgb, ${color} 18%, transparent)` } },
               h('div', { style: { height: '100%', width: '40%', borderRadius: 2, background: color, animation: 'tf-shimmer 1.1s linear infinite' } }),
@@ -191,15 +209,21 @@ function PipelinePanel({ active }) {
 }
 
 /* ── Backlog 拖拽看板 ────────────────────────────────────────────── */
-function BoardPanel({ backlog, api, onRefresh }) {
+function BoardPanel({ backlog, api, onRefresh, sessionId }) {
   const [drag, setDrag] = React.useState(null)
   const [over, setOver] = React.useState(null)
   if (!backlog) return h('div', { style: { color: T.text2, fontSize: 13, padding: '28px 20px', textAlign: 'center' } },
     h('div', { style: { fontSize: 28, marginBottom: 8 } }, '📋'),
     'backlog 为空（还没有流水线运行过）')
 
+  // 子卡查找表：subtaskId → subtask
+  const subtaskMap = {}
+  for (const t of (backlog.tasks || [])) {
+    if (t.type === 'subtask' && t.id) subtaskMap[t.id] = t
+  }
+
   const move = async (kind, id, to) => {
-    try { await api.backlogUpdate(kind, id, to, backlog.product, '看板拖拽流转') } catch (e) { /* 面板吞错，轮询自愈 */ }
+    try { await api.backlogUpdate(kind, id, to, sessionId, '看板拖拽流转') } catch (e) { /* 面板吞错，轮询自愈 */ }
     onRefresh()
   }
   const card = (item, kind) => h('div', {
@@ -228,11 +252,49 @@ function BoardPanel({ backlog, api, onRefresh }) {
       typeof item.retries === 'number' && item.retries > 0 ? h('span', { style: { fontSize: 10.5, color: T.warn, fontFamily: MONO } }, `↻${item.retries}`) : null,
       item.humanIntervention || item.status === 'needs-human' ? h('span', { style: { fontSize: 10.5, color: T.error, fontWeight: 700 } }, '⚠') : null,
     ),
+    (kind === 'task' && (item.devAssign || item.qaAssign || item.acceptBy)) ? h('div', { style: { ...flexRow, marginTop: 3, fontSize: 10.5, color: T.text2, fontFamily: MONO } },
+      item.devAssign ? h('span', { title: 'dev 分配', style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 130, whiteSpace: 'nowrap' } }, `👨‍💻${item.devAssign}`) : null,
+      item.qaAssign ? h('span', { title: 'qa 分配', style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 130, whiteSpace: 'nowrap' } }, `🧪${item.qaAssign}`) : null,
+      item.acceptBy ? h('span', { title: '验收/汇报人', style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 130, whiteSpace: 'nowrap' } }, `✅${item.acceptBy}`) : null,
+    ) : null,
+    (kind === 'task' && byRoleLine(item)) ? h('div', { style: { ...flexRow, marginTop: 3, fontSize: 10.5, color: T.warn, fontFamily: MONO } },
+      h('span', { style: { color: T.text2 } }, '⛽'),
+      byRoleLine(item),
+    ) : null,
+    // 子卡摘要 + 子卡列表（主卡展开）
+    (kind === 'task' && (item.subtaskIds || []).length > 0) ? (() => {
+      const subs = item.subtaskIds.map((id) => subtaskMap[id]).filter(Boolean)
+      if (subs.length === 0) return null
+      const done = subs.filter((s) => s.status === 'done').length
+      const failed = subs.filter((s) => s.status === 'failed').length
+      const running = subs.filter((s) => s.status === 'running').length
+      return h('div', { style: { marginTop: 5 } },
+        h('div', { style: { ...flexRow, fontSize: 10.5, color: T.text2, fontFamily: MONO, marginBottom: 3 } },
+          h('span', null, `📦 ${subs.length} 子卡`),
+          done > 0 ? h('span', { style: { color: T.success } }, `${done}✓`) : null,
+          running > 0 ? h('span', { style: { color: T.brand } }, `${running}⟳`) : null,
+          failed > 0 ? h('span', { style: { color: T.error } }, `${failed}✗`) : null,
+        ),
+        subs.map((sub) => h('div', {
+          key: sub.id,
+          style: {
+            display: 'flex', alignItems: 'center', gap: 4, fontSize: 10.5, fontFamily: MONO,
+            padding: '2px 6px', borderRadius: 4, marginBottom: 2,
+            background: sub.status === 'failed' ? `color-mix(in srgb, ${T.error} 7%, transparent)` : T.layer2,
+            border: `1px solid ${stColor(sub.status)}30`,
+          },
+        },
+          h('span', { style: { color: stColor(sub.status), fontWeight: 600, minWidth: 12 } }, sub.status === 'done' ? '✓' : sub.status === 'failed' ? '✗' : sub.status === 'running' ? '⟳' : '…'),
+          h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 130 } }, (sub.title || '').replace(/^开发 · /, '')),
+          sub.devAssign ? h('span', { style: { marginLeft: 'auto', color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 70, whiteSpace: 'nowrap' } }, sub.devAssign) : null,
+        ))
+      )
+    })() : null,
   )
 
   const groups = [
     { kind: 'req', list: backlog.requirements || [] },
-    { kind: 'task', list: backlog.tasks || [] },
+    { kind: 'task', list: (backlog.tasks || []).filter((t) => t.type !== 'subtask') }, // 只展示主卡（子卡嵌套在主卡下）
     { kind: 'bug', list: backlog.bugs || [] },
   ]
   return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 14 } },
@@ -283,6 +345,115 @@ function BoardPanel({ backlog, api, onRefresh }) {
   )
 }
 
+/* ── 团队选择器（input.right 注入） ─────────────────────────────── */
+function TeamSelector({ sessionId, remote }) {
+  const [teams, setTeams] = React.useState([])
+  const [active, setActive] = React.useState(null)
+  const [open, setOpen] = React.useState(false)
+  const ref = React.useRef(null)
+
+  const load = React.useCallback(async () => {
+    if (!remote || !sessionId) return
+    try {
+      const tw = unwrap(await remote.listTeams(sessionId), 'listTeams')
+      setTeams((tw && tw.teams) || [])
+      const at = unwrap(await remote.getActiveTeam(sessionId), 'getActiveTeam')
+      setActive(at && at.team ? at.team : null)
+    } catch (e) { /* 静默 */ }
+  }, [remote, sessionId])
+
+  React.useEffect(() => { load() }, [load])
+
+  // 点击外部关闭下拉
+  React.useEffect(() => {
+    if (!open) return
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  const select = async (teamId) => {
+    if (!remote || !sessionId) return
+    try {
+      if (!teamId) {
+        await remote.clearTeam(sessionId)
+        setActive(null)
+      } else {
+        const r = unwrap(await remote.selectTeam(sessionId, teamId), 'selectTeam')
+        setActive(r && r.team ? r.team : null)
+      }
+    } catch (e) { /* 静默 */ }
+    setOpen(false)
+  }
+
+  if (teams.length === 0) return null
+
+  return h('div', { ref, style: { position: 'relative' } },
+    h('button', {
+      onClick: () => setOpen(!open),
+      title: active ? `当前团队：${active.name}（点击切换）` : '选择团队',
+      style: {
+        display: 'inline-flex', alignItems: 'center', gap: 4,
+        padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
+        fontSize: 11, fontFamily: MONO, fontWeight: 500,
+        border: `1px solid ${active ? T.brand : T.border}`,
+        background: active ? `color-mix(in srgb, ${T.brand} 10%, transparent)` : 'transparent',
+        color: active ? T.brand : T.text2,
+        transition: 'all .12s ease',
+      },
+    },
+      h('span', { style: { fontSize: 12 } }, active ? active.icon : '🏭'),
+      h('span', { style: { maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, active ? active.name : '团队'),
+      h('span', { style: { fontSize: 8, opacity: .6 } }, open ? '▲' : '▼'),
+    ),
+    open ? h('div', {
+      style: {
+        position: 'absolute', bottom: '100%', right: 0, marginBottom: 4,
+        minWidth: 160, background: T.layer1, border: `1px solid ${T.border}`,
+        borderRadius: 8, boxShadow: '0 4px 12px rgba(0,0,0,.15)',
+        zIndex: 100, overflow: 'hidden',
+      },
+    },
+      h('div', { style: { padding: '6px 10px', fontSize: 10, color: T.text2, borderBottom: `1px solid ${T.border}` } }, '选择团队'),
+      // "无团队"选项：清除选择，回到原生模式
+      h('button', {
+        onClick: () => select(null),
+        style: {
+          display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+          padding: '7px 10px', border: 'none', cursor: 'pointer', textAlign: 'left',
+          background: !active ? `color-mix(in srgb, ${T.text2} 10%, transparent)` : 'transparent',
+          color: T.text, fontSize: 12, transition: 'background .1s',
+          borderBottom: `1px solid ${T.border}`,
+        },
+      },
+        h('span', { style: { fontSize: 14, opacity: .5 } }, '💬'),
+        h('div', null,
+          h('div', { style: { fontWeight: 600 } }, '无团队（直接对话）'),
+          h('div', { style: { fontSize: 10, color: T.text2, marginTop: 1 } }, '不走 teamflow，模型直接工作'),
+        ),
+        !active ? h('span', { style: { marginLeft: 'auto', color: T.text2, fontSize: 12 } }, '✓') : null,
+      ),
+      teams.map((team) => h('button', {
+        key: team.id,
+        onClick: () => select(team.id),
+        style: {
+          display: 'flex', alignItems: 'center', gap: 8, width: '100%',
+          padding: '7px 10px', border: 'none', cursor: 'pointer', textAlign: 'left',
+          background: active && active.id === team.id ? `color-mix(in srgb, ${T.brand} 10%, transparent)` : 'transparent',
+          color: T.text, fontSize: 12, transition: 'background .1s',
+        },
+      },
+        h('span', { style: { fontSize: 14 } }, team.icon),
+        h('div', null,
+          h('div', { style: { fontWeight: 600 } }, team.name),
+          h('div', { style: { fontSize: 10, color: T.text2, marginTop: 1 } }, team.description),
+        ),
+        active && active.id === team.id ? h('span', { style: { marginLeft: 'auto', color: T.brand, fontSize: 12 } }, '✓') : null,
+      )),
+    ) : null,
+  )
+}
+
 /* ── 主视图 ──────────────────────────────────────────────────────── */
 /** Typert remote 的标准 RPC 信封：client 拿到的是 { ok, value }（或 { ok, error }），必须解包 .value。 */
 interface RpcEnvelope {
@@ -299,12 +470,13 @@ function unwrap(res: RpcEnvelope | undefined | null, what?: string): any {
   return res.value
 }
 
-/** teamflow 服务实例的调用面（$mount 后由 ctx.get 取得，方法返回 RPC 信封）。 */
+/** teamflow 服务实例的调用面（$mount 后由 ctx.get 取得，方法返回 RPC 信封）。
+ *  各方法带 sessionId：host 按该会话所属 workspace（项目）过滤，不同 workspace 数据互不可见。 */
 interface TeamflowRemote {
-  list(): Promise<RpcEnvelope>
-  snapshot(runId?: string | null): Promise<RpcEnvelope>
-  backlog(product?: string | null): Promise<RpcEnvelope>
-  backlogUpdate(kind: string, id: string, to: string, product?: string | null, reason?: string): Promise<RpcEnvelope>
+  list(sessionId?: string | null): Promise<RpcEnvelope>
+  snapshot(runId?: string | null, sessionId?: string | null): Promise<RpcEnvelope>
+  backlog(sessionId?: string | null): Promise<RpcEnvelope>
+  backlogUpdate(kind: string, id: string, to: string, sessionId?: string | null, reason?: string, meta?: Record<string, unknown>): Promise<RpcEnvelope>
   resume(runId: string, sessionId: string): Promise<RpcEnvelope>
 }
 
@@ -315,28 +487,26 @@ interface TeamFlowViewProps {
 
 function TeamFlowView(props: TeamFlowViewProps) {
   const api = props.remote as TeamflowRemote // $mount 后的 teamflow 服务实例（ctx.get 取得，普通对象）
-  const [state, setState] = React.useState({ runs: [], active: null, backlog: null, err: null })
+  const [state, setState] = React.useState({ runs: [], active: null, backlog: null, err: null, workspace: null })
   const [runId, setRunId] = React.useState(null)
   const [tab, setTab] = React.useState('pipeline')
-  const [product, setProduct] = React.useState('')
   const [busy, setBusy] = React.useState(false)
 
   const refresh = React.useCallback(async () => {
     if (!api) { setState((s) => ({ ...s, err: 'remote 未就绪' })); return }
     try {
-      const lr = unwrap(await api.list(), 'list') as { runs?: Array<Record<string, unknown>> }
+      const lr = unwrap(await api.list(props.sessionId), 'list') as { runs?: Array<Record<string, unknown>>; workspace?: { slug?: string; path?: string | null } }
       const runsList = (lr && lr.runs) || []
+      const workspace = (lr && lr.workspace) || null
       const id = runId || (runsList[0] && (runsList[0].id as string | undefined))
-      const snapWrap = id ? await api.snapshot(id) : null
-      const snap = snapWrap ? (unwrap(snapWrap, 'snapshot') as { options?: { productRoot?: string | null } } | null) : null
-      const p = product || (snap && snap.options && snap.options.productRoot) || null
-      const bo = unwrap(await api.backlog(p), 'backlog') as Record<string, unknown>
-      setState({ runs: (runsList || []).slice(0, 12), active: snap, backlog: bo, err: null })
-      if (!product && p) setProduct(p)
+      const snapWrap = id ? await api.snapshot(id, props.sessionId) : null
+      const snap = snapWrap ? (unwrap(snapWrap, 'snapshot') as Record<string, unknown> | null) : null
+      const bo = unwrap(await api.backlog(props.sessionId), 'backlog') as Record<string, unknown>
+      setState({ runs: (runsList || []).slice(0, 12), active: snap, backlog: bo, err: null, workspace })
     } catch (e) {
       setState((s) => ({ ...s, err: String((e && e.message) || e) }))
     }
-  }, [runId, product, api])
+  }, [runId, api, props.sessionId])
 
   React.useEffect(() => {
     refresh()
@@ -344,7 +514,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
     return () => clearInterval(t)
   }, [refresh])
 
-  const { runs, active, backlog, err } = state
+  const { runs, active, backlog, err, workspace } = state
   const total = (active && active.stages) ? active.stages.reduce((a, s) => a + (stageTokenNum(s) || 0), 0) : 0
   const needHuman = []
   if (backlog) {
@@ -382,7 +552,6 @@ function TeamFlowView(props: TeamFlowViewProps) {
     color: sel ? T.brand : T.text2,
     fontFamily: MONO,
   })
-  const input = { font: 'inherit', fontSize: 12, padding: '4px 9px', borderRadius: 8, border: `1px solid ${T.border2}`, background: T.layer1, color: T.text, outline: 'none' }
 
   return h('div', { style: { fontFamily: SANS, fontSize: 13, color: T.text, display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 16px' } },
     /* 顶部品牌条 */
@@ -437,7 +606,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
         const fin = kind === 'bug' ? 'verified' : 'accepted'
         return h('button', {
           key: item.id,
-          onClick: async () => { await api.backlogUpdate(kind, item.id, fin, backlog.product, '人工处理'); refresh() },
+          onClick: async () => { await api.backlogUpdate(kind, item.id, fin, props.sessionId, '人工处理'); refresh() },
           style: { ...btn, background: T.success, color: '#fff', border: 'none', fontWeight: 600 },
         }, `处理 ${item.id}`)
       }),
@@ -459,18 +628,22 @@ function TeamFlowView(props: TeamFlowViewProps) {
       ),
     ),
 
-    /* 筛选条 */
+    /* 作用域条：当前工作区（项目）+ 本工作区历史流水线 */
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, flexWrap: 'wrap' } },
-      h('label', { style: { color: T.text2, display: 'flex', alignItems: 'center', gap: 6 } },
-        '产品',
-        h('input', {
-          value: product,
-          onChange: (e) => setProduct(e.target.value.trim()),
-          placeholder: 'products/tetris',
-          style: { ...input, width: 160 },
-          onKeyDown: (e) => { if (e.key === 'Enter') refresh() },
-        }),
+      h('span', {
+        title: `当前工作区（workspace 级隔离）：${(workspace && workspace.path) || '未连接工作区'}`,
+        style: {
+          display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: MONO,
+          fontSize: 11.5, padding: '2px 10px', borderRadius: 999,
+          background: `color-mix(in srgb, ${T.brand} 10%, transparent)`,
+          border: `1px solid color-mix(in srgb, ${T.brand} 30%, transparent)`, color: T.brand,
+        },
+      },
+        h('span', { style: { fontSize: 13 } }, '🗂'),
+        h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 } },
+          (workspace && workspace.path) ? String(workspace.path).split(/[\\/]/).filter(Boolean).pop() : 'ungrouped'),
       ),
+      h('span', { style: { color: T.text2, fontSize: 11.5 } }, `workspace=${(workspace && workspace.slug) || '—'}`),
       h('div', { style: { display: 'flex', alignItems: 'center', gap: 5 } },
         h('span', { style: { color: T.text2 } }, '历史'),
         runs.length ? runs.map((r) => {
@@ -481,7 +654,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
       ),
     ),
 
-    tab === 'pipeline' ? h(PipelinePanel, { active }) : h(BoardPanel, { backlog, api, onRefresh: refresh }),
+    tab === 'pipeline' ? h(PipelinePanel, { active }) : h(BoardPanel, { backlog, api, onRefresh: refresh, sessionId: props.sessionId }),
   )
 }
 
@@ -494,12 +667,11 @@ if (typeof document !== 'undefined') {
   document.head.appendChild(styleEl)
 }
 
-/** 注册 conversation.view tab「团队工作台」。 */
+/** 注册 conversation.view tab「团队工作台」+ input.right 团队选择按钮。 */
 export async function apply(ctx) {
   await ctx.remote.$mount(TEAMFLOW_REMOTE_CONTRIBUTION)
-  // $mount 完成后命名空间服务已在全局注册：ctx.get 直接取实例（不经 ctx 代理的
-  // 注入检查），组件通过 slot inject 拿到的是普通对象，方法访问不触发 guard。
   const teamflow = ctx.get('remote.teamflow')
+  // 注册团队工作台 tab
   ctx.slots.inject('conversation.view', () => ctx.slots.register({
     name: 'conversation.view',
     id: 'teamflow',
@@ -507,4 +679,11 @@ export async function apply(ctx) {
     label: '🏭 团队工作台',
     inject: (sessionId) => ({ sessionId, remote: teamflow }),
   }, TeamFlowView))
+  // 注册输入框旁的团队选择按钮
+  ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+    name: 'conversation.input.right',
+    id: 'teamflow-team-select',
+    order: 5,
+    inject: (sessionId) => ({ sessionId, remote: teamflow }),
+  }, TeamSelector))
 }
