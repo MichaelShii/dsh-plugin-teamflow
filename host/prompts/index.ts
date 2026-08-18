@@ -204,9 +204,10 @@ ${clip(qa, 10000)}
 ${clip(devSummary, 8000)}
 【要求】
 1. 逐条核对 PRD 验收标准达成情况。
-2. 输出验收结论（正文 ≤80 行）：✅ 通过 / ⚠️ 有条件通过 / ❌ 不通过，附逐条核对表、意见与遗留事项。
-3. 【记忆回写】产品记忆写入 docs/teamflow/memory.md：在「迭代历史」表追加一行（版本/日期/需求/结果/runId），更新「已知待办」（划掉已完成、补充新发现）；若 PRD 结构变化，同步更新 docs/SUMMARY.md。【边界】不得改写 AGENTS.md 除 <!-- teamflow --> 托管区以外的内容（托管区也不放流水账，只放指针）。
-4. 输出中文 Markdown。`
+2. 输出验收结论（正文 ≤80 行）：✅ 通过 / ⚠️ 有条件通过 / ❌ 不通过 / 📝 需求不适用，附逐条核对表、意见与遗留事项。
+3. 【需求不适用判定】若 PRD/技术变更单/确认单已指出「需求与现状不符」，或开发结果明确为「无需改动（需求站不住/已满足）」，则结论应为 **「📝 需求不适用」** 并说明原因——不要因「无缺陷」而标 ✅ 通过。
+4. 【记忆回写】产品记忆写入 docs/teamflow/memory.md：在「迭代历史」表追加一行（版本/日期/需求/结果/runId），更新「已知待办」（划掉已完成、补充新发现）；若 PRD 结构变化，同步更新 docs/SUMMARY.md。【边界】不得改写 AGENTS.md 除 <!-- teamflow --> 托管区以外的内容（托管区也不放流水账，只放指针）。
+5. 输出中文 Markdown。`
 
 /** 需求分诊模型 prompt（模型驱动 triage；供 core/triage.runTriage 使用）。 */
 export const TRIAGE_PROMPT = (requirement: string, opts: { needDesign?: boolean } | undefined, pre: { rationale: string[] }): string => `你是资深研发需求分诊分析师。请只做一件事：理性分析这条开发需求适合走哪种流水线模式，再给出结论。不要写代码、不要臆测需求范围。

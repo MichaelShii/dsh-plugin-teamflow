@@ -15,7 +15,7 @@
   - ✅ **领域化重构完成**：1418 行单文件 → 11 个领域文件（见 §3）
   - ✅ **token 双口径**（真实累计 usage + 上下文压力 + 计费当量，ADR-0003）
   - ✅ **lite 模式 / mode 5 档 + 模型驱动 triage**（ADR-0004，`teamflow_triage`）
-  - ⏳ 进行中：**executePipeline 按 mode 路由第二批**（tech 技术变更单 PRD / patch 无独立 QA / full/medium 阶段集差异）——见 §6
+  - ⏳ 进行中：**full/medium 阶段集差异执行**（lite/tech/patch 档已成型并端到端验证；full/medium 仍为既有 if 语义）——见 §6
 
 ## 2. 文档索引（按职责）
 
@@ -23,7 +23,7 @@
 |---|---|---|
 | **摘要索引** | 本文件 | 先读：现状 / 结构 / 工程约定 / 待办 |
 | 使用与架构 | `README.md` | 安装、契约速览、token/lite 说明、ADR 索引 |
-| 决策记录 | `docs/adr/0001~0004` | 自研 journal(不引 LangGraph) / AGENTS 最小侵入 / 部署+token 口径 / triage+共享状态 |
+| 决策记录 | `docs/adr/0001~0005` | 自研 journal(不引 LangGraph) / AGENTS 最小侵入 / 部署+token 口径 / triage+共享状态 / **需求无效→验收「需求不适用」拦截** |
 | 测试 | `test/smoke.js` `test/journal.test.js` | 结构/描述符 smoke + journal 行为 |
 
 ## 3. 工程结构（领域划分，单向依赖）
@@ -67,11 +67,12 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 |---|---|
 | v0.3~0.6 | journal 断点续跑（ADR-0001）/ AGENTS 最小侵入（ADR-0002）/ 防假交付(实质校验+熔断)/ 并发池 / QA 缺陷登记 / 完成汇报 |
 | v0.8.0 | token 双口径 + 成本观测线 + lite 模式 + 部署契约（ADR-0003/0004） |
-| v0.8.x(进行) | 领域化重构（11 文件）+ triage 5 档(model 驱动)（ADR-0004 落地） |
+| v0.8.x(进行) | 领域化重构（11 文件）+ triage 5 档(model 驱动)+ lite/tech/patch 端到端 + 需求无效拦截（ADR-0004/0005 落地） |
 
 ## 6. 已知待办
 
-- 🔜 **executePipeline 按 mode 路由（第二批）**：`core/pipeline.ts` 挂 `MODE_REGISTRY` 驱动的 `PipelineSpec`——`tech` 用「技术变更单」PRD 变体（prompts 加 `techChangePrompt`）+ 回归加强 QA；`patch` 跳过独立 QA（开发自测兜底）；`full/medium` 阶段集按档差异；取代 `executePipeline` 内散落 if/else。
+- 🔜 **full/medium 阶段集差异执行**：`core/pipeline.ts` 按 `MODE_REGISTRY` 的 `PipelineSpec` 差异执行（lite/tech/patch 已成型；medium 应强制设计/技术方案、full 应含 PM 前置评估；取代散落 if/else）。
+- **需求有效性前置拦截**（ADR-0005 触发信号）：在 PRD/确认单阶段判别"需求与现状不符"即停，避免走完开发/验收。
 - **deploy.mjs FILES** 未含 `host/core/**`、`host/util.ts`、`host/constants.ts`、`host/prompts/**` 源码（运行时只看 lib，不影响功能；补上保持 profile 工作副本一致，非阻断）。
 - `COST_BUDGET_TOKENS=250k` 硬编码 → 可升级为 service Config（观测线可调）。
 - smoke.js 的源码断言依赖 host 目录聚合（`#region host-pool`）：新增领域文件需同步加入。
@@ -81,3 +82,5 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 - 2026-08-18：领域化重构完成（11 领域文件，index 收门面）；smoke 改 host-pool 聚合断言；deploy.mjs 加运行 web 检测提示。
 - 2026-08-18：triage 5 档（`MODE_REGISTRY` + `suggestMode` 正则 + `runTriage` 模型驱动 + `teamflow_triage` 工具 + `mode` 透传/归一）；许可共识：护栏角色(mode)不折叠、契约文档按档折叠、patch 档折叠独立 QA。
 - 2026-08-18：`TRIAGE_PROMPT` 归入 `prompts/index.ts`（所有 prompt 统一）；本 AGENTS.md 建立（插件自身产品记忆锚点）。
+- 2026-08-18：mode 路由落地（tech 技术变更单 / patch 单点确认+跳独立 QA）+ **模式透明化**（start 缺省自动模型分诊，使用者无需知道 mode）。
+- 2026-08-18：端到端复验暴露三问题并修复——dev 执行纪律（任务卡唯一契约、禁核查既有功能）、patchConfirm 需求核对、验收结论解析（❌→rework / rework / 需求无效→needs-human，ADR-0005）。

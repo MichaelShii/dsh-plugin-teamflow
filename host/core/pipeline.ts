@@ -258,8 +258,21 @@ export async function executePipeline(
     if (!accR.text) { advanceTask(journal, 'acceptance', 'needs-human', null, '验收失败'); throw new Error(`验收失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
     const acceptance = accR.text
     timeline.acceptance = acceptance
-    // 解析验收结论：❌/不通过/需返工 → rework（不落 accepted），req 需人工
-    const accVerdict = /❌|不通过|需返工|未通过/.test(acceptance) ? 'rework' : 'accepted'
+    // 结论解析（顺序重要：reject 先于 rework——验收核对表里逐条的 ❌ 标记不能抢先判成 rework；
+    // 「📝 需求不适用」等是验收负责人的整体结论，是更强的信号）
+    const accVerdict = /📝\s*需求不适用|需求与实际不符|需求站不住|无需改动|无需修改|需求无效/.test(acceptance) ? 'reject'
+      : /❌|不通过|需返工|未通过/.test(acceptance) ? 'rework'
+      : 'accepted'
+    if (accVerdict === 'reject') {
+      // 需求与现状不符（无有效变更）→ 拦截：task needs-human、req needs-human、流水线中断（非 accepted）
+      advanceTask(journal, 'acceptance', 'needs-human', clip(acceptance, 300), '需求与现状不符（无需改动），需人工决定调整或取消需求')
+      const store = storeFor(root)
+      const req = store.find('req', journal.reqId)
+      if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', '需求与现状不符，需人工处理（调整或取消）') }
+      journal.logs.push({ t: Date.now(), level: 'error', message: '需求与现状不符（无需改动），流水线中断，需人工处理' })
+      persistJournal(journal)
+      throw new Error('需求与现状不符，无需改动，需人工决定调整或取消需求')
+    }
     advanceTask(journal, 'acceptance', accVerdict, clip(acceptance, 300), accVerdict === 'rework' ? '验收不通过（需返工）' : '验收完成')
     const store = storeFor(root)
     const req = store.find('req', journal.reqId)
