@@ -78,10 +78,11 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 - **deploy.mjs FILES** 未含 `host/core/**`、`host/util.ts`、`host/constants.ts`、`host/prompts/**` 源码（运行时只看 lib，不影响功能；补上保持 profile 工作副本一致，非阻断）。
 - `STAGE_TOKEN_BUDGET=60k` 硬编码 → 可升级为 service Config（熔断阈值可调）。
 - smoke.js 的源码断言依赖 host 目录聚合（`#region host-pool`）：新增领域文件需同步加入。
+- 🔜 **给官方提交 PR（低侵入原则下不自改 DSH）**：`conversation` 服务增加 `setView(viewId)`（复用内部 `store.actions.setView`），使「查看子代理会话」可一键跳转并自动切到「对话」tab；PR 合并前暂用 B 方案（按钮加引导文案：「跳转后请切「对话」tab 查看轨迹」）。
 
 ## 7. 变更记录（近期）
 
 - 2026-08-19：token 计量收敛为官方口径（去除计费当量/上下文压力自定义概念）：`usage` = 输入未命中/命中/写缓存/输出/调用数 + 缓存命中率；熔断预算用官方总消耗；工作台卡片/任务卡/汇报均按官方口径展示。
 - 2026-08-19：流水线视图重设计 —— 横向蛇形流程（相位从左至右、上下波浪错位 + SVG 弧线连接 + 沿路径流动高亮虚线 + 箭头终点），整块画布默认可拖拽平移 + 滚轮缩放 + 适应/± 控制簇，点阵网格背景与步骤序号徽标提升质感；历史 run 选择器门控到流水线 tab。验收结论解析修复为只认「验收结论」行（parseAcceptanceVerdict，误报实锤 tf-msytlok5）。
-- 2026-08-19：阶段卡点击查看详情 —— 悬浮于画布右上的浮层（不挤占画布宽度；画布加高至 560；浮层内原生 wheel stopPropagation，滚轮只滚正文不触发画布缩放），官方口径 usage 全字段 + 阶段性产物全文 +「🎬 查看子代理会话」跳转（sessions.openSubagent，mode one-shot）；host 新增 stageDetail RPC（读 stage.output 全文）；终态 checkpoint 不再删 stage.output（磁盘+内存保留全文，供详情/断点续跑，smoke 断言同步）。
+- 2026-08-19：阶段卡点击查看详情 —— 悬浮于画布右上的浮层（不挤占画布宽度；画布加高至 560；浮层内原生 wheel stopPropagation，滚轮只滚正文不触发画布缩放），官方口径 usage 全字段 + 阶段性产物全文 +「🎬 跳转子代理会话」（sessions.openSubagent，mode one-shot；按钮带引导文案「跳转后请切「对话」tab 查看轨迹」——DSH 未向第三方暴露切视图接口，待官方 conversation.setView PR 后一键直达）；host 新增 stageDetail RPC（读 stage.output 全文）；终态 checkpoint 不再删 stage.output（磁盘+内存保留全文，供详情/断点续跑，smoke 断言同步）。
 - 2026-08-19：dev 子卡模型（一个需求一张轮转主卡 + 并行 dev 子卡）、assign 与 status 分离（teamflow_assign）、workspace 级隔离（DSH workspace UUID）、UI"+团队"触发 + teamflow_pause/resume、子代理路由跟随主线程、state.json 预编译索引 + 版本切片/一次成型纪律、backlogUpdate 参数对齐修复。

@@ -334,18 +334,23 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
         h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, 'TOKEN · 官方口径'),
         h('span', { style: { fontSize: 11.5, fontFamily: MONO, color: T.text, lineHeight: 1.65 } }, usageDetail(d || st || {})),
       ),
-      /* 跳子代理会话 */
-      h('button', {
-        onClick: openChild, disabled: !hasChild,
-        title: hasChild ? '打开该阶段子代理的真实会话轨迹（推理 + 工具调用）' : '该阶段无可用子代理会话',
-        style: {
-          font: 'inherit', fontSize: 12, fontWeight: 600, padding: '8px 12px', borderRadius: 9, cursor: 'pointer',
-          display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center',
-          border: `1px solid color-mix(in srgb, ${T.brand} 40%, transparent)`,
-          background: `color-mix(in srgb, ${T.brand} 12%, transparent)`, color: T.brand,
-          opacity: hasChild ? 1 : 0.45,
-        },
-      }, '🎬 查看子代理会话'),
+      /* 跳子代理会话（当前 DSH 未暴露"切 conversation.view 视图"接口：openSubagent 仅完成跳转，
+         完整轨迹需到「对话」tab 查看；待官方 conversation.setView 支持后再一键直达，见 AGENTS §6 待办） */
+      h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
+        h('button', {
+          onClick: openChild, disabled: !hasChild,
+          title: hasChild ? '跳转到该阶段子代理会话（完整推理与工具调用轨迹）；跳转后请切换「对话」tab 查看' : '该阶段无可用子代理会话',
+          style: {
+            font: 'inherit', fontSize: 12, fontWeight: 600, padding: '8px 12px', borderRadius: 9, cursor: 'pointer',
+            display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center',
+            border: `1px solid color-mix(in srgb, ${T.brand} 40%, transparent)`,
+            background: `color-mix(in srgb, ${T.brand} 12%, transparent)`, color: T.brand,
+            opacity: hasChild ? 1 : 0.45,
+          },
+        }, '🎬 跳转子代理会话'),
+        hasChild ? h('div', { style: { fontSize: 10.5, color: T.text2, textAlign: 'center', lineHeight: 1.55 } },
+          '跳转成功后，请切「对话」tab 查看该子代理的完整会话轨迹') : null,
+      ),
       /* 产物全文 */
       h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
         h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, '📄 阶段性产物'),
