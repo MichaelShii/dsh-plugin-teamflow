@@ -294,15 +294,13 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
     : det.loading ? '加载中…'
     : '（无产物正文）'
   const closeBtn = { font: 'inherit', width: 26, height: 26, borderRadius: 8, cursor: 'pointer', border: `1px solid ${T.border}`, background: 'transparent', color: T.text2, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, lineHeight: 1 }
+  // 画布旁的真实栏目（不是画布内浮层）：滚轮滚动自身内容，不触发画布缩放
   return h('div', {
-    onMouseDown: (e) => e.stopPropagation(),
     style: {
-      position: 'absolute', top: 12, right: 12, bottom: 12, width: 372, zIndex: 8, borderRadius: 14, overflow: 'hidden',
+      width: 372, flex: '0 0 auto', borderRadius: 12, overflow: 'hidden',
       display: 'flex', flexDirection: 'column',
-      border: `1px solid ${T.border}`,
-      background: `color-mix(in srgb, ${T.layer1} 94%, transparent)`,
-      backdropFilter: 'blur(12px)',
-      boxShadow: '0 14px 48px rgba(0,0,0,.32)',
+      border: `1px solid ${T.border}`, background: T.layer1,
+      boxShadow: '0 6px 24px rgba(0,0,0,.14)',
     },
   },
     /* 头 */
@@ -362,6 +360,7 @@ function PipelinePanel({ active, api, runId, sessionId, sessions }) {
   const [grabbing, setGrabbing] = React.useState(false)
   const dragRef = React.useRef(null)
   const fittedRef = React.useRef(false)
+  const refitQueued = React.useRef(false) // 详情面板开关导致画布宽度变化 → 需重新适配居中
   const [det, setDet] = React.useState(null) // { seq, stage, loading, data, err } —— 阶段详情抽屉
 
   React.useEffect(() => {
@@ -371,12 +370,13 @@ function PipelinePanel({ active, api, runId, sessionId, sessions }) {
       const W = el.clientWidth, H = el.clientHeight
       if (W <= 0) return
       if (W !== vw) setVw(W)
-      if (!fittedRef.current) {
+      if (!fittedRef.current || refitQueued.current) {
         const lay = layoutFlow(groups, W)
         const raw = Math.min((H - 46) / lay.worldH, (W - 40) / lay.worldW, 1)
         const s = Math.max(0.5, raw)
         setView({ x: (W - lay.worldW * s) / 2, y: (H - lay.worldH * s) / 2, s })
         fittedRef.current = true
+        refitQueued.current = false
       }
     }
     doFit()
@@ -407,6 +407,7 @@ function PipelinePanel({ active, api, runId, sessionId, sessions }) {
 
   const openDetail = async (s) => {
     if (!api || !runId) return
+    refitQueued.current = true // 面板撑开 → 画布宽度变化后重新适配居中
     setDet({ seq: s.seq, stage: s, loading: true, data: null, err: null })
     try {
       const d = await api.stageDetail(runId, s.seq, sessionId)
@@ -415,6 +416,7 @@ function PipelinePanel({ active, api, runId, sessionId, sessions }) {
       setDet({ seq: s.seq, stage: s, loading: false, data: null, err: String((e && e.message) || e) })
     }
   }
+  const closeDet = () => { refitQueued.current = true; setDet(null) } // 关闭 → 画布回全宽后重新居中
 
   const layout = layoutFlow(groups, vw)
   const fitNow = () => {
@@ -449,51 +451,54 @@ function PipelinePanel({ active, api, runId, sessionId, sessions }) {
   }
   const onUp = () => { dragRef.current = null; setGrabbing(false) }
 
-  return h('div', {
-    ref: wrapRef,
-    onMouseDown: onDown, onMouseMove: onMove, onMouseUp: onUp, onMouseLeave: onUp,
-    style: {
-      position: 'relative', height: 460, borderRadius: 12, overflow: 'hidden', touchAction: 'none',
-      border: `1px solid ${T.border}`, userSelect: 'none',
-      cursor: grabbing ? 'grabbing' : 'grab',
-      background: `radial-gradient(circle, ${T.border2} 1px, transparent 1px) 0 0 / 24px 24px, ${T.layer1}`,
-      backgroundBlendMode: 'overlay',
-    },
-  },
-    /* 世界层（整体可拖动/缩放的画布） */
+  return h('div', { style: { display: 'flex', gap: 10, alignItems: 'stretch' } },
+    /* 画布视口（整体可拖动/缩放；详情面板在画布之外，滚轮事件互不干扰） */
     h('div', {
-      style: { position: 'absolute', left: 0, top: 0, width: layout.worldW, height: layout.worldH, transform: `translate(${view.x}px, ${view.y}px) scale(${view.s})`, transformOrigin: '0 0' },
+      ref: wrapRef,
+      onMouseDown: onDown, onMouseMove: onMove, onMouseUp: onUp, onMouseLeave: onUp,
+      style: {
+        position: 'relative', flex: 1, minWidth: 0, height: 460, borderRadius: 12, overflow: 'hidden', touchAction: 'none',
+        border: `1px solid ${T.border}`, userSelect: 'none',
+        cursor: grabbing ? 'grabbing' : 'grab',
+        background: `radial-gradient(circle, ${T.border2} 1px, transparent 1px) 0 0 / 24px 24px, ${T.layer1}`,
+        backgroundBlendMode: 'overlay',
+      },
     },
-      /* 连接弧线 SVG 层（置于节点之下） */
-      h('svg', { width: layout.worldW, height: layout.worldH, style: { position: 'absolute', left: 0, top: 0, overflow: 'visible', zIndex: 0 } },
-        h('defs', {}, layout.conns.map((c) => h('marker', { key: 'm' + c.x1 + '-' + c.y1, id: 'tfm-' + c.x1 + '-' + c.y1, viewBox: '0 0 10 10', refX: 8, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: c.color })))),
-        layout.conns.map((c) => h('g', { key: 'c' + c.x1 + '-' + c.y1 },
-          h('path', { d: connPath(c), fill: 'none', stroke: `color-mix(in srgb, ${c.color} 12%, transparent)`, strokeWidth: 7, strokeLinecap: 'round' }),
-          h('path', { d: connPath(c), fill: 'none', stroke: `color-mix(in srgb, ${c.color} 45%, transparent)`, strokeWidth: 2.5, markerEnd: `url(#tfm-${c.x1}-${c.y1})` }),
-          h('path', { d: connPath(c), fill: 'none', stroke: c.color, strokeWidth: 2, strokeLinecap: 'round', strokeDasharray: '5 9', animation: 'tf-flow .75s linear infinite' }),
-        )),
+      /* 世界层（整体可拖动/缩放的画布） */
+      h('div', {
+        style: { position: 'absolute', left: 0, top: 0, width: layout.worldW, height: layout.worldH, transform: `translate(${view.x}px, ${view.y}px) scale(${view.s})`, transformOrigin: '0 0' },
+      },
+        /* 连接弧线 SVG 层（置于节点之下） */
+        h('svg', { width: layout.worldW, height: layout.worldH, style: { position: 'absolute', left: 0, top: 0, overflow: 'visible', zIndex: 0 } },
+          h('defs', {}, layout.conns.map((c) => h('marker', { key: 'm' + c.x1 + '-' + c.y1, id: 'tfm-' + c.x1 + '-' + c.y1, viewBox: '0 0 10 10', refX: 8, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: c.color })))),
+          layout.conns.map((c) => h('g', { key: 'c' + c.x1 + '-' + c.y1 },
+            h('path', { d: connPath(c), fill: 'none', stroke: `color-mix(in srgb, ${c.color} 12%, transparent)`, strokeWidth: 7, strokeLinecap: 'round' }),
+            h('path', { d: connPath(c), fill: 'none', stroke: `color-mix(in srgb, ${c.color} 45%, transparent)`, strokeWidth: 2.5, markerEnd: `url(#tfm-${c.x1}-${c.y1})` }),
+            h('path', { d: connPath(c), fill: 'none', stroke: c.color, strokeWidth: 2, strokeLinecap: 'round', strokeDasharray: '5 9', animation: 'tf-flow .75s linear infinite' }),
+          )),
+        ),
+        /* 节点层 */
+        h('div', { style: { position: 'absolute', left: 0, top: 0, zIndex: 1 } },
+          layout.nodes.map((n) => FlowNode(n, openDetail)),
+        ),
       ),
-      /* 节点层 */
-      h('div', { style: { position: 'absolute', left: 0, top: 0, zIndex: 1 } },
-        layout.nodes.map((n) => FlowNode(n, openDetail)),
+      layout.nodes.length === 0 ? h('div', { style: { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.text2, fontSize: 13 } }, '流水线还没有开始执行节点') : null,
+      /* 浮层控制簇（不参与画布拖拽） */
+      h('div', {
+        onMouseDown: (e) => e.stopPropagation(),
+        style: { position: 'absolute', top: 10, right: 12, zIndex: 6, display: 'flex', alignItems: 'center', gap: 6, padding: 5, borderRadius: 11, border: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.layer1} 82%, transparent)`, backdropFilter: 'blur(8px)', boxShadow: '0 6px 20px rgba(0,0,0,.16)' },
+      },
+        h('button', { title: '缩小', onClick: () => zoomBy(0.86), style: zoomStyle }, '−'),
+        h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2, minWidth: 34, textAlign: 'center' } }, `${Math.round(view.s * 100)}%`),
+        h('button', { title: '放大', onClick: () => zoomBy(1.16), style: zoomStyle }, '+'),
+        h('span', { style: { width: 1, height: 14, background: T.border } }),
+        h('button', { title: '适应画布', onClick: fitNow, style: { ...zoomStyle, fontSize: 13 } }, '⤢'),
+        h('span', { style: { width: 1, height: 14, background: T.border } }),
+        h('span', { style: { fontSize: 10.5, color: T.text2, paddingRight: 4, opacity: 0.85 } }, '✥ 拖动画布 · 滚轮缩放'),
       ),
     ),
-    layout.nodes.length === 0 ? h('div', { style: { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.text2, fontSize: 13 } }, '流水线还没有开始执行节点') : null,
-    /* 浮层控制簇（不参与画布拖拽） */
-    h('div', {
-      onMouseDown: (e) => e.stopPropagation(),
-      style: { position: 'absolute', top: 10, right: 12, zIndex: 6, display: 'flex', alignItems: 'center', gap: 6, padding: 5, borderRadius: 11, border: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.layer1} 82%, transparent)`, backdropFilter: 'blur(8px)', boxShadow: '0 6px 20px rgba(0,0,0,.16)' },
-    },
-      h('button', { title: '缩小', onClick: () => zoomBy(0.86), style: zoomStyle }, '−'),
-      h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2, minWidth: 34, textAlign: 'center' } }, `${Math.round(view.s * 100)}%`),
-      h('button', { title: '放大', onClick: () => zoomBy(1.16), style: zoomStyle }, '+'),
-      h('span', { style: { width: 1, height: 14, background: T.border } }),
-      h('button', { title: '适应画布', onClick: fitNow, style: { ...zoomStyle, fontSize: 13 } }, '⤢'),
-      h('span', { style: { width: 1, height: 14, background: T.border } }),
-      h('span', { style: { fontSize: 10.5, color: T.text2, paddingRight: 4, opacity: 0.85 } }, '✥ 拖动画布 · 滚轮缩放'),
-    ),
-    /* 阶段详情抽屉（点击阶段卡打开；浮层不参与画布拖动/缩放） */
-    det ? h(StageDetailDrawer, { det, onClose: () => setDet(null), sessionId, sessions }) : null,
+    /* 阶段详情面板：画布旁的真实栏目（不嵌套画布 → 鼠标悬停其内滚轮滚动正文，不触发画布缩放；面板撑开时画布自动重新适配居中） */
+    det ? h(StageDetailDrawer, { det, onClose: closeDet, sessionId, sessions }) : null,
   )
 }
 
