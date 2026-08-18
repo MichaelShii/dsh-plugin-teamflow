@@ -349,8 +349,7 @@ export async function executePipeline(
     inFlight.delete(journal.id)
     activeProducts.delete(scopeKey) // 释放工作区级并发锁
     journal.result = { requirement, options: sanitizeSnapOptions(options), timeline: summarizeTimeline(timeline) }
-    for (const s of journal.stages) delete s.output // 内存只留摘要（磁盘 journal 已持久化全文）
-    persistJournal(journal) // 终态 checkpoint（含日志刷新）
+    persistJournal(journal) // 终态 checkpoint（含日志刷新；阶段全文保留在磁盘+内存，供详情抽屉/断点续跑读取）
     noteRun(journal.workspace || 'default', { id: journal.id, requirement: journal.requirement, verdict: journal.status })
     deliverCompletion(journal, parent) // 汇总投递回发起会话（主线程）
     console.log(`[teamflow] 运行结束 ${journal.id} → ${journal.status}（工作区 ${scopeKey}）`)

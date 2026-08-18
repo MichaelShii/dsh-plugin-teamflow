@@ -392,6 +392,25 @@ export class TeamflowService extends TypertRemoteService {
     return j ? snapshotOf(j) : null
   }
 
+  /** 阶段详情：卡片点击查看 —— 状态/耗时/官方 usage + 产物全文（超 24k 截断）。 */
+  stageDetail(runId, seq, sessionId) {
+    if (typeof runId !== 'string' || !runId || seq === undefined || seq === null) return null
+    const sc = sessionScope(sessionId)
+    const j = runs.get(runId)
+    if (!j) return null
+    // 跨 workspace 的 run 不可见（同 snapshot 守卫）
+    if (j.workspace && sc.projectKey && j.workspace !== sc.projectKey && sc.projectKey !== 'default') return null
+    const s = (j.stages || []).find((st) => Number(st.seq) === Number(seq))
+    if (!s) return null
+    return {
+      seq: s.seq, label: s.label, phase: s.phase, status: s.status, outcome: s.outcome,
+      childId: s.childId || null, startedAt: s.startedAt, endedAt: s.endedAt,
+      usage: s.usage || null,
+      summary: clip(s.summary || '', 3000),
+      output: clip(toText(s.output) || toText(s.handoff) || '', 24000),
+    }
+  }
+
   start(sessionId, requirement, options) {
     const sid = typeof sessionId === 'string' ? sessionId : null
     const req = typeof requirement === 'string' && requirement.trim() ? requirement.trim() : null

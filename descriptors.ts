@@ -171,6 +171,15 @@ export const TEAMFLOW_DESCRIPTORS: readonly InvocationDescriptor[] = Object.free
     parameters: [p('runId'), p('sessionId')],
     result: strict,
   },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/stageDetail',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'stageDetail',
+    invocation: { kind: 'direct' },
+    parameters: [p('runId'), p('seq'), p('sessionId')],
+    result: strict,
+  },
 ])
 
 /** client 端 $mount 使用的贡献对象。 */

@@ -201,20 +201,23 @@ function connPath(c) {
   return `M ${c.x1} ${c.y1} C ${c.x1 + dx} ${c.y1}, ${c.x2 - dx} ${c.y2}, ${c.x2} ${c.y2}`
 }
 
-function FlowStageCard(s, key) {
+function FlowStageCard(s, key, onOpen) {
   const color = stColor(s.status)
   const running = s.status === 'running'
   const usage = stageUsageLine(s)
   return h('div', {
     key,
-    title: s.label,
+    title: `${s.label} —— 点击查看阶段详情`,
+    onMouseDown: (e) => e.stopPropagation(), // 不触发画布拖动，允许点击
+    onClick: () => onOpen && onOpen(s),
     style: {
       boxSizing: 'border-box', height: cardH(s), borderRadius: 10, position: 'relative', overflow: 'hidden',
       display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 3, padding: '6px 11px 6px 13px',
       background: `linear-gradient(135deg, color-mix(in srgb, ${color} 8%, ${T.layer1}), ${T.layer1} 64%)`,
       border: `1px solid ${T.border}`, borderLeft: `3px solid ${color}`,
       opacity: s.status === 'pending' ? 0.56 : 1,
-      transition: 'transform .12s ease, box-shadow .12s ease',
+      cursor: 'pointer',
+      transition: 'transform .12s ease, box-shadow .12s ease, border-color .12s ease',
       boxShadow: running ? `0 0 0 1px color-mix(in srgb, ${color} 32%, transparent), 0 6px 18px color-mix(in srgb, ${color} 15%, transparent)` : '0 1px 2px rgba(0,0,0,.05)',
     },
   },
@@ -223,6 +226,7 @@ function FlowStageCard(s, key) {
         : h('span', { style: { width: 6, height: 6, borderRadius: 2, background: color } }),
       h('span', { style: { flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, s.label),
       chip(stText(s.status), color, { dot: true }),
+      h('span', { style: { color: T.text2, fontSize: 11, opacity: 0.5 } }, '↗'),
     ),
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 13, fontSize: 10.5, color: T.text2, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' } },
       s.startedAt ? h('span', {}, fmtDur(s.startedAt, s.endedAt)) : h('span', {}, '—'),
@@ -234,7 +238,7 @@ function FlowStageCard(s, key) {
   )
 }
 
-function FlowNode(node) {
+function FlowNode(node, onOpen) {
   const g = node
   const running = g.stages.some((s) => s.status === 'running')
   return h('div', {
@@ -269,12 +273,80 @@ function FlowNode(node) {
     ),
     /* 卡片列 */
     h('div', { style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 7, paddingTop: 10 } },
-      g.stages.map((s) => FlowStageCard(s, s.seq)),
+      g.stages.map((s) => FlowStageCard(s, s.seq, onOpen)),
     ),
   )
 }
 
-function PipelinePanel({ active }) {
+/** 阶段详情抽屉（卡片点击打开；浮于画布右侧，不参与拖动/缩放）。 */
+function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
+  const st = det.stage
+  const d = det.data
+  const color = (st && st.status) ? stColor(st.status) : T.text2
+  const hasChild = !!(d && d.childId && sessions && typeof sessions.openSubagent === 'function')
+  const openChild = () => {
+    if (!hasChild) return
+    try { sessions.openSubagent({ parentSessionId: sessionId, childSessionId: d.childId, mode: 'one-shot' }) } catch (e) { /* 会话跳转失败忽略 */ }
+  }
+  const outText = d && d.output ? d.output
+    : d && d.summary ? `（该 run 未保存完整正文，展示摘要）\n\n${d.summary}`
+    : det.err ? `⚠ 加载失败：${det.err}`
+    : det.loading ? '加载中…'
+    : '（无产物正文）'
+  const closeBtn = { font: 'inherit', width: 26, height: 26, borderRadius: 8, cursor: 'pointer', border: `1px solid ${T.border}`, background: 'transparent', color: T.text2, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, lineHeight: 1 }
+  return h('div', {
+    onMouseDown: (e) => e.stopPropagation(),
+    style: {
+      position: 'absolute', top: 12, right: 12, bottom: 12, width: 372, zIndex: 8, borderRadius: 14, overflow: 'hidden',
+      display: 'flex', flexDirection: 'column',
+      border: `1px solid ${T.border}`,
+      background: `color-mix(in srgb, ${T.layer1} 94%, transparent)`,
+      backdropFilter: 'blur(12px)',
+      boxShadow: '0 14px 48px rgba(0,0,0,.32)',
+    },
+  },
+    /* 头 */
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: 9, padding: '12px 14px', borderBottom: `1px solid ${T.border}`, background: `linear-gradient(135deg, color-mix(in srgb, ${color} 14%, transparent), transparent 62%)` } },
+      h('span', { style: { fontSize: 17 } }, PHASE_ICON[st && st.phase] || '⚙️'),
+      h('div', { style: { flex: 1, minWidth: 0 } },
+        h('div', { style: { fontSize: 12.5, fontWeight: 700, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, st ? st.label : '阶段详情'),
+        h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 1, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' } },
+          `${st ? `#${st.seq} · ${st.phase}` : ''}${(st && (st.startedAt || st.endedAt)) ? ` · ${fmtDur(st.startedAt, st.endedAt)}` : ''}`),
+      ),
+      st ? chip(stText(st.status), color, { dot: true }) : null,
+      h('button', { onClick: onClose, style: closeBtn, title: '关闭' }, '✕'),
+    ),
+    /* 内容 */
+    h('div', { style: { flex: 1, overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 11 } },
+      /* usage 明细（官方口径全字段） */
+      h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+        h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, 'TOKEN · 官方口径'),
+        h('span', { style: { fontSize: 11.5, fontFamily: MONO, color: T.text, lineHeight: 1.65 } }, usageDetail(d || st || {})),
+      ),
+      /* 跳子代理会话 */
+      h('button', {
+        onClick: openChild, disabled: !hasChild,
+        title: hasChild ? '打开该阶段子代理的真实会话轨迹（推理 + 工具调用）' : '该阶段无可用子代理会话',
+        style: {
+          font: 'inherit', fontSize: 12, fontWeight: 600, padding: '8px 12px', borderRadius: 9, cursor: 'pointer',
+          display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center',
+          border: `1px solid color-mix(in srgb, ${T.brand} 40%, transparent)`,
+          background: `color-mix(in srgb, ${T.brand} 12%, transparent)`, color: T.brand,
+          opacity: hasChild ? 1 : 0.45,
+        },
+      }, '🎬 查看子代理会话'),
+      /* 产物全文 */
+      h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
+        h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, '📄 阶段性产物'),
+        h('div', {
+          style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, lineHeight: 1.62, color: T.text, background: `color-mix(in srgb, ${T.layer2} 55%, transparent)`, border: `1px solid ${T.border}`, borderRadius: 10, padding: '10px 12px', maxHeight: 240, overflowY: 'auto' },
+        }, outText),
+      ),
+    ),
+  )
+}
+
+function PipelinePanel({ active, api, runId, sessionId, sessions }) {
   if (!active) return h('div', { style: { color: T.text2, fontSize: 13, padding: '28px 20px', textAlign: 'center' } },
     h('div', { style: { fontSize: 28, marginBottom: 8 } }, '🏭'),
     '暂无运行中的流水线——让模型调用 teamflow_start，或在上方输入需求')
@@ -290,6 +362,7 @@ function PipelinePanel({ active }) {
   const [grabbing, setGrabbing] = React.useState(false)
   const dragRef = React.useRef(null)
   const fittedRef = React.useRef(false)
+  const [det, setDet] = React.useState(null) // { seq, stage, loading, data, err } —— 阶段详情抽屉
 
   React.useEffect(() => {
     const el = wrapRef.current
@@ -328,6 +401,20 @@ function PipelinePanel({ active }) {
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
+
+  // 切换 run 时关闭详情抽屉
+  React.useEffect(() => { setDet(null) }, [active && active.id, runId])
+
+  const openDetail = async (s) => {
+    if (!api || !runId) return
+    setDet({ seq: s.seq, stage: s, loading: true, data: null, err: null })
+    try {
+      const d = await api.stageDetail(runId, s.seq, sessionId)
+      setDet({ seq: s.seq, stage: s, loading: false, data: unwrap(d, 'stageDetail') || null, err: null })
+    } catch (e) {
+      setDet({ seq: s.seq, stage: s, loading: false, data: null, err: String((e && e.message) || e) })
+    }
+  }
 
   const layout = layoutFlow(groups, vw)
   const fitNow = () => {
@@ -388,7 +475,7 @@ function PipelinePanel({ active }) {
       ),
       /* 节点层 */
       h('div', { style: { position: 'absolute', left: 0, top: 0, zIndex: 1 } },
-        layout.nodes.map((n) => FlowNode(n)),
+        layout.nodes.map((n) => FlowNode(n, openDetail)),
       ),
     ),
     layout.nodes.length === 0 ? h('div', { style: { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.text2, fontSize: 13 } }, '流水线还没有开始执行节点') : null,
@@ -405,6 +492,8 @@ function PipelinePanel({ active }) {
       h('span', { style: { width: 1, height: 14, background: T.border } }),
       h('span', { style: { fontSize: 10.5, color: T.text2, paddingRight: 4, opacity: 0.85 } }, '✥ 拖动画布 · 滚轮缩放'),
     ),
+    /* 阶段详情抽屉（点击阶段卡打开；浮层不参与画布拖动/缩放） */
+    det ? h(StageDetailDrawer, { det, onClose: () => setDet(null), sessionId, sessions }) : null,
   )
 }
 
@@ -678,11 +767,15 @@ interface TeamflowRemote {
   backlog(sessionId?: string | null): Promise<RpcEnvelope>
   backlogUpdate(kind: string, id: string, to: string, sessionId?: string | null, reason?: string, meta?: Record<string, unknown>): Promise<RpcEnvelope>
   resume(runId: string, sessionId: string): Promise<RpcEnvelope>
+  stageDetail(runId: string, seq: number, sessionId?: string | null): Promise<RpcEnvelope>
 }
 
 interface TeamFlowViewProps {
   sessionId: string
   remote: unknown
+  sessions?: {
+    openSubagent?: (a: { parentSessionId: string; childSessionId: string; mode?: string }) => void
+  } | null
 }
 
 function TeamFlowView(props: TeamFlowViewProps) {
@@ -855,7 +948,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
       ) : null,
     ),
 
-    tab === 'pipeline' ? h(PipelinePanel, { active }) : h(BoardPanel, { backlog, api, onRefresh: refresh, sessionId: props.sessionId }),
+    tab === 'pipeline' ? h(PipelinePanel, { active, api, runId: activeRun ? activeRun.id : null, sessionId: props.sessionId, sessions: props.sessions }) : h(BoardPanel, { backlog, api, onRefresh: refresh, sessionId: props.sessionId }),
   )
 }
 
@@ -879,7 +972,7 @@ export async function apply(ctx) {
     id: 'teamflow',
     order: 20,
     label: '🏭 团队工作台',
-    inject: (sessionId) => ({ sessionId, remote: teamflow }),
+    inject: (sessionId) => ({ sessionId, remote: teamflow, sessions: ctx.get('sessions') }),
   }, TeamFlowView))
   // 注册输入框旁的团队选择按钮
   ctx.slots.inject('conversation.input.right', () => ctx.slots.register({

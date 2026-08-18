@@ -83,4 +83,5 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 
 - 2026-08-19：token 计量收敛为官方口径（去除计费当量/上下文压力自定义概念）：`usage` = 输入未命中/命中/写缓存/输出/调用数 + 缓存命中率；熔断预算用官方总消耗；工作台卡片/任务卡/汇报均按官方口径展示。
 - 2026-08-19：流水线视图重设计 —— 横向蛇形流程（相位从左至右、上下波浪错位 + SVG 弧线连接 + 沿路径流动高亮虚线 + 箭头终点），整块画布默认可拖拽平移 + 滚轮缩放 + 适应/± 控制簇，点阵网格背景与步骤序号徽标提升质感；历史 run 选择器门控到流水线 tab。验收结论解析修复为只认「验收结论」行（parseAcceptanceVerdict，误报实锤 tf-msytlok5）。
+- 2026-08-19：阶段卡点击查看详情 —— 右侧抽屉（官方口径 usage 全字段 + 阶段性产物全文）+「🎬 查看子代理会话」跳转（sessions.openSubagent，mode one-shot）；host 新增 stageDetail RPC（读 stage.output 全文）；终态 checkpoint 不再删 stage.output（磁盘+内存保留全文，供详情/断点续跑，smoke 断言同步）。
 - 2026-08-19：dev 子卡模型（一个需求一张轮转主卡 + 并行 dev 子卡）、assign 与 status 分离（teamflow_assign）、workspace 级隔离（DSH workspace UUID）、UI"+团队"触发 + teamflow_pause/resume、子代理路由跟随主线程、state.json 预编译索引 + 版本切片/一次成型纪律、backlogUpdate 参数对齐修复。
