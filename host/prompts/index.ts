@@ -129,10 +129,11 @@ export const ONCE_DISCIPLINE = `【一次成型纪律 · 硬约束】这是最�
 - 产出末尾必须附带 state 块，供 host 沉淀索引、下一轮免重读。
 `
 
-/** 版本归档文案：活文档只存当前版本正文 + 一行当前版修订 + 指针；历史统一归档到 history/。 */
+/** 版本归档文案：活文档只存当前版本正文（增量 + 压缩基线）+ 一行当前版修订 + 指针；历史统一归档到 history/。 */
 export const VERSION_SLICE_BLOCK = `【版本切片 · 硬约束】这是文档防膨胀的硬约束：
-- 活文档（PRD.md / DESIGN.md / TECHNICAL.md 等）只存【当前版本正文】+【修订记录表当前版一行】+【指向历史版本的指针】。
-- 旧版内容不要留在活文档：整体 copy 到 ${TF_DOCS}/history/<旧版本号>/ 下（同文件名，如 ${TF_DOCS}/history/v2.2/PRD.md），日常不读，需追溯才打开。
+- 活文档（PRD.md / DESIGN.md / TECHNICAL.md 等）只存【当前版本正文（增量 + 压缩基线）】+【修订记录表当前版一行】+【指向历史版本的指针】。
+- 【mv 归档 · 结构强制】更新旧活文档前，先把整文件用 mv（移动/改名：git mv 或文件系统 mv）挪到 ${TF_DOCS}/history/<旧版本号>/ 下（同文件名，如 ${TF_DOCS}/history/v2.4/PRD.md，已存在则跳过）。mv 后旧路径即不存在——**绝不允许在旧文件上做逐处 edit/插入**。
+- 【新文件只写增量 + 压缩基线】旧文件 mv 走后，在原路径 write 一个全新的干净文件：正文只含 (1) 本次变更（新增/修改的 US/AC 完整可测文本 + 受影响规格）；(2) **回归底线：既有 AC 仅列 编号 + 一行语义 + 指针**（完整文本在 history 归档，按需 grep，**严禁照抄旧 AC 全文**）；(3) 验收准则与数值规格的增量。
 - **严禁在活文档修订表里累积全部历史版本**（如 v1.0~v2.x 全列）；历史修订信息只属于 history/ 下的对应版本文件。
 - 需要看历史时去 ${TF_DOCS}/history/<版本>/，不要 grep/read 历史全文进上下文。
 `
@@ -143,8 +144,8 @@ ${ONCE_DISCIPLINE}【原始需求】
 ${requirement}
 【要求】
 1. 先看上方 state 索引与 ${TF_DOCS}/SUMMARY.md（摘要），判断是否有既有 PRD 模式/历史 AC；不要全量重读历史文档。
-2. 若已有历史 PRD（${TF_DOCS}/prd/PRD.md 或 ${TF_DOCS}/history/v*.md）或 ${TF_DOCS}/memory.md：这是迭代需求——输出增量 PRD（保留既有 AC 编号与语义、压缩旧 AC 冗长表述、显式标注本次变更），升级版本号。
-3. 【版本切片】${TF_DOCS}/prd/PRD.md 已有旧版时：先 read ≤1 次读旧版标题/版本号（不读全文），整体 copy 旧版到 ${TF_DOCS}/history/v<旧版本号>/PRD.md（若已存在则跳过）；PRD.md 重写为仅当前版正文 + 修订表当前版一行 + 指向 history/ 的指针。
+2. 若已有历史 PRD（${TF_DOCS}/prd/PRD.md 或 ${TF_DOCS}/history/v*.md）或 ${TF_DOCS}/memory.md：这是迭代需求——输出增量 PRD（保留既有 AC 编号与语义、旧 AC 只作压缩回归基线列出、显式标注本次变更），升级版本号。
+3. 【版本切片 · mv + 增量文件】${TF_DOCS}/prd/PRD.md 已有旧版时：先 read ≤1 次读旧版标题/版本号（不读全文），把整文件用 mv（移动/改名：git mv 或文件系统 mv）挪到 ${TF_DOCS}/history/v<旧版本号>/PRD.md（已存在则跳过）；旧路径 mv 后即不存在，**严禁在旧文件上逐处 edit/插入**。然后 ${TF_DOCS}/prd/PRD.md write 一个全新干净文件：只含 v<新版本号> 本次变更（新增/修改 US/AC 完整可测文本 + 受影响规格）+ 回归底线清单（既有 AC 仅 编号 + 一行语义 + 指针到 history，按需 grep，**严禁照抄旧 AC 全文**）+ 验收准则与数值规格增量 + 修订表当前版一行。
 4. 输出完整 PRD（Markdown）：背景与目标、用户故事（含逐条可测试的验收标准）、功能范围与非目标、交互流程概述、优先级(P0/P1/P2)、依赖与风险、里程碑建议。验收标准可测试可量化，精炼优先。
 5. 产出写入 ${TF_DOCS}/prd/PRD.md；同步更新 ${TF_DOCS}/memory.md（新迭代需求、目标版本）。【边界】只写 ${TF_DOCS}/ 下文件；不改 AGENTS.md 除 teamflow 托管区外内容。
 6. 【state 沉淀】结尾输出 state 块（phase="prd"），summary 含本次 AC 要点、version 写新版本号，extra 放 { "acIndex": {...}, "summary": "产品一句话", "techStack": "..." }。${STATE_BLOCK_INSTRUCTION}`
@@ -157,7 +158,7 @@ ${clip(prd, 15000)}
 1. 若项目已有前端代码/设计系统或历史 ${TF_DOCS}/design/DESIGN.md，先 grep 定位规范要点，勿全量重读；设计必须贴合现有风格与组件规范（迭代时保留既有规范，新增/修订部分显式标注）。
 2. 输出：页面/模块清单与信息架构、关键页面线框描述（布局/组件/状态）、交互与动效说明、视觉规范（配色/字号/间距，尽量复用现有 token）、可访问性要点。
 3. 输出中文 Markdown，具体到可直接指导前端实现，精炼优先。
-4. 产出写入 ${TF_DOCS}/design/DESIGN.md（write 1 次；旧版先整体归档到 ${TF_DOCS}/history/v<旧版>/DESIGN.md，不反复 edit）。【边界】只写 ${TF_DOCS}/ 下文件。
+4. 产出写入 ${TF_DOCS}/design/DESIGN.md（write 1 次；旧版整文件 mv 归档到 ${TF_DOCS}/history/v<旧版>/DESIGN.md，不逐处 edit）。【边界】只写 ${TF_DOCS}/ 下文件。
 5. 【state 沉淀】结尾输出 state 块（phase="design"），summary 写关键设计决策。${STATE_BLOCK_INSTRUCTION}`
 
 export const scaffoldPrompt = (req, design, root, runId, state) => `你是资深架构师。工作区为空或尚无项目骨架，请规划并**实际落地**新项目脚手架。
@@ -204,7 +205,7 @@ ${JSON.stringify(tasks)}
 1. 先阅读 ${TF_DOCS}/SUMMARY.md 与工作区现有项目（package.json、README、src 结构等）及 AGENTS.md，方案必须贴合现有技术栈与代码风格，并给出具体文件路径。
 2. 输出：数据模型与存储、API 设计（路由/入参出参）、前端组件与页面划分、状态管理、关键实现要点与边界情况、测试策略。
 3. 任务拆分：若上方【流水线派发任务】存在，你的拆分必须与之对齐——逐项校验/细化派发任务（文件边界、接口契约、验收标准），不得另起一套任务体系；未派发时给出可并行任务清单。
-4. 输出中文 Markdown，精炼完整；产出写入 ${TF_DOCS}/technical/TECHNICAL.md（write 1 次，旧版归档 ${TF_DOCS}/history/v<旧版>/TECHNICAL.md，不反复 edit）。【边界】只写 ${TF_DOCS}/ 下文件。
+4. 输出中文 Markdown，精炼完整；产出写入 ${TF_DOCS}/technical/TECHNICAL.md（write 1 次，旧版整文件 mv 归档 ${TF_DOCS}/history/v<旧版>/TECHNICAL.md，不逐处 edit）。【边界】只写 ${TF_DOCS}/ 下文件。
 5. 【state 沉淀】结尾输出 state 块（phase="tech"），extra 放 { "verifyScripts": [...], "modules": {"/file": "契约或一句话"} }，summary 写关键架构/契约决策。${STATE_BLOCK_INSTRUCTION}`
 
 export const devPrompt = (task, tech, prd, root, runId, state) => `你是高级全栈工程师（开发执行）。当前工作区即为目标项目，请实际实现以下任务。
@@ -238,7 +239,7 @@ ${clip(devSummary, 15000)}
 6. 【缺陷提交格式】发现的缺陷按以下结构化清单输出（供缺陷管理系统直接收录）：
    | 编号 | 严重级(P0/P1/P2/P3) | 功能模块 | 复现步骤 | 期望行为 | 实际行为 | 关联验收项 |
    若无缺陷，显式输出「未发现缺陷」。
-7. 输出中文 Markdown，具体可执行；报告写入 ${TF_DOCS}/qa/QA-REPORT.md（write 1 次，旧版归档 ${TF_DOCS}/history/v<旧版>/QA-REPORT.md，正文精炼，不留无限长历史）。【边界】只写 ${TF_DOCS}/ 下文件。
+7. 输出中文 Markdown，具体可执行；报告写入 ${TF_DOCS}/qa/QA-REPORT.md（write 1 次，旧版整文件 mv 归档 ${TF_DOCS}/history/v<旧版>/QA-REPORT.md，正文精炼，不留无限长历史）。【边界】只写 ${TF_DOCS}/ 下文件。
 8. 【state 沉淀】结尾输出 state 块（phase="qa"），summary 写测试结论/被阻断项，extra 放 { "verifyScripts": [...] }。${STATE_BLOCK_INSTRUCTION}`
 
 export const acceptancePrompt = (prd, qa, devSummary, root, runId, state) => `你是产品经理（验收负责人）。请对照 PRD 验收标准对本次交付做最终验收。
