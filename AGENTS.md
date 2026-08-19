@@ -84,6 +84,7 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 ## 7. 变更记录（近期）
 
 - 2026-08-19：`journal.ownerSession` 溯源（发起会话 id，下发于 stageDetail）；跳转子代理按钮增加跨会话判定——ownerSession≠当前会话时禁用并 title/文案提示（DSH 目录按父会话加载、跨父导航待官方 PR）。
+- 2026-08-19：PRD/活文档升级改 **mv 归档 + 增量干净文件**（结构上杜绝 edit-in-place）：`VERSION_SLICE_BLOCK` 真正接入 PRD prompt；旧版整文件 git mv 到 history/<旧版本>/，新文件只写增量 US/AC + 压缩回归基线（AC 仅编号+一行语义+指针，严禁照抄全文，防 35KB 巨无霸）；design/tech/QA 归档话术同步。
 
 - 2026-08-19：token 计量收敛为官方口径（去除计费当量/上下文压力自定义概念）：`usage` = 输入未命中/命中/写缓存/输出/调用数 + 缓存命中率；熔断预算用官方总消耗；工作台卡片/任务卡/汇报均按官方口径展示。
 - 2026-08-19：流水线视图重设计 —— 横向蛇形流程（相位从左至右、上下波浪错位 + SVG 弧线连接 + 沿路径流动高亮虚线 + 箭头终点），整块画布默认可拖拽平移 + 滚轮缩放 + 适应/± 控制簇，点阵网格背景与步骤序号徽标提升质感；历史 run 选择器门控到流水线 tab。验收结论解析修复为只认「验收结论」行（parseAcceptanceVerdict，误报实锤 tf-msytlok5）。
