@@ -28,7 +28,7 @@ TeamFlow 团队研发流水线 —— DeepSeek Harness 可分发插件（`dsh pl
 - **并发池**：开发任务按 `maxConcurrency`（默认 3，最大 8）并行执行。
 - **QA 缺陷登记**：QA 报告按固定表格输出 → 自动解析成 Bug 进入 backlog。
 - **token 计量（官方口径）**：每阶段记录 `usage` = **输入(缓存未命中)/输入(缓存命中)/写缓存/输出 + 调用数**（由子代理会话逐事件累计）+ **缓存命中率**（cacheRead/(input+cacheRead)）。工作台卡片/任务卡/完成汇报均按此口径展示，模型无关、与官方账单一致。
-- **lite 模式（v0.8.0）**：微功能轻量——`teamflow_start(lite:true)` 跳过 UI/UX 设计与独立技术方案文档阶段（PRD 即契约），直接 **PRD → 开发 → QA → 验收** 4 段；实测较完整 7 段省 ~64% 时间、~88% token。
+- **lite 模式（v0.8.0）**：微功能轻量——`teamflow_start(lite:true)` 跳过独立技术方案文档阶段（PRD 即契约），直接 **PRD → 开发 → QA → 验收**；配套 `needDesign:true` 时**保留 UI/UX 设计阶段**。实测较完整 7 段省 ~64% 时间、~88% token。
 - **token 熔断**：单阶段官方总消耗（input+cacheRead+cacheWrite+output 累计）超 `STAGE_TOKEN_BUDGET`（默认 60k）时停止重试、需人工介入。
 - **🏭 团队工作台（Web tab）**：与 chat / 轨迹并列的会话头部 tab，含：
   - 流水线图形工作流（阶段泳道 + 节点卡片：状态/耗时/token/子代理会话，2s 实时刷新）

@@ -33,7 +33,7 @@ export interface PipelineOptions {
   tasks?: unknown
   productRoot?: string | null
   maxConcurrency?: number
-  /** lite：微功能轻量模式——跳过 UI/UX 设计与独立技术方案文档阶段，PRD 即契约，QA/验收保留。 */
+  /** lite：微功能轻量模式——跳过独立技术方案文档阶段，PRD 即契约，QA/验收保留；needDesign=true 时保留 UI/UX 设计。 */
   lite?: boolean
   /** 需求分诊路由（ADR-0004）；缺省由 triage 自动判定。 */
   mode?: PipelineMode

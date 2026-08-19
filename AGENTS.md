@@ -83,6 +83,8 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 
 ## 7. 变更记录（近期）
 
+- 2026-08-19：**lite × needDesign 语义修复**：lite 模式不再吞掉显式要求的「UI/UX 设计」——去掉 pipeline 设计阶段闸门里的 `!options.lite`(design 以 `needDesign` 为准启用);lite 仍跳过独立技术方案文档(PRD/变更单即契约)。工具描述/types/triage/README 同步注明「lite + needDesign:true 保留设计阶段」。
+
 - 2026-08-19：`journal.ownerSession` 溯源（发起会话 id，下发于 stageDetail）；跳转子代理按钮增加跨会话判定——ownerSession≠当前会话时禁用并 title/文案提示（DSH 目录按父会话加载、跨父导航待官方 PR）。
 - 2026-08-19：PRD/活文档升级改 **mv 归档 + 增量干净文件**（结构上杜绝 edit-in-place）：`VERSION_SLICE_BLOCK` 真正接入 PRD prompt；旧版整文件 git mv 到 history/<旧版本>/，新文件只写增量 US/AC + 压缩回归基线（AC 仅编号+一行语义+指针，严禁照抄全文，防 35KB 巨无霸）；design/tech/QA 归档话术同步。
 

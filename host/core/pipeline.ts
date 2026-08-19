@@ -139,9 +139,9 @@ export async function executePipeline(
       if (journal.cancelled) return
     }
 
-    /* ── UI/UX 设计阶段 ── */
+    /* ── UI/UX 设计阶段（needDesign 即启用；lite 也保留，否则显式要求设计的 UI 需求会被吞掉） ── */
     let design = null
-    if (stageEnabled('design') && options.needDesign && !options.lite) {
+    if (stageEnabled('design') && options.needDesign) {
       if (resumed('UI/UX 设计')) {
         design = resume.products.design
         timeline.design = design
