@@ -112,12 +112,24 @@ export function productCtx(root) {
 backlog（需求/任务/缺陷）事实源在 ${base}/backlog/ 的持久化镜像 $DSH_HOME/teamflow/<workspace>/：任务为单卡轮转模型（待办→开发中→待测试→测试中→待验收→已验收），devAssign/qaAssign 记录在任务卡上。
 `
 }
+
+/** 头尾组合切片：保留头部(背景/基线) + 尾部(新增 AC/修订)，预算不变但覆盖增量段。 */
+function headTailClip(text: unknown, head: number, tail: number): string {
+  const s = text === null || text === undefined ? '' : String(text)
+  if (s.length <= head + tail) return s
+  return s.slice(0, head) + '\n...\n【本次变更段】\n' + s.slice(-tail)
+}
+
 export const TOKEN_HYGIENE = (runId) => `【token 卫生 · 硬约束】上下文很贵，以下是必须遵守的预算纪律（超配额会记录 warning，不打断）：
-- 禁止全量 read 超过 200 行的文件；同一文件 read/grep 合计 ≤3 次；全量 read 的目标文件 ≤2 个；其余一律 grep 定位 + limit 分段读取。
-- 动手前优先用 1 次综合检索（grep）定位，再批量分段读取；避免对同一文件反复小步 read/grep。
-- 运行命令时把完整输出重定向到文件（写到 logs/teamflow/${runId || '<runId>'}/ 下，如 logs/teamflow/${runId || '<runId>'}/dev-out.log），再读取尾部摘要，不要把几百行输出直接回显、更不要把日志文件散落到项目根。
+- 【文件作用域】只整文件 read 任务 spec 明确列出的目标文件；需要了解其他文件的接口时，用 grep 搜索关键词（不要 read 全文）。不在任务范围内的源码文件禁止整文件读取。
+- 【禁止重复读】同一文件 read ≤1 次；如需确认改动结果，用 grep 搜索变更点而非重新 read 全文。
+- 【grep 优先】动手前优先用 1 次综合检索（grep）定位，再批量分段读取；避免对同一文件反复小步 read/grep。
+- 【批量修复】验证失败时：一次性读取所有失败项 → 一次性修完（1 次 edit） → 再跑 1 次验证。禁止"修一个→跑→修一个→跑"。最多 3 轮修→跑循环；超过则输出诊断摘要并停止。
+- 禁止全量 read 超过 200 行的文件（超出部分用 grep + limit 分段）；全量 read 的目标文件 ≤2 个；其余一律 grep 定位 + limit 分段读取。
+- 运行命令时把完整输出重定向到文件（写到 logs/teamflow/${runId || '<runId>'}/ 下），再读取尾部摘要，不要把几百行输出直接回显。
 - 报告与摘要一律精简（QA ≤150 行、验收 ≤80 行、开发 ≤40 行），细节落盘文件。
-- 本迭代的契约/验收标准已在下文【上下文包/交接摘要】或对应技术方案中给出：不得重新全量 read AGENTS.md / SUMMARY.md / PRD.md / DESIGN.md / TECHNICAL.md 全文，只需按需 grep/read 目标代码。
+- AGENTS.md / SUMMARY.md 已在上下文中自动注入，无需花调用读取全文；如需查找特定规则，grep 关键词定位。
+- 本迭代的契约/验收标准已在下文【上下文包/交接摘要】或对应技术方案中给出：不得重新全量 read PRD.md / DESIGN.md / TECHNICAL.md 全文，只需按需 grep/read 目标代码。
 `
 
 /** 一次成型纪律：目标文档 write ≤1 次 + read ≤2 次，严禁 read→edit→read 循环。 */
@@ -227,7 +239,7 @@ ${clip(tech, 12000)}`
 
 export const qaPrompt = (prd, devSummary, root, runId, state) => `你是资深 QA 测试工程师。当前工作区即为目标项目，请对本次交付做功能测试。
 ${productCtx(root)}${stateSliceFor(state, 'qa')}${TOKEN_HYGIENE(runId)}【PRD（本次变更与相关 AC）】
-${clip(prd, 12000)}
+${headTailClip(prd, 5000, 7000)}
 【开发结果摘要】
 ${clip(devSummary, 15000)}
 【要求】
@@ -245,7 +257,7 @@ ${clip(devSummary, 15000)}
 export const acceptancePrompt = (prd, qa, devSummary, root, runId, state) => `你是产品经理（验收负责人）。请对照 PRD 验收标准对本次交付做最终验收。
 ${productCtx(root)}${stateSliceFor(state, 'acceptance')}${TOKEN_HYGIENE(runId)}
 ${ONCE_DISCIPLINE}【PRD（修订记录 + 本次新增 AC）】
-${clip(prd, 8000)}
+${headTailClip(prd, 4000, 5000)}
 【QA 测试报告（结论）】
 ${clip(qa, 10000)}
 【开发结果摘要】
