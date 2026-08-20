@@ -44,6 +44,10 @@ expect(parseAcceptanceVerdict('## 验收结论：⚠️ 有条件通过\n偏离�
 expect(parseAcceptanceVerdict('## 验收结论：✅ 通过\n已按架构蓝图实现，无重复、无偏离，模块边界清晰，架构一致性良好。'), 'accepted', '通过 + 架构一致 → accepted（架构词不误杀正常通过）')
 expect(parseAcceptanceVerdict('## 验收结论：✅ 通过\n无 P0/P1/P2 缺陷。'), 'accepted', '纯功能通过 → accepted（不受架构词影响）')
 
+console.log('── M3 回归（tf-mt1pulkw）：架构「PASS/无返工」不得误杀（否定式保护）──')
+expect(parseAcceptanceVerdict('## 验收结论：⚠️ 有条件通过\n架构一致性核验（M3 质量门禁）— PASS，无返工项，无该抽象未抽象，无架构打回项，非漂移。'), 'accepted', '「M3 PASS，无返工/非漂移/无该抽象未抽象/无架构打回项」→ accepted（否定式不误判 rework，回归核心）')
+expect(parseAcceptanceVerdict('## 验收结论：⚠️ 有条件通过\n但检测到重复实现：两套安全存储适配器；偏离蓝图、该拆未拆，需架构返工。'), 'rework', '「存在重复实现/偏离蓝图/需架构返工」→ rework（真打回仍识别）')
+
 console.log('── M1 架构蓝图提取（extractBlueprint）──')
 const blueprinted = `# 技术方案
 <!-- blueprint -->{"summary":"应抽独立 storage 封装","modules":{"/storage.js":{"responsibility":"持久化封装","why":"消除 game/audio 两套适配器重复"}},"duplications":["game.safeStorage 与 audio.resolveStorage 重复"],"tasks":[{"title":"拆 storage 模块","files":["/storage.js"],"spec":"独立 UMD 存储层"}]}<!-- /blueprint -->`

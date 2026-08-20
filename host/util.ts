@@ -101,9 +101,16 @@ export function handoffBrief(text: string | null | undefined): string {
 export function parseAcceptanceVerdict(text) {
   const acc = String(text || '')
   const accLine = (acc.split('\n').find((l) => /验收结论|整体结论/.test(l)) || '').replace(/\|.*/, '').trim()
-  // M3 架构门禁：明确的架构打回信号 → rework（无论结论行写没写「通过」）
-  // 覆盖：架构返工/重复实现/偏离蓝图/该拆未拆/该抽象未抽象/破坏既有结构
-  if (/架构.*(返工|不通过|打回|需重构)|重复实现|重复适配|偏离蓝图|未按蓝图|该拆未拆|该抽象未抽象|破坏既有结构|结构性.*问题/.test(acc)) return 'rework'
+  // M3 架构门禁：明确的架构打回信号 → rework（无论结论行写没写「通过」）。
+  // 修正误杀（tf-mt1pulkw）：验收正文「架构一致性核验 — PASS，无返工项」被朴素正则
+  // 当成打回信号 → 误判 rework。现在改为「独立断言词 + 否定保护」：
+  //   打回信号 = 出现明确的架构缺陷断言词（重复实现/偏离蓝图/该拆未拆… 或 架构…返工/打回/需重构），
+  //             且未被否定保护（无返工/非漂移/M3 PASS/架构一致性良好/无该抽象未抽象…）覆盖时。
+  const hasArchRedFlag =
+    /重复实现|重复适配|偏离蓝图|未按蓝图|该拆未拆|该抽象未抽象|破坏既有结构|结构性.*问题|架构(打回|需重构)|需.*返工|返工.*项.*(存在|仍)|仍.*(返工|重构)/.test(acc)
+  const archNegated =
+    /无返工|无.*返工|不返工|无架构打回|无.*打回|非漂移|无.*重复|无.*偏离|无.*抽象.*问题|无.*蓝图.*问题|架构一致性.*(PASS|良好|达标|通过|无问题)|M3.*(PASS|通过|达标)|架构.*(达标|无问题|良好)/.test(acc)
+  if (hasArchRedFlag && !archNegated) return 'rework'
   if (/❌\s*不通过|需返工|未通过/.test(accLine) && !/✅\s*通过/.test(accLine)) return 'rework'
   if (/📝\s*需求不适用/.test(acc)) return 'reject'
   if (!/通过|✅|⚠️/.test(accLine) && /需求不适用|需求与实际不符|需求站不住|需求无效|无需改动|无需修改/.test(accLine)) return 'reject'
