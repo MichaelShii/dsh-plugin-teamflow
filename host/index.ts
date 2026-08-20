@@ -329,6 +329,24 @@ function registerTools(ctx) {
 const pausedSessions = new Set<string>()
 /** 会话级当前团队：activeTeams.get(sessionId) → 当前选中的团队 id。 */
 const activeTeams = new Map<string, string>()
+/** 延迟注入队列：选团队时 agent 可能尚未加载，存入 pending，后续时机补发。 */
+const pendingInjections = new Map<string, { teamName: string; teamIcon: string; teamId: string }>()
+
+/** 尝试补发延迟注入：agent 可用时注入上下文并清除 pending。 */
+function tryFlushPendingInjections(sessionId: string): void {
+  const pending = pendingInjections.get(sessionId)
+  if (!pending) return
+  const agent = runtime.agents ? runtime.agents.get(sessionId) : undefined
+  if (!agent || typeof agent.inject !== 'function') return
+  try {
+    agent.inject({
+      type: 'user',
+      content: [{ type: 'text', text: `[TeamFlow 上下文] 用户已选择「${pending.teamIcon} ${pending.teamName}」团队。只有收到明确的开发需求（新功能/迭代/重构/bug修复/代码改动请求）时才调用 teamflow_start 并指定 teamId="${pending.teamId}"。收到反馈、讨论、闲聊、UI 意见等非开发请求时，不要调用 teamflow_start，直接正常回复。` }],
+      source: { kind: 'plugin', plugin: 'dsh-plugin-teamflow', form: 'context' },
+    })
+    pendingInjections.delete(sessionId)
+  } catch (e) { /* inject 失败静默 */ }
+}
 
 export class TeamflowService extends TypertRemoteService {
   static inject = ['agents', 'subagents', 'tokenMeter', 'typert', 'tools']
@@ -418,6 +436,8 @@ export class TeamflowService extends TypertRemoteService {
     if (!sid || !req) return { ok: false, error: '缺少 sessionId 或需求描述' }
     const agent = runtime.agents && runtime.agents.get(sid)
     if (agent === undefined) return { ok: false, error: `找不到会话对应的 Agent：${sid}` }
+    // 补发延迟注入（选团队时 agent 可能尚未加载）
+    tryFlushPendingInjections(sid)
     try {
       const opts = (options && typeof options === 'object') ? options : {}
       const runId = startPipeline(agent, req, opts, undefined)
@@ -495,14 +515,16 @@ export class TeamflowService extends TypertRemoteService {
     activeTeams.set(sid, tid)
     // 注入会话级上下文：告诉模型什么该走 teamflow，什么不该
     const agent = runtime.agents && runtime.agents.get(sid)
+    const injectPayload = {
+      type: 'user' as const,
+      content: [{ type: 'text' as const, text: `[TeamFlow 上下文] 用户已选择「${team.icon} ${team.name}」团队。只有收到明确的开发需求（新功能/迭代/重构/bug修复/代码改动请求）时才调用 teamflow_start 并指定 teamId="${tid}"。收到反馈、讨论、闲聊、UI 意见等非开发请求时，不要调用 teamflow_start，直接正常回复。` }],
+      source: { kind: 'plugin' as const, plugin: 'dsh-plugin-teamflow', form: 'context' as const },
+    }
     if (agent && typeof agent.inject === 'function') {
-      try {
-        agent.inject({
-          type: 'user',
-          content: [{ type: 'text', text: `[TeamFlow 上下文] 用户已选择「${team.icon} ${team.name}」团队。只有收到明确的开发需求（新功能/迭代/重构/bug修复/代码改动请求）时才调用 teamflow_start 并指定 teamId="${tid}"。收到反馈、讨论、闲聊、UI 意见等非开发请求时，不要调用 teamflow_start，直接正常回复。` }],
-          source: { kind: 'plugin', plugin: 'dsh-plugin-teamflow', form: 'context' },
-        })
-      } catch (e) { /* inject 失败不影响主流程 */ }
+      try { agent.inject(injectPayload) } catch (e) { /* inject 失败不影响主流程 */ }
+    } else {
+      // agent 尚未加载（新会话懒加载），存入 pending，后续补发
+      pendingInjections.set(sid, { teamName: team.name, teamIcon: team.icon, teamId: tid })
     }
     return { ok: true, team: { id: team.id, name: team.name, icon: team.icon } }
   }
@@ -511,6 +533,8 @@ export class TeamflowService extends TypertRemoteService {
   getActiveTeam(sessionId) {
     const sid = typeof sessionId === 'string' ? sessionId : null
     if (!sid) return { team: null }
+    // 补发延迟注入（UI 加载时 agent 通常已就绪）
+    tryFlushPendingInjections(sid)
     const tid = activeTeams.get(sid)
     if (!tid) return { team: null }
     const sc = sessionScope(sid)

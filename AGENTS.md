@@ -83,6 +83,7 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 
 ## 7. 变更记录（近期）
 
+- 2026-08-20：**延迟注入修复**——新会话选团队时 agent 可能尚未加载（懒加载），导致 `agent.inject` 静默失败、模型无团队上下文→不走 teamflow。修复：选团队时若 agent 不可用，存入 `pendingInjections` 队列；在 `start`（流水线启动前）和 `getActiveTeam`（UI 加载时）补发注入。
 - 2026-08-20：**TOKEN_HYGIENE v2 + PRD head+tail 切片**——通用 token 治理：文件作用域（只 read 任务目标文件）、禁止重复读（同文件 read ≤1 次）、批量修复（一次修完所有失败再跑，最多 3 轮）、AGENTS.md/SUMMARY.md 已注入无需重读；QA/验收 PRD 内联改 head+tail 组合切片（覆盖头部基线+尾部新增 AC，预算不变）。基于 BGM run 实际数据对比正常会话，只砍"正常会话不会做的操作"，零质量损失。
 - 2026-08-19：**lite × needDesign 语义修复**：lite 模式不再吞掉显式要求的「UI/UX 设计」——去掉 pipeline 设计阶段闸门里的 `!options.lite`(design 以 `needDesign` 为准启用);lite 仍跳过独立技术方案文档(PRD/变更单即契约)。工具描述/types/triage/README 同步注明「lite + needDesign:true 保留设计阶段」。
 
