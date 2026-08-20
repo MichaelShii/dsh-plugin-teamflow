@@ -70,6 +70,7 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 | v0.8.x(进行) | 领域化重构（11 文件）+ triage 5 档(model 驱动)+ lite/tech/patch 端到端 + 需求无效拦截（ADR-0004/0005 落地） |
 | v0.10(进行) | 多团队架构(teams.json)+UI"+团队"触发+workspace 级隔离(UUID)+单任务轮转+dev 子卡+官方口径 token 展示+会话暂停/resume+state.json 预编译索引+版本切片/一次成型纪律+子代理路由跟随主线程 |
 | v0.10.1 | **验收结论解析修复**（误报实锤 run tf-msytlok5：验收 ✅ 通过，记忆回写段「SUMMARY.md 结构无需改动」命中旧正则「无需改动」→ 误判 reject 杀整条流水线）。`parseAcceptanceVerdict` 移入 util.ts：只认显式「验收结论/整体结论」行 + 专用「📝 需求不适用」全文命中，正文散文不再朴素子串匹配；verdict.test.js 回归覆盖 |
+| v0.10.2 | **执行路径基准**（同一持久化需求 A/B）：流水线 38m/164 调用/11.6M billed vs 原生 DSH 27m/115 调用/19.1M billed。流水线省 ~39% token（阶段/子代理上下文隔离），原生快 ~29%（少门禁但单 agent 上下文膨胀）；质量等价。**拆分价值在「上下文隔离」而非并行次数**。详见 `docs/benchmarks/pipeline-vs-native.md` |
 
 ## 6. 已知待办
 
