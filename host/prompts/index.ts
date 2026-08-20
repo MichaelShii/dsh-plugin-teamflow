@@ -218,7 +218,12 @@ ${JSON.stringify(tasks)}
 2. 输出：数据模型与存储、API 设计（路由/入参出参）、前端组件与页面划分、状态管理、关键实现要点与边界情况、测试策略。
 3. 任务拆分：若上方【流水线派发任务】存在，你的拆分必须与之对齐——逐项校验/细化派发任务（文件边界、接口契约、验收标准），不得另起一套任务体系；未派发时给出可并行任务清单。
 4. 输出中文 Markdown，精炼完整；产出写入 ${TF_DOCS}/technical/TECHNICAL.md（write 1 次，旧版整文件 mv 归档 ${TF_DOCS}/history/v<旧版>/TECHNICAL.md，不逐处 edit）。【边界】只写 ${TF_DOCS}/ 下文件。
-5. 【state 沉淀】结尾输出 state 块（phase="tech"），extra 放 { "verifyScripts": [...], "modules": {"/file": "契约或一句话"} }，summary 写关键架构/契约决策。${STATE_BLOCK_INSTRUCTION}`
+5. 【架构蓝图 JSON · 必输出（供 dev 继承 / 验收核验，M1/M2）】在文档之后，额外输出一个**架构蓝图 JSON 块**（与正文同一份输出里、文档末尾）：
+<!-- blueprint -->{"summary":"一句话架构判断","modules":{"/相对路径.js":{"responsibility":"职责","dependsOn":["依赖文件"],"assemblyOrder":1,"why":"为什么这样设计/为什么独立"},"/另一个.js":{"responsibility":"","why":""}},"duplications":["检测到的重复/适配器漂移风险，如多套安全存储封装"],"tasks":[{"title":"任务名（按文件边界）","files":["/a.js"],"spec":"一句话任务说明"}]}<!-- /blueprint -->
+   - modules：本次涉及每个文件的职责 + 依赖 + 装配顺序 + **架构理由（why：为什么独立/这样设计）**。
+   - tasks：按文件边界拆可并行任务（files 无交集可并行）；有依赖/冲突则合并或标注先后。
+   - 若发现重复/该抽独立模块（如统一 storage 封装），在 modules 里给出新模块并说明 why。
+6. 【state 沉淀】结尾输出 state 块（phase="tech"），extra 放 { "verifyScripts": [...], "modules": {"/file": "契约或一句话"} }，summary 写关键架构/契约决策。${STATE_BLOCK_INSTRUCTION}`
 
 /**
  * 架构师 prompt（M1「认知前置 + 架构落地」）：全模式启用，轻量版（lite/tech/patch）只产架构蓝图 JSON，
