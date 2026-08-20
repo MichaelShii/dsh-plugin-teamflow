@@ -38,6 +38,7 @@ const FILES = [
   'host/core/report.ts',
   'host/core/pipeline.ts',
   'host/core/triage.ts',
+  'host/core/sanity.ts',
   'client/index.tsx',
   'lib/host.mjs', 'lib/host.mjs.map',
   'lib/store.mjs', 'lib/store.mjs.map',
