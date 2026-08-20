@@ -36,7 +36,7 @@
     "watch": "tsdown --watch",
     "deploy": "node deploy.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node test/smoke.js && node test/verdict.test.js && node test/journal.test.js"
+    "test": "node test/smoke.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js"
   },
   "dependencies": {
     "react": "^18.2.0"

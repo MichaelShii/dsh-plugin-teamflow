@@ -1,8 +1,8 @@
 /**
  * dsh-plugin-teamflow core — 流水线编排中枢（阶段执行 / 入口 / 取消 / 断点续跑）。
  * 依赖：context/backlog/metering/runner/report + prompts + util/constants/types + store。
- * 【mode 策略路由】后续 triage（P/L/T/M/F）将在这里挂 MODE_REGISTRY（策略表），
- * 取代 executePipeline 内散落的 if/else——见 ADR-0004 与 docs/adr/0004。
+ * 【档位阶段集】按 mode（full/medium/lite/tech/patch）经 STAGE_POLICY（constants.ts）
+ * 展开实际执行阶段集（resolveStages），再与团队阶段取交集——见 ADR-0004。
  */
 import { runtime, runs, inFlight, activeProducts, providerName, workspaceScopeOf } from './context.ts'
 import { initPipelineBacklog, advanceTask, storeFor, parseDefects, noteTaskStageUsage, noteTaskAssign, createSubtask, completeSubtask, noteSubtaskUsage, getSubtasks } from './backlog.ts'
@@ -10,7 +10,7 @@ import { withRetry, runPool } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
 import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint } from '../util.ts'
-import { RETRY_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME } from '../constants.ts'
+import { RETRY_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, resolveStages } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext } from '../types.ts'
@@ -86,6 +86,9 @@ export async function executePipeline(
   const tasks = normalizeTasks(options.tasks)
   const maxConcurrency = Number.isFinite(options.maxConcurrency) && options.maxConcurrency > 0 ? Math.min(options.maxConcurrency, 8) : 3
   const timeline: Record<string, unknown> = {}
+  // 档位→阶段集（ADR-0004 差异执行的单一事实来源）：先按 mode + needDesign/needScaffold 展开，
+  // 再与团队阶段列表取交集（团队可进一步裁剪）。取代散落的 if/else 阶段门控。
+  const stageSet = resolveStages(options.mode, { needDesign: options.needDesign, needScaffold: options.needScaffold })
   // 团队配置：加载团队的阶段列表，确定哪些阶段跳过（optional + 未启用）
   let activeStageKeys: Set<string> | null = null
   if (options.teamId) {
@@ -97,7 +100,8 @@ export async function executePipeline(
       journal.logs.push({ t: Date.now(), level: 'info', message: `团队「${team.name}」：阶段 ${active.map((s) => s.label).join(' → ')}` })
     }
   }
-  const stageEnabled = (key: string) => !activeStageKeys || activeStageKeys.has(key)
+  journal.logs.push({ t: Date.now(), level: 'info', message: `档位阶段集：mode=${options.mode || 'full'} → ${stageSet.join(' → ') || '(空)'}` })
+  const enabled = (key: string) => stageSet.indexOf(key as any) !== -1 && (!activeStageKeys || activeStageKeys.has(key))
   // 断点续跑：跳过 resume.phase 之前的阶段
   const resumed = (phase) => !!resume && PHASE_ORDER.indexOf(phase) < PHASE_ORDER.indexOf(resume.phase)
   const logSkip = (phase) => journal.logs.push({ t: Date.now(), level: 'warn', message: `跳过已完成阶段：${phase}（断点续跑）` })
@@ -155,9 +159,9 @@ export async function executePipeline(
       if (journal.cancelled) return
     }
 
-    /* ── UI/UX 设计阶段（needDesign 即启用；lite 也保留，否则显式要求设计的 UI 需求会被吞掉） ── */
+    /* ── UI/UX 设计阶段（档位阶段集启用；lite+needDesign 也保留，显式要求的 UI 需求不被吞） ── */
     let design = null
-    if (stageEnabled('design') && options.needDesign) {
+    if (enabled('design')) {
       if (resumed('UI/UX 设计')) {
         design = resume.products.design
         timeline.design = design
@@ -174,9 +178,9 @@ export async function executePipeline(
       }
     }
 
-    /* ── 架构规划阶段 ── */
+    /* ── 架构规划阶段（档位阶段集启用：显式 needScaffold 才含，见 STAGE_POLICY） ── */
     let scaffold = null
-    if (stageEnabled('scaffold') && options.needScaffold) {
+    if (enabled('scaffold')) {
       if (resumed('架构规划')) {
         scaffold = resume.products.scaffold
         timeline.scaffold = scaffold
@@ -303,12 +307,12 @@ export async function executePipeline(
     }
     persistJournal(journal)
 
-    /* ── QA 测试阶段 ── */
+    /* ── QA 测试阶段（档位阶段集启用：patch 档不含 qa，见 STAGE_POLICY） ── */
     let qa = null
-    if (!stageEnabled('qa') || options.mode === 'patch') {
-      // 团队无 QA 阶段 或 patch 档：跳过独立 QA
-      journal.logs.push({ t: Date.now(), level: 'info', message: 'patch 模式：跳过独立 QA（单点修复，开发自测兜底）' })
-      qa = 'patch 档：独立 QA 跳过（单点修复，开发自测兜底）'
+    if (!enabled('qa')) {
+      // 档位阶段集无 QA（patch）或团队未启用 QA：跳过独立 QA
+      journal.logs.push({ t: Date.now(), level: 'info', message: '当前档位阶段集不含独立 QA：跳过（单点修复，开发自测兜底）' })
+      qa = '（独立 QA 跳过：当前档位由开发自测兜底）'
     } else if (resumed('QA 测试')) {
       qa = resume.products.qa
       timeline.qa = qa

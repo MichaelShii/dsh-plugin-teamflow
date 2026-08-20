@@ -20,3 +20,77 @@ export const STATUS = {
 export const PHASE_ORDER = ['PRD 产品需求', 'UI/UX 设计', '架构规划', '技术方案', '开发', 'QA 测试', '产品验收']
 export const PHASE_KEY_OF = { prd: 'PRD 产品需求', design: 'UI/UX 设计', scaffold: '架构规划', tech: '技术方案', dev: '开发', qa: 'QA 测试', acceptance: '产品验收' }
 export const PHASE_KEY_BY_NAME = { 'PRD 产品需求': 'prd', 'UI/UX 设计': 'design', '架构规划': 'scaffold', '技术方案': 'tech', '开发': 'dev', 'QA 测试': 'qa', '产品验收': 'acceptance' }
+
+/**
+ * 档位→阶段集策略表（ADR-0004「阶段集差异执行」的单一事实来源）。
+ * 每个档位声明执行顺序的阶段规则；`when` 为条件阶段（满足才含入）。
+ * ⚠ 设计要点：design/scaffold 在所有档位都按**显式 flag**（needDesign/needScaffold）条件化，
+ * 显式请求永不被档位吞掉（v0.8.1「lite 不再吞显式设计」原则的泛化）。
+ * 档位之间的真正差异由 pipeline 的 prompt 形态承担：PRD 形态（prd/techChange/patchConfirm）、
+ * tech 文档形态（isHeavy/architect 蓝图）、patch 无独立 QA。
+ * - patch：无独立 QA（单点修复，开发自测兜底）；显式 needDesign/needScaffold 仍有效。
+ * - full 的 PM 前置评估、medium 强制设计为后续待办（见 AGENTS §6），非本表范围。
+ */
+export type StageKey = 'prd' | 'design' | 'scaffold' | 'tech' | 'dev' | 'qa' | 'acceptance'
+export type StageMode = 'full' | 'medium' | 'lite' | 'tech' | 'patch'
+export interface StagePolicyOpts {
+  needDesign?: boolean
+  needScaffold?: boolean
+}
+export interface StageRule {
+  key: StageKey
+  /** 条件阶段：满足才含入执行集；缺省为恒含。 */
+  when?: (o: StagePolicyOpts) => boolean
+}
+export const STAGE_POLICY: Record<StageMode, StageRule[]> = {
+  full: [
+    { key: 'prd' },
+    { key: 'design', when: (o) => !!o.needDesign },
+    { key: 'scaffold', when: (o) => !!o.needScaffold },
+    { key: 'tech' },
+    { key: 'dev' },
+    { key: 'qa' },
+    { key: 'acceptance' },
+  ],
+  medium: [
+    { key: 'prd' },
+    { key: 'design', when: (o) => !!o.needDesign },
+    { key: 'scaffold', when: (o) => !!o.needScaffold },
+    { key: 'tech' },
+    { key: 'dev' },
+    { key: 'qa' },
+    { key: 'acceptance' },
+  ],
+  lite: [
+    { key: 'prd' },
+    { key: 'design', when: (o) => !!o.needDesign },
+    { key: 'scaffold', when: (o) => !!o.needScaffold },
+    { key: 'tech' },
+    { key: 'dev' },
+    { key: 'qa' },
+    { key: 'acceptance' },
+  ],
+  tech: [
+    { key: 'prd' },
+    { key: 'design', when: (o) => !!o.needDesign },
+    { key: 'scaffold', when: (o) => !!o.needScaffold },
+    { key: 'tech' },
+    { key: 'dev' },
+    { key: 'qa' },
+    { key: 'acceptance' },
+  ],
+  patch: [
+    { key: 'prd' },
+    { key: 'design', when: (o) => !!o.needDesign },
+    { key: 'scaffold', when: (o) => !!o.needScaffold },
+    { key: 'tech' },
+    { key: 'dev' },
+    { key: 'acceptance' },
+  ],
+}
+
+/** 按档位 + 条件展开实际执行阶段集（纯函数；未知档回退 full）。 */
+export function resolveStages(mode: StageMode | string | null | undefined, opts: StagePolicyOpts = {}): StageKey[] {
+  const rules = STAGE_POLICY[(mode || 'full') as StageMode] || STAGE_POLICY.full
+  return rules.filter((r) => !r.when || r.when(opts)).map((r) => r.key)
+}
