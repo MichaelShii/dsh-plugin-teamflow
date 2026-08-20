@@ -30,8 +30,8 @@ export const PIPELINE_MODES: PipelineMode[] = ['full', 'medium', 'lite', 'tech',
 export const MODE_REGISTRY: Record<PipelineMode, ModeSpec> = {
   full: { key: 'full', label: 'full（完整）', prdForm: 'full', needDesignDefault: true, independentQA: true, techDoc: true, desc: '跨模块大需求 / 新功能重：完整 7 段 + PM 前置评估' },
   medium: { key: 'medium', label: 'medium（标准）', prdForm: 'full', needDesignDefault: true, independentQA: true, techDoc: true, desc: '含 UI 的中等功能：PRD+设计+技术方案+开发+QA+验收' },
-  lite: { key: 'lite', label: 'lite（轻量）', prdForm: 'confirm', needDesignDefault: false, independentQA: true, techDoc: false, desc: '单模块小功能/微增强：PRD(确认型)+开发+QA+验收（needDesign 时含 UI/UX 设计）' },
-  tech: { key: 'tech', label: 'tech（改造）', prdForm: 'tech-change', needDesignDefault: false, independentQA: true, techDoc: false, desc: '技术驱动改造/优化/重构/热修：技术变更单+开发+QA+验收（回归加强）' },
+  lite: { key: 'lite', label: 'lite（轻量）', prdForm: 'confirm', needDesignDefault: false, independentQA: true, techDoc: false, desc: '单模块小功能/微增强：PRD(确认型)+轻量架构蓝图+开发+QA+验收（needDesign 时含 UI/UX 设计）' },
+  tech: { key: 'tech', label: 'tech（改造）', prdForm: 'tech-change', needDesignDefault: false, independentQA: true, techDoc: false, desc: '技术驱动改造/优化/重构/热修：技术变更单+轻量架构蓝图+开发+QA+验收（回归加强）' },
   patch: { key: 'patch', label: 'patch（热修）', prdForm: 'confirm', needDesignDefault: false, independentQA: false, techDoc: false, desc: '单行/常量/版本号/hotfix：单 agent 直改+自测即交付（无独立 QA）' },
 }
 
@@ -40,7 +40,7 @@ const SIGNALS: Array<{ mode: 'patch' | 'tech' | 'lite' | 'medium' | 'full'; word
   { mode: 'patch', words: ['hotfix', '热修', '修复 bug', '修 bug', '改个 bug', '版本号', '常量', '一行', 'bump', '回滚', '卫生', '笔误', '拼写'] },
   { mode: 'tech', words: ['重构', '优化', '升级', '架构', '性能', '依赖', '脚手架', '缓存', '清理', '遗留债', '工程', '内部改造', '技术债'] },
   { mode: 'lite', words: ['微功能', '小功能', '小增强', '加个', '补一个', '轻微', '顺手'] },
-  { mode: 'medium', words: ['界面', 'UI', '视觉', '页面', '按钮', '样式', '交互', '布局', '组件'] },
+  { mode: 'medium', words: ['界面', 'UI', '视觉', '页面', '按钮', '样式', '交互', '布局', '组件', '持久化', 'localStorage', '本地存储', '存储', '保存', '恢复', '存档', '独立模块', '抽象', '存储层', 'sessionStorage', 'IndexedDB', '跨模块', '数据层'] },
   { mode: 'full', words: ['跨模块', '完整', '大型', '对接', '集成', '模块化', '重构为', '二期', '平台'] },
 ]
 
@@ -66,6 +66,14 @@ export function suggestMode(requirement: string, opts?: { needDesign?: boolean; 
   // 护栏兜底：patch 不适用于"需求含测试/验收/跨文件"场景；UI 需求不得落 patch/tech
   if ((mode === 'patch' || mode === 'tech') && (opts && opts.needDesign)) mode = 'medium'
   if ((mode === 'patch') && (countOf('tech') > 0 || text.includes('新增') || text.includes('功能'))) mode = 'lite'
+
+  // M1 架构护栏：命中"架构性"信号（持久化/存储/独立模块/抽象/跨模块等）→ 不得落 lite/tech/patch，
+  // 强制 medium+（必须有架构阶段产蓝图）。架构性改动靠局部视角会塌，不能当微功能/改造处理。
+  const architectureSignals = ['持久化', 'localStorage', '本地存储', '存储', '保存', '恢复', '存档', '独立模块', '抽象', '存储层', 'sessionStorage', 'IndexedDB', '跨模块', '数据层']
+  if ((mode === 'lite' || mode === 'tech' || mode === 'patch') && architectureSignals.some((w) => text.includes(w))) {
+    mode = 'medium'
+    rationale.push(`架构护栏：需求含「${architectureSignals.find((w) => text.includes(w))}」→ 强升 medium（需架构阶段）`)
+  }
 
   const kind = mode === 'patch' ? '热修/单点' : mode === 'tech' ? '技术驱动改造' : mode === 'lite' ? '微功能' : mode === 'medium' ? '标准功能(含UI)' : '完整需求'
   const confidence: 'high' | 'medium' | 'low' = mode === 'patch' ? 'high' : hits.length >= 2 ? 'medium' : 'low'

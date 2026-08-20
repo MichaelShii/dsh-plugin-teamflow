@@ -104,7 +104,7 @@ function registerTools(ctx) {
       teamId: { type: 'string', description: '团队 id（对应 teams.json 中的团队；缺省使用当前会话选中的团队）' },
       needDesign: { type: 'boolean', description: '涉及 UI 改造时设为 true' },
       needScaffold: { type: 'boolean', description: '项目尚未建立时设为 true' },
-      lite: { type: 'boolean', description: '微功能轻量模式（推荐小改动）：跳过独立技术方案文档阶段（PRD/变更单即契约），直接开发 → QA → 验收；若 needDesign=true 则保留 UI/UX 设计阶段（省 token/时间，可追溯性保留）' },
+      lite: { type: 'boolean', description: '微功能轻量模式（推荐小改动）：仍跑轻量架构阶段产出架构蓝图（供开发继承，不写完整 TECHNICAL.md 文档），直接开发 → QA → 验收；若 needDesign=true 则保留 UI/UX 设计阶段（省 token/时间，可追溯性保留）' },
       mode: { type: 'string', description: '需求路由模式：full / medium / lite / tech / patch（缺省自动 triage；可用 teamflow_triage 预判）' },
       productRoot: { type: 'string', description: '产品线目录（如 products/tetris）' },
       maxConcurrency: { type: 'integer', description: '开发任务并发数（默认 3，最大 8）' },
@@ -523,8 +523,9 @@ export class TeamflowService extends TypertRemoteService {
     if (agent && typeof agent.inject === 'function') {
       try { agent.inject(injectPayload) } catch (e) { /* inject 失败不影响主流程 */ }
     } else {
-      // agent 尚未加载（新会话懒加载），存入 pending，后续补发
+      // agent 尚未加载（新会话懒加载），存入 pending，2 秒后重试（agent 通常 1-2s 内就绪）
       pendingInjections.set(sid, { teamName: team.name, teamIcon: team.icon, teamId: tid })
+      setTimeout(() => tryFlushPendingInjections(sid), 2000)
     }
     return { ok: true, team: { id: team.id, name: team.name, icon: team.icon } }
   }

@@ -60,6 +60,11 @@ export interface TeamflowState {
     verdict?: string | null
     endedAt?: number | null
   } | null
+  /** 本次 run 的运行时注入上下文（不持久化；M0 状态核对 + M1 架构蓝图 + M2 dev 蓝图）。 */
+  __runCtx?: {
+    sanity?: string
+    blueprint?: string
+  } | null
 }
 
 /** 空态 state。 */
@@ -176,6 +181,11 @@ export function noteRun(projectKey: string, run: { id?: string; requirement?: st
 /** 按角色渲染 state slice（注入到子代理 prompt）。角色 → 只拿相关片段。 */
 export function stateSliceFor(state: TeamflowState, role: 'pm' | 'design' | 'arch' | 'tech' | 'dev' | 'qa' | 'acceptance'): string {
   const lines: string[] = []
+  // 本次 run 注入上下文（M0 状态核对 + M1 架构蓝图）：所有角色都先看到"现状 + 架构基线"
+  if (state.__runCtx) {
+    if (state.__runCtx.sanity) lines.push(state.__runCtx.sanity)
+    if (state.__runCtx.blueprint && (role === 'arch' || role === 'tech' || role === 'dev')) lines.push(state.__runCtx.blueprint)
+  }
   lines.push('【预编译产品状态（state.json · 权威记忆在 docs/teamflow/memory.md，本块已是够用的索引，勿再全量读历史文档）】')
   if (state.product.currentVersion) lines.push(`- 当前版本：${state.product.currentVersion}`)
   if (state.product.summary) lines.push(`- 产品概要：${state.product.summary}`)

@@ -101,8 +101,62 @@ export function handoffBrief(text: string | null | undefined): string {
 export function parseAcceptanceVerdict(text) {
   const acc = String(text || '')
   const accLine = (acc.split('\n').find((l) => /验收结论|整体结论/.test(l)) || '').replace(/\|.*/, '').trim()
+  // M3 架构门禁：明确的架构打回信号 → rework（无论结论行写没写「通过」）
+  // 覆盖：架构返工/重复实现/偏离蓝图/该拆未拆/该抽象未抽象/破坏既有结构
+  if (/架构.*(返工|不通过|打回|需重构)|重复实现|重复适配|偏离蓝图|未按蓝图|该拆未拆|该抽象未抽象|破坏既有结构|结构性.*问题/.test(acc)) return 'rework'
   if (/❌\s*不通过|需返工|未通过/.test(accLine) && !/✅\s*通过/.test(accLine)) return 'rework'
   if (/📝\s*需求不适用/.test(acc)) return 'reject'
   if (!/通过|✅|⚠️/.test(accLine) && /需求不适用|需求与实际不符|需求站不住|需求无效|无需改动|无需修改/.test(accLine)) return 'reject'
   return 'accepted'
+}
+
+/** 架构蓝图（M1/M2）：tech/architect 阶段的产物契约，host 解析注入 dev。 */
+export interface BlueprintModule {
+  responsibility: string
+  dependsOn?: string[]
+  assemblyOrder?: number
+  why?: string
+}
+export interface BlueprintTask {
+  title: string
+  files?: string[]
+  spec?: string
+}
+export interface Blueprint {
+  summary: string
+  modules?: Record<string, BlueprintModule>
+  duplications?: string[]
+  tasks?: BlueprintTask[]
+  /** 人读渲染文本（注入 dev/QA 用的简版） */
+  render: string
+}
+
+const bdOpen = '<!-- blueprint -->'
+const bdClose = '<!-- /blueprint -->'
+
+/**
+ * 从 tech/architect 产出中提取架构蓝图 JSON 块。
+ * 约定：产出内嵌 `<!-- blueprint -->{...json...}<!-- /blueprint -->`。
+ * 解析失败返回 null（不影响主流程）。
+ */
+export function extractBlueprint(text: string | null | undefined): Blueprint | null {
+  const s = String(text || '')
+  const i = s.indexOf(bdOpen)
+  const j = s.indexOf(bdClose)
+  if (i === -1 || j === -1 || j <= i) return null
+  const raw = s.slice(i + bdOpen.length, j).trim()
+  let parsed: { summary?: string; modules?: Record<string, BlueprintModule>; duplications?: string[]; tasks?: BlueprintTask[] } | null = null
+  try { parsed = JSON.parse(raw) } catch (e) { return null }
+  if (!parsed || typeof parsed !== 'object') return null
+  const summary = typeof parsed.summary === 'string' ? parsed.summary : ''
+  const modules = parsed.modules || {}
+  const duplications = Array.isArray(parsed.duplications) ? parsed.duplications : []
+  const tasks = Array.isArray(parsed.tasks) ? parsed.tasks : []
+  const parts: string[] = []
+  if (summary) parts.push(`架构判断：${summary}`)
+  const modEntries = Object.entries(modules)
+  if (modEntries.length) parts.push(`模块蓝图：${modEntries.map(([f, m]) => `${f}→${m.responsibility || ''}${m.why ? `（${m.why}）` : ''}`).join('；')}`)
+  if (duplications.length) parts.push(`重复风险：${duplications.join('；')}`)
+  if (tasks.length) parts.push(`架构拆解任务：${tasks.map((t) => t.title).join('，')}`)
+  return { summary, modules, duplications, tasks, render: `【架构蓝图（tech 阶段产出，dev 须在既有架构上实现，勿重建）】\n${parts.join('\n')}` }
 }

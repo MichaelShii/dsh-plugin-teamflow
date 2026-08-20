@@ -8,8 +8,8 @@ import { runtime, runs, inFlight, activeProducts, providerName, workspaceScopeOf
 import { initPipelineBacklog, advanceTask, storeFor, parseDefects, noteTaskStageUsage, noteTaskAssign, createSubtask, completeSubtask, noteSubtaskUsage, getSubtasks } from './backlog.ts'
 import { withRetry, runPool } from './runner.ts'
 import { deliverCompletion } from './report.ts'
-import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
-import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict } from '../util.ts'
+import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
+import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint } from '../util.ts'
 import { RETRY_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
@@ -17,6 +17,7 @@ import type { Journal, PipelineOptions, ResumeContext } from '../types.ts'
 import { normalizeMode, runTriage } from './triage.ts'
 import { loadTeams, findTeam, getActiveStages } from './teams.ts'
 import { loadState, extractStateBlock, mergeStateBlock, noteRun } from './state.ts'
+import { runSanityCheck } from './sanity.ts'
 
 /** 从 journal 已完成阶段重建断点续跑产物（prd/design/scaffold/tech/qa/acceptance/dev）。 */
 export function buildResumeProducts(journal) {
@@ -112,6 +113,21 @@ export async function executePipeline(
 
     // 预编译 state（跨 run 累积索引）：各阶段 prompt 注入 slice；结束后提取/合并 state 块
     const state = loadState(journal.workspace || 'default')
+    // M0 状态核对：核对代码库真实状态（多人/场外提交/非流水线改动），注入后续所有阶段。
+    // 核心原则：认知可复用"减量"，但不替代"对现状的核对"。
+    try {
+      const wsCwd = workspaceScopeOf(parent).path
+      const sanity = runSanityCheck(wsCwd)
+      state.__runCtx = { ...(state.__runCtx || {}), sanity: sanity.summary }
+      journal.sanity = { ok: sanity.ok, branch: sanity.branch, hasDirty: sanity.hasDirty, dirty: sanity.dirty.slice(0, 1000), recentCommits: sanity.recentCommits.slice(0, 1000), summary: sanity.summary }
+      if (sanity.hasDirty || !sanity.ok) {
+        journal.logs.push({ t: Date.now(), level: 'warn', message: sanity.summary })
+      } else {
+        journal.logs.push({ t: Date.now(), level: 'info', message: sanity.summary })
+      }
+    } catch (e) {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: '状态核对失败（不影响流程）：' + String((e && e.message) || e) })
+    }
     const mergeStageState = (phaseKey, output) => {
       const block = extractStateBlock(output)
       if (block) mergeStateBlock(journal.workspace || 'default', block, phaseKey)
@@ -177,22 +193,33 @@ export async function executePipeline(
       }
     }
 
-    /* ── 技术方案阶段 ── */
+    /* ── 技术方案/架构阶段（全模式启用；lite/tech/patch 轻量产架构蓝图，不写文档） ── */
     let tech = null
-    if (options.lite || options.mode === 'tech' || options.mode === 'patch') {
-      // lite/tech/patch 模式：跳过独立技术方案文档阶段 —— 以「PRD/变更单 + 任务卡」为契约
-      journal.logs.push({ t: Date.now(), level: 'info', message: `${options.mode || 'lite'} 模式：跳过独立技术方案阶段（PRD/变更单即契约）` })
-    } else if (resumed('技术方案')) {
+    if (resumed('技术方案')) {
       tech = resume.products.tech
       timeline.tech = tech
       logSkip('技术方案')
     } else {
-      journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：技术方案' })
-      const techR = await withRetry(journal, parent, '高级全栈工程师 · 技术方案', '技术方案', techPrompt(prd, design, scaffold, tasks, root, journal.id, state), signal)
-      if (!techR.text) { throw new Error(`技术方案失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
+      const isHeavy = !options.lite && options.mode !== 'tech' && options.mode !== 'patch'
+      journal.logs.push({ t: Date.now(), level: 'phase', message: isHeavy ? '进入阶段：技术方案' : '进入阶段：架构蓝图' })
+      const label = isHeavy ? '高级全栈工程师 · 技术方案' : '架构师 · 架构蓝图'
+      const prompt = isHeavy
+        ? techPrompt(prd, design, scaffold, tasks, root, journal.id, state)
+        : architectPrompt(prd, root, journal.id, state)
+      const techR = await withRetry(journal, parent, label, '技术方案', prompt, signal)
+      if (!techR.text) { throw new Error(`${label}失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
       tech = techR.text
       timeline.tech = tech
       mergeStageState('tech', tech)
+      // 提取架构蓝图 JSON → 注入后续阶段（dev 继承蓝图）并用于自动拆任务
+      const bd = extractBlueprint(tech)
+      if (bd && bd.summary !== undefined) {
+        try {
+          state.__runCtx = state.__runCtx || {}
+          state.__runCtx.blueprint = bd.render
+          journal.blueprint = { modules: bd.modules, tasks: bd.tasks }
+        } catch (e) { /* 蓝图注入失败不影响 */ }
+      }
       noteTaskStageUsage(journal)
       if (journal.cancelled) return
     }
@@ -205,12 +232,36 @@ export async function executePipeline(
       logSkip('开发')
     } else {
       journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：开发' })
-      const devTaskDefs = tasks.length > 0 ? tasks : [{ title: '整体开发', spec: '按技术方案实现全部需求' }]
-      journal.logs.push({ t: Date.now(), level: 'info', message: `开发阶段开始，任务数：${devTaskDefs.length}（并发 ${maxConcurrency}）` })
+      // 开发任务来源（按优先级）：架构蓝图自动拆 > 调用方显式 tasks > 整体开发兜底。
+      // M2「认知前置 + 架构落地」：架构师（tech/architect 阶段）已按文件边界拆好蓝图 tasks，
+      // dev 继承蓝图在既有架构上实现；无蓝图时退化为整体开发或调用方 tasks。
+      const blueprintTasks = (journal.blueprint && Array.isArray(journal.blueprint.tasks) && journal.blueprint.tasks.length)
+        ? journal.blueprint.tasks.map((t) => ({ title: t.title || '开发任务', files: Array.isArray(t.files) ? t.files : [], spec: t.spec || '' }))
+        : []
+      const devTaskDefs: Array<{ title: string; spec: string; files: string[] }> = blueprintTasks.length
+        ? blueprintTasks
+        : tasks.length > 0
+          ? tasks.map((t) => ({ title: t.title, spec: t.spec, files: [] }))
+          : [{ title: '整体开发', spec: '按技术方案/需求实现全部改动', files: [] }]
+      // 冲突检测：蓝图任务文件有交集 → 合并（保证并发不写同一文件）；无交集才可并行
+      const mergedDefs: Array<{ title: string; files: string[]; spec: string }> = []
+      for (const t of devTaskDefs) {
+        const hit = t.files && t.files.length
+          ? mergedDefs.find((m) => m.files.some((f) => t.files.includes(f)))
+          : undefined
+        if (hit) {
+          hit.title = `${hit.title} + ${t.title}`
+          hit.spec = `${hit.spec}${t.spec ? `；${t.spec}` : ''}`
+          for (const f of (t.files || [])) if (!hit.files.includes(f)) hit.files.push(f)
+        } else {
+          mergedDefs.push({ title: t.title, files: t.files || [], spec: t.spec || '' })
+        }
+      }
+      journal.logs.push({ t: Date.now(), level: 'info', message: `开发阶段开始，任务数：${mergedDefs.length}（并发 ${maxConcurrency}${blueprintTasks.length ? '，源自架构蓝图自动拆解' : ''}）` })
       advanceTask(journal, 'running', null, '开发开始（待办 → 开发中）', { by: 'dev' })
       // 为每个 dev 子任务建一张子卡（并行 agent 各自独立跟踪）
-      const subCards = devTaskDefs.map((dt) => createSubtask(journal, dt.title, dt.spec))
-      devResults = await runPool(devTaskDefs, maxConcurrency, async (task, idx) => {
+      const subCards = mergedDefs.map((dt) => createSubtask(journal, dt.title, dt.spec))
+      devResults = await runPool(mergedDefs, maxConcurrency, async (task, idx) => {
         const sub = subCards[idx]
         if (sub) {
           completeSubtask(journal, sub.id, false, null, null) // 先标记 running（end 由 complete 设）

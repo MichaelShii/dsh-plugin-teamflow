@@ -23,7 +23,7 @@
 |---|---|---|
 | **摘要索引** | 本文件 | 先读：现状 / 结构 / 工程约定 / 待办 |
 | 使用与架构 | `README.md` | 安装、契约速览、token/lite 说明、ADR 索引 |
-| 决策记录 | `docs/adr/0001~0005` | 自研 journal(不引 LangGraph) / AGENTS 最小侵入 / 部署+token 口径 / triage+共享状态 / **需求无效→验收「需求不适用」拦截** |
+| 决策记录 | `docs/adr/0001~0006` | 自研 journal(不引 LangGraph) / AGENTS 最小侵入 / 部署+token 口径 / triage+共享状态 / 需求无效→验收「需求不适用」拦截 / **认知前置+架构落地重构(质量优先)** |
 | 测试 | `test/smoke.js` `test/journal.test.js` | 结构/描述符 smoke + journal 行为 |
 
 ## 3. 工程结构（领域划分，单向依赖）
@@ -71,9 +71,11 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 | v0.10(进行) | 多团队架构(teams.json)+UI"+团队"触发+workspace 级隔离(UUID)+单任务轮转+dev 子卡+官方口径 token 展示+会话暂停/resume+state.json 预编译索引+版本切片/一次成型纪律+子代理路由跟随主线程 |
 | v0.10.1 | **验收结论解析修复**（误报实锤 run tf-msytlok5：验收 ✅ 通过，记忆回写段「SUMMARY.md 结构无需改动」命中旧正则「无需改动」→ 误判 reject 杀整条流水线）。`parseAcceptanceVerdict` 移入 util.ts：只认显式「验收结论/整体结论」行 + 专用「📝 需求不适用」全文命中，正文散文不再朴素子串匹配；verdict.test.js 回归覆盖 |
 | v0.10.2 | **执行路径基准**（同一持久化需求 A/B）：流水线 38m/164 调用/11.6M billed vs 原生 DSH 27m/115 调用/19.1M billed。流水线省 ~39% token（阶段/子代理上下文隔离），原生快 ~29%（少门禁但单 agent 上下文膨胀）；质量等价。**拆分价值在「上下文隔离」而非并行次数**。详见 `docs/benchmarks/pipeline-vs-native.md` |
+| v0.11 | **「认知前置 + 架构落地」重构（破坏性，ADR-0006）**：① M0 状态核对（core/sanity.ts，start 跑 git 现状注入各阶段，治"认知过期/场外提交"）；② M1 架构阶段全模式启用（lite 也跑轻量架构蓝图，architectPrompt/techPrompt 产结构化 JSON 蓝图，state.__runCtx 统一注入）；③ M2 dev 继承蓝图 + 按蓝图自动拆任务（devTaskDefs 蓝图优先+文件冲突检测合并）；④ M3 质量门禁（QA/验收加架构核验，parseAcceptanceVerdict 识别架构打回）；⑤ triage 架构护栏（持久化/存储/独立模块等 → 强升 medium）。质量优先于 token：不砍「建全局认知」；原生工作流基线见 `docs/benchmarks/native-workflow.md` |
 
 ## 6. 已知待办
 
+- 🔜 **用「持久化」类需求重跑验证 ADR-0006**：确认 M0 状态核对注入、M1 蓝图产出（架构阶段不再被 lite 跳过）、M2 dev 按蓝图拆任务、M3 验收架构核验（重复适配器应被打回）全链路生效。
 - 🔜 **full/medium 阶段集差异执行**：`core/pipeline.ts` 按 `MODE_REGISTRY` 的 `PipelineSpec` 差异执行（lite/tech/patch 已成型；medium 应强制设计/技术方案、full 应含 PM 前置评估；取代散落 if/else）。
 - **需求有效性前置拦截**（ADR-0005 触发信号）：在 PRD/确认单阶段判别"需求与现状不符"即停，避免走完开发/验收。
 - **deploy.mjs FILES** 未含 `host/core/**`、`host/util.ts`、`host/constants.ts`、`host/prompts/**` 源码（运行时只看 lib，不影响功能；补上保持 profile 工作副本一致，非阻断）。
@@ -84,6 +86,7 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 
 ## 7. 变更记录（近期）
 
+- 2026-08-20：**【认知前置 + 架构落地】重构（ADR-0006，破坏性）**——从「持久化需求 A/B 实测」提炼：流水线质量低于原生的根因是跳过「建全局认知 → 架构决策」。落地：M0 状态核对（`core/sanity.ts`，start 跑 git 现状，注入所有阶段）；M1 架构阶段全模式启用（lite 轻量蓝图 / full-medium 蓝图+文档，`architectPrompt` 允许整读关键文件，产出 `<!-- blueprint -->` JSON）；M2 dev 继承蓝图 + 蓝图自动拆任务（文件冲突检测合并）；M3 QA/验收架构核验（`parseAcceptanceVerdict` 识别架构打回 → rework）；triage 架构护栏（持久化/存储/独立模块 → 强升 medium）。质量优先于 token：不砍「建全局认知」。
 - 2026-08-20：**延迟注入修复**——新会话选团队时 agent 可能尚未加载（懒加载），导致 `agent.inject` 静默失败、模型无团队上下文→不走 teamflow。修复：选团队时若 agent 不可用，存入 `pendingInjections` 队列；在 `start`（流水线启动前）和 `getActiveTeam`（UI 加载时）补发注入。
 - 2026-08-20：**TOKEN_HYGIENE v2 + PRD head+tail 切片**——通用 token 治理：文件作用域（只 read 任务目标文件）、禁止重复读（同文件 read ≤1 次）、批量修复（一次修完所有失败再跑，最多 3 轮）、AGENTS.md/SUMMARY.md 已注入无需重读；QA/验收 PRD 内联改 head+tail 组合切片（覆盖头部基线+尾部新增 AC，预算不变）。基于 BGM run 实际数据对比正常会话，只砍"正常会话不会做的操作"，零质量损失。
 - 2026-08-19：**lite × needDesign 语义修复**：lite 模式不再吞掉显式要求的「UI/UX 设计」——去掉 pipeline 设计阶段闸门里的 `!options.lite`(design 以 `needDesign` 为准启用);lite 仍跳过独立技术方案文档(PRD/变更单即契约)。工具描述/types/triage/README 同步注明「lite + needDesign:true 保留设计阶段」。

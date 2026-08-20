@@ -43,6 +43,20 @@ export interface JournalRecord {
   workspacePath?: string | null
   /** 发起会话 id（阶段子代理的直接 parent；跨会话跳转判定用）。 */
   ownerSession?: string | null
+  /** M0 状态核对结果（start 时快照；多人/场外提交检测）。 */
+  sanity?: {
+    ok?: boolean
+    branch?: string | null
+    hasDirty?: boolean
+    dirty?: string
+    recentCommits?: string
+    summary?: string
+  } | null
+  /** M1/M2 架构蓝图（tech/architect 阶段产出，dev 继承）。 */
+  blueprint?: {
+    modules?: Record<string, unknown>
+    tasks?: Array<{ title: string; files?: string[]; spec?: string }>
+  } | null
   product?: string | null
   reqId?: string | null
   /** 单任务模型：需求关联的唯一（轮转）任务 id。 */
@@ -176,6 +190,8 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     workspacePath: journal.workspacePath || null,
     ownerSession: journal.ownerSession || null,
     product: journal.product || null,
+    sanity: journal.sanity || null,
+    blueprint: journal.blueprint || null,
     reqId: journal.reqId || null,
     taskId: journal.taskId || null,
     taskMap: journal.taskMap || {},
