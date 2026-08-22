@@ -98,9 +98,9 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_start',
-    description: '启动团队研发流水线：按团队配置执行对应阶段（PRD→设计→技术→开发→QA→验收）。通过 teamId 指定团队（对应 teams.json 配置），或在 UI 通过 "+" 按钮选择团队后发送消息自动匹配。阶段失败自动重试，超阈值打回并需人工介入；每阶段记录 token 用量。',
+    description: '启动团队研发流水线（后台异步执行）：按团队配置执行对应阶段（PRD→设计→技术→开发→QA→验收）。通过 teamId 指定团队（对应 teams.json 配置），或在 UI 通过 "+" 按钮选择团队后发送消息自动匹配。阶段失败自动重试，超阈值打回并需人工介入；每阶段记录 token 用量。注意：调用后实现工作由流水线子代理完成，主线程不得自行改代码或跑验证抢活。requirement 必须忠实转写用户原话，不得自行扩写或补充未经读码核实的文件路径/技术断言（下游各阶段会按它建 PRD）。',
     parameters: {
-      requirement: { type: 'string', required: true, description: '用户的需求描述' },
+      requirement: { type: 'string', required: true, description: '用户的需求描述——忠实转写用户原话；不要臆造文件路径、技术方案或未经验证的断言' },
       teamId: { type: 'string', description: '团队 id（对应 teams.json 中的团队；缺省使用当前会话选中的团队）' },
       needDesign: { type: 'boolean', description: '涉及 UI 改造时设为 true' },
       needScaffold: { type: 'boolean', description: '项目尚未建立时设为 true' },
@@ -122,7 +122,7 @@ function registerTools(ctx) {
     },
     output: {
       schema: { type: 'object', additionalProperties: false, required: ['runId', 'status'], properties: { runId: { type: 'string' }, status: { type: 'string' } } },
-      render: (args, value) => [{ type: 'text', text: `团队研发流水线已启动（runId=${value.runId}，${value.status}）。可看面板或 teamflow_status 查询进度/阶段 token；backlog 已持久化到 $DSH_HOME/teamflow。` }],
+      render: (args, value) => [{ type: 'text', text: `团队研发流水线已启动（runId=${value.runId}，${value.status}），正在后台执行。【重要】你现在停手：不要自行读取/修改代码实现该需求，不要重复跑测试验证——实现、QA、汇报由流水线各阶段完成。你只需告知用户流水线已启动，等待流水线完成后的官方完成汇报，再向用户转述结果。可用 teamflow_status 查询进度/阶段 token；backlog 已持久化到 $DSH_HOME/teamflow。` }],
     },
     async execute(args, exec) {
       const parent = exec && exec.agent
@@ -194,7 +194,8 @@ function registerTools(ctx) {
       if (id) {
         const j = runs.get(id)
         if (!j) return { error: `未找到运行：${id}` }
-        return { runId: j.id, status: j.status, workspace: j.workspace || null, snapshot: snapshotOf(j) }
+        const running = j.status === 'running'
+        return { runId: j.id, status: j.status, workspace: j.workspace || null, reminder: running ? '流水线仍在后台执行：不要自行改代码实现该需求或重复跑验证，等待完成汇报。' : null, snapshot: snapshotOf(j) }
       }
       const sc = workspaceScopeOf(exec && exec.agent)
       const arr = runsFor(sc.projectKey).slice(0, 10).map((j) => ({ id: j.id, status: j.status, startedAt: j.startedAt, endedAt: j.endedAt, agentsStarted: j.agentsStarted, stageCount: j.stages.length, requirement: clip(j.requirement, 60) }))
@@ -333,6 +334,11 @@ const activeTeams = new Map<string, string>()
 const pendingInjections = new Map<string, { teamName: string; teamIcon: string; teamId: string }>()
 
 /** 尝试补发延迟注入：agent 可用时注入上下文并清除 pending。 */
+/** 会话注入的 TeamFlow 契约文案（单一事实来源）：何时走流水线 + 启动后主线程必须停手等汇报。 */
+function teamflowContextText(teamIcon: string, teamName: string, teamId: string): string {
+  return `[TeamFlow 上下文] 用户已选择「${teamIcon} ${teamName}」团队。只有收到明确的开发需求（新功能/迭代/重构/bug修复/代码改动请求）时才调用 teamflow_start 并指定 teamId="${teamId}"，requirement 参数忠实转写用户原话即可（不要自行扩写、不要臆造文件路径或技术细节）。收到反馈、讨论、闲聊、UI 意见等非开发请求时，不要调用 teamflow_start，直接正常回复。调用 teamflow_start 之后：流水线在后台执行，你不要再自行读取/修改代码实现该需求，也不要重复跑测试验证——只需告知用户流水线已启动，等待流水线的完成汇报后再答复用户。`
+}
+
 function tryFlushPendingInjections(sessionId: string): void {
   const pending = pendingInjections.get(sessionId)
   if (!pending) return
@@ -341,7 +347,7 @@ function tryFlushPendingInjections(sessionId: string): void {
   try {
     agent.inject({
       type: 'user',
-      content: [{ type: 'text', text: `[TeamFlow 上下文] 用户已选择「${pending.teamIcon} ${pending.teamName}」团队。只有收到明确的开发需求（新功能/迭代/重构/bug修复/代码改动请求）时才调用 teamflow_start 并指定 teamId="${pending.teamId}"。收到反馈、讨论、闲聊、UI 意见等非开发请求时，不要调用 teamflow_start，直接正常回复。` }],
+      content: [{ type: 'text', text: teamflowContextText(pending.teamIcon, pending.teamName, pending.teamId) }],
       source: { kind: 'plugin', plugin: 'dsh-plugin-teamflow', form: 'context' },
     })
     pendingInjections.delete(sessionId)
@@ -517,7 +523,7 @@ export class TeamflowService extends TypertRemoteService {
     const agent = runtime.agents && runtime.agents.get(sid)
     const injectPayload = {
       type: 'user' as const,
-      content: [{ type: 'text' as const, text: `[TeamFlow 上下文] 用户已选择「${team.icon} ${team.name}」团队。只有收到明确的开发需求（新功能/迭代/重构/bug修复/代码改动请求）时才调用 teamflow_start 并指定 teamId="${tid}"。收到反馈、讨论、闲聊、UI 意见等非开发请求时，不要调用 teamflow_start，直接正常回复。` }],
+      content: [{ type: 'text' as const, text: teamflowContextText(team.icon, team.name, tid) }],
       source: { kind: 'plugin' as const, plugin: 'dsh-plugin-teamflow', form: 'context' as const },
     }
     if (agent && typeof agent.inject === 'function') {
