@@ -5,12 +5,12 @@
  * 展开实际执行阶段集（resolveStages），再与团队阶段取交集——见 ADR-0004。
  */
 import { runtime, runs, inFlight, activeProducts, providerName, workspaceScopeOf } from './context.ts'
-import { initPipelineBacklog, advanceTask, storeFor, parseDefects, noteTaskStageUsage, noteTaskAssign, createSubtask, completeSubtask, noteSubtaskUsage, getSubtasks } from './backlog.ts'
+import { initPipelineBacklog, advanceTask, storeFor, parseDefects, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, createSubtask, completeSubtask, noteSubtaskUsage, getSubtasks } from './backlog.ts'
 import { withRetry, runPool } from './runner.ts'
 import { deliverCompletion } from './report.ts'
-import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
+import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
 import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint } from '../util.ts'
-import { RETRY_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, resolveStages } from '../constants.ts'
+import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, resolveStages } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext } from '../types.ts'
@@ -309,6 +309,7 @@ export async function executePipeline(
 
     /* ── QA 测试阶段（档位阶段集启用：patch 档不含 qa，见 STAGE_POLICY） ── */
     let qa = null
+    let qaBlocked = false
     if (!enabled('qa')) {
       // 档位阶段集无 QA（patch）或团队未启用 QA：跳过独立 QA
       journal.logs.push({ t: Date.now(), level: 'info', message: '当前档位阶段集不含独立 QA：跳过（单点修复，开发自测兜底）' })
@@ -320,77 +321,120 @@ export async function executePipeline(
     } else {
       journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：QA 测试' })
       advanceTask(journal, 'testing', null, 'QA 开始（待测试 → 测试中）', { by: 'qa' })
-      const qaR = await withRetry(journal, parent, 'QA 测试工程师 · 功能测试', 'QA 测试', qaPrompt(prd, JSON.stringify(timeline.dev), root, journal.id, state), signal)
-      if (!qaR.text) { advanceTask(journal, 'needs-human', null, 'QA 失败', { by: 'qa' }); throw new Error(`QA 失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
-      qa = qaR.text
-      timeline.qa = qa
-      mergeStageState('qa', qa)
-      noteTaskStageUsage(journal) // QA 角色的真实 usage 累计
-      const qaStages = journal.stages.filter((s) => s.phase === 'QA 测试')
-      noteTaskAssign(journal, 'qa', qaStages.map((s) => s.childId).filter(Boolean).join(',') || '测试组')
-      advanceTask(journal, 'pending-acceptance', clip(qa, 300), 'QA 完成（测试中 → 待验收）', { by: 'qa' })
       const store = storeFor(scopeKey)
-      const defects = parseDefects(qa)
-      if (defects.length > 0) {
-        const req = store.find('req', journal.reqId)
-        defects.slice(0, 8).forEach((d) => {
-          const id = store.nextId('bug')
-          const b = { id, reqId: journal.reqId, taskId: journal.taskId || null, severity: d.severity, title: `QA 缺陷：${d.module || d.id}`, reproduce: '', expected: '', actual: '', ac: '', status: 'open', owner: null, retries: 0, humanIntervention: false, createdAt: Date.now(), updatedAt: Date.now(), events: [] }
-          store.bugs.push(b)
-          if (req) { req.bugIds.push(id); req.status = 'pending-acceptance'; req.updatedAt = Date.now() }
-        })
-        store.persist()
-        journal.logs.push({ t: Date.now(), level: 'warn', message: `QA 发现 ${defects.length} 个缺陷，已登记到 backlog（需开发认领）` })
+      const qaStageChildren = () => journal.stages.filter((s) => s.phase === 'QA 测试').map((s) => s.childId).filter(Boolean).join(',') || '测试组'
+      // QA → 开发修复 → 复验 打回闭环：QA 发现 P0-P2 缺陷则打回开发确认/修复，干净才进验收；超 QA_REWORK_LIMIT 轮需人工。
+      let round = 0
+      let qaClean = false
+      const devFixRounds = []
+      const qaDevSummary = () => {
+        const src = JSON.stringify(timeline.dev)
+        return devFixRounds.length ? `${src}\n【QA 打回后的修复摘要】\n${devFixRounds.join('\n---\n')}` : src
+      }
+      let defects = []
+      do {
+        round += 1
+        const isReverify = round > 1
+        const label = isReverify ? `QA 复验 · 第${round - 1}轮修复后` : 'QA 测试工程师 · 功能测试'
+        const qaR = await withRetry(journal, parent, label, 'QA 测试', qaPrompt(prd, qaDevSummary(), root, journal.id, state), signal)
+        if (!qaR.text) { advanceTask(journal, 'needs-human', null, isReverify ? `QA 复验失败（第 ${round - 1} 轮修复后）` : 'QA 失败', { by: 'qa' }); throw new Error(`QA 失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
+        qa = qaR.text
+        timeline.qa = qa
+        mergeStageState('qa', qa)
+        noteTaskStageUsage(journal) // QA 角色的真实 usage 累计
+        noteTaskAssign(journal, 'qa', qaStageChildren())
+        defects = parseDefects(qa)
+        // 登记全部缺陷（含 P3 观察项，幂等）
+        syncQaDefects(journal, defects)
+        // 阻断判定：只认 P0/P1/P2（P3 观察项非阻断，记卡不循环）
+        const blocking = defects.filter((d) => d.severity !== 'P3')
+        if (blocking.length === 0) {
+          qaClean = true
+          journal.logs.push({ t: Date.now(), level: 'info', message: defects.length ? `QA 仅有 P3 观察项 ${defects.map((d) => d.id).join('、')}（非阻断）` : 'QA 未发现阻断缺陷' })
+          break
+        }
+        if (journal.cancelled) return
+        if (round > QA_REWORK_LIMIT) {
+          // 超过复验轮次上限 → 需人工介入，跳过产品验收（QA 不干净不验收）
+          qaBlocked = true
+          journal.humanIntervention = true
+          journal.logs.push({ t: Date.now(), level: 'error', message: `QA 连续 ${round} 轮（含复验）仍有 ${blocking.length} 个阻断缺陷（${blocking.map((d) => d.id).join('、')}），超出复验上限 ${QA_REWORK_LIMIT}，需人工介入` })
+          advanceTask(journal, 'needs-human', clip(qa, 300), `QA ${round} 轮复验仍有阻断缺陷，超出上限 ${QA_REWORK_LIMIT}，需人工介入`, { by: 'qa' })
+          const req = store.find('req', journal.reqId)
+          if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', `QA 复验 ${QA_REWORK_LIMIT} 轮仍含阻断缺陷，需人工介入（${blocking.map((d) => d.id).join('、')}）`) }
+          break
+        }
+        // 打回开发确认/修复 → 下一轮复验
+        journal.logs.push({ t: Date.now(), level: 'warn', message: `QA 发现 ${blocking.length} 个阻断缺陷（第 ${round} 轮），打回开发确认修复后复验` })
+        advanceTask(journal, 'rework', clip(qa, 300), `QA 打回开发修复（第 ${round}/${QA_REWORK_LIMIT + 1} 轮）`, { by: 'qa' })
+        const fixR = await withRetry(journal, parent, `开发 · QA 缺陷修复（第 ${round} 轮）`, '开发', qaFixPrompt(blocking, qa, tech, prd, root, journal.id, state), signal)
+        if (!fixR.text) { advanceTask(journal, 'needs-human', null, 'QA 打回后开发修复失败', { by: 'qa' }); throw new Error(`开发修复失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
+        devFixRounds.push(clip(fixR.text, 3000))
+        noteTaskStageUsage(journal) // 修复子代理真实 usage 累计到任务卡
+        if (journal.cancelled) return
+      } while (true)
+      if (!qaBlocked && qaClean) {
+        verifyReqBugs(journal) // 复验通过 → 关闭全部 open 缺陷
+        advanceTask(journal, 'pending-acceptance', clip(qa, 300), 'QA 通过（待验收）', { by: 'qa' })
+        journal.logs.push({ t: Date.now(), level: 'info', message: round > 1 ? `QA 复验通过（第 ${round - 1} 轮修复后），无阻断缺陷` : 'QA 未发现 P0/P1/P2 阻断缺陷' })
       } else {
-        journal.logs.push({ t: Date.now(), level: 'info', message: 'QA 未发现 P0/P1/P2 缺陷（未登记 Bug）' })
+        journal.logs.push({ t: Date.now(), level: 'warn', message: 'QA 阶段打回超限结束：产品验收跳过，需求需人工介入' })
       }
       if (journal.cancelled) return
     }
     persistJournal(journal)
 
-    /* ── 产品验收阶段（总是执行） ── */
-    journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：产品验收' })
-    // 单任务模型：验收前任务置「待验收」（patch/无独立 QA 时 task 仍在 testable）
-    {
-      const curTask = storeFor(scopeKey).find('task', journal.taskId)
-      if (curTask && curTask.status !== 'pending-acceptance' && curTask.status !== 'needs-human' && curTask.status !== 'rework') {
-        advanceTask(journal, 'pending-acceptance', null, '进入验收（待验收）', { by: 'pm' })
+    /* ── 产品验收阶段（QA 打回未超限才执行；超限时需求已置 needs-human，跳过验收） ── */
+    if (!qaBlocked) {
+      journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：产品验收' })
+      // 单任务模型：验收前任务置「待验收」（patch/无独立 QA 时 task 仍在 testable）
+      {
+        const curTask = storeFor(scopeKey).find('task', journal.taskId)
+        if (curTask && curTask.status !== 'pending-acceptance' && curTask.status !== 'needs-human' && curTask.status !== 'rework') {
+          advanceTask(journal, 'pending-acceptance', null, '进入验收（待验收）', { by: 'pm' })
+        }
       }
-    }
-    const accR = await withRetry(journal, parent, '产品经理 · 最终验收', '产品验收', acceptancePrompt(prd, qa, JSON.stringify(timeline.dev), root, journal.id, state), signal)
-    if (!accR.text) { advanceTask(journal, 'needs-human', null, '验收失败', { by: 'pm' }); throw new Error(`验收失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
-    const acceptance = accR.text
-    timeline.acceptance = acceptance
-    noteTaskStageUsage(journal) // 验收角色的真实 usage 累计
-    mergeStageState('acceptance', acceptance)
-    // 结论解析：见 parseAcceptanceVerdict（只认结论行，避免正文「无需改动」等否定/引用话术误杀整条流水线）
-    const accVerdict = parseAcceptanceVerdict(acceptance)
-    if (accVerdict === 'reject') {
-      // 需求与现状不符（无有效变更）→ 拦截：task needs-human、req needs-human、流水线中断（非 accepted）
-      advanceTask(journal, 'needs-human', clip(acceptance, 300), '需求与现状不符（无需改动），需人工决定调整或取消需求', { by: 'pm' })
+      const accR = await withRetry(journal, parent, '产品经理 · 最终验收', '产品验收', acceptancePrompt(prd, qa, JSON.stringify(timeline.dev), root, journal.id, state), signal)
+      if (!accR.text) { advanceTask(journal, 'needs-human', null, '验收失败', { by: 'pm' }); throw new Error(`验收失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
+      const acceptance = accR.text
+      timeline.acceptance = acceptance
+      noteTaskStageUsage(journal) // 验收角色的真实 usage 累计
+      mergeStageState('acceptance', acceptance)
+      // 结论解析：见 parseAcceptanceVerdict（只认结论行，避免正文「无需改动」等否定/引用话术误杀整条流水线）
+      const accVerdict = parseAcceptanceVerdict(acceptance)
+      if (accVerdict === 'reject') {
+        // 需求与现状不符（无有效变更）→ 拦截：task needs-human、req needs-human、流水线中断（非 accepted）
+        advanceTask(journal, 'needs-human', clip(acceptance, 300), '需求与现状不符（无需改动），需人工决定调整或取消需求', { by: 'pm' })
+        const store = storeFor(scopeKey)
+        const req = store.find('req', journal.reqId)
+        if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', '需求与现状不符，需人工处理（调整或取消）') }
+        journal.logs.push({ t: Date.now(), level: 'error', message: '需求与现状不符（无需改动），流水线中断，需人工处理' })
+        persistJournal(journal)
+        throw new Error('需求与现状不符，无需改动，需人工决定调整或取消需求')
+      }
+      advanceTask(journal, accVerdict, clip(acceptance, 300), accVerdict === 'rework' ? '验收不通过（需返工）' : '验收完成（待验收 → 已验收）', { by: 'pm' })
       const store = storeFor(scopeKey)
       const req = store.find('req', journal.reqId)
-      if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', '需求与现状不符，需人工处理（调整或取消）') }
-      journal.logs.push({ t: Date.now(), level: 'error', message: '需求与现状不符（无需改动），流水线中断，需人工处理' })
-      persistJournal(journal)
-      throw new Error('需求与现状不符，无需改动，需人工决定调整或取消需求')
-    }
-    advanceTask(journal, accVerdict, clip(acceptance, 300), accVerdict === 'rework' ? '验收不通过（需返工）' : '验收完成（待验收 → 已验收）', { by: 'pm' })
-    const store = storeFor(scopeKey)
-    const req = store.find('req', journal.reqId)
-    if (req) {
-      const openBugs = store.bugs.filter((b) => b.reqId === req.id && b.status !== 'verified' && b.status !== 'closed')
-      if (accVerdict === 'rework') {
-        req.humanIntervention = true
-        store.pushEvent(req, req.status, 'needs-human', '验收不通过（需返工）')
-      } else if (openBugs.length > 0) {
-        store.pushEvent(req, req.status, 'pending-acceptance', '存在未关闭缺陷')
-      } else {
-        store.pushEvent(req, req.status, 'accepted', '验收通过')
+      if (req) {
+        const openBugs = store.bugs.filter((b) => b.reqId === req.id && b.status !== 'verified' && b.status !== 'closed')
+        if (accVerdict === 'rework') {
+          req.humanIntervention = true
+          journal.humanIntervention = true // 汇报状态线：completed+humanIntervention → ⚠️ 已完成（需人工介入）
+          store.pushEvent(req, req.status, 'needs-human', '验收不通过（需返工）')
+        } else if (openBugs.length > 0) {
+          store.pushEvent(req, req.status, 'pending-acceptance', '存在未关闭缺陷')
+        } else {
+          verifyReqBugs(journal) // 验收通过 → 关闭遗留 open 缺陷
+          store.pushEvent(req, req.status, 'accepted', '验收通过')
+        }
       }
+      journal.logs.push({ t: Date.now(), level: 'info', message: '流水线全部完成 ✅' })
+      journal.status = 'completed'
+    } else {
+      // QA 打回超限：验收跳过，需求已 needs-human（humanIntervention=true）
+      journal.logs.push({ t: Date.now(), level: 'error', message: '产品验收跳过：QA 复验超限，需求已置 needs-human，需人工介入' })
+      journal.status = 'completed'
     }
-    journal.logs.push({ t: Date.now(), level: 'info', message: '流水线全部完成 ✅' })
-    journal.status = 'completed'
   } catch (e) {
     if (journal.cancelled) {
       journal.status = 'cancelled'

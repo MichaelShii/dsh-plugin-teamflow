@@ -4,6 +4,8 @@
 
 /** 单阶段连续失败重试上限。 */
 export const RETRY_LIMIT = 2
+/** QA→开发→复验 打回闭环的最大轮数（QA 发现缺陷 → 打回开发修复 → 复验；超过则需人工介入，防无限循环）。 */
+export const QA_REWORK_LIMIT = 2
 /** 单阶段 token 熔断预算（官方口径总消耗：input+cacheRead+cacheWrite+output 累计）。 */
 export const STAGE_TOKEN_BUDGET = 60000
 /** 假阳性完成检测：明确拒绝/放弃模式的输出视为未产出。 */

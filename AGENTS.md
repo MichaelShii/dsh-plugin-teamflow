@@ -23,7 +23,7 @@
 |---|---|---|
 | **摘要索引** | 本文件 | 先读：现状 / 结构 / 工程约定 / 待办 |
 | 使用与架构 | `README.md` | 安装、契约速览、token/lite 说明、ADR 索引 |
-| 决策记录 | `docs/adr/0001~0006` | 自研 journal(不引 LangGraph) / AGENTS 最小侵入 / 部署+token 口径 / triage+共享状态 / 需求无效→验收「需求不适用」拦截 / **认知前置+架构落地重构(质量优先)** |
+| 决策记录 | `docs/adr/0001~0007` | 自研 journal(不引 LangGraph) / AGENTS 最小侵入 / 部署+token 口径 / triage+共享状态 / 需求无效→验收「需求不适用」拦截 / 认知前置+架构落地重构(质量优先) / **QA 打回修复有界闭环(ADR-0007)** |
 | 测试 | `test/smoke.js` `test/stages.test.js` `test/verdict.test.js` `test/journal.test.js` | 结构/描述符 smoke + 档位阶段集 + 验收结论 + journal 行为 |
 
 ## 3. 工程结构（领域划分，单向依赖）
@@ -72,6 +72,7 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 | v0.10.1 | **验收结论解析修复**（误报实锤 run tf-msytlok5：验收 ✅ 通过，记忆回写段「SUMMARY.md 结构无需改动」命中旧正则「无需改动」→ 误判 reject 杀整条流水线）。`parseAcceptanceVerdict` 移入 util.ts：只认显式「验收结论/整体结论」行 + 专用「📝 需求不适用」全文命中，正文散文不再朴素子串匹配；verdict.test.js 回归覆盖 |
 | v0.10.2 | **执行路径基准**（同一持久化需求 A/B）：流水线 38m/164 调用/11.6M billed vs 原生 DSH 27m/115 调用/19.1M billed。流水线省 ~39% token（阶段/子代理上下文隔离），原生快 ~29%（少门禁但单 agent 上下文膨胀）；质量等价。**拆分价值在「上下文隔离」而非并行次数**。详见 `docs/benchmarks/pipeline-vs-native.md` |
 | v0.11 | **「认知前置 + 架构落地」重构（破坏性，ADR-0006）**：① M0 状态核对（core/sanity.ts，start 跑 git 现状注入各阶段，治"认知过期/场外提交"）；② M1 架构阶段全模式启用（lite 也跑轻量架构蓝图，architectPrompt/techPrompt 产结构化 JSON 蓝图，state.__runCtx 统一注入）；③ M2 dev 继承蓝图 + 按蓝图自动拆任务（devTaskDefs 蓝图优先+文件冲突检测合并）；④ M3 质量门禁（QA/验收加架构核验，parseAcceptanceVerdict 识别架构打回）；⑤ triage 架构护栏（持久化/存储/独立模块等 → 强升 medium）。质量优先于 token：不砍「建全局认知」；原生工作流基线见 `docs/benchmarks/native-workflow.md` |
+| v0.12(进行) | **QA 打回修复闭环（ADR-0007）**：QA 发现 P0-P2 阻断缺陷 → 打回开发确认+修复（qaFixPrompt）→ 复验 QA → 干净才进产品验收；`QA_REWORK_LIMIT=2` 上限防无限循环、超限转 needs-human 人工介入；`parseDefects` 容忍 `**P1**` 加粗严重级（修对照实验 tf-mt317a5e 缺陷漏登记）；缺陷卡按 reqId+defectId 幂等登记、复验通过 `verifyReqBugs` 关单（P3 观察项保留）。实证：docs/benchmarks/pipeline-vs-native.md「复核」节 |
 
 ## 6. 已知待办
 
@@ -86,6 +87,7 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 
 ## 7. 变更记录（近期）
 
+- 2026-08-21：**QA 打回修复闭环（ADR-0007）**——对照实验 run tf-mt317a5e 实锤流程双缺口：① `parseDefects` 旧正则要求严重级后紧跟 `|`，QA 报告写 `**P1**`（markdown 加粗）→ 缺陷解析为 0 →「QA 未发现缺陷」日志 + 静默进验收（验收源码复核才拦住 BUG-P1-1）；② QA 阶段无「缺陷→打回开发→复验」闭环，缺陷只登记不回流。落地：`parseDefects` 改按管道单元格解析（容忍 `**P1**`/反引号/行首 `|`，只认 id+P0-P3+模块三要素非 OBS 行）；`pipeline.ts` QA 改 `do…while` 有界闭环——P0-P2 阻断缺陷 → `advanceTask('rework')` + 开发修复子代理（新 `qaFixPrompt`，指令「先确认属实→修复→交还复验」）→ 复验，干净才 `pending-acceptance` 进产品验收；`QA_REWORK_LIMIT=2` 超限 → task/req needs-human + humanIntervention，跳过验收；验收块 `if (!qaBlocked)` 门控。`backlog.ts` 新增 `syncQaDefects`（按 reqId+defectId 幂等建卡/刷新）+ `verifyReqBugs`（复验/验收通过关 P0-P2 open 单，P3 观察项保留）。smoke 增补 3g 断言，typecheck/bundle/全套测试通过。
 - 2026-08-20：**档位阶段集差异执行落地（ADR-0004 待办清理）**——`host/constants.ts` 新增 `STAGE_POLICY` 五档策略表（单一事实来源）+ `resolveStages()` 纯函数；`pipeline.ts` 的 design/scaffold/qa 门控改由 `enabled()`（档位阶段集 × 团队阶段交集）驱动，**取代散落 if/else**。语义关键：**design/scaffold 全档位按显式 flag 条件化（不吞显式请求，v0.8.1 原则泛化）**；patch 始终无独立 QA。初版曾把「medium 去 scaffold」做成结构化排除，审计发现会吞显式 needScaffold/needDesign → 已回正。新增 `test/stages.test.js`（五档展开行为测试，含「显式 flag 不被吞」回归断言），smoke 增补 `3f`，package.json test 链挂上。
 - 2026-08-20：**【认知前置 + 架构落地】重构（ADR-0006，破坏性）**——从「持久化需求 A/B 实测」提炼：流水线质量低于原生的根因是跳过「建全局认知 → 架构决策」。落地：M0 状态核对（`core/sanity.ts`，start 跑 git 现状，注入所有阶段）；M1 架构阶段全模式启用（lite 轻量蓝图 / full-medium 蓝图+文档，`architectPrompt` 允许整读关键文件，产出 `<!-- blueprint -->` JSON）；M2 dev 继承蓝图 + 蓝图自动拆任务（文件冲突检测合并）；M3 QA/验收架构核验（`parseAcceptanceVerdict` 识别架构打回 → rework）；triage 架构护栏（持久化/存储/独立模块 → 强升 medium）。质量优先于 token：不砍「建全局认知」。
 - 2026-08-20：**延迟注入修复**——新会话选团队时 agent 可能尚未加载（懒加载），导致 `agent.inject` 静默失败、模型无团队上下文→不走 teamflow。修复：选团队时若 agent 不可用，存入 `pendingInjections` 队列；在 `start`（流水线启动前）和 `getActiveTeam`（UI 加载时）补发注入。

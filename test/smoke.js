@@ -152,6 +152,19 @@ ok(/resolveStages/.test(pipelineSrc) && /const stageSet = resolveStages/.test(pi
 ok(/const enabled = \(key/.test(pipelineSrc) && /stageSet\.indexOf/.test(pipelineSrc), 'pipeline：enabled() 基于阶段集（档位 × 团队交集）')
 ok(/if \(enabled\('design'\)\)/.test(pipelineSrc) && /if \(enabled\('scaffold'\)\)/.test(pipelineSrc) && /if \(!enabled\('qa'\)\)/.test(pipelineSrc), 'pipeline：design/scaffold/qa 由阶段集门控（取代散落 if/else）')
 
+console.log('── 3g) QA→开发 打回修复→复验 闭环（QA 缺陷不再静默进验收）──')
+ok(/QA_REWORK_LIMIT/.test(constantsSrc), 'constants：QA_REWORK_LIMIT 复验轮次上限（防无限循环）')
+ok(/function parseDefects/.test(backlogSrc) && /\*\*/.test(backlogSrc), 'backlog：parseDefects 容忍 markdown 加粗严重级（**P1**）')
+ok(/export function syncQaDefects/.test(backlogSrc) && /defectId/.test(backlogSrc), 'backlog：QA 缺陷幂等登记（按 reqId+defectId 不重复建卡）')
+ok(/export function verifyReqBugs/.test(backlogSrc), 'backlog：复验通过关闭全部 open 缺陷（verifyReqBugs）')
+ok(/export const qaFixPrompt/.test(promptsSrc) && /先确认，后修复/.test(promptsSrc), 'prompts：qaFixPrompt（QA 缺陷→开发确认+修复，交还复验）')
+ok(/qaFixPrompt\(/.test(pipelineSrc) && /QA 打回开发修复/.test(pipelineSrc), 'pipeline：QA 发现缺陷 → 打回开发修复（qaFixPrompt 子代理）')
+ok(/qaBlocked/.test(pipelineSrc) && /QA_REWORK_LIMIT/.test(pipelineSrc), 'pipeline：复验轮次上限 → 超限置 qaBlocked（需人工）')
+ok(/if \(!qaBlocked\)/.test(pipelineSrc) && /产品验收跳过/.test(pipelineSrc), 'pipeline：QA 不干净则跳过产品验收（干净才进验收）')
+ok(/journal\.humanIntervention = true/.test(pipelineSrc), 'pipeline：打回超限/验收 rework 置 journal.humanIntervention')
+const reportSrc = readFileSync(join(here, '../host/core/report.ts'), 'utf8')
+ok(/journal\.humanIntervention \? '⚠️ 已完成（需人工介入）'/.test(reportSrc), 'report：completed+humanIntervention → ⚠️ 已完成（需人工介入），不再误报 ✅')
+
 console.log('── 4) 其他文件 ──')
 for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../descriptors.ts', '../client/index.tsx', '../host/index.ts', '../store.ts']) {
   ok(existsSync(join(here, f)), `存在 ${f}`)

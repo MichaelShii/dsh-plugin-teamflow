@@ -48,7 +48,7 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
       ? `Token：输入(未命中) ${tok(usageAgg.input)} / 输入(命中) ${tok(usageAgg.cacheRead)} / 写缓存 ${tok(usageAgg.cacheWrite)} / 输出 ${tok(usageAgg.output)} · ${usageAgg.calls} 次调用${hitTotal ? ` · 缓存命中 ${hitTotal}` : ''}`
       : 'Token：—'
     const statusLine = {
-      completed: '✅ 已完成',
+      completed: journal.humanIntervention ? '⚠️ 已完成（需人工介入）' : '✅ 已完成',
       failed: '❌ 失败',
       cancelled: '⏹ 已取消',
       interrupted: '⚠ 中断（可用 teamflow_resume 从断点重跑）',

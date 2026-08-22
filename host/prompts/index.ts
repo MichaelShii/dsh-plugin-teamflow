@@ -287,6 +287,24 @@ ${clip(devSummary, 15000)}
 7. 输出中文 Markdown，具体可执行；报告写入 ${TF_DOCS}/qa/QA-REPORT.md（write 1 次，旧版整文件 mv 归档 ${TF_DOCS}/history/v<旧版>/QA-REPORT.md，正文精炼，不留无限长历史）。【边界】只写 ${TF_DOCS}/ 下文件。
 8. 【state 沉淀】结尾输出 state 块（phase="qa"），summary 写测试结论/被阻断项，extra 放 { "verifyScripts": [...] }。${STATE_BLOCK_INSTRUCTION}`
 
+/** QA 打回后的开发修复 prompt：确认缺陷是否属实 → 修复 → 复验交接（QA→dev 打回闭环用）。 */
+export const qaFixPrompt = (defects, qa, tech, prd, root, runId, state) => `你是高级全栈工程师。QA 复验报告指出了若干缺陷，本阶段请**逐一确认**并修复，随后交由 QA 复验。
+${productCtx(root)}${stateSliceFor(state, 'dev')}${TOKEN_HYGIENE(runId)}
+【QA 复验报告（缺陷清单在报告 §3 缺陷表）】
+${clip(qa, 12000)}
+【QA 指出的缺陷】
+${JSON.stringify(defects, null, 2)}
+【技术方案/架构蓝图摘要（修复应在既有架构上做，勿重建）】
+${(tech && String(tech).trim()) ? clip(tech, 12000) : ''}
+【PRD】相关验收标准见 ${TF_DOCS}/prd/PRD.md（按需 grep 对应 AC 编号，不必通读全文）。
+【要求】
+1. 【先确认，后修复】对每个缺陷逐条核实：它是否确实成立（读代码/复现/对照现象与期望）——
+   确认属实的 → 直接把它修好；QA 误报/与现状不符 → 在摘要中明确说明证据（不得臆造改动，也不得无视真实缺陷）。
+2. 只修改与缺陷相关的文件（可用 grep 定位，不要整文件读无关大文件）；遵守既有架构与代码风格。
+3. 实际修复后运行相关验证命令确保通过（回归底线：既有六套验证不加后门）；命令输出重定向到 logs/teamflow/${runId || '<runId>'}/。
+4. 输出修复摘要（≤40 行中文）：逐条缺陷的「属实性判断 + 修复方式 / 误报证据」，改动文件、如何验证、遗留问题。不要粘贴大段代码。
+5. 【state 沉淀】结尾输出 state 块（phase="dev"），touched 放改动文件数组，summary 写修复结论。${STATE_BLOCK_INSTRUCTION}`
+
 export const acceptancePrompt = (prd, qa, devSummary, root, runId, state) => `你是产品经理（验收负责人）。请对照 PRD 验收标准对本次交付做最终验收。
 ${productCtx(root)}${stateSliceFor(state, 'acceptance')}${TOKEN_HYGIENE(runId)}
 ${ONCE_DISCIPLINE}【PRD（修订记录 + 本次新增 AC）】

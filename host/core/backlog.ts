@@ -109,17 +109,26 @@ export function transitionBacklog(product: string | null | undefined, kind, id: 
   return { ok: true, item: { id: item.id, status: item.status, humanIntervention: item.humanIntervention } }
 }
 
-/** 解析 QA 报告中的结构化缺陷行（| 编号 | P0-3 | 模块 |...），跳过表头与 OBS 观察项。 */
+/**
+ * 解析 QA 报告中的结构化缺陷行（| 编号 | P0-3 | 模块 |...），跳过表头与 OBS 观察项。
+ * 按管道单元格解析（不依赖固定列数），容忍 markdown 加粗/反引号（如 **P1** / `P1`），
+ * 且只认三要素齐全 + 严重级为 P0-P3 的行——修正历史「QA 标 **P1** 却解析不到」的漏登记。
+ */
 export function parseDefects(qaText: string) {
   const defects = []
   const lines = qaText.split('\n')
   for (const line of lines) {
-    const m = line.match(/^\s*\|?\s*(\S+)\s*\|\s*(P[0-3])\s*\|\s*([^|]*)\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|[^|]*\|?/)
-    if (!m) continue
-    const id = m[1]
-    const sev = m[2]
-    const mod = m[3].trim()
-    if (id === '编号' || id.indexOf('OBS') === 0) continue
+    if (line.indexOf('|') === -1) continue
+    const cells = line.split('|').map((s) => (s || '').trim())
+    // 行首可能以 `|` 开头 → 第一个空单元格；去掉
+    if (cells.length && cells[0] === '') cells.shift()
+    if (cells.length < 3) continue
+    const id = cells[0]
+    const sev = (cells[1] || '').replace(/[*`>]/g, '')
+    const mod = (cells[2] || '').replace(/[*`]/g, '').trim()
+    if (!/^P[0-3]$/.test(sev)) continue
+    if (!id || id === '编号' || id.indexOf('OBS') === 0) continue
+    if (!mod) continue
     defects.push({ id, severity: sev, module: mod })
   }
   return defects
@@ -318,4 +327,54 @@ export function assignTask(product: string | null | undefined, kind: string, id:
   item.updatedAt = Date.now()
   store.persist()
   return { ok: true, item: { id: item.id, devAssign: item.devAssign || null, qaAssign: item.qaAssign || null, acceptBy: item.acceptBy || null, owner: item.owner || null } }
+}
+
+/**
+ * QA 复验循环的缺陷登记（幂等）：把本次 QA 报告解析出的缺陷登记/更新到要求下的 bug 列表。
+ * - 按「reqId + defect.id」幂等：已登记过的同一缺陷（rework 多轮复现）不重复建卡，只刷新状态。
+ * - severity 缺失/未知的缺陷行不建卡（防御性：只认明确 P0-P3 的缺陷）。
+ * @returns 本次新增的 bug 记录（仅本轮新创建，不含续跑命中已存在者）
+ */
+export function syncQaDefects(journal, defects) {
+  const store = storeFor(journal.workspace || 'default')
+  const req = journal.reqId ? store.find('req', journal.reqId) : null
+  const created = []
+  for (const d of defects || []) {
+    const id = String(d && d.id || '').trim()
+    if (!id || !/^P[0-3]$/.test(String(d && d.severity || ''))) continue
+    const exist = store.bugs.find((b) => b.reqId === journal.reqId && b.defectId === id)
+    if (exist) {
+      // 幂等：只刷新严重级与状态（若复验仍出现 → 保持 open/reopened 信号）
+      exist.severity = String(d.severity)
+      exist.module = String(d.module || '')
+      exist.updatedAt = Date.now()
+    } else {
+      const bug = {
+        id: store.nextId('bug'), defectId: id, reqId: journal.reqId, taskId: journal.taskId || null,
+        severity: String(d.severity), module: String(d.module || ''), title: `QA 缺陷：${id}`,
+        reproduce: '', expected: '', actual: '', ac: '', status: 'open', owner: null,
+        retries: 0, humanIntervention: false, createdAt: Date.now(), updatedAt: Date.now(), events: [],
+      }
+      store.bugs.push(bug)
+      if (req) { req.bugIds = req.bugIds || []; if (!req.bugIds.includes(bug.id)) { req.bugIds.push(bug.id); req.updatedAt = Date.now() } }
+      created.push(bug)
+    }
+  }
+  store.persist()
+  persistJournal(journal)
+  return created
+}
+
+/** 把某需求下全部 open 的阻断缺陷（P0/P1/P2）标记为已验证关闭（QA 复验通过或验收通过后调用；P3 观察项保留 open 待登记，不误关）。 */
+export function verifyReqBugs(journal) {
+  const store = storeFor(journal.workspace || 'default')
+  let touched = false
+  for (const b of store.bugs) {
+    if (b.reqId === journal.reqId && b.status === 'open' && b.severity !== 'P3') {
+      b.status = 'verified'
+      b.updatedAt = Date.now()
+      touched = true
+    }
+  }
+  if (touched) store.persist()
 }
