@@ -35,10 +35,9 @@ const T = {
 const STATUS_TEXT = {
   created: '立项', 'in-progress': '进行中', 'pending-acceptance': '待验收', accepted: '已验收', closed: '已关闭',
   pending: '待办', running: '开发中', testable: '待测试', testing: '测试中', rework: '打回',
-  'needs-human': '需人工', cancelled: '已取消', open: '待认领', claimed: '处理中', fixed: '已修复待验',
+  'needs-human': '需人工', cancelled: '已关闭', open: '待认领', claimed: '处理中', fixed: '已修复待验',
   verified: '已关闭', reopened: '重开', done: '已完成', completed: '已完成', failed: '失败',
-  interrupted: '已中断', superseded: '已取代',
-}
+  interrupted: '已中断', superseded: '已取代',}
 const STATUS_COLOR = {
   created: T.text2, pending: T.text2, open: T.text2,
   'in-progress': T.brand, running: T.brand, claimed: T.brand, testing: T.brand, fixed: T.brand, reopened: '#8250df',
