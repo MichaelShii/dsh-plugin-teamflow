@@ -4,9 +4,11 @@
  */
 import { runtime, inFlight, providerName } from './context.ts'
 import { accumulateSessionUsage, totalTokensOf } from './metering.ts'
+import { startStageGuard } from './guard.ts'
 import { clip, extractText, normalizeSignal, hasSubstance, isUnretryable, handoffBrief } from '../util.ts'
 import { RETRY_LIMIT, STAGE_TOKEN_BUDGET } from '../constants.ts'
 import type { Journal, ParentAgentLike } from '../types.ts'
+import type { JournalStage } from '../../store.ts'
 
 /** 并发池：按 max 个 worker 消费 items，返回同序结果。 */
 export async function runPool(items, max, fn) {
@@ -78,7 +80,7 @@ export async function runAgent(
 ): Promise<string | null> {
   const maxSeq = journal.stages.length ? Math.max(...journal.stages.map((s) => s.seq)) : 0
   let stageText = null
-  const stage = {
+  const stage: JournalStage = {
     seq: maxSeq + 1, label, phase, status: 'running', outcome: null,
     childId: null, startedAt: Date.now(), endedAt: null, summary: null,
     usage: null, handoff: null, output: null,
@@ -86,6 +88,7 @@ export async function runAgent(
   journal.stages.push(stage)
   journal.agentsStarted += 1
   let run = null
+  let cancelGuard: (() => void) | null = null
   try {
     // 显式传当前生效路由，避免继承过期的 parent.options 快照（主线程已切换代理的情况）
     const route = resolveChildRoute(parent)
@@ -110,6 +113,8 @@ export async function runAgent(
         })
       }
     } catch (e) { /* 轨迹写入失败不影响主流程 */ }
+    // 单调用护栏：进行中退化检测（推理复读/墙钟超限 → dispose 中止，outcome=degenerated 走干净重试）
+    cancelGuard = startStageGuard({ run, journal, label, stage })
     const result = await run.result
     const stop = result && result.stopReason
     const text = extractText(result && result.output)
@@ -123,6 +128,14 @@ export async function runAgent(
       stage.output = clip(text, 50000) // 阶段产物全文（断点续跑重建上下文）
       return text
     }
+    if (stage.guardReason) {
+      // 护栏中止优先于通用失败分类（成功产出已在上方抢救）
+      stage.status = 'failed'
+      stage.outcome = 'degenerated'
+      stage.summary = `进行中护栏中止（${stage.guardReason}），本次尝试无有效产出`
+      journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} ${stage.summary}` })
+      return null
+    }
     stage.status = 'failed'
     stage.outcome = (stop === 'completed' && text) ? 'insubstantial' : (stop || 'error')
     if (stage.outcome === 'insubstantial') {
@@ -135,11 +148,17 @@ export async function runAgent(
     return null
   } catch (e) {
     stage.status = journal.cancelled ? 'cancelled' : 'failed'
-    stage.outcome = journal.cancelled ? 'cancelled' : 'error'
-    stage.summary = `启动/执行失败：${String((e && e.message) || e)}`
-    journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 启动/执行失败：${String((e && e.message) || e)}` })
+    if (!journal.cancelled && stage.guardReason) {
+      stage.outcome = 'degenerated'
+      stage.summary = `进行中护栏中止（${stage.guardReason}）：${String((e && e.message) || e)}`
+    } else {
+      stage.outcome = journal.cancelled ? 'cancelled' : 'error'
+      stage.summary = `启动/执行失败：${String((e && e.message) || e)}`
+    }
+    journal.logs.push({ t: Date.now(), level: 'error', message: `${label} ${stage.summary}` })
     return null
   } finally {
+    if (cancelGuard) cancelGuard()
     stage.usage = accumulateSessionUsage(run)
     stage.handoff = stageText ? handoffBrief(stageText) : null
     stage.endedAt = Date.now()
@@ -171,8 +190,11 @@ export async function withRetry(
       journal.humanIntervention = true
       return { text: null, attempts, stageTokens }
     }
+    // 护栏中止（degenerated）= 主动止损而非失控烧钱：豁免预算门，允许一次干净重试
+    // （实证 tf-mt5afdch：死循环尝试 481 万 token 零产出，续跑干净重试仅 ~100 万即全量通过）
+    const guardedRetry = !!(lastStage && lastStage.outcome === 'degenerated')
     // token 熔断：本阶段累计总消耗超预算 → 停止重试
-    if (stageTokens >= STAGE_TOKEN_BUDGET) {
+    if (!guardedRetry && stageTokens >= STAGE_TOKEN_BUDGET) {
       journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 累计 token ${Math.round(stageTokens / 1000)}k 超出阶段预算 ${Math.round(STAGE_TOKEN_BUDGET / 1000)}k，熔断，需人工介入` })
       journal.humanIntervention = true
       return { text: null, attempts, stageTokens }

@@ -8,6 +8,15 @@ export const RETRY_LIMIT = 2
 export const QA_REWORK_LIMIT = 2
 /** 单阶段 token 熔断预算（官方口径总消耗：input+cacheRead+cacheWrite+output 累计）。 */
 export const STAGE_TOKEN_BUDGET = 60000
+/* ── 子代理单调用护栏（进行中退化检测；进度信号而非配额，防误杀正常长任务）── */
+/** 护栏轮询间隔 ms。 */
+export const GUARD_POLL_MS = 15000
+/** 复读判定：滑动窗口内同一规范化流式片段出现次数上限（正常 agent 措辞有变化，几乎不可能逐字重复）。 */
+export const GUARD_REPEAT_LIMIT = 12
+/** 复读检测滑动窗口大小（条）。 */
+export const GUARD_WINDOW_SIZE = 400
+/** 墙钟兜底：单次尝试最长运行时间（历史正常阶段 p95 ~10min，取 2.5 倍余量，只兜极端失控）。 */
+export const GUARD_WALL_CLOCK_MS = 25 * 60_000
 /** 假阳性完成检测：明确拒绝/放弃模式的输出视为未产出。 */
 export const REFUSAL_PATTERN = /(无法完成|不能完成|无法继续|抱歉|对不起|我(无法|不能)|无法执行|cannot complete|unable to)/i
 /** 各阶段最小产出长度（防"假完成"：空话/一句话冒充交付）。 */

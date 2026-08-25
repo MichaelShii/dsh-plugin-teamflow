@@ -146,6 +146,30 @@ const bdClose = '<!-- /blueprint -->'
  * 约定：产出内嵌 `<!-- blueprint -->{...json...}<!-- /blueprint -->`。
  * 解析失败返回 null（不影响主流程）。
  */
+/**
+ * 抢救「顶层值提前闭合」类畸形蓝图 JSON。
+ * 实锤（run tf-mt85o5jj）：模型在 duplications 数组后多写一个 `}`，根对象提前闭合，
+ * 后续 `,"tasks":[…]` 被判为 JSON 外内容 → 整块解析失败 → 开发任务回退单任务「整体开发」，并行度丢失。
+ * 修复策略：定位 parse 报错位置；若 head 是完整对象（以 } 收尾）且 tail 是 `,"key":` 续写形态，
+ * 删掉 head 末尾那个提前闭合的根括号后拼接重试（最多 3 轮）。
+ */
+function repairBlueprintJson(raw: string): string | null {
+  let cur = raw
+  for (let round = 0; round < 3; round++) {
+    let err: unknown = null
+    try { JSON.parse(cur); return cur } catch (e) { err = e }
+    const m = String(((err as Error) && (err as Error).message) || '').match(/position (\d+)/)
+    if (!m) return null
+    const pos = Number(m[1])
+    const head = cur.slice(0, pos)
+    const tail = cur.slice(pos)
+    if (!/^\s*,?\s*"/.test(tail)) return null
+    if (!/\}\s*$/.test(head)) return null
+    cur = head.replace(/\}\s*$/, '') + tail.replace(/^\s*,\s*/, ',')
+  }
+  return null
+}
+
 export function extractBlueprint(text: string | null | undefined): Blueprint | null {
   const s = String(text || '')
   const i = s.indexOf(bdOpen)
@@ -153,7 +177,10 @@ export function extractBlueprint(text: string | null | undefined): Blueprint | n
   if (i === -1 || j === -1 || j <= i) return null
   const raw = s.slice(i + bdOpen.length, j).trim()
   let parsed: { summary?: string; modules?: Record<string, BlueprintModule>; duplications?: string[]; tasks?: BlueprintTask[] } | null = null
-  try { parsed = JSON.parse(raw) } catch (e) { return null }
+  try { parsed = JSON.parse(raw) } catch (e) {
+    const repaired = repairBlueprintJson(raw)
+    if (repaired) { try { parsed = JSON.parse(repaired) } catch (e2) { parsed = null } }
+  }
   if (!parsed || typeof parsed !== 'object') return null
   const summary = typeof parsed.summary === 'string' ? parsed.summary : ''
   const modules = parsed.modules || {}

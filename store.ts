@@ -28,6 +28,8 @@ export interface JournalStage {
   handoff?: string | null
   summary?: string | null
   output?: string | null
+  /** 单调用护栏中止原因（进行中退化检测触发时记录；outcome 相应为 degenerated）。 */
+  guardReason?: string | null
 }
 
 /** 运行日志（journal）——运行时对象与磁盘可持久化形态的公共形状。 */

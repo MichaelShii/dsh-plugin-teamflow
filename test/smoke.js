@@ -60,7 +60,7 @@ const hostSrc = [
   readFileSync(join(here, '../host/util.ts'), 'utf8'),
   readFileSync(join(here, '../host/constants.ts'), 'utf8'),
   readFileSync(join(here, '../host/prompts/index.ts'), 'utf8'),
-  ...['context', 'backlog', 'metering', 'runner', 'report', 'pipeline', 'teams', 'state'].map((f) => readFileSync(join(here, `../host/core/${f}.ts`), 'utf8')),
+  ...['context', 'backlog', 'metering', 'runner', 'guard', 'report', 'pipeline', 'teams', 'state'].map((f) => readFileSync(join(here, `../host/core/${f}.ts`), 'utf8')),
 ].join('\n//#region host-pool\n')
 const utilSrc = readFileSync(join(here, '../host/util.ts'), 'utf8')
 const constantsSrc = readFileSync(join(here, '../host/constants.ts'), 'utf8')
@@ -164,6 +164,23 @@ ok(/if \(!qaBlocked\)/.test(pipelineSrc) && /产品验收跳过/.test(pipelineSr
 ok(/journal\.humanIntervention = true/.test(pipelineSrc), 'pipeline：打回超限/验收 rework 置 journal.humanIntervention')
 const reportSrc = readFileSync(join(here, '../host/core/report.ts'), 'utf8')
 ok(/journal\.humanIntervention \? '⚠️ 已完成（需人工介入）'/.test(reportSrc), 'report：completed+humanIntervention → ⚠️ 已完成（需人工介入），不再误报 ✅')
+
+console.log('── 3h) 子代理进行中护栏 + resume 标志复位 + 工程动作承接 ──')
+const guardSrc = readFileSync(join(here, '../host/core/guard.ts'), 'utf8')
+ok(/export function startStageGuard/.test(guardSrc) && /GUARD_REPEAT_LIMIT/.test(guardSrc) && /GUARD_WALL_CLOCK_MS/.test(guardSrc), 'guard：单调用护栏（复读检测 + 墙钟兜底，进度信号而非配额）')
+ok(/GUARD_POLL_MS/.test(constantsSrc) && /GUARD_REPEAT_LIMIT = 12/.test(constantsSrc) && /GUARD_WALL_CLOCK_MS/.test(constantsSrc), 'constants：护栏阈值常量')
+ok(/startStageGuard\(\{ run, journal, label, stage \}\)/.test(hostSrc), 'runner：runAgent 接入单调用护栏')
+ok(/outcome = 'degenerated'/.test(hostSrc), 'runner：护栏中止标记 outcome=degenerated（避开 isUnretryable 正则，可重试）')
+ok(/const guardedRetry = !!\(lastStage && lastStage\.outcome === 'degenerated'\)/.test(hostSrc), 'runner：护栏中止豁免预算门，允许一次干净重试')
+ok(/j\.humanIntervention = false/.test(pipelineSrc), 'pipeline：resumeRun 重置 humanIntervention（完成汇报不再误标 ⚠️）')
+ok(/const stageFailError = /.test(pipelineSrc) && (pipelineSrc.match(/stageFailError\(/g) || []).length >= 7, 'pipeline：阶段失败文案带真实次数/outcome/熔断语义（7 处 throw 收口）')
+ok(!/次后仍无产出，需人工介入`/.test(pipelineSrc), 'pipeline：不再有「重试 N 次后仍无产出」失真文案')
+ok(/工程动作承接/.test(promptsSrc) && /随任务传递/.test(promptsSrc), 'prompts：PRD 承接工程指令 + tech 蓝图传递 git 动作')
+ok(/工程动作执行/.test(promptsSrc) && /先执行动作再写码/.test(promptsSrc), 'prompts：dev 先执行 git 动作再写码')
+ok(/防双归档/.test(promptsSrc) && /跳过 mv 归档、不再自增版本号/.test(promptsSrc), 'prompts：PRD 归档幂等（重试/续跑不再升版）')
+ok(/幂等替换，不是追加/.test(promptsSrc) && /只允许存在\*\*一段\*\*「当前迭代记忆」/.test(promptsSrc), 'prompts：memory.md 当前迭代段落整体替换（不追加重复段）')
+ok(/repairBlueprintJson/.test(utilSrc), 'util：蓝图 JSON 提前闭合抢救（防静默回退整体开发）')
+ok(/蓝图块解析失败/.test(pipelineSrc) && /devAssign: \(mainTask && mainTask\.devAssign\) \|\| null/.test(backlogSrc), 'pipeline/backlog：蓝图解析失败告警 + 子卡继承 devAssign')
 
 console.log('── 4) 其他文件 ──')
 for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../descriptors.ts', '../client/index.tsx', '../host/index.ts', '../store.ts']) {

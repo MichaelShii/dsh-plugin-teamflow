@@ -10,7 +10,7 @@ import { withRetry, runPool } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
 import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint } from '../util.ts'
-import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, resolveStages } from '../constants.ts'
+import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, resolveStages, STAGE_TOKEN_BUDGET } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext } from '../types.ts'
@@ -105,6 +105,15 @@ export async function executePipeline(
   // 断点续跑：跳过 resume.phase 之前的阶段
   const resumed = (phase) => !!resume && PHASE_ORDER.indexOf(phase) < PHASE_ORDER.indexOf(resume.phase)
   const logSkip = (phase) => journal.logs.push({ t: Date.now(), level: 'warn', message: `跳过已完成阶段：${phase}（断点续跑）` })
+  /** 阶段失败错误：带真实尝试次数/末次结果/累计消耗与熔断语义（取代千篇一律的「重试 N 次后仍无产出」）。 */
+  const stageFailError = (label: string, r: { attempts?: number; stageTokens?: number }): Error => {
+    const last = [...(journal.stages || [])].reverse().find((s) => s.phase === label)
+    const attempts = r && r.attempts ? r.attempts : RETRY_LIMIT
+    const burnt = Math.round(((r && r.stageTokens) || 0) / 1000)
+    const breaker = ((r && r.stageTokens) || 0) >= STAGE_TOKEN_BUDGET ? '，超出阶段预算熔断' : ''
+    const detail = last ? `末次 ${last.outcome || 'unknown'}${last.summary ? `（${last.summary}）` : ''}` : '无阶段记录'
+    return new Error(`${label} 阶段失败：${attempts} 次尝试未交付，${detail}，累计消耗 ${burnt}k token${breaker}，需人工介入`)
+  }
   try {
     if (resume) {
       journal.logs.push({ t: Date.now(), level: 'info', message: `断点续跑：复用 backlog（req=${journal.reqId}），从「${resume.phase}」继续` })
@@ -151,7 +160,7 @@ export async function executePipeline(
           ? { label: '工程师 · 单点确认', fn: patchConfirmPrompt }
           : { label: '产品经理 · 梳理 PRD', fn: prdPrompt }
       const prdR = await withRetry(journal, parent, pForm.label, 'PRD 产品需求', pForm.fn(requirement, root, journal.id, state), signal)
-      if (!prdR.text) { throw new Error(`PRD 阶段失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
+      if (!prdR.text) { throw stageFailError('PRD 产品需求', prdR) }
       prd = prdR.text
       timeline.prd = prd
       mergeStageState('prd', prd)
@@ -169,7 +178,7 @@ export async function executePipeline(
       } else {
         journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：UI/UX 设计' })
         const designR = await withRetry(journal, parent, 'UI/UX 设计师 · 设计说明', 'UI/UX 设计', designPrompt(prd, root, journal.id, state), signal)
-        if (!designR.text) { throw new Error(`UI/UX 设计失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
+        if (!designR.text) { throw stageFailError('UI/UX 设计', designR) }
         design = designR.text
         timeline.design = design
         mergeStageState('design', design)
@@ -188,7 +197,7 @@ export async function executePipeline(
       } else {
         journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：架构规划' })
         const scR = await withRetry(journal, parent, '架构师 · 脚手架规划与落地', '架构规划', scaffoldPrompt(requirement, design, root, journal.id, state), signal)
-        if (!scR.text) { throw new Error(`架构规划失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
+        if (!scR.text) { throw stageFailError('架构规划', scR) }
         scaffold = scR.text
         timeline.scaffold = scaffold
         mergeStageState('scaffold', scaffold)
@@ -211,7 +220,7 @@ export async function executePipeline(
         ? techPrompt(prd, design, scaffold, tasks, root, journal.id, state)
         : architectPrompt(prd, root, journal.id, state)
       const techR = await withRetry(journal, parent, label, '技术方案', prompt, signal)
-      if (!techR.text) { throw new Error(`${label}失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
+      if (!techR.text) { throw stageFailError(label, techR) }
       tech = techR.text
       timeline.tech = tech
       mergeStageState('tech', tech)
@@ -223,6 +232,9 @@ export async function executePipeline(
           state.__runCtx.blueprint = bd.render
           journal.blueprint = { modules: bd.modules, tasks: bd.tasks }
         } catch (e) { /* 蓝图注入失败不影响 */ }
+      } else if (/<!-- blueprint -->/.test(String(tech))) {
+        // 蓝图块存在但解析失败：显式告警（否则静默回退整体开发，并行度丢失难排查）
+        journal.logs.push({ t: Date.now(), level: 'warn', message: '技术方案蓝图块解析失败（JSON 畸形），开发任务将回退整体开发——TECHNICAL.md 蓝图块需人工检查' })
       }
       noteTaskStageUsage(journal)
       if (journal.cancelled) return
@@ -337,7 +349,7 @@ export async function executePipeline(
         const isReverify = round > 1
         const label = isReverify ? `QA 复验 · 第${round - 1}轮修复后` : 'QA 测试工程师 · 功能测试'
         const qaR = await withRetry(journal, parent, label, 'QA 测试', qaPrompt(prd, qaDevSummary(), root, journal.id, state), signal)
-        if (!qaR.text) { advanceTask(journal, 'needs-human', null, isReverify ? `QA 复验失败（第 ${round - 1} 轮修复后）` : 'QA 失败', { by: 'qa' }); throw new Error(`QA 失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
+        if (!qaR.text) { advanceTask(journal, 'needs-human', null, isReverify ? `QA 复验失败（第 ${round - 1} 轮修复后）` : 'QA 失败', { by: 'qa' }); throw stageFailError(isReverify ? 'QA 测试（复验）' : 'QA 测试', qaR) }
         qa = qaR.text
         timeline.qa = qa
         mergeStageState('qa', qa)
@@ -368,7 +380,7 @@ export async function executePipeline(
         journal.logs.push({ t: Date.now(), level: 'warn', message: `QA 发现 ${blocking.length} 个阻断缺陷（第 ${round} 轮），打回开发确认修复后复验` })
         advanceTask(journal, 'rework', clip(qa, 300), `QA 打回开发修复（第 ${round}/${QA_REWORK_LIMIT + 1} 轮）`, { by: 'qa' })
         const fixR = await withRetry(journal, parent, `开发 · QA 缺陷修复（第 ${round} 轮）`, '开发', qaFixPrompt(blocking, qa, tech, prd, root, journal.id, state), signal)
-        if (!fixR.text) { advanceTask(journal, 'needs-human', null, 'QA 打回后开发修复失败', { by: 'qa' }); throw new Error(`开发修复失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
+        if (!fixR.text) { advanceTask(journal, 'needs-human', null, 'QA 打回后开发修复失败', { by: 'qa' }); throw stageFailError('开发（QA 打回修复）', fixR) }
         devFixRounds.push(clip(fixR.text, 3000))
         noteTaskStageUsage(journal) // 修复子代理真实 usage 累计到任务卡
         if (journal.cancelled) return
@@ -395,7 +407,7 @@ export async function executePipeline(
         }
       }
       const accR = await withRetry(journal, parent, '产品经理 · 最终验收', '产品验收', acceptancePrompt(prd, qa, JSON.stringify(timeline.dev), root, journal.id, state), signal)
-      if (!accR.text) { advanceTask(journal, 'needs-human', null, '验收失败', { by: 'pm' }); throw new Error(`验收失败：重试 ${RETRY_LIMIT} 次后仍无产出，需人工介入`) }
+      if (!accR.text) { advanceTask(journal, 'needs-human', null, '验收失败', { by: 'pm' }); throw stageFailError('产品验收', accR) }
       const acceptance = accR.text
       timeline.acceptance = acceptance
       noteTaskStageUsage(journal) // 验收角色的真实 usage 累计
@@ -556,6 +568,8 @@ export function resumeRun(runId: string | null | undefined, sessionId: string | 
     j.interrupted = false
     j.interruptedAt = null
     j.error = null
+    // 重置历史失败留下的需人工标记（否则完成汇报头会误标「⚠️ 已完成（需人工介入）」，实锤 tf-mt5afdch 续跑）
+    j.humanIntervention = false
     j.endedAt = null
     j.logs = (j.logs || []).slice(-200)
     j.logs.push({ t: Date.now(), level: 'warn', message: `断点续跑：从「${resumePhase}」继续（已完成阶段复用产物）` })

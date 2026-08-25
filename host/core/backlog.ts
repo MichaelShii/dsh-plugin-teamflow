@@ -264,7 +264,7 @@ export function createSubtask(journal, title, spec) {
   const sub = {
     id, reqId: journal.reqId, parentId: journal.taskId, product: journal.workspace || 'default',
     type: 'subtask', title: `开发 · ${title}`, spec: spec || '',
-    status: 'pending', devAssign: null, owner: null,
+    status: 'pending', devAssign: (mainTask && mainTask.devAssign) || null, owner: null,
     retries: 0, humanIntervention: false, createdAt: Date.now(), updatedAt: Date.now(),
     events: [], bugIds: [], usage: null, byRole: {},
     startedAt: null, endedAt: null, summary: null, childId: null, failed: false,

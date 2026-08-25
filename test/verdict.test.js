@@ -59,5 +59,13 @@ expect(bd && Object.keys(bd.modules || {}).length === 1, true, '提取 modules')
 expect(extractBlueprint('没有蓝图块'), null, '无蓝图块 → null')
 expect(extractBlueprint('<!-- blueprint -->{bad json}<!-- /blueprint -->'), null, '非法 JSON → null')
 
+console.log('── 回归：蓝图「顶层值提前闭合」抢救（实锤 tf-mt85o5jj：duplications 后多一个 }，tasks 被判为块外内容 → 静默回退整体开发）──')
+const broken = `<!-- blueprint -->{"summary":"踢墙开关","modules":{"/game.js":{"responsibility":"引擎","why":"状态闭环"}},"duplications":["与 ghost/BGM 开关模式不同，需 README 标注"]},"tasks":[{"title":"T1: game.js 引擎踢墙开关","files":["/game.js"],"spec":"偏移表+开关"},{"title":"T2: ui.js 面板开关","files":["/ui.js"],"spec":"开关控件"}]}<!-- /blueprint -->`
+const bdb = extractBlueprint(broken)
+expect(bdb !== null, true, '提前闭合的畸形蓝图可被抢救（不再回退 null）')
+expect((bdb && bdb.tasks ? bdb.tasks.length : -1), 2, '抢救后 tasks 不丢失（并行拆解保住）')
+expect((bdb && bdb.summary) || '', '踢墙开关', '抢救后 summary 完整')
+expect(extractBlueprint('<!-- blueprint -->完全不是 JSON<!-- /blueprint -->'), null, '彻底非 JSON 仍返回 null')
+
 console.log(failed === 0 ? '\n✅ verdict 测试全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

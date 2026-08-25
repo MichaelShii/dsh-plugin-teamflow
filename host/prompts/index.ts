@@ -157,10 +157,11 @@ ${requirement}
 【要求】
 1. 先看上方 state 索引与 ${TF_DOCS}/SUMMARY.md（摘要），判断是否有既有 PRD 模式/历史 AC；不要全量重读历史文档。
 2. 若已有历史 PRD（${TF_DOCS}/prd/PRD.md 或 ${TF_DOCS}/history/v*.md）或 ${TF_DOCS}/memory.md：这是迭代需求——输出增量 PRD（保留既有 AC 编号与语义、旧 AC 只作压缩回归基线列出、显式标注本次变更），升级版本号。
-3. 【版本切片 · mv + 增量文件】${TF_DOCS}/prd/PRD.md 已有旧版时：先 read ≤1 次读旧版标题/版本号（不读全文），把整文件用 mv（移动/改名：git mv 或文件系统 mv）挪到 ${TF_DOCS}/history/v<旧版本号>/PRD.md（已存在则跳过）；旧路径 mv 后即不存在，**严禁在旧文件上逐处 edit/插入**。然后 ${TF_DOCS}/prd/PRD.md write 一个全新干净文件：只含 v<新版本号> 本次变更（新增/修改 US/AC 完整可测文本 + 受影响规格）+ 回归底线清单（既有 AC 仅 编号 + 一行语义 + 指针到 history，按需 grep，**严禁照抄旧 AC 全文**）+ 验收准则与数值规格增量 + 修订表当前版一行。
+3. 【版本切片 · mv + 增量文件】${TF_DOCS}/prd/PRD.md 已有旧版时：先 read ≤1 次读旧版标题/版本号（不读全文），把整文件用 mv（移动/改名：git mv 或文件系统 mv）挪到 ${TF_DOCS}/history/v<旧版本号>/PRD.md（已存在则跳过）；旧路径 mv 后即不存在，**严禁在旧文件上逐处 edit/插入**。然后 ${TF_DOCS}/prd/PRD.md write 一个全新干净文件：只含 v<新版本号> 本次变更（新增/修改 US/AC 完整可测文本 + 受影响规格）+ 回归底线清单（既有 AC 仅 编号 + 一行语义 + 指针到 history，按需 grep，**严禁照抄旧 AC 全文**）+ 验收准则与数值规格增量 + 修订表当前版一行。【防双归档 · 重试/续跑幂等】mv 前 若发现「旧版」修订表当前版的变更摘要与【原始需求】同主题——说明它就是本 run 上次尝试产出的同需求 PRD（阶段重试或断点续跑场景）——此时**跳过 mv 归档、不再自增版本号**：保留现有文件与版本，仅做缺失小节补全校验。
 4. 输出完整 PRD（Markdown）：背景与目标、用户故事（含逐条可测试的验收标准）、功能范围与非目标、交互流程概述、优先级(P0/P1/P2)、依赖与风险、里程碑建议。验收标准可测试可量化，精炼优先。
-5. 产出写入 ${TF_DOCS}/prd/PRD.md；同步更新 ${TF_DOCS}/memory.md（新迭代需求、目标版本）。【边界】只写 ${TF_DOCS}/ 下文件；不改 AGENTS.md 除 teamflow 托管区外内容。
-6. 【state 沉淀】结尾输出 state 块（phase="prd"），summary 含本次 AC 要点、version 写新版本号，extra 放 { "acIndex": {...}, "summary": "产品一句话", "techStack": "..." }。${STATE_BLOCK_INSTRUCTION}`
+5. 产出写入 ${TF_DOCS}/prd/PRD.md；同步更新 ${TF_DOCS}/memory.md：【幂等替换，不是追加】文件里只允许存在**一段**「当前迭代记忆」——把它整体替换为本次版本（旧的当前迭代段删除，已验收的历史压缩成一行并入「迭代历史」），修订相关行按版本号 upsert（同版本号复写同一行）。【续跑幂等】memory 已含本需求同版本的记录时，保持版本号不变、只更新状态。【边界】只写 ${TF_DOCS}/ 下文件；不改 AGENTS.md 除 teamflow 托管区外内容。
+6. 【工程动作承接】原始需求中的工程指令（新建/切换分支、提交、打 tag 等）必须原样保留到 PRD 的「工程约束」小节：写明动作、时机与基线（如「从当前主干最新提交新建分支 feat/<名> 后实施」）；工作区已有未提交改动时注明处理方式。不得静默丢弃或改写工程指令。
+7. 【state 沉淀】结尾输出 state 块（phase="prd"），summary 含本次 AC 要点、version 写新版本号，extra 放 { "acIndex": {...}, "summary": "产品一句话", "techStack": "..." }。${STATE_BLOCK_INSTRUCTION}`
 
 export const designPrompt = (prd, root, runId, state) => `你是资深 UI/UX 设计师。当前工作区即为目标项目。
 ${productCtx(root)}${stateSliceFor(state, 'design')}
@@ -170,7 +171,7 @@ ${clip(prd, 15000)}
 1. 若项目已有前端代码/设计系统或历史 ${TF_DOCS}/design/DESIGN.md，先 grep 定位规范要点，勿全量重读；设计必须贴合现有风格与组件规范（迭代时保留既有规范，新增/修订部分显式标注）。
 2. 输出：页面/模块清单与信息架构、关键页面线框描述（布局/组件/状态）、交互与动效说明、视觉规范（配色/字号/间距，尽量复用现有 token）、可访问性要点。
 3. 输出中文 Markdown，具体到可直接指导前端实现，精炼优先。
-4. 产出写入 ${TF_DOCS}/design/DESIGN.md（write 1 次；旧版整文件 mv 归档到 ${TF_DOCS}/history/v<旧版>/DESIGN.md，不逐处 edit）。【边界】只写 ${TF_DOCS}/ 下文件。
+4. 产出写入 ${TF_DOCS}/design/DESIGN.md（write 1 次；旧版整文件 mv 归档到 ${TF_DOCS}/history/v<旧版>/DESIGN.md，不逐处 edit；旧版若是本 run 上次尝试产出的同需求草稿——内容与本次一致——则跳过归档直接覆盖写）。【边界】只写 ${TF_DOCS}/ 下文件。
 5. 【state 沉淀】结尾输出 state 块（phase="design"），summary 写关键设计决策。${STATE_BLOCK_INSTRUCTION}`
 
 export const scaffoldPrompt = (req, design, root, runId, state) => `你是资深架构师。工作区为空或尚无项目骨架，请规划并**实际落地**新项目脚手架。
@@ -216,8 +217,8 @@ ${JSON.stringify(tasks)}
 ` : ''}【要求】
 1. 先阅读 ${TF_DOCS}/SUMMARY.md 与工作区现有项目（package.json、README、src 结构等）及 AGENTS.md，方案必须贴合现有技术栈与代码风格，并给出具体文件路径。
 2. 输出：数据模型与存储、API 设计（路由/入参出参）、前端组件与页面划分、状态管理、关键实现要点与边界情况、测试策略。
-3. 任务拆分：若上方【流水线派发任务】存在，你的拆分必须与之对齐——逐项校验/细化派发任务（文件边界、接口契约、验收标准），不得另起一套任务体系；未派发时给出可并行任务清单。
-4. 输出中文 Markdown，精炼完整；产出写入 ${TF_DOCS}/technical/TECHNICAL.md（write 1 次，旧版整文件 mv 归档 ${TF_DOCS}/history/v<旧版>/TECHNICAL.md，不逐处 edit）。【边界】只写 ${TF_DOCS}/ 下文件。
+3. 任务拆分：若上方【流水线派发任务】存在，你的拆分必须与之对齐——逐项校验/细化派发任务（文件边界、接口契约、验收标准），不得另起一套任务体系；未派发时给出可并行任务清单。PRD「工程约束」中的 git 动作（分支/提交要求）必须随任务传递（写进对应 task spec 或单独列出），不得丢失。
+4. 输出中文 Markdown，精炼完整；产出写入 ${TF_DOCS}/technical/TECHNICAL.md（write 1 次，旧版整文件 mv 归档 ${TF_DOCS}/history/v<旧版>/TECHNICAL.md，不逐处 edit；旧版若是本 run 上次尝试产出的同需求草稿——内容与本次一致——则跳过归档直接覆盖写）。【边界】只写 ${TF_DOCS}/ 下文件。
 5. 【架构蓝图 JSON · 必输出（供 dev 继承 / 验收核验，M1/M2）】在文档之后，额外输出一个**架构蓝图 JSON 块**（与正文同一份输出里、文档末尾）：
 <!-- blueprint -->{"summary":"一句话架构判断","modules":{"/相对路径.js":{"responsibility":"职责","dependsOn":["依赖文件"],"assemblyOrder":1,"why":"为什么这样设计/为什么独立"},"/另一个.js":{"responsibility":"","why":""}},"duplications":["检测到的重复/适配器漂移风险，如多套安全存储封装"],"tasks":[{"title":"任务名（按文件边界）","files":["/a.js"],"spec":"一句话任务说明"}]}<!-- /blueprint -->
    - modules：本次涉及每个文件的职责 + 依赖 + 装配顺序 + **架构理由（why：为什么独立/这样设计）**。
@@ -262,9 +263,10 @@ ${clip(tech, 12000)}`
 2. 只修改与任务相关的文件（见【任务目标文件】，无则按 spec 推断）；遵守既有架构与代码风格。需要确认其他文件接口时用 grep 定位，不要整文件读无关大文件。
 3. 若 spec 与现状不符，在实现摘要中明确说明并给出证据，而不是凭空宣称完成或擅自扩大改动。
 4. 实际编写/修改代码（用 grep + 分段读定位文件，不要反复 read 大文件），完成后运行相关构建/验证命令确保通过。
-5. 【日志纪律】运行命令输出重定向到 logs/teamflow/${runId || '<runId>'}/ 下。
-6. 输出实现摘要（≤40 行）：改动文件列表、关键实现点、如何验证、遗留问题。不要粘贴大段代码。
-7. 【state 沉淀】结尾输出 state 块（phase="dev"），touched 放改动文件数组，summary 写实现结论。${STATE_BLOCK_INSTRUCTION}`
+5. 【工程动作执行】若任务 spec 或 PRD 工程约束包含 git 动作（如新建分支）：**先执行动作再写码**（如 git checkout -b <分支>）；工作区已有与本任务无关的未提交改动时，不要擅自提交/清理，在实现摘要中声明现状。
+6. 【日志纪律】运行命令输出重定向到 logs/teamflow/${runId || '<runId>'}/ 下。
+7. 输出实现摘要（≤40 行）：改动文件列表、关键实现点、如何验证、遗留问题。不要粘贴大段代码。
+8. 【state 沉淀】结尾输出 state 块（phase="dev"），touched 放改动文件数组，summary 写实现结论。${STATE_BLOCK_INSTRUCTION}`
 
 export const qaPrompt = (prd, devSummary, root, runId, state) => `你是资深 QA 测试工程师。当前工作区即为目标项目，请对本次交付做功能测试。
 ${productCtx(root)}${stateSliceFor(state, 'qa')}${TOKEN_HYGIENE(runId)}【PRD（本次变更与相关 AC）】
@@ -284,7 +286,7 @@ ${clip(devSummary, 15000)}
 6. 【缺陷提交格式】发现的缺陷按以下结构化清单输出（供缺陷管理系统直接收录）：
    | 编号 | 严重级(P0/P1/P2/P3) | 功能模块 | 复现步骤 | 期望行为 | 实际行为 | 关联验收项 |
    若无缺陷，显式输出「未发现缺陷」。
-7. 输出中文 Markdown，具体可执行；报告写入 ${TF_DOCS}/qa/QA-REPORT.md（write 1 次，旧版整文件 mv 归档 ${TF_DOCS}/history/v<旧版>/QA-REPORT.md，正文精炼，不留无限长历史）。【边界】只写 ${TF_DOCS}/ 下文件。
+7. 输出中文 Markdown，具体可执行；报告写入 ${TF_DOCS}/qa/QA-REPORT.md（write 1 次，旧版整文件 mv 归档 ${TF_DOCS}/history/v<旧版>/QA-REPORT.md，正文精炼，不留无限长历史；归档目标已存在同版本文件、或旧版即本 run 上次尝试产出时，跳过归档直接覆盖写）。【边界】只写 ${TF_DOCS}/ 下文件。
 8. 【state 沉淀】结尾输出 state 块（phase="qa"），summary 写测试结论/被阻断项，extra 放 { "verifyScripts": [...] }。${STATE_BLOCK_INSTRUCTION}`
 
 /** QA 打回后的开发修复 prompt：确认缺陷是否属实 → 修复 → 复验交接（QA→dev 打回闭环用）。 */
