@@ -160,6 +160,7 @@ ok(/export const qaFixPrompt/.test(promptsSrc) && /先确认，后修复/.test(p
 ok(/qaFixPrompt\(/.test(pipelineSrc) && /QA 打回开发修复/.test(pipelineSrc), 'pipeline：QA 发现缺陷 → 打回开发修复（qaFixPrompt 子代理）')
 ok(/qaBlocked/.test(pipelineSrc) && /QA_REWORK_LIMIT/.test(pipelineSrc), 'pipeline：复验轮次上限 → 超限置 qaBlocked（需人工）')
 ok(/if \(!qaBlocked\)/.test(pipelineSrc) && /产品验收跳过/.test(pipelineSrc), 'pipeline：QA 不干净则跳过产品验收（干净才进验收）')
+ok(/b\.severity !== 'P3'/.test(pipelineSrc), 'pipeline：验收收尾 openBugs 排除 P3 观察项（P3 非阻断，与 QA 阶段语义一致——P3 不再卡死 pending-acceptance）')
 ok(/journal\.humanIntervention = true/.test(pipelineSrc), 'pipeline：打回超限/验收 rework 置 journal.humanIntervention')
 const reportSrc = readFileSync(join(here, '../host/core/report.ts'), 'utf8')
 ok(/journal\.humanIntervention \? '⚠️ 已完成（需人工介入）'/.test(reportSrc), 'report：completed+humanIntervention → ⚠️ 已完成（需人工介入），不再误报 ✅')

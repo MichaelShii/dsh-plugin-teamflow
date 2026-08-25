@@ -452,7 +452,7 @@ export async function executePipeline(
       const store = storeFor(scopeKey)
       const req = store.find('req', journal.reqId)
       if (req) {
-        const openBugs = store.bugs.filter((b) => b.reqId === req.id && b.status !== 'verified' && b.status !== 'closed')
+        const openBugs = store.bugs.filter((b) => b.reqId === req.id && b.status !== 'verified' && b.status !== 'closed' && b.severity !== 'P3')
         if (accVerdict === 'rework') {
           req.humanIntervention = true
           journal.humanIntervention = true // 汇报状态线：completed+humanIntervention → ⚠️ 已完成（需人工介入）
