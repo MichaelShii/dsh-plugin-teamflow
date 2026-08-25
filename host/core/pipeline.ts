@@ -9,7 +9,8 @@ import { initPipelineBacklog, advanceTask, storeFor, parseDefects, syncQaDefects
 import { withRetry, runPool } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
-import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint } from '../util.ts'
+import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, runFolderName } from '../util.ts'
+import { mkdirSync, writeFileSync } from 'node:fs'
 import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, resolveStages, STAGE_TOKEN_BUDGET } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
@@ -72,11 +73,13 @@ export async function executePipeline(
   activeProducts.set(scopeKey, journal.id)
   // 自动分诊（对调用方透明）：未显式 mode 且非 lite 且非续跑 → 内部先用模型思考一轮再路由。
   // 使用者无需了解/选择 mode；mode 是内部路由 + 可选显式覆盖（审计可见）。
+  let triageSlug = ''
   if (options.mode === undefined && !options.lite) {
     try {
       const verdict = await runTriage(requirement, { needDesign: options.needDesign }, parent, signal)
       options.mode = verdict.mode
       if (verdict.needDesign && !options.needDesign) options.needDesign = true
+      triageSlug = verdict.slug || ''
       journal.options = Object.assign({}, options) as Record<string, unknown>
       journal.logs.push({ t: Date.now(), level: 'info', message: `自动分诊：${verdict.kind} → ${verdict.mode}（source=${verdict.source}）` })
     } catch (e) {
@@ -124,8 +127,29 @@ export async function executePipeline(
     }
     persistJournal(journal)
 
+    // ADR-0008 任务夹：需求级档案单元 docs/teamflow/<yyyyMMdd>-r<N>[-<slug>]/。
+    // 夹名在建夹时刻固定并持久化 journal.runDocs——阶段重试/断点续跑一律复用同夹（幂等由结构保证）。
+    if (!journal.runDocs && journal.reqId) {
+      journal.runDocs = `${'docs/teamflow'}/${runFolderName(new Date(), journal.reqId, triageSlug)}`
+      try {
+        if (journal.workspacePath) {
+          const abs = `${journal.workspacePath}/${journal.runDocs}`
+          mkdirSync(abs, { recursive: true })
+          writeFileSync(`${abs}/meta.json`, JSON.stringify({
+            reqId: journal.reqId, runId: journal.id, title: String(requirement).replace(/\s+/g, ' ').trim().slice(0, 80),
+            status: 'running', mode: options.mode || null, createdAt: Date.now(),
+          }, null, 2), 'utf8')
+        }
+        journal.logs.push({ t: Date.now(), level: 'info', message: `任务夹就绪：${journal.runDocs}/（本需求全部产物收口于此；建后不可变，重试/续跑复用）` })
+      } catch (e) {
+        journal.logs.push({ t: Date.now(), level: 'warn', message: `任务夹创建失败（不影响流程）：${String((e && e.message) || e)}` })
+      }
+    }
+
     // 预编译 state（跨 run 累积索引）：各阶段 prompt 注入 slice；结束后提取/合并 state 块
     const state = loadState(journal.workspace || 'default')
+    state.__runCtx = { ...(state.__runCtx || {}) }
+    if (journal.runDocs) state.__runCtx.runDocs = journal.runDocs
     // M0 状态核对：核对代码库真实状态（多人/场外提交/非流水线改动），注入后续所有阶段。
     // 核心原则：认知可复用"减量"，但不替代"对现状的核对"。
     try {
@@ -461,7 +485,17 @@ export async function executePipeline(
     activeProducts.delete(scopeKey) // 释放工作区级并发锁
     journal.result = { requirement, options: sanitizeSnapOptions(options), timeline: summarizeTimeline(timeline) }
     persistJournal(journal) // 终态 checkpoint（含日志刷新；阶段全文保留在磁盘+内存，供详情抽屉/断点续跑读取）
-    noteRun(journal.workspace || 'default', { id: journal.id, requirement: journal.requirement, verdict: journal.status })
+    // ADR-0008：任务夹 meta.json 终态回写（status/endedAt），供目录扫描聚合
+    try {
+      if (journal.runDocs && journal.workspacePath) {
+        writeFileSync(`${journal.workspacePath}/${journal.runDocs}/meta.json`, JSON.stringify({
+          reqId: journal.reqId, runId: journal.id, title: String(requirement).replace(/\s+/g, ' ').trim().slice(0, 80),
+          status: journal.status, mode: options.mode || null,
+          createdAt: journal.startedAt, endedAt: journal.endedAt,
+        }, null, 2), 'utf8')
+      }
+    } catch (e) { /* meta 回写失败不影响收尾 */ }
+    noteRun(journal.workspace || 'default', { id: journal.id, requirement: journal.requirement, verdict: journal.status, runDocs: journal.runDocs })
     deliverCompletion(journal, parent) // 汇总投递回发起会话（主线程）
     console.log(`[teamflow] 运行结束 ${journal.id} → ${journal.status}（工作区 ${scopeKey}）`)
   }

@@ -28,8 +28,10 @@ export interface JournalStage {
   handoff?: string | null
   summary?: string | null
   output?: string | null
-  /** 单调用护栏中止原因（进行中退化检测触发时记录；outcome 相应为 degenerated）。 */
+  /** 单调用护栏中止原因（进行中退化检测触发时记录；outcome 相应为 degenerated/stalled）。 */
   guardReason?: string | null
+  /** 护栏中止分类：degenerated（复读，可干净重试）/ stalled（挂死/空转，走预算门转人工）。 */
+  guardOutcome?: 'degenerated' | 'stalled' | null
 }
 
 /** 运行日志（journal）——运行时对象与磁盘可持久化形态的公共形状。 */
@@ -61,6 +63,8 @@ export interface JournalRecord {
   } | null
   product?: string | null
   reqId?: string | null
+  /** ADR-0008 任务夹相对路径（docs/teamflow/<yyyyMMdd>-r<N>[-<slug>]；需求级身份，建夹后固定，重试/续跑复用）。 */
+  runDocs?: string | null
   /** 单任务模型：需求关联的唯一（轮转）任务 id。 */
   taskId?: string | null
   taskMap?: Record<string, string>
@@ -195,6 +199,7 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     sanity: journal.sanity || null,
     blueprint: journal.blueprint || null,
     reqId: journal.reqId || null,
+    runDocs: journal.runDocs || null,
     taskId: journal.taskId || null,
     taskMap: journal.taskMap || {},
     agentsStarted: journal.agentsStarted || 0,

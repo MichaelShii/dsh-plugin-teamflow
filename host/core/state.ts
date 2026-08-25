@@ -24,8 +24,6 @@ export interface StageStateBlock {
   touched?: string[]
   /** 本次验收结论（acceptance 阶段） */
   verdict?: string
-  /** 当前版本号（prd/acceptance 阶段） */
-  version?: string
   /** 需同步的记忆要点 */
   memory?: string[]
   /** free-form 结构：可放模块契约、AC 索引等供后续 slice */
@@ -40,10 +38,11 @@ export interface TeamflowState {
   updatedAt: number | null
   /** 产品级结论索引 */
   product: {
-    currentVersion?: string | null
     summary?: string | null
     techStack?: string | null
   }
+  /** ADR-0008：最近一次任务夹（docs/teamflow/<folder>），替代旧「当前版本」概念。 */
+  lastRunFolder?: string | null
   /** 模块 → 契约/一句话（tech/dev 阶段沉淀） */
   modules: Record<string, string>
   /** 验证脚本清单（tech/qa 沉淀） */
@@ -56,14 +55,15 @@ export interface TeamflowState {
   lastRun: {
     runId?: string | null
     requirement?: string | null
-    version?: string | null
+    folder?: string | null
     verdict?: string | null
     endedAt?: number | null
   } | null
-  /** 本次 run 的运行时注入上下文（不持久化；M0 状态核对 + M1 架构蓝图 + M2 dev 蓝图）。 */
+  /** 本次 run 的运行时注入上下文（不持久化；M0 状态核对 + M1 架构蓝图 + 任务夹路径）。 */
   __runCtx?: {
     sanity?: string
     blueprint?: string
+    runDocs?: string
   } | null
 }
 
@@ -73,7 +73,8 @@ function emptyState(): TeamflowState {
     version: 1,
     projectName: null,
     updatedAt: null,
-    product: { currentVersion: null, summary: null, techStack: null },
+    product: { summary: null, techStack: null },
+    lastRunFolder: null,
     modules: {},
     verifyScripts: [],
     acIndex: {},
@@ -98,6 +99,7 @@ export function loadState(projectKey: string): TeamflowState {
         base.projectName = raw.projectName ?? null
         base.updatedAt = raw.updatedAt ?? null
         base.product = { ...base.product, ...(raw.product || {}) }
+        base.lastRunFolder = raw.lastRunFolder ?? null
         base.modules = raw.modules || {}
         base.verifyScripts = Array.isArray(raw.verifyScripts) ? raw.verifyScripts : []
         base.acIndex = raw.acIndex || {}
@@ -147,7 +149,6 @@ export function mergeStateBlock(projectKey: string, block: StageStateBlock, phas
         if (typeof f === 'string' && f) state.modules[f] = state.modules[f] || 'touched'
       }
     }
-    if (typeof block.version === 'string' && block.version) state.product.currentVersion = block.version
     if (typeof block.verdict === 'string' && block.verdict) {
       state.lastRun = state.lastRun || {}
       state.lastRun.verdict = block.verdict
@@ -165,14 +166,15 @@ export function mergeStateBlock(projectKey: string, block: StageStateBlock, phas
   return state
 }
 
-/** 按 run 更新 lastRun（finally 时调用）。 */
-export function noteRun(projectKey: string, run: { id?: string; requirement?: string; verdict?: string; endedAt?: number }): void {
+/** 按 run 更新 lastRun / lastRunFolder（finally 时调用）。 */
+export function noteRun(projectKey: string, run: { id?: string; requirement?: string; verdict?: string; endedAt?: number; runDocs?: string | null }): void {
   const state = loadState(projectKey)
+  if (run.runDocs) state.lastRunFolder = run.runDocs
   state.lastRun = {
     runId: run.id || null,
     requirement: run.requirement ? String(run.requirement).slice(0, 200) : null,
     verdict: run.verdict || null,
-    version: state.product.currentVersion || null,
+    folder: run.runDocs || null,
     endedAt: run.endedAt ?? Date.now(),
   }
   saveState(projectKey, state)
@@ -181,13 +183,13 @@ export function noteRun(projectKey: string, run: { id?: string; requirement?: st
 /** 按角色渲染 state slice（注入到子代理 prompt）。角色 → 只拿相关片段。 */
 export function stateSliceFor(state: TeamflowState, role: 'pm' | 'design' | 'arch' | 'tech' | 'dev' | 'qa' | 'acceptance'): string {
   const lines: string[] = []
-  // 本次 run 注入上下文（M0 状态核对 + M1 架构蓝图）：所有角色都先看到"现状 + 架构基线"
+  // 本次 run 注入上下文（任务夹路径 + M0 状态核对 + M1 架构蓝图）：所有角色都先看到
   if (state.__runCtx) {
+    if (state.__runCtx.runDocs) lines.push(`【本次任务产物夹】${state.__runCtx.runDocs}/（host 已创建；本需求的 PRD/TECHNICAL/QA-REPORT/ACCEPTANCE 全部写这里，夹建后不可变、不归档不升版）`)
     if (state.__runCtx.sanity) lines.push(state.__runCtx.sanity)
     if (state.__runCtx.blueprint && (role === 'arch' || role === 'tech' || role === 'dev')) lines.push(state.__runCtx.blueprint)
   }
   lines.push('【预编译产品状态（state.json · 权威记忆在 docs/teamflow/memory.md，本块已是够用的索引，勿再全量读历史文档）】')
-  if (state.product.currentVersion) lines.push(`- 当前版本：${state.product.currentVersion}`)
   if (state.product.summary) lines.push(`- 产品概要：${state.product.summary}`)
   if (state.product.techStack && (role === 'tech' || role === 'dev' || role === 'arch')) lines.push(`- 技术栈：${state.product.techStack}`)
   if (Object.keys(state.acIndex).length && (role === 'pm' || role === 'qa' || role === 'acceptance' || role === 'tech')) {
@@ -210,15 +212,14 @@ export function stateSliceFor(state: TeamflowState, role: 'pm' | 'design' | 'arc
     if (state.stages.prd) lines.push(`- PRD 摘要：${state.stages.prd}`)
   } else if (role === 'qa') {
     if (state.stages.qa) lines.push(`- 上轮 QA 摘要：${state.stages.qa}`)
-    if (state.product.currentVersion) lines.push(`- 上轮版本：${state.product.currentVersion}`)
   }
   if (state.lastRun) {
     const r = state.lastRun
-    lines.push(`- 上轮：${r.requirement ? r.requirement : ''}${r.verdict ? ' → ' + r.verdict : ''}${r.version ? `（${r.version}）` : ''}`)
+    lines.push(`- 上轮：${r.requirement ? r.requirement : ''}${r.verdict ? ' → ' + r.verdict : ''}${r.folder ? `（${r.folder}）` : ''}`)
   }
   return lines.join('\n')
 }
 
 /** 让每个阶段产出末尾附带 state 块（将并入 stage output，由 host 提取）。 */
 export const STATE_BLOCK_INSTRUCTION = `\n\n【State 沉淀 · 结尾必须输出】在回答末尾追加一段（供索引复用，与正文同一份输出即可）：
-<!-- state -->{"phase":"<阶段key>","summary":"<≤500字本阶段结论，受益于下一轮>","version":"<版本号，如有>","memory":["<记忆要点>"]}<!-- /state -->`
+<!-- state -->{"phase":"<阶段key>","summary":"<≤500字本阶段结论，受益于下一轮>","memory":["<记忆要点>"]}<!-- /state -->`

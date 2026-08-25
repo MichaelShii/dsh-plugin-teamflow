@@ -246,7 +246,14 @@ export function noteTaskAssign(journal, role, assignee) {
   const store = storeFor(journal.workspace || 'default')
   const task = journal.taskId ? store.find('task', journal.taskId) : null
   if (!task) return
-  if (role === 'dev' && assignee) task.devAssign = String(assignee)
+  if (role === 'dev' && assignee) {
+    task.devAssign = String(assignee)
+    // 级联刷新 dev 子卡（子卡创建早于赋值的时序缺口：实锤 r9 run dev-17 devAssign 为空）
+    for (const sid of task.subtaskIds || []) {
+      const sub = store.find('task', sid)
+      if (sub && !sub.devAssign) sub.devAssign = String(assignee)
+    }
+  }
   if (role === 'qa' && assignee) task.qaAssign = String(assignee)
   if ((role === 'accept' || role === 'pm') && assignee) task.acceptBy = String(assignee)
   store.persist()

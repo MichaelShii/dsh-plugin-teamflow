@@ -612,7 +612,7 @@ function BoardPanel({ backlog, api, onRefresh, sessionId }) {
     { kind: 'task', list: (backlog.tasks || []).filter((t) => t.type !== 'subtask') }, // 只展示主卡（子卡嵌套在主卡下）
     { kind: 'bug', list: backlog.bugs || [] },
   ]
-  return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 14 } },
+  return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 14, maxHeight: '72vh', overflowY: 'auto', paddingRight: 4 } },
     groups.map(({ kind, list }) => {
       const counts = {}
       for (const s of COLUMNS[kind]) counts[s] = 0
@@ -640,6 +640,7 @@ function BoardPanel({ backlog, api, onRefresh, sessionId }) {
               style: {
                 minWidth: 140, maxWidth: 172, flex: '0 0 auto',
                 borderRadius: 10, padding: 7, minHeight: 84,
+                maxHeight: 340, overflowY: 'auto', // 任务增多时列内滚动，不撑高页面
                 background: isOver ? `color-mix(in srgb, ${color} 8%, ${T.layer1})` : T.layer2,
                 border: `1px dashed ${isOver ? color : T.border}`,
                 transition: 'background .12s ease, border-color .12s ease',

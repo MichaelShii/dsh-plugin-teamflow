@@ -15,6 +15,20 @@ export function extractText(blocks) {
   if (!Array.isArray(blocks)) return ''
   return blocks.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n')
 }
+
+/**
+ * ADR-0008 任务夹命名：<yyyyMMdd>-r<N>[-<slug>]。
+ * - date 用本地时区（用户在东八区晚上建的需求不能落到"明天"）
+ * - reqId 形如 req-8 → 段 r8（防撞兜底：slug 缺失/非法时夹名退化为 <date>-r<N>）
+ * - slug 由 triage 模型给出并经 host 校验（[a-z0-9-]{3,24}），此处再做一次防御性清洗
+ */
+export function runFolderName(date: Date, reqId: string, slug?: string | null): string {
+  const ymd = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}`
+  const n = String(reqId || '').replace(/^req[-_]/i, 'r')
+  const clean = String(slug || '').toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '')
+  const valid = /^[a-z0-9][a-z0-9-]{2,23}$/.test(clean) ? clean : ''
+  return valid ? `${ymd}-${n}-${valid}` : `${ymd}-${n}`
+}
 /**
  * 产品名白名单归一化：只允许 [a-zA-Z0-9_-] 组成的路径段（可含 / 分隔）。
  * 拒绝：绝对路径、盘符、. / .. 段、空段、空白字符 —— 防止穿越 $DSH_HOME 写任意目录。

@@ -2,20 +2,26 @@
  * dsh-plugin-teamflow — Prompt 模板（阶段提示词 + 团队模板）。
  * 依赖：util.ts（clip）、core/state.ts（stateSliceFor / STATE_BLOCK_INSTRUCTION）。
  *
- * 【产物收口约定】（v0.9）
- * - 团队文档（PRD/设计/架构/技术方案/QA 报告/产品记忆/摘要/历史）一律收口到
- *   `docs/teamflow/` 下，绝不落到宿主 `docs/<职责>/` 或项目根，避免污染宿主文档树。
- * - 子代理运行的命令输出等日志一律收口到 `logs/teamflow/<runId>/` 下。
- * - 【版本切片 + 一次成型】（v0.10）：
- *   - PRD/TECH/etc 活文档只存「当前版本」；旧版归档为独立版本文件，不再无限累积。
- *   - 目标文档只 write 一次 + 最多 read/校验 2 次，严禁 read→edit→read 循环。
- *   - 开工前读 state slice（预编译索引），不再全量读历史文档。
+ * 【产物收口约定】（v0.13，ADR-0008 任务夹制）
+ * - 每个需求一个自包含任务夹：docs/teamflow/<yyyyMMdd>-r<N>[-<slug>]/，收口本需求的
+ *   PRD/DESIGN/TECHNICAL/QA-REPORT/ACCEPTANCE。夹由 host 创建命名（journal.runDocs），
+ *   建后不可变、阶段重试与断点续跑复用同夹——无版本切片、无归档动作。
+ * - 产品层只保留 docs/teamflow/memory.md（团队约定/技术栈/待办，低频幂等更新）。
+ * - 回归基线：新 PRD 头部「基线依赖：<其他任务夹>」声明；跨代变更用「取代：<夹>#AC-n」；
+ *   硬保障在项目 verify-* 可执行套件。
+ * - 命令输出日志照旧收口 logs/teamflow/<runId>/。
  */
 import { clip } from '../util.ts'
 import { stateSliceFor, STATE_BLOCK_INSTRUCTION } from '../core/state.ts'
 
-/** 团队文档根（相对工作区根）——TeamFlow 所有产物文档的收口目录。 */
+/** 产品层文档根（memory.md 等跨任务资产；任务产物在其中的任务夹内）。 */
 const TF_DOCS = 'docs/teamflow'
+
+/** 本次任务产物夹相对路径（ADR-0008）：host 在启动时注入 state.__runCtx.runDocs。 */
+function RUN(state: unknown): string {
+  const rd = state && (state as { __runCtx?: { runDocs?: unknown } }).__runCtx && (state as { __runCtx?: { runDocs?: unknown } }).__runCtx!.runDocs
+  return typeof rd === 'string' && rd ? rd : `${TF_DOCS}/current-run`
+}
 
 /**
  * AGENTS.md 模板 —— 共识层 + TeamFlow 托管区（所有产物文档指向 docs/teamflow/）。
@@ -38,16 +44,11 @@ export const AGENTS_TEMPLATE = `# AGENTS.md — 团队协作守则与文档索�
 
 | 职责 | 位置 | 说明 |
 |---|---|---|
-| 摘要索引 | ${TF_DOCS}/SUMMARY.md | 先读：每文档用途/关键章节/读取指引（token 预算） |
 | 产品入口 | README.md | 玩法/操作/运行/验收速览（团队资产的入口文档） |
-| 需求（PRD） | ${TF_DOCS}/prd/PRD.md | 验收唯一依据（AC 清单 + 数值规格） |
-| 设计 | ${TF_DOCS}/design/DESIGN.md | 视觉/交互/动效/a11y 规范 |
-| 架构 | ${TF_DOCS}/architecture/ARCHITECTURE.md | 工程方案与脚手架说明 |
-| 技术方案 | ${TF_DOCS}/technical/TECHNICAL.md | 模块契约与任务拆分 |
-| QA | ${TF_DOCS}/qa/QA-REPORT.md | 测试报告 + 人工补测清单 |
-| 产品记忆/待办 | ${TF_DOCS}/memory.md | TeamFlow 维护：迭代历史与下一批待办（按需读取） |
+| 任务产物 | ${TF_DOCS}/<yyyyMMdd-rN-slug>/ | 每个需求一个自包含任务夹：PRD/设计/技术方案/QA 报告/验收报告（按日期倒序即迭代史） |
+| 架构总览 | ${TF_DOCS}/architecture/ARCHITECTURE.md | 工程方案与脚手架说明（产品级长期文档） |
+| 产品记忆 | ${TF_DOCS}/memory.md | 团队约定/技术栈/已知待办（低频更新） |
 | 运行日志 | logs/teamflow/<runId>/ | TeamFlow 流水线各阶段命令日志（日常不读） |
-| 历史归档 | ${TF_DOCS}/history/<版本>/ | 已发布版本快照（日常不读） |
 
 ## 3. 团队角色与标准流程
 
@@ -55,11 +56,9 @@ export const AGENTS_TEMPLATE = `# AGENTS.md — 团队协作守则与文档索�
 
 **标准流程**：需求 → PRD →（UI 改造时）UI/UX 设计 →（新项目时）架构规划 → 技术方案 → 并行开发 → QA 测试 → 产品验收。
 
-**产出物落盘约定（全部收口到 ${TF_DOCS}/）**：PRD → ${TF_DOCS}/prd/PRD.md；设计 → ${TF_DOCS}/design/DESIGN.md；架构 → ${TF_DOCS}/architecture/ARCHITECTURE.md；技术方案 → ${TF_DOCS}/technical/TECHNICAL.md；QA 报告 → ${TF_DOCS}/qa/QA-REPORT.md；产品记忆 → ${TF_DOCS}/memory.md。**除实际产品代码改造与 AGENTS.md 托管区外，TeamFlow 只在 ${TF_DOCS}/ 与 logs/teamflow/ 下写文件，绝不写入宿主 docs/<职责>/ 或项目根。**
+**产出物落盘约定**：每个需求的所有产物写入该需求的任务夹 ${TF_DOCS}/<任务夹>/（夹名与路径由 TeamFlow 指定，见各阶段指令）；ARCHITECTURE.md 与 memory.md 是产品级长期文档。**除实际产品代码改造与 AGENTS.md 托管区外，TeamFlow 只在 ${TF_DOCS}/ 与 logs/teamflow/ 下写文件，绝不写入宿主 docs/<职责>/ 或项目根。**
 
 **完成度自查**：每个环节交付前对照职责清单自查，未完成不得流转；架构师对新项目必须实际初始化脚手架文件与 AGENTS.md 草稿。
-
-**文档归档**：更新活文档前，先把当前版本快照复制到 ${TF_DOCS}/history/<版本>/（防臃肿，见 ${TF_DOCS}/SUMMARY.md）。
 
 ## 4. 工程约定
 
@@ -68,7 +67,7 @@ export const AGENTS_TEMPLATE = `# AGENTS.md — 团队协作守则与文档索�
 <!-- teamflow:begin -->
 ## TeamFlow 托管区（本块由 TeamFlow 自动维护，团队请勿手改）
 
-- 团队文档根：${TF_DOCS}/（PRD/设计/架构/技术方案/QA/记忆/历史全部在此）
+- 团队文档根：${TF_DOCS}/（每需求一个任务夹 + memory.md + architecture/）
 - 运行日志：logs/teamflow/<runId>/
 - 需求/任务/缺陷 backlog：持久化镜像位于 $DSH_HOME/teamflow/<workspace>/（按工作区/项目隔离）
 - 规则：TeamFlow 只维护本块、${TF_DOCS}/ 与 logs/teamflow/；本文件其余内容为团队资产。
@@ -81,14 +80,12 @@ export const AGENTS_TEMPLATE = `# AGENTS.md — 团队协作守则与文档索�
 
 export const MEMORY_TEMPLATE = `# {{PRODUCT}} 产品记忆与待办（TeamFlow 维护）
 
-> 由 TeamFlow 流水线的产品经理在每次验收后追加；按需读取，不注入每次会话（AGENTS.md 只放指针）。
-> 这是团队资产的活文档：团队可自行增删，TeamFlow 只追加迭代记录与待办。
+> 本文件是**产品约定层**：只记录跨需求长期有效的信息（技术栈、团队规矩、已知待办）。
+> 每个需求的迭代细节在各自任务夹 docs/teamflow/<日期-rN-slug>/ 内，不写进本文件。
 
-## 迭代历史
+## 团队约定与技术栈
 
-| 版本 | 日期 | 需求 | 结果 | runId |
-|---|---|---|---|---|
-|（验收后由产品经理追加一行）|
+- （架构师初始化脚手架时填写：代码形态、模块边界、验证命令）
 
 ## 已知待办（下一批）
 
@@ -96,19 +93,19 @@ export const MEMORY_TEMPLATE = `# {{PRODUCT}} 产品记忆与待办（TeamFlow �
 
 ## 说明
 
-- 团队文档根：${TF_DOCS}/（本文件即 ${TF_DOCS}/memory.md）
+- 任务产物：docs/teamflow/<日期-rN-slug>/（一需求一夹，建后不可变）
 - backlog（需求/任务/缺陷）事实源：$DSH_HOME/teamflow/<workspace>/（按工作区/项目隔离）
-- 本文件与 AGENTS.md 的 <!-- teamflow --> 托管区共同构成 TeamFlow 的记忆层
 - 运行日志：logs/teamflow/<runId>/
 `
 
 export function productCtx(root) {
   const base = root || 'products/<product>'
   return `【产品线约定】本需求属于产品 ${base}（当前工作区即其项目根）。
-开工前先读 ${base}/AGENTS.md（团队守则与文档索引）与 ${base}/${TF_DOCS}/SUMMARY.md（团队文档摘要索引，先读摘要、按需精读，不要无目的全量通读）；
-团队文档全部收口在 ${base}/${TF_DOCS}/ 下：PRD=${TF_DOCS}/prd/PRD.md、技术方案=${TF_DOCS}/technical/TECHNICAL.md、QA=${TF_DOCS}/qa/QA-REPORT.md、产品记忆=${TF_DOCS}/memory.md（按需读取）；
+开工前先读 ${base}/AGENTS.md（团队守则与文档索引；先读摘要、按需精读，不要无目的全量通读）；
+【任务夹制 · ADR-0008】每个需求一个自包含任务夹 docs/teamflow/<yyyyMMdd-rN-slug>/（本需求的夹路径见下方各阶段指令），夹内收口本需求全部产物（PRD/设计/技术方案/QA 报告/验收报告），**夹建后不可变、不归档、不升版**——重试/续跑写同一个夹；跨需求的产品级文档只有 ${TF_DOCS}/memory.md（约定/待办）与 architecture/；
+【回归基线】新 PRD 头部声明「基线依赖：<既往任务夹名>」，跨代变更行为用「取代：<某夹>#AC-n」显式标注——历史夹永不改动；
 【文档边界 · 硬约束】TeamFlow 契约文档只写 ${base}/${TF_DOCS}/ 下（目录不存在则创建），**绝不写宿主 docs/<职责>/、绝不往项目根散落日志文件**；命令输出等日志写 logs/teamflow/<runId>/；
-【AGENTS.md 边界 · 硬约束】AGENTS.md 是团队资产（会被无条件注入，只放共识层/索引/托管区）：**禁止在迭代中新增/追加「产品记忆、待办、变更记录」等流水账章节**（这类数据只写 ${TF_DOCS}/memory.md 与 history/、state.json）；除文末 <!-- teamflow:begin/end --> 托管区外，任何环节都不得改写、重排或覆盖 AGENTS.md 其他内容（产品记忆写入 ${TF_DOCS}/memory.md）；
+【AGENTS.md 边界 · 硬约束】AGENTS.md 是团队资产（会被无条件注入，只放共识层/索引/托管区）：**禁止在迭代中新增/追加「产品记忆、待办、变更记录」等流水账章节**（这类数据只写 ${TF_DOCS}/memory.md 与任务夹）；除文末 <!-- teamflow:begin/end --> 托管区外，任何环节都不得改写、重排或覆盖 AGENTS.md 其他内容；
 backlog（需求/任务/缺陷）事实源在 ${base}/backlog/ 的持久化镜像 $DSH_HOME/teamflow/<workspace>/：任务为单卡轮转模型（待办→开发中→待测试→测试中→待验收→已验收），devAssign/qaAssign 记录在任务卡上。
 `
 }
@@ -128,8 +125,8 @@ export const TOKEN_HYGIENE = (runId) => `【token 卫生 · 硬约束】上下�
 - 禁止全量 read 超过 200 行的文件（超出部分用 grep + limit 分段）；全量 read 的目标文件 ≤2 个；其余一律 grep 定位 + limit 分段读取。
 - 运行命令时把完整输出重定向到文件（写到 logs/teamflow/${runId || '<runId>'}/ 下），再读取尾部摘要，不要把几百行输出直接回显。
 - 报告与摘要一律精简（QA ≤150 行、验收 ≤80 行、开发 ≤40 行），细节落盘文件。
-- AGENTS.md / SUMMARY.md 已在上下文中自动注入，无需花调用读取全文；如需查找特定规则，grep 关键词定位。
-- 本迭代的契约/验收标准已在下文【上下文包/交接摘要】或对应技术方案中给出：不得重新全量 read PRD.md / DESIGN.md / TECHNICAL.md 全文，只需按需 grep/read 目标代码。
+- AGENTS.md 与产品记忆索引已在上下文中自动注入，无需花调用读取全文；如需查找特定规则，grep 关键词定位。
+- 本迭代的契约/验收标准已在下文【上下文包/交接摘要】或本任务夹 PRD 中给出：不得重新全量 read 任务夹内 PRD.md / DESIGN.md / TECHNICAL.md 全文，只需按需 grep/read 目标代码。
 `
 
 /** 一次成型纪律：目标文档 write ≤1 次 + read ≤2 次，严禁 read→edit→read 循环。 */
@@ -141,27 +138,22 @@ export const ONCE_DISCIPLINE = `【一次成型纪律 · 硬约束】这是最�
 - 产出末尾必须附带 state 块，供 host 沉淀索引、下一轮免重读。
 `
 
-/** 版本归档文案：活文档只存当前版本正文（增量 + 压缩基线）+ 一行当前版修订 + 指针；历史统一归档到 history/。 */
-export const VERSION_SLICE_BLOCK = `【版本切片 · 硬约束】这是文档防膨胀的硬约束：
-- 活文档（PRD.md / DESIGN.md / TECHNICAL.md 等）只存【当前版本正文（增量 + 压缩基线）】+【修订记录表当前版一行】+【指向历史版本的指针】。
-- 【mv 归档 · 结构强制】更新旧活文档前，先把整文件用 mv（移动/改名：git mv 或文件系统 mv）挪到 ${TF_DOCS}/history/<旧版本号>/ 下（同文件名，如 ${TF_DOCS}/history/v2.4/PRD.md，已存在则跳过）。mv 后旧路径即不存在——**绝不允许在旧文件上做逐处 edit/插入**。
-- 【新文件只写增量 + 压缩基线】旧文件 mv 走后，在原路径 write 一个全新的干净文件：正文只含 (1) 本次变更（新增/修改的 US/AC 完整可测文本 + 受影响规格）；(2) **回归底线：既有 AC 仅列 编号 + 一行语义 + 指针**（完整文本在 history 归档，按需 grep，**严禁照抄旧 AC 全文**）；(3) 验收准则与数值规格的增量。
-- **严禁在活文档修订表里累积全部历史版本**（如 v1.0~v2.x 全列）；历史修订信息只属于 history/ 下的对应版本文件。
-- 需要看历史时去 ${TF_DOCS}/history/<版本>/，不要 grep/read 历史全文进上下文。
-`
-
 export const prdPrompt = (requirement, root, runId, state) => `你是资深产品经理。当前工作区即为目标项目（若为空表示项目尚未建立）。
 ${productCtx(root)}${stateSliceFor(state, 'pm')}
 ${ONCE_DISCIPLINE}【原始需求】
 ${requirement}
+【本次产物落点】${RUN(state)}/PRD.md（write 1 次；目录不存在则创建）。
 【要求】
-1. 先看上方 state 索引与 ${TF_DOCS}/SUMMARY.md（摘要），判断是否有既有 PRD 模式/历史 AC；不要全量重读历史文档。
-2. 若已有历史 PRD（${TF_DOCS}/prd/PRD.md 或 ${TF_DOCS}/history/v*.md）或 ${TF_DOCS}/memory.md：这是迭代需求——输出增量 PRD（保留既有 AC 编号与语义、旧 AC 只作压缩回归基线列出、显式标注本次变更），升级版本号。
-3. 【版本切片 · mv + 增量文件】${TF_DOCS}/prd/PRD.md 已有旧版时：先 read ≤1 次读旧版标题/版本号（不读全文），把整文件用 mv（移动/改名：git mv 或文件系统 mv）挪到 ${TF_DOCS}/history/v<旧版本号>/PRD.md（已存在则跳过）；旧路径 mv 后即不存在，**严禁在旧文件上逐处 edit/插入**。然后 ${TF_DOCS}/prd/PRD.md write 一个全新干净文件：只含 v<新版本号> 本次变更（新增/修改 US/AC 完整可测文本 + 受影响规格）+ 回归底线清单（既有 AC 仅 编号 + 一行语义 + 指针到 history，按需 grep，**严禁照抄旧 AC 全文**）+ 验收准则与数值规格增量 + 修订表当前版一行。【防双归档 · 重试/续跑幂等】mv 前 若发现「旧版」修订表当前版的变更摘要与【原始需求】同主题——说明它就是本 run 上次尝试产出的同需求 PRD（阶段重试或断点续跑场景）——此时**跳过 mv 归档、不再自增版本号**：保留现有文件与版本，仅做缺失小节补全校验。
-4. 输出完整 PRD（Markdown）：背景与目标、用户故事（含逐条可测试的验收标准）、功能范围与非目标、交互流程概述、优先级(P0/P1/P2)、依赖与风险、里程碑建议。验收标准可测试可量化，精炼优先。
-5. 产出写入 ${TF_DOCS}/prd/PRD.md；同步更新 ${TF_DOCS}/memory.md：【幂等替换，不是追加】文件里只允许存在**一段**「当前迭代记忆」——把它整体替换为本次版本（旧的当前迭代段删除，已验收的历史压缩成一行并入「迭代历史」），修订相关行按版本号 upsert（同版本号复写同一行）。【续跑幂等】memory 已含本需求同版本的记录时，保持版本号不变、只更新状态。【边界】只写 ${TF_DOCS}/ 下文件；不改 AGENTS.md 除 teamflow 托管区外内容。
+1. 先看上方 state 索引与 AGENTS.md 文档索引，判断是否为迭代需求、既往哪些任务夹与本需求相关（夹名含日期与主题，按日期倒序即演进史）；不要全量通读历史文档。
+2. 【AC 编号】本夹内从 AC-1 连续编起——AC 归属本需求，不沿用任何全局编号。
+3. 【头部声明 · 必写】PRD.md 开头依次：
+   - \`<!-- meta: summary="<一句话概括本需求交付了什么>" -->\`
+   - \`基线依赖：<本需求依赖的既往任务夹名>（其既定行为不得回退）\`；无依赖写「基线依赖：无」
+   - \`取代：<某任务夹>#<AC 编号>：<一句话说明>\`（仅当本需求显式改变某既有行为时写；没有就省略）
+4. 输出完整 PRD（Markdown）：背景与目标、用户故事（含逐条可测试的验收标准）、功能范围与非目标、交互流程概述、优先级(P0/P1/P2)、依赖与风险、里程碑建议。验收标准可测试可量化，精炼优先。**不要写修订记录表，不要写「版本：vX.Y / 状态：进行中」等版本管理字段**（任务夹即档案，身份由夹名承载）。
+5. 【memory 回写 · 仅限约定变更】只有当本需求引入新的团队约定/技术栈决策时，才更新 docs/teamflow/memory.md（同主题替换原行，幂等，不追加流水账）；否则不动 memory。
 6. 【工程动作承接】原始需求中的工程指令（新建/切换分支、提交、打 tag 等）必须原样保留到 PRD 的「工程约束」小节：写明动作、时机与基线（如「从当前主干最新提交新建分支 feat/<名> 后实施」）；工作区已有未提交改动时注明处理方式。不得静默丢弃或改写工程指令。
-7. 【state 沉淀】结尾输出 state 块（phase="prd"），summary 含本次 AC 要点、version 写新版本号，extra 放 { "acIndex": {...}, "summary": "产品一句话", "techStack": "..." }。${STATE_BLOCK_INSTRUCTION}`
+7. 【state 沉淀】结尾输出 state 块（phase="prd"），summary 含本次 AC 要点与一句话产品语义，extra 放 { "acIndex": {...}, "summary": "产品一句话", "techStack": "..." }。${STATE_BLOCK_INSTRUCTION}`
 
 export const designPrompt = (prd, root, runId, state) => `你是资深 UI/UX 设计师。当前工作区即为目标项目。
 ${productCtx(root)}${stateSliceFor(state, 'design')}
@@ -171,7 +163,7 @@ ${clip(prd, 15000)}
 1. 若项目已有前端代码/设计系统或历史 ${TF_DOCS}/design/DESIGN.md，先 grep 定位规范要点，勿全量重读；设计必须贴合现有风格与组件规范（迭代时保留既有规范，新增/修订部分显式标注）。
 2. 输出：页面/模块清单与信息架构、关键页面线框描述（布局/组件/状态）、交互与动效说明、视觉规范（配色/字号/间距，尽量复用现有 token）、可访问性要点。
 3. 输出中文 Markdown，具体到可直接指导前端实现，精炼优先。
-4. 产出写入 ${TF_DOCS}/design/DESIGN.md（write 1 次；旧版整文件 mv 归档到 ${TF_DOCS}/history/v<旧版>/DESIGN.md，不逐处 edit；旧版若是本 run 上次尝试产出的同需求草稿——内容与本次一致——则跳过归档直接覆盖写）。【边界】只写 ${TF_DOCS}/ 下文件。
+4. 产出写入 ${RUN(state)}/DESIGN.md（write 1 次）。【边界】只写 ${TF_DOCS}/ 下文件。
 5. 【state 沉淀】结尾输出 state 块（phase="design"），summary 写关键设计决策。${STATE_BLOCK_INSTRUCTION}`
 
 export const scaffoldPrompt = (req, design, root, runId, state) => `你是资深架构师。工作区为空或尚无项目骨架，请规划并**实际落地**新项目脚手架。
@@ -192,7 +184,7 @@ ${clip(design, 10000)}
         <!-- teamflow:begin -->…<!-- teamflow:end --> 托管块（含指向 ${TF_DOCS}/memory.md
         与 backlog/ 的索引行）；若已有托管块，跳过。其余内容一行不动。
       - 产品根尚无 AGENTS.md：基于下方模板创建（共识层 + 文档索引 + teamflow 托管区），
-        并创建 ${TF_DOCS}/SUMMARY.md（摘要索引）与 ${TF_DOCS}/memory.md（按下方的 memory.md 骨架，替换 {{占位符}}）；
+        并创建 ${TF_DOCS}/memory.md（按下方的 memory.md 骨架，替换 {{占位符}}）；
    d) 输出完成度自查清单：已落地项 / 未落地项及原因——未完成项必须显式列出，不得宣称全部完成。
 4. 若工作区已有部分文件，先阅读并尊重现状。
 5. 输出中文 Markdown，精炼完整；方案文档写入 ${TF_DOCS}/architecture/ARCHITECTURE.md。
@@ -215,10 +207,10 @@ ${clip(scaffold, 10000)}
 ` : ''}${tasks && tasks.length > 0 ? `【流水线派发任务（必须对齐，不得另起一套）】
 ${JSON.stringify(tasks)}
 ` : ''}【要求】
-1. 先阅读 ${TF_DOCS}/SUMMARY.md 与工作区现有项目（package.json、README、src 结构等）及 AGENTS.md，方案必须贴合现有技术栈与代码风格，并给出具体文件路径。
+1. 先阅读 AGENTS.md 与工作区现有项目（package.json、README、src 结构等），方案必须贴合现有技术栈与代码风格，并给出具体文件路径。
 2. 输出：数据模型与存储、API 设计（路由/入参出参）、前端组件与页面划分、状态管理、关键实现要点与边界情况、测试策略。
 3. 任务拆分：若上方【流水线派发任务】存在，你的拆分必须与之对齐——逐项校验/细化派发任务（文件边界、接口契约、验收标准），不得另起一套任务体系；未派发时给出可并行任务清单。PRD「工程约束」中的 git 动作（分支/提交要求）必须随任务传递（写进对应 task spec 或单独列出），不得丢失。
-4. 输出中文 Markdown，精炼完整；产出写入 ${TF_DOCS}/technical/TECHNICAL.md（write 1 次，旧版整文件 mv 归档 ${TF_DOCS}/history/v<旧版>/TECHNICAL.md，不逐处 edit；旧版若是本 run 上次尝试产出的同需求草稿——内容与本次一致——则跳过归档直接覆盖写）。【边界】只写 ${TF_DOCS}/ 下文件。
+4. 输出中文 Markdown，精炼完整；产出写入 ${RUN(state)}/TECHNICAL.md（write 1 次）。【边界】只写 ${TF_DOCS}/ 下文件。
 5. 【架构蓝图 JSON · 必输出（供 dev 继承 / 验收核验，M1/M2）】在文档之后，额外输出一个**架构蓝图 JSON 块**（与正文同一份输出里、文档末尾）：
 <!-- blueprint -->{"summary":"一句话架构判断","modules":{"/相对路径.js":{"responsibility":"职责","dependsOn":["依赖文件"],"assemblyOrder":1,"why":"为什么这样设计/为什么独立"},"/另一个.js":{"responsibility":"","why":""}},"duplications":["检测到的重复/适配器漂移风险，如多套安全存储封装"],"tasks":[{"title":"任务名（按文件边界）","files":["/a.js"],"spec":"一句话任务说明"}]}<!-- /blueprint -->
    - modules：本次涉及每个文件的职责 + 依赖 + 装配顺序 + **架构理由（why：为什么独立/这样设计）**。
@@ -286,7 +278,7 @@ ${clip(devSummary, 15000)}
 6. 【缺陷提交格式】发现的缺陷按以下结构化清单输出（供缺陷管理系统直接收录）：
    | 编号 | 严重级(P0/P1/P2/P3) | 功能模块 | 复现步骤 | 期望行为 | 实际行为 | 关联验收项 |
    若无缺陷，显式输出「未发现缺陷」。
-7. 输出中文 Markdown，具体可执行；报告写入 ${TF_DOCS}/qa/QA-REPORT.md（write 1 次，旧版整文件 mv 归档 ${TF_DOCS}/history/v<旧版>/QA-REPORT.md，正文精炼，不留无限长历史；归档目标已存在同版本文件、或旧版即本 run 上次尝试产出时，跳过归档直接覆盖写）。【边界】只写 ${TF_DOCS}/ 下文件。
+7. 输出中文 Markdown，具体可执行；报告写入 ${RUN(state)}/QA-REPORT.md（write 1 次，正文精炼）。【边界】只写 ${TF_DOCS}/ 下文件。
 8. 【state 沉淀】结尾输出 state 块（phase="qa"），summary 写测试结论/被阻断项，extra 放 { "verifyScripts": [...] }。${STATE_BLOCK_INSTRUCTION}`
 
 /** QA 打回后的开发修复 prompt：确认缺陷是否属实 → 修复 → 复验交接（QA→dev 打回闭环用）。 */
@@ -298,7 +290,7 @@ ${clip(qa, 12000)}
 ${JSON.stringify(defects, null, 2)}
 【技术方案/架构蓝图摘要（修复应在既有架构上做，勿重建）】
 ${(tech && String(tech).trim()) ? clip(tech, 12000) : ''}
-【PRD】相关验收标准见 ${TF_DOCS}/prd/PRD.md（按需 grep 对应 AC 编号，不必通读全文）。
+【PRD】相关验收标准见 ${RUN(state)}/PRD.md（按需 grep 对应 AC 编号，不必通读全文）。
 【要求】
 1. 【先确认，后修复】对每个缺陷逐条核实：它是否确实成立（读代码/复现/对照现象与期望）——
    确认属实的 → 直接把它修好；QA 误报/与现状不符 → 在摘要中明确说明证据（不得臆造改动，也不得无视真实缺陷）。
@@ -323,7 +315,7 @@ ${clip(devSummary, 8000)}
 1. 逐条核对 PRD 验收标准达成情况。
 2. 输出验收结论（正文 ≤80 行）：✅ 通过 / ⚠️ 有条件通过 / ❌ 不通过 / 📝 需求不适用，附逐条核对表、意见与遗留事项。
 3. 【需求不适用判定】若 PRD/技术变更单/确认单已指出「需求与现状不符」，或开发结果明确为「无需改动（需求站不住/已满足）」，则结论应为 **「📝 需求不适用」** 并说明原因——不要因「无缺陷」而标 ✅ 通过。
-4. 【记忆回写】产品记忆写入 ${TF_DOCS}/memory.md：在「迭代历史」表追加一行（版本/日期/需求/结果/runId），更新「已知待办」（划掉已完成、补充新发现）；若 PRD 结构变化，同步更新 ${TF_DOCS}/SUMMARY.md。【边界】只写 ${TF_DOCS}/ 下文件；不得改写 AGENTS.md 除 <!-- teamflow --> 托管区以外的内容。
+4. 【验收报告落盘】写入 ${RUN(state)}/ACCEPTANCE.md（write 1 次，与正文一致）。【记忆回写 · 仅限约定变更】只有当本需求引入新的团队约定/技术栈决策、或「已知待办」有增删时，才更新 docs/teamflow/memory.md（同主题替换原行，幂等，不追加流水账）；否则不动 memory。【边界】只写 ${TF_DOCS}/ 下文件；不得改写 AGENTS.md 除 <!-- teamflow --> 托管区以外的内容。
 5. 输出中文 Markdown。
 6. 【state 沉淀】结尾输出 state 块（phase="acceptance"），summary 写验收结论、verdict 写"accepted/rework/reject/needs-human"，extra.done 写本次交付确认。${STATE_BLOCK_INSTRUCTION}`
 
@@ -349,7 +341,7 @@ ${pre.rationale.length ? `\n【正则预筛参考信号（仅供参考，请结�
 5. 【M1 架构判据（重要）】涉及**架构性改动**——持久化/本地存储/数据库/独立模块/抽象/跨多文件且无现有可复用封装（如 localStorage 封装、存储层、状态管理）——即使表面像"小功能"，也**至少 medium**（必须走架构阶段产蓝图，避免 dev 局部散落实现）；这类改动靠"微功能"轻档会塌。技术驱动改造（重构/优化/架构升级）本身归 tech（tech 档现也走轻量架构蓝图）。
 
 【输出】只输出一个 JSON 对象（不要任何其他文字）：
-{ "mode": "patch|lite|tech|medium|full", "kind": "一句话性质", "needDesign": true|false, "complexity": "small|medium|large", "rationale": ["关键论据1","关键论据2"], "confidence": "high|medium|low" }`
+{ "mode": "patch|lite|tech|medium|full", "slug": "本需求主题词(3-24个小写字母/数字/短横线,如 wallkick-toggle、7bag-random;用于命名任务文件夹)", "kind": "一句话性质", "needDesign": true|false, "complexity": "small|medium|large", "rationale": ["关键论据1","关键论据2"], "confidence": "high|medium|low" }`
 
 /** tech 档 PRD：技术变更单（无功能 AC，重范围/目标/改动面/回归）。 */
 export const techChangePrompt = (requirement, root, runId, state) => `你是资深技术负责人。当前工作区即为目标项目。这是一个**技术驱动改造**需求（重构/优化/升级/架构/依赖/技术债）——产品不需要完整功能 PRD，但需要一份**技术变更单**作开发/QA/验收与记忆回写的契约。
@@ -357,9 +349,9 @@ ${productCtx(root)}${stateSliceFor(state, 'tech')}
 ${ONCE_DISCIPLINE}【原始需求/改造目标】
 ${requirement}
 【要求】
-1. 产出「技术变更单」（Markdown），写入 ${TF_DOCS}/technical/ 下（如 ${TF_DOCS}/technical/changes.md 或 TECHNICAL.md 新增小节）——**不升级/不改写 ${TF_DOCS}/prd/PRD.md 的功能 AC**（技术驱动改造原则上不新增用户可见功能验收项；若确有一点用户可见行为变化，在该节显式说明）。
+1. 产出「技术变更单」（Markdown），写入 ${RUN(state)}/TECH-CHANGE.md——**不改写任何既往任务夹内的 PRD 功能 AC**（技术驱动改造原则上不新增用户可见功能验收项；若确有一点用户可见行为变化，在该节显式说明）。
 2. 变更单内容：改造背景与目标（一句话）、影响范围（涉及文件/模块）、技术方案要点（改动思路）、行为兼容性影响（有无用户可见变化）、回归与验证方案（跑哪些验证命令、回归底线）、风险与回滚。
-3. 同步更新 ${TF_DOCS}/memory.md 记录本次改造（版本 / 变更单位置 / 状态）；不改 AGENTS.md 除 teamflow 托管区外内容。
+3. 同步更新 docs/teamflow/memory.md 记录本次改造要点（仅当涉及新约定/待办增删；同主题替换，幂等）；不改 AGENTS.md 除 teamflow 托管区外内容。
 4. 精炼（这是给开发/QA 的契约，≤120 行），输出中文 Markdown。【边界】只写 ${TF_DOCS}/ 下文件。
 5. 【state 沉淀】结尾输出 state 块（phase="tech"），extra 放 { "verifyScripts": [...], "scopedFiles": [...] }。${STATE_BLOCK_INSTRUCTION}`
 

@@ -129,9 +129,10 @@ export async function runAgent(
       return text
     }
     if (stage.guardReason) {
-      // 护栏中止优先于通用失败分类（成功产出已在上方抢救）
+      // 护栏中止优先于通用失败分类（成功产出已在上方抢救）；
+      // 复读=degenerated（可干净重试），挂死/空转=stalled（走预算门转人工）
       stage.status = 'failed'
-      stage.outcome = 'degenerated'
+      stage.outcome = stage.guardOutcome || 'degenerated'
       stage.summary = `进行中护栏中止（${stage.guardReason}），本次尝试无有效产出`
       journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} ${stage.summary}` })
       return null
@@ -149,7 +150,7 @@ export async function runAgent(
   } catch (e) {
     stage.status = journal.cancelled ? 'cancelled' : 'failed'
     if (!journal.cancelled && stage.guardReason) {
-      stage.outcome = 'degenerated'
+      stage.outcome = stage.guardOutcome || 'degenerated'
       stage.summary = `进行中护栏中止（${stage.guardReason}）：${String((e && e.message) || e)}`
     } else {
       stage.outcome = journal.cancelled ? 'cancelled' : 'error'

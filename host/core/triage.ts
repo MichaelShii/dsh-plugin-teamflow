@@ -109,6 +109,8 @@ export interface TriageVerdict {
   complexity: 'small' | 'medium' | 'large'
   rationale: string[]
   confidence: 'high' | 'medium' | 'low'
+  /** ADR-0008 任务夹主题词（短横线小写英文，3-24 字符；模型未给/非法为空）。 */
+  slug: string
   source: 'model' | 'fallback'
 }
 
@@ -127,6 +129,7 @@ function parseVerdictText(text: string): TriageVerdict | null {
       complexity: ['small', 'medium', 'large'].indexOf(raw.complexity) !== -1 ? raw.complexity : 'medium',
       rationale: Array.isArray(raw.rationale) ? raw.rationale.map(String).slice(0, 6) : [],
       confidence: ['high', 'medium', 'low'].indexOf(raw.confidence) !== -1 ? raw.confidence : 'medium',
+      slug: /^[a-z0-9][a-z0-9-]{2,23}$/.test(String(raw.slug || '')) ? String(raw.slug) : '',
       source: 'model',
     }
   } catch (e) { return null }
@@ -137,7 +140,7 @@ function fallbackVerdict(requirement: string, opts?: { needDesign?: boolean }): 
   const pre = suggestMode(requirement, opts)
   return {
     mode: pre.mode, kind: pre.kind, needDesign: !!(opts && opts.needDesign), complexity: 'medium',
-    rationale: [...pre.rationale, '（模型分诊不可用，已用正则兜底）'], confidence: pre.confidence, source: 'fallback',
+    rationale: [...pre.rationale, '（模型分诊不可用，已用正则兜底）'], confidence: pre.confidence, slug: '', source: 'fallback',
   }
 }
 
