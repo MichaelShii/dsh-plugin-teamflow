@@ -5,7 +5,7 @@
 import { fileFor, readJson, writeJson, teamflowRoot, persistJournal } from '../../store.ts'
 import type { BacklogItem } from '../types.ts'
 import { stores } from './context.ts'
-import { STATUS } from '../constants.ts'
+import { STATUS, PHASE_ROLE } from '../constants.ts'
 import { clip, snippet } from '../util.ts'
 
 export class BacklogStore {
@@ -166,16 +166,8 @@ export function initPipelineBacklog(journal, requirement, options) {
   return { reqId, req, taskId }
 }
 
-/** 阶段 → 角色键（任务卡按角色累计 token 用）。 */
-const ROLE_OF_PHASE = {
-  'PRD 产品需求': 'pm',
-  'UI/UX 设计': 'design',
-  '架构规划': 'arch',
-  '技术方案': 'tech',
-  '开发': 'dev',
-  'QA 测试': 'qa',
-  '产品验收': 'acceptance',
-}
+/** 阶段 → 角色键（单一事实来源 constants.PHASE_ROLE；任务卡按角色累计 token 用）。 */
+
 
 /** 把单次 stage 的真实 usage 累计到任务卡（按角色拆分；单任务模型下所有阶段都属于该任务）。 */
 function applyStageUsage(task, role, stage) {
@@ -210,7 +202,7 @@ export function noteTaskStageUsage(journal) {
   let touched = false
   for (const s of stages) {
     if (!s.usage) continue
-    applyStageUsage(task, ROLE_OF_PHASE[s.phase] || 'other', s)
+    applyStageUsage(task, PHASE_ROLE[s.phase] || 'other', s)
     if ((s.seq || 0) > from) from = s.seq
     touched = true
   }
@@ -241,8 +233,8 @@ export function advanceTask(journal, to, summary, reason, meta) {
 }
 
 /** 为唯一任务卡记录某角色的分配人（只写 assign 字段，不碰 status）。
- *  role='dev' → devAssign；role='qa' → qaAssign；role='accept'/'pm' → acceptBy。 */
-export function noteTaskAssign(journal, role, assignee) {
+ *  role='dev' → devAssign；role='qa' → qaAssign；role='accept' → acceptBy。 */
+export function noteTaskAssign(journal, role: string, assignee) {
   const store = storeFor(journal.workspace || 'default')
   const task = journal.taskId ? store.find('task', journal.taskId) : null
   if (!task) return
@@ -255,7 +247,7 @@ export function noteTaskAssign(journal, role, assignee) {
     }
   }
   if (role === 'qa' && assignee) task.qaAssign = String(assignee)
-  if ((role === 'accept' || role === 'pm') && assignee) task.acceptBy = String(assignee)
+  if (role === 'accept' && assignee) task.acceptBy = String(assignee)
   store.persist()
   persistJournal(journal)
 }
@@ -326,7 +318,7 @@ export function assignTask(product: string | null | undefined, kind: string, id:
   if (kind === 'task') {
     if (role === 'dev') item.devAssign = assignee
     else if (role === 'qa') item.qaAssign = assignee
-    else if (role === 'accept' || role === 'pm') item.acceptBy = assignee
+    else if (role === 'accept') item.acceptBy = assignee
     else return { ok: false, error: `未知角色 ${role}（支持 dev/qa/accept）` }
   } else {
     item.owner = assignee

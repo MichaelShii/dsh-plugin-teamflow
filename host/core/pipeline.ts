@@ -328,7 +328,7 @@ export async function executePipeline(
       // 累计全部 dev stage usage 到主卡（汇总）
       noteTaskStageUsage(journal)
       const devStages = journal.stages.filter((s) => s.phase === '开发')
-      noteTaskAssign(journal, 'dev', devStages.map((s) => s.childId).filter(Boolean).join(',') || '开发组')
+      noteTaskAssign(journal, 'dev', devStages.map((s) => (s.childId || '').slice(0, 8)).filter(Boolean).join(',') || '开发组')
       const failedCount = devResults.filter((r) => r && r.failed).length
       if (failedCount > 0) {
         advanceTask(journal, 'needs-human', null, '开发失败，需人工介入', { by: 'dev' })
@@ -358,7 +358,7 @@ export async function executePipeline(
       journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：QA 测试' })
       advanceTask(journal, 'testing', null, 'QA 开始（待测试 → 测试中）', { by: 'qa' })
       const store = storeFor(scopeKey)
-      const qaStageChildren = () => journal.stages.filter((s) => s.phase === 'QA 测试').map((s) => s.childId).filter(Boolean).join(',') || '测试组'
+      const qaStageChildren = () => journal.stages.filter((s) => s.phase === 'QA 测试').map((s) => (s.childId || '').slice(0, 8)).filter(Boolean).join(',') || '测试组'
       // QA → 开发修复 → 复验 打回闭环：QA 发现 P0-P2 缺陷则打回开发确认/修复，干净才进验收；超 QA_REWORK_LIMIT 轮需人工。
       let round = 0
       let qaClean = false
@@ -435,6 +435,8 @@ export async function executePipeline(
       const acceptance = accR.text
       timeline.acceptance = acceptance
       noteTaskStageUsage(journal) // 验收角色的真实 usage 累计
+      const accStage = journal.stages.find((s) => s.phase === '产品验收' && s.childId)
+      noteTaskAssign(journal, 'accept', accStage ? String(accStage.childId).slice(0, 8) : '验收组')
       mergeStageState('acceptance', acceptance)
       // 结论解析：见 parseAcceptanceVerdict（只认结论行，避免正文「无需改动」等否定/引用话术误杀整条流水线）
       const accVerdict = parseAcceptanceVerdict(acceptance)

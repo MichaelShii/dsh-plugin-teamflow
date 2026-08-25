@@ -13,6 +13,7 @@
 import { join } from 'node:path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { teamflowRoot } from '../../store.ts'
+import type { RoleKey } from '../constants.ts'
 
 /** 各阶段会额外输出一段 `<!-- state -->...<!-- /state -->` 的结构化 JSON，host 提取后合并进 state.json。 */
 export interface StageStateBlock {
@@ -181,7 +182,7 @@ export function noteRun(projectKey: string, run: { id?: string; requirement?: st
 }
 
 /** 按角色渲染 state slice（注入到子代理 prompt）。角色 → 只拿相关片段。 */
-export function stateSliceFor(state: TeamflowState, role: 'pm' | 'design' | 'arch' | 'tech' | 'dev' | 'qa' | 'acceptance'): string {
+export function stateSliceFor(state: TeamflowState, role: RoleKey): string {
   const lines: string[] = []
   // 本次 run 注入上下文（任务夹路径 + M0 状态核对 + M1 架构蓝图）：所有角色都先看到
   if (state.__runCtx) {

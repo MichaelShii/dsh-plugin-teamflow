@@ -35,6 +35,23 @@ export const PHASE_KEY_OF = { prd: 'PRD 产品需求', design: 'UI/UX 设计', s
 export const PHASE_KEY_BY_NAME = { 'PRD 产品需求': 'prd', 'UI/UX 设计': 'design', '架构规划': 'scaffold', '技术方案': 'tech', '开发': 'dev', 'QA 测试': 'qa', '产品验收': 'acceptance' }
 
 /**
+ * 角色键单一事实来源（byRole token 分段 / stateSliceFor 切片 / noteTaskAssign 写入共用）。
+ * 对应 PHASE_ORDER 各阶段；'design'/'arch' 为条件阶段（needDesign/needScaffold），无对应阶段则不累计。
+ */
+export const ROLE_KEYS = ['pm', 'design', 'arch', 'tech', 'dev', 'qa', 'acceptance'] as const
+export type RoleKey = (typeof ROLE_KEYS)[number]
+/** 阶段显示名 → 角色键（任务卡 byRole 累计用；未知阶段归 'other'）。 */
+export const PHASE_ROLE: Record<string, RoleKey> = {
+  'PRD 产品需求': 'pm',
+  'UI/UX 设计': 'design',
+  '架构规划': 'arch',
+  '技术方案': 'tech',
+  '开发': 'dev',
+  'QA 测试': 'qa',
+  '产品验收': 'acceptance',
+}
+
+/**
  * 档位→阶段集策略表（ADR-0004「阶段集差异执行」的单一事实来源）。
  * 每个档位声明执行顺序的阶段规则；`when` 为条件阶段（满足才含入）。
  * ⚠ 设计要点：design/scaffold 在所有档位都按**显式 flag**（needDesign/needScaffold）条件化，
