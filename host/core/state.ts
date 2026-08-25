@@ -222,5 +222,5 @@ export function stateSliceFor(state: TeamflowState, role: RoleKey): string {
 }
 
 /** 让每个阶段产出末尾附带 state 块（将并入 stage output，由 host 提取）。 */
-export const STATE_BLOCK_INSTRUCTION = `\n\n【State 沉淀 · 结尾必须输出】在回答末尾追加一段（供索引复用，与正文同一份输出即可）：
-<!-- state -->{"phase":"<阶段key>","summary":"<≤500字本阶段结论，受益于下一轮>","memory":["<记忆要点>"]}<!-- /state -->`
+export const STATE_BLOCK_INSTRUCTION = `\n\n[STATE BLOCK · mandatory at the end] Append one section at the END of your answer (same output as the body; the host indexes it):
+<!-- state -->{"phase":"<stage-key>","summary":"<≤500 chars: this stage's conclusion, useful for the next run>","memory":["<memory points>"]}<!-- /state -->`
