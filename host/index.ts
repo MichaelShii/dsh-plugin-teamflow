@@ -26,7 +26,7 @@ import { RETRY_LIMIT, STAGE_TOKEN_BUDGET, STATUS, PHASE_ORDER, PHASE_KEY_OF, PHA
 import { toText, clip, extractText, normalizeRoot, normalizeTasks, sanitizeSnapOptions, normalizeSignal, hasSubstance, isUnretryable, handoffBrief } from './util.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, devPrompt, qaPrompt, acceptancePrompt } from './prompts/index.ts'
 import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, workspaceScopeOf } from './core/context.ts'
-import { backlogSummary, transitionBacklog, assignTask } from './core/backlog.ts'
+import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/backlog.ts'
 import { loadTeams, findTeam, type TeamConfig } from './core/teams.ts'
 import { runPool, runAgent, withRetry } from './core/runner.ts'
 import { deliverCompletion } from './core/report.ts'
@@ -433,6 +433,64 @@ export class TeamflowService extends TypertRemoteService {
       usage: s.usage || null,
       summary: clip(s.summary || '', 3000),
       output: clip(toText(s.output) || toText(s.handoff) || '', 24000),
+    }
+  }
+
+  /** Backlog 条目详情：卡片点击查看 —— 完整字段 + 流转时间线 + 关联（子卡/缺陷）+ 任务夹路径。 */
+  itemDetail(kind, id, sessionId) {
+    const k = typeof kind === 'string' && ['req', 'task', 'bug'].indexOf(kind) !== -1 ? kind : null
+    if (!k || typeof id !== 'string' || !id) return null
+    const sc = sessionScope(sessionId)
+    const store = storeFor(sc.projectKey)
+    const item = store.find(k, id)
+    if (!item) return null
+    const reqId = k === 'req' ? item.id : (item.reqId || null)
+    // 任务夹路径（ADR-0008）+ 关联 run 信息（req 需求原文在这）：匹配该需求的 journal
+    let runDocs: string | null = null
+    let runInfo: { runId: string; status: string; requirement: string; startedAt: number | null; endedAt: number | null } | null = null
+    for (const j of runsFor(sc.projectKey)) {
+      if (j.reqId !== reqId) continue
+      if (j.runDocs && !runDocs) runDocs = j.runDocs
+      if (!runInfo) runInfo = { runId: j.id, status: j.status, requirement: String(j.requirement || ''), startedAt: j.startedAt || null, endedAt: j.endedAt || null }
+    }
+    const byRole = item.byRole || null
+    let subtasks: Array<{ id: string; title: string; status: string; summary: string; devAssign: string | null; usage: unknown; failed: boolean }> = []
+    let bugs: Array<{ id: string; title: string; status: string; severity: string | null }> = []
+    if (k === 'task') {
+      for (const sid of (item.subtaskIds || [])) {
+        const s = store.find('task', sid)
+        if (s) subtasks.push({ id: s.id, title: String(s.title || s.id), status: s.status, summary: String(s.summary || ''), devAssign: s.devAssign || null, usage: s.usage || null, failed: !!s.failed })
+      }
+      for (const bid of (item.bugIds || [])) {
+        const b = store.find('bug', bid)
+        if (b) bugs.push({ id: b.id, title: String(b.title || b.id), status: b.status, severity: b.severity || null })
+      }
+    } else if (k === 'req') {
+      for (const tid of (item.taskIds || [])) {
+        const t = store.find('task', tid)
+        if (t && t.type !== 'subtask') subtasks.push({ id: t.id, title: String(t.title || t.id), status: t.status, summary: String(t.summary || ''), devAssign: t.devAssign || null, usage: t.usage || null, failed: !!t.failed })
+      }
+      for (const bid of (item.bugIds || [])) {
+        const b = store.find('bug', bid)
+        if (b) bugs.push({ id: b.id, title: String(b.title || b.id), status: b.status, severity: b.severity || null })
+      }
+    }
+    return {
+      kind: k, id: item.id, title: String(item.title || item.id),
+      status: item.status, spec: String(item.spec || ''),
+      summary: String(item.summary || ''),
+      severity: item.severity || null, owner: item.owner || null,
+      devAssign: item.devAssign || null, qaAssign: item.qaAssign || null,
+      assignBy: item.acceptBy || null, retries: item.retries !== undefined ? item.retries : 0,
+      humanIntervention: !!item.humanIntervention,
+      createdAt: item.createdAt || null, updatedAt: item.updatedAt || null,
+      events: (item.events || []).slice(-30),
+      usage: k === 'task' ? (item.usage || null) : null,
+      byRole: k === 'task' ? byRole : null,
+      reqId: reqId || null,
+      runDocs,
+      runInfo,
+      subtasks, bugs,
     }
   }
 

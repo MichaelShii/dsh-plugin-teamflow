@@ -11,6 +11,10 @@ export function clip(text, n) {
   const s = toText(text)
   return s.length > n ? s.slice(0, n) + `\n…[已截断 ${s.length - n} 字符]` : s
 }
+/** 干净截断（无「已截断」后缀、压平空白）：用于持久化展示字段——截断后缀会烙进数据，实体越存越脏。 */
+export function snippet(text, n) {
+  return String(text === null || text === undefined ? '' : text).replace(/\s+/g, ' ').trim().slice(0, n)
+}
 export function extractText(blocks) {
   if (!Array.isArray(blocks)) return ''
   return blocks.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n')

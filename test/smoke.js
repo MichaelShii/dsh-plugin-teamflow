@@ -18,7 +18,7 @@ const ok = (cond, msg) => {
 const assert = (cond, msg) => { if (!cond) { throw new Error(`assert failed: ${msg}`) } }
 
 console.log('── 1) descriptors 校验（typert validateInvocation 规则）──')
-assert(Array.isArray(TEAMFLOW_DESCRIPTORS) && TEAMFLOW_DESCRIPTORS.length === 16, '应有 16 个 Remote 描述符')
+assert(Array.isArray(TEAMFLOW_DESCRIPTORS) && TEAMFLOW_DESCRIPTORS.length === 17, '应有 17 个 Remote 描述符')
 const endpoints = new Set()
 const ids = new Set()
 for (const d of TEAMFLOW_DESCRIPTORS) {
@@ -67,7 +67,7 @@ const constantsSrc = readFileSync(join(here, '../host/constants.ts'), 'utf8')
 ok(/class TeamflowService extends TypertRemoteService/.test(hostSrc), 'TeamflowService extends TypertRemoteService')
 ok(/static inject = \['agents', 'subagents', 'tokenMeter', 'typert', 'tools'\]/.test(hostSrc), 'static inject 完整')
 ok(/ctx\.typert\.register\(\{[\s\S]*invocations: TEAMFLOW_DESCRIPTORS/.test(hostSrc), 'typert.register 注册 strict descriptors')
-for (const m of ['ping', 'list', 'snapshot', 'start', 'cancel', 'backlog', 'backlogUpdate', 'assign', 'pause', 'resumeSession', 'listTeams', 'selectTeam', 'getActiveTeam', 'clearTeam', 'resume', 'stageDetail']) {
+for (const m of ['ping', 'list', 'snapshot', 'start', 'cancel', 'backlog', 'backlogUpdate', 'assign', 'pause', 'resumeSession', 'listTeams', 'selectTeam', 'getActiveTeam', 'clearTeam', 'resume', 'stageDetail', 'itemDetail']) {
   ok(new RegExp(`\\n  ${m}\\(`).test(hostSrc), `Remote 方法 ${m}()`)
 }
 ok(/export default TeamflowService/.test(hostSrc), '默认导出 TeamflowService')

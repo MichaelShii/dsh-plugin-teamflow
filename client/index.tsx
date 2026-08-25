@@ -93,6 +93,8 @@ function fmtTokens(n) {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
   return String(n)
 }
+/** 官方口径计费合计（billed input + output）。 */
+function totalTokens(u) { return (u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0) + (u.output || 0) }
 /** 官方口径工具函数（与 DeepSeek usage 账单对齐，零额外概念）：
  *  - u.input       : 输入（缓存未命中）
  *  - u.cacheRead   : 输入（缓存命中）
@@ -224,7 +226,7 @@ function FlowStageCard(s, key, onOpen) {
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
       running ? h('span', { style: { width: 7, height: 7, borderRadius: 999, background: color, animation: 'tf-pulse 1.15s ease-in-out infinite' } })
         : h('span', { style: { width: 6, height: 6, borderRadius: 2, background: color } }),
-      h('span', { style: { flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, s.label),
+      h('span', { title: s.label, style: { flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, s.label),
       chip(stText(s.status), color, { dot: true }),
       h('span', { style: { color: T.text2, fontSize: 11, opacity: 0.5 } }, '↗'),
     ),
@@ -324,7 +326,7 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 9, padding: '12px 14px', borderBottom: `1px solid ${T.border}`, background: `linear-gradient(135deg, color-mix(in srgb, ${color} 14%, transparent), transparent 62%)` } },
       h('span', { style: { fontSize: 17 } }, PHASE_ICON[st && st.phase] || '⚙️'),
       h('div', { style: { flex: 1, minWidth: 0 } },
-        h('div', { style: { fontSize: 12.5, fontWeight: 700, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, st ? st.label : '阶段详情'),
+        h('div', { title: st ? st.label : undefined, style: { fontSize: 12.5, fontWeight: 700, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, st ? st.label : '阶段详情'),
         h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 1, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' } },
           `${st ? `#${st.seq} · ${st.phase}` : ''}${(st && (st.startedAt || st.endedAt)) ? ` · ${fmtDur(st.startedAt, st.endedAt)}` : ''}`),
       ),
@@ -527,6 +529,16 @@ function PipelinePanel({ active, api, runId, sessionId, sessions }) {
 function BoardPanel({ backlog, api, onRefresh, sessionId }) {
   const [drag, setDrag] = React.useState(null)
   const [over, setOver] = React.useState(null)
+  const [det, setDet] = React.useState(null)
+  const openItem = async (kind, id) => {
+    setDet({ kind, id, loading: true, data: null, err: null })
+    try {
+      const d = unwrap(await api.itemDetail(kind, id, sessionId), 'itemDetail')
+      setDet({ kind, id, loading: false, data: d, err: null })
+    } catch (e) {
+      setDet({ kind, id, loading: false, data: null, err: String((e && e.message) || e) })
+    }
+  }
   if (!backlog) return h('div', { style: { color: T.text2, fontSize: 13, padding: '28px 20px', textAlign: 'center' } },
     h('div', { style: { fontSize: 28, marginBottom: 8 } }, '📋'),
     'backlog 为空（还没有流水线运行过）')
@@ -544,6 +556,7 @@ function BoardPanel({ backlog, api, onRefresh, sessionId }) {
   const card = (item, kind) => h('div', {
     key: item.id,
     draggable: true,
+    onClick: () => openItem(kind, item.id),
     onDragStart: () => setDrag({ kind, id: item.id, from: item.status }),
     onDragEnd: () => setDrag(null),
     style: {
@@ -554,23 +567,23 @@ function BoardPanel({ backlog, api, onRefresh, sessionId }) {
       transition: 'opacity .1s ease, transform .12s ease',
       boxShadow: '0 1px 2px rgba(0,0,0,.05)',
     },
-    title: `${item.id} · ${item.status}${item.summary ? '\n' + item.summary : ''}`,
+    title: `${item.id} · ${item.status}${item.summary ? '\n' + item.summary : ''}（点击查看详情）`,
   },
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 4 } },
       h('span', { style: { fontFamily: MONO, color: T.text2, fontSize: 10.5 } }, item.id),
       item.severity ? chip(item.severity, item.severity === 'P0' ? T.error : item.severity === 'P1' ? T.warn : T.text2) : null,
       item.owner ? h('span', { style: { marginLeft: 'auto', fontSize: 10.5, color: T.text2 } }, `👤 ${item.owner}`) : null,
     ),
-    h('div', { style: { fontWeight: 500, margin: '3px 0 4px', lineHeight: 1.4 } }, (item.title || '').slice(0, 30)),
+    h('div', { title: item.title || undefined, style: { fontWeight: 500, margin: '3px 0 4px', lineHeight: 1.4 } }, (item.title || '').slice(0, 30)),
     h('div', { style: { ...flexRow, marginTop: 2 } },
       chip(stText(item.status), stColor(item.status)),
       typeof item.retries === 'number' && item.retries > 0 ? h('span', { style: { fontSize: 10.5, color: T.warn, fontFamily: MONO } }, `↻${item.retries}`) : null,
       item.humanIntervention || item.status === 'needs-human' ? h('span', { style: { fontSize: 10.5, color: T.error, fontWeight: 700 } }, '⚠') : null,
     ),
     (kind === 'task' && (item.devAssign || item.qaAssign || item.acceptBy)) ? h('div', { style: { ...flexRow, marginTop: 3, fontSize: 10.5, color: T.text2, fontFamily: MONO } },
-      item.devAssign ? h('span', { title: 'dev 分配', style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 130, whiteSpace: 'nowrap' } }, `👨‍💻${item.devAssign}`) : null,
-      item.qaAssign ? h('span', { title: 'qa 分配', style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 130, whiteSpace: 'nowrap' } }, `🧪${item.qaAssign}`) : null,
-      item.acceptBy ? h('span', { title: '验收/汇报人', style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 130, whiteSpace: 'nowrap' } }, `✅${item.acceptBy}`) : null,
+      item.devAssign ? h('span', { title: `dev 分配\n${item.devAssign}`, style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 130, whiteSpace: 'nowrap' } }, `👨‍💻${item.devAssign}`) : null,
+      item.qaAssign ? h('span', { title: `qa 分配\n${item.qaAssign}`, style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 130, whiteSpace: 'nowrap' } }, `🧪${item.qaAssign}`) : null,
+      item.acceptBy ? h('span', { title: `验收/汇报人\n${item.acceptBy}`, style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 130, whiteSpace: 'nowrap' } }, `✅${item.acceptBy}`) : null,
     ) : null,
     (kind === 'task' && byRoleLine(item)) ? h('div', { style: { ...flexRow, marginTop: 3, fontSize: 10.5, color: T.warn, fontFamily: MONO } },
       h('span', { style: { color: T.text2 } }, '⛽'),
@@ -600,8 +613,8 @@ function BoardPanel({ backlog, api, onRefresh, sessionId }) {
           },
         },
           h('span', { style: { color: stColor(sub.status), fontWeight: 600, minWidth: 12 } }, sub.status === 'done' ? '✓' : sub.status === 'failed' ? '✗' : sub.status === 'running' ? '⟳' : '…'),
-          h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 130 } }, (sub.title || '').replace(/^开发 · /, '')),
-          sub.devAssign ? h('span', { style: { marginLeft: 'auto', color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 70, whiteSpace: 'nowrap' } }, sub.devAssign) : null,
+          h('span', { title: sub.title || undefined, style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 130 } }, (sub.title || '').replace(/^开发 · /, '')),
+          sub.devAssign ? h('span', { title: `dev 分配\n${sub.devAssign}`, style: { marginLeft: 'auto', color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 70, whiteSpace: 'nowrap' } }, sub.devAssign) : null,
         ))
       )
     })() : null,
@@ -658,6 +671,143 @@ function BoardPanel({ backlog, api, onRefresh, sessionId }) {
         ),
       )
     }),
+    det ? h(ItemDetailDrawer, { det, onClose: () => setDet(null) }) : null,
+  )
+}
+
+/* ── TeamFlow Backlog 条目详情抽屉 ──────────────────────────────── */
+function fmtAt(ts) { return ts ? new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '—' }
+
+function ItemDetailDrawer({ det, onClose }) {
+  const d = det && det.data
+  const loading = det && det.loading
+  const err = det && det.err
+  const kind = det && det.kind
+  const icon = kind === 'req' ? '📌' : kind === 'task' ? '🔧' : '🐞'
+  const color = d ? stColor(d.status) : T.text2
+  const closeBtn = { font: 'inherit', width: 26, height: 26, borderRadius: 8, cursor: 'pointer', border: `1px solid ${T.border}`, background: 'transparent', color: T.text2, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, lineHeight: 1 }
+  const secTitle = (label) => h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, label)
+  const kv = (k, v, mono?: boolean) => h('div', { style: { display: 'flex', gap: 8, fontSize: 11.5, lineHeight: 1.6 } },
+    h('span', { style: { flex: '0 0 72px', color: T.text2 } }, k),
+    h('span', { title: v === null || v === undefined ? undefined : String(v), style: { flex: 1, minWidth: 0, fontFamily: mono ? MONO : undefined, color: T.text, wordBreak: 'break-all', textOverflow: 'ellipsis' } }, v === null || v === undefined ? '—' : String(v)),
+  )
+  const linkRow = (it, extra) => h('div', { key: it.id, style: { display: 'flex', flexDirection: 'column', gap: 2, padding: '5px 8px', borderRadius: 7, background: T.layer2, fontSize: 11.5 } },
+    h('div', { style: { display: 'flex', gap: 7, alignItems: 'center' } },
+      h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2, flex: '0 0 auto' } }, it.id),
+      it.severity ? chip(it.severity, it.severity === 'P0' ? T.error : it.severity === 'P1' ? T.warn : T.text2) : null,
+      chip(stText(it.status), stColor(it.status)),
+      extra && extra.usage ? h('span', { style: { fontSize: 10, fontFamily: MONO, color: T.warn, flex: '0 0 auto' } }, `⛽${fmtTokens((extra.usage.input || 0) + (extra.usage.cacheRead || 0) + (extra.usage.cacheWrite || 0) + (extra.usage.output || 0))}`) : null,
+      extra && extra.assignee ? h('span', { title: `dev 分配\n${extra.assignee}`, style: { display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 10, fontFamily: MONO, color: T.text2, flex: '0 0 auto', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 90, whiteSpace: 'nowrap' } }, `👨‍💻${String(extra.assignee).slice(0, 14)}`) : null,
+      h('span', { title: it.title || undefined, style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: T.text } }, (it.title || '').slice(0, 44)),
+    ),
+    it.summary ? h('div', { title: it.summary, style: { fontSize: 10.5, color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' } }, it.summary) : null,
+  )
+  return h('div', {
+    style: {
+      position: 'absolute', top: 10, right: 12, bottom: 10, width: 400, zIndex: 9,
+      borderRadius: 14, overflow: 'hidden',
+      display: 'flex', flexDirection: 'column',
+      border: `1px solid ${T.border}`,
+      background: `color-mix(in srgb, ${T.layer1} 92%, transparent)`,
+      backdropFilter: 'blur(14px)',
+      boxShadow: '0 14px 48px rgba(0,0,0,.30)',
+    },
+  },
+    /* 头 */
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: 9, padding: '12px 14px', borderBottom: `1px solid ${T.border}`, background: `linear-gradient(135deg, color-mix(in srgb, ${color} 14%, transparent), transparent 62%)` } },
+      h('span', { style: { fontSize: 17 } }, icon),
+      h('div', { style: { flex: 1, minWidth: 0 } },
+        h('div', { style: { fontSize: 12.5, fontWeight: 700, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: d ? (d.title || d.id) : undefined },
+          d ? (d.title || d.id) : `${det.kind} · ${det.id}`),
+        d ? h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 1, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' } },
+          `${d.id} · ${d.kind}${d.severity ? ' · ' + d.severity : ''}`) : null,
+      ),
+      d ? chip(stText(d.status), color, { dot: true }) : null,
+      h('button', { onClick: onClose, style: closeBtn, title: '关闭' }, '✕'),
+    ),
+    /* 内容 */
+    h('div', { style: { flex: 1, overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 13 } },
+      loading ? h('div', { style: { color: T.text2, fontSize: 12, padding: 12 } }, '加载中…') :
+        err ? h('div', { style: { color: T.error, fontSize: 12, padding: 12 } }, '⚠ ' + err) :
+          !d ? null :
+          [
+            /* 概览 */
+            h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+              secTitle('概览'),
+              d.spec ? h('div', { style: { fontSize: 12, color: T.text, lineHeight: 1.65, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: T.layer2, borderRadius: 8, padding: '8px 10px' } }, d.spec) : null,
+              d.summary ? h('div', { style: { fontSize: 11.5, color: T.text2, lineHeight: 1.6, wordBreak: 'break-word' } }, d.summary) : null,
+              h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2 } },
+                d.devAssign ? kv('👨‍💻 dev', d.devAssign.slice(0, 26), true) : null,
+                d.qaAssign ? kv('🧪 qa', d.qaAssign.slice(0, 26), true) : null,
+                d.assignBy ? kv('✅ 验收', d.assignBy.slice(0, 26), true) : null,
+                d.owner ? kv('👤 owner', d.owner.slice(0, 26), true) : null,
+                (typeof d.retries === 'number' && d.retries > 0) ? kv('↻ 重试', String(d.retries)) : null,
+                d.humanIntervention ? kv('⚠ 人工介入', '需人工介入') : null,
+                kv('更新于', fmtAt(d.updatedAt) || '—'),
+              ),
+            ),
+            /* 需求原文 + 运行信息（req / 关联 journal） */
+            d.runInfo ? (() => {
+              const ri = d.runInfo
+              return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+                h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+                  secTitle('运行'),
+                  h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2 } }, ri.runId),
+                  chip(stText(ri.status), stColor(ri.status)),
+                  (ri.startedAt || ri.endedAt) ? h('span', { style: { fontSize: 10.5, color: T.text2, fontFamily: MONO } }, `${fmtAt(ri.startedAt)} → ${fmtAt(ri.endedAt)} · ${fmtDur(ri.startedAt, ri.endedAt)}`) : null,
+                ),
+                h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+                  secTitle('需求原文'),
+                  h('div', { style: { fontSize: 11.5, color: T.text, lineHeight: 1.65, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: T.layer2, borderRadius: 8, padding: '8px 10px' } }, ri.requirement || '（无原文）'),
+                ),
+              )
+            })() : null,
+            /* 任务夹（ADR-0008） */
+            d.runDocs ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+              secTitle('任务夹'),
+              h('div', { style: { fontSize: 11.5, fontFamily: MONO, color: T.brand, background: T.layer2, borderRadius: 8, padding: '7px 10px', wordBreak: 'break-all' } }, d.runDocs + '/'),
+            ) : null,
+            /* TOKEN（task） */
+            (kind === 'task' && d.usage) ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+              secTitle('TOKEN · 官方口径'),
+              h('span', { style: { fontSize: 11.5, fontFamily: MONO, color: T.text, lineHeight: 1.65 } }, usageDetail(d)),
+              (d.byRole && Object.keys(d.byRole).length > 0) ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2 } },
+                Object.entries(d.byRole).sort((a, b) => (totalTokens(b[1]) - totalTokens(a[1]))).map(([role, uRaw]) => {
+                  const u = uRaw as { input?: number; cacheRead?: number; cacheWrite?: number; output?: number; calls?: number }
+                  const label = role === 'dev' ? '👨‍💻 开发' : role === 'qa' ? '🧪 QA' : role === 'acceptance' ? '✅ 验收' : role === 'pm' ? '📌 产品' : role === 'design' ? '🎨 设计' : role === 'arch' ? '🏗 架构' : '⚙️ ' + role
+                  return h('div', { key: role, style: { display: 'flex', gap: 7, alignItems: 'center', fontSize: 10.5, fontFamily: MONO, color: T.text2 } },
+                    h('span', { style: { flex: '0 0 64px' } }, label),
+                    h('span', { style: { color: T.text } }, `⛽${fmtTokens(totalTokens(u))}`),
+                    h('span', null, `${fmtTokens(u.input || 0)}i / ${fmtTokens(u.cacheRead || 0)}c / ${fmtTokens(u.output || 0)}o · ${u.calls || 0} 次`),
+                  )
+                }),
+              ) : null,
+            ) : null,
+            /* 关联子卡 */
+            (d.subtasks && d.subtasks.length > 0) ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+              secTitle(`关联子卡（${d.subtasks.length}）`),
+              h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } }, d.subtasks.map((s) => linkRow(s, { usage: s.usage, assignee: s.devAssign }))),
+            ) : null,
+            /* 关联缺陷 */
+            (d.bugs && d.bugs.length > 0) ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+              secTitle(`关联缺陷（${d.bugs.length}）`),
+              h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } }, d.bugs.map((b) => linkRow(b, {}))),
+            ) : null,
+            /* 流转时间线 */
+            (d.events && d.events.length > 0) ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+              secTitle(`流转时间线（${d.events.length}）`),
+              h('div', { style: { display: 'flex', flexDirection: 'column', gap: 0 } },
+                d.events.slice().reverse().map((ev) => h('div', { key: `${ev.at}-${ev.to}`, style: { display: 'flex', gap: 8, alignItems: 'baseline', padding: '5px 0', borderBottom: `1px dashed ${T.border}`, fontSize: 11.5 } },
+                  h('span', { style: { fontFamily: MONO, color: T.text2, fontSize: 10.5, flex: '0 0 42px' } }, fmtAt(ev.at)),
+                  h('span', { style: { color: T.text } }, ev.from || '—'),
+                  h('span', { style: { color: T.text2 } }, '→'),
+                  h('span', { style: { fontFamily: MONO, color: T.brand } }, ev.to),
+                  h('span', { style: { flex: 1, minWidth: 0, color: T.text2, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: ev.reason || undefined }, ev.reason || ''),
+                )),
+              ),
+            ) : null,
+          ],
+    ),
   )
 }
 
@@ -719,7 +869,7 @@ function TeamSelector({ sessionId, remote }) {
       },
     },
       h('span', { style: { fontSize: 12 } }, active ? active.icon : '🏭'),
-      h('span', { style: { maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, active ? active.name : '团队'),
+      h('span', { title: active && active.name ? String(active.name) : '团队', style: { maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, active ? active.name : '团队'),
       h('span', { style: { fontSize: 8, opacity: .6 } }, open ? '▲' : '▼'),
     ),
     open ? h('div', {
@@ -795,6 +945,7 @@ interface TeamflowRemote {
   backlogUpdate(kind: string, id: string, to: string, sessionId?: string | null, reason?: string, meta?: Record<string, unknown>): Promise<RpcEnvelope>
   resume(runId: string, sessionId: string): Promise<RpcEnvelope>
   stageDetail(runId: string, seq: number, sessionId?: string | null): Promise<RpcEnvelope>
+  itemDetail(kind: string, id: string, sessionId?: string | null): Promise<RpcEnvelope>
 }
 
 interface TeamFlowViewProps {
@@ -960,7 +1111,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
         },
       },
         h('span', { style: { fontSize: 13 } }, '🗂'),
-        h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 } },
+        h('span', { title: (workspace && workspace.path) ? String(workspace.path) : undefined, style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 } },
           (workspace && workspace.path) ? String(workspace.path).split(/[\\/]/).filter(Boolean).pop() : 'ungrouped'),
       ),
       /* 历史 run 切换：仅流水线 tab 下有意义（Backlog 看板是工作区级，不随 run 变化，

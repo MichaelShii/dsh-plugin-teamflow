@@ -180,6 +180,15 @@ export const TEAMFLOW_DESCRIPTORS: readonly InvocationDescriptor[] = Object.free
     parameters: [p('runId'), p('seq'), p('sessionId')],
     result: strict,
   },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/itemDetail',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'itemDetail',
+    invocation: { kind: 'direct' },
+    parameters: [p('kind'), p('id'), p('sessionId')],
+    result: strict,
+  },
 ])
 
 /** client 端 $mount 使用的贡献对象。 */

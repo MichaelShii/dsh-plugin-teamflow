@@ -9,7 +9,7 @@ import { initPipelineBacklog, advanceTask, storeFor, parseDefects, syncQaDefects
 import { withRetry, runPool } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
-import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, runFolderName } from '../util.ts'
+import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, runFolderName } from '../util.ts'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, resolveStages, STAGE_TOKEN_BUDGET } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
@@ -313,7 +313,7 @@ export async function executePipeline(
         const ok = !!devR.text
         // 完成子卡：记录状态 + childId + 摘要
         if (sub) {
-          completeSubtask(journal, sub.id, !ok, devR.text ? clip(devR.text, 300) : null, null)
+          completeSubtask(journal, sub.id, !ok, devR.text ? snippet(devR.text, 1000) : null, null)
           // 把对应 stage 的 usage 累计到子卡
           const devStage = journal.stages.filter((s) => s.phase === '开发').pop()
           if (devStage) noteSubtaskUsage(journal, sub.id, devStage)
@@ -395,23 +395,23 @@ export async function executePipeline(
           qaBlocked = true
           journal.humanIntervention = true
           journal.logs.push({ t: Date.now(), level: 'error', message: `QA 连续 ${round} 轮（含复验）仍有 ${blocking.length} 个阻断缺陷（${blocking.map((d) => d.id).join('、')}），超出复验上限 ${QA_REWORK_LIMIT}，需人工介入` })
-          advanceTask(journal, 'needs-human', clip(qa, 300), `QA ${round} 轮复验仍有阻断缺陷，超出上限 ${QA_REWORK_LIMIT}，需人工介入`, { by: 'qa' })
+          advanceTask(journal, 'needs-human', snippet(qa, 3000), `QA ${round} 轮复验仍有阻断缺陷，超出上限 ${QA_REWORK_LIMIT}，需人工介入`, { by: 'qa' })
           const req = store.find('req', journal.reqId)
           if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', `QA 复验 ${QA_REWORK_LIMIT} 轮仍含阻断缺陷，需人工介入（${blocking.map((d) => d.id).join('、')}）`) }
           break
         }
         // 打回开发确认/修复 → 下一轮复验
         journal.logs.push({ t: Date.now(), level: 'warn', message: `QA 发现 ${blocking.length} 个阻断缺陷（第 ${round} 轮），打回开发确认修复后复验` })
-        advanceTask(journal, 'rework', clip(qa, 300), `QA 打回开发修复（第 ${round}/${QA_REWORK_LIMIT + 1} 轮）`, { by: 'qa' })
+        advanceTask(journal, 'rework', snippet(qa, 3000), `QA 打回开发修复（第 ${round}/${QA_REWORK_LIMIT + 1} 轮）`, { by: 'qa' })
         const fixR = await withRetry(journal, parent, `开发 · QA 缺陷修复（第 ${round} 轮）`, '开发', qaFixPrompt(blocking, qa, tech, prd, root, journal.id, state), signal)
         if (!fixR.text) { advanceTask(journal, 'needs-human', null, 'QA 打回后开发修复失败', { by: 'qa' }); throw stageFailError('开发（QA 打回修复）', fixR) }
-        devFixRounds.push(clip(fixR.text, 3000))
+        devFixRounds.push(snippet(fixR.text, 3000))
         noteTaskStageUsage(journal) // 修复子代理真实 usage 累计到任务卡
         if (journal.cancelled) return
       } while (true)
       if (!qaBlocked && qaClean) {
         verifyReqBugs(journal) // 复验通过 → 关闭全部 open 缺陷
-        advanceTask(journal, 'pending-acceptance', clip(qa, 300), 'QA 通过（待验收）', { by: 'qa' })
+        advanceTask(journal, 'pending-acceptance', snippet(qa, 3000), 'QA 通过（待验收）', { by: 'qa' })
         journal.logs.push({ t: Date.now(), level: 'info', message: round > 1 ? `QA 复验通过（第 ${round - 1} 轮修复后），无阻断缺陷` : 'QA 未发现 P0/P1/P2 阻断缺陷' })
       } else {
         journal.logs.push({ t: Date.now(), level: 'warn', message: 'QA 阶段打回超限结束：产品验收跳过，需求需人工介入' })
@@ -440,7 +440,7 @@ export async function executePipeline(
       const accVerdict = parseAcceptanceVerdict(acceptance)
       if (accVerdict === 'reject') {
         // 需求与现状不符（无有效变更）→ 拦截：task needs-human、req needs-human、流水线中断（非 accepted）
-        advanceTask(journal, 'needs-human', clip(acceptance, 300), '需求与现状不符（无需改动），需人工决定调整或取消需求', { by: 'pm' })
+        advanceTask(journal, 'needs-human', snippet(acceptance, 3000), '需求与现状不符（无需改动），需人工决定调整或取消需求', { by: 'pm' })
         const store = storeFor(scopeKey)
         const req = store.find('req', journal.reqId)
         if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', '需求与现状不符，需人工处理（调整或取消）') }
@@ -448,7 +448,7 @@ export async function executePipeline(
         persistJournal(journal)
         throw new Error('需求与现状不符，无需改动，需人工决定调整或取消需求')
       }
-      advanceTask(journal, accVerdict, clip(acceptance, 300), accVerdict === 'rework' ? '验收不通过（需返工）' : '验收完成（待验收 → 已验收）', { by: 'pm' })
+      advanceTask(journal, accVerdict, snippet(acceptance, 3000), accVerdict === 'rework' ? '验收不通过（需返工）' : '验收完成（待验收 → 已验收）', { by: 'pm' })
       const store = storeFor(scopeKey)
       const req = store.find('req', journal.reqId)
       if (req) {

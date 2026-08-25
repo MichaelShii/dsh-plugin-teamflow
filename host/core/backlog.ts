@@ -6,7 +6,7 @@ import { fileFor, readJson, writeJson, teamflowRoot, persistJournal } from '../.
 import type { BacklogItem } from '../types.ts'
 import { stores } from './context.ts'
 import { STATUS } from '../constants.ts'
-import { clip } from '../util.ts'
+import { clip, snippet } from '../util.ts'
 
 export class BacklogStore {
   product: string
@@ -89,7 +89,7 @@ export function backlogSummary(product: string | null | undefined) {
       failed: !!t.failed, childId: t.childId || null,
       spec: t.spec || null,
       startedAt: t.startedAt || null, endedAt: t.endedAt || null, updatedAt: t.updatedAt || null,
-      summary: clip(t.summary || '', 300),
+      summary: t.summary || '',
     })).reverse(),
     bugs: store.bugs.slice(-30).map((b) => ({ id: b.id, reqId: b.reqId || null, severity: b.severity || null, title: b.title, status: b.status, owner: b.owner || null, retries: b.retries || 0, humanIntervention: !!b.humanIntervention, updatedAt: b.updatedAt })).reverse(),
   }
@@ -141,7 +141,7 @@ export function initPipelineBacklog(journal, requirement, options) {
   const reqId = store.nextId('req')
   const req = {
     id: reqId, product: key, productRoot: options.productRoot || null,
-    title: clip(requirement, 120), status: 'created',
+      title: String(requirement || '未命名需求').replace(/\s+/g, ' ').trim().slice(0, 120), status: 'created',
     createdAt: Date.now(), updatedAt: Date.now(), events: [], taskIds: [], bugIds: [], humanIntervention: false,
   }
   store.requirements.push(req)
@@ -150,7 +150,7 @@ export function initPipelineBacklog(journal, requirement, options) {
   const taskId = store.nextId('task')
   const task = {
     id: taskId, reqId, product: key, type: 'task',
-    title: `需求任务 · ${clip(requirement, 40)}`,
+    title: `需求任务 · ${snippet(requirement, 100)}`,
     status: 'pending', owner: null, devAssign: null, qaAssign: null, acceptBy: null,
     retries: 0, humanIntervention: false, createdAt: Date.now(), updatedAt: Date.now(),
     events: [], bugIds: [], usage: null, byRole: {},
@@ -233,7 +233,7 @@ export function advanceTask(journal, to, summary, reason, meta) {
   if (!task) { persistJournal(journal); return }
   const from = task.status
   store.pushEvent(task, from, to, reason || '')
-  if (summary) task.summary = clip(summary, 300)
+  if (summary) task.summary = snippet(summary, 2000)
   if (to === 'needs-human') task.humanIntervention = true
   if (to === 'accepted') task.humanIntervention = false
   store.persist()
@@ -292,7 +292,7 @@ export function completeSubtask(journal, subId, failed, summary, childId) {
   sub.status = failed ? 'failed' : 'done'
   sub.failed = !!failed
   sub.endedAt = Date.now()
-  if (summary) sub.summary = clip(summary, 300)
+  if (summary) sub.summary = snippet(summary, 1000)
   if (childId) sub.childId = childId
   sub.updatedAt = Date.now()
   store.persist()
