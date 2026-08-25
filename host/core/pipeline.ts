@@ -487,6 +487,28 @@ export async function executePipeline(
     activeProducts.delete(scopeKey) // 释放工作区级并发锁
     journal.result = { requirement, options: sanitizeSnapOptions(options), timeline: summarizeTimeline(timeline) }
     persistJournal(journal) // 终态 checkpoint（含日志刷新；阶段全文保留在磁盘+内存，供详情抽屉/断点续跑读取）
+    // 孤儿收尾：run 异常/取消时把未到终态的 req/task 落成可见状态（中断不再永远 in-progress；cancelled 保留 resume 入口）
+    try {
+      const store = storeFor(scopeKey)
+      if (journal.status === 'failed') {
+        const req = store.find('req', journal.reqId)
+        if (req && (req.status === 'in-progress' || req.status === 'created')) {
+          req.humanIntervention = true
+          store.pushEvent(req, req.status, 'needs-human', `流水线异常退出（${String(journal.error || '').slice(0, 120)}），需人工确认后继续（teamflow_resume）或关闭（backlogUpdate closed）`)
+          req.status = 'needs-human'
+        }
+        const task = journal.taskId ? store.find('task', journal.taskId) : null
+        if (task && (task.status === 'running' || task.status === 'pending')) {
+          store.pushEvent(task, task.status, 'needs-human', '流水线异常退出（中断），需人工确认')
+          task.status = 'needs-human'
+        }
+        store.persist()
+      } else if (journal.status === 'cancelled') {
+        const req = store.find('req', journal.reqId)
+        if (req && req.status === 'in-progress') store.pushEvent(req, req.status, 'in-progress', '流水线已取消（可 teamflow_resume 续跑，或 backlogUpdate → closed 放弃并关闭）')
+        if (req) store.persist()
+      }
+    } catch (e) { /* 孤儿收尾尽力而为，不影响主收尾 */ }
     // ADR-0008：任务夹 meta.json 终态回写（status/endedAt），供目录扫描聚合
     try {
       if (journal.runDocs && journal.workspacePath) {
@@ -606,6 +628,22 @@ export function resumeRun(runId: string | null | undefined, sessionId: string | 
     j.error = null
     // 重置历史失败留下的需人工标记（否则完成汇报头会误标「⚠️ 已完成（需人工介入）」，实锤 tf-mt5afdch 续跑）
     j.humanIntervention = false
+    // 孤儿收尾回写恢复：上次失败/取消把 req/task 落到 needs-human，续跑时恢复进行中语义
+    try {
+      const store = storeFor(productKey)
+      const req = store.find('req', j.reqId)
+      if (req && req.status === 'needs-human' && req.humanIntervention) {
+        store.pushEvent(req, req.status, 'in-progress', `断点续跑（从「${resumePhase}」恢复流水线执行）`)
+        req.status = 'in-progress'
+        req.humanIntervention = false
+      }
+      const task = j.taskId ? store.find('task', j.taskId) : null
+      if (task && task.status === 'needs-human') {
+        store.pushEvent(task, task.status, 'running', '断点续跑（恢复流水线执行）')
+        task.status = 'running'
+      }
+      store.persist()
+    } catch (e) { /* 恢复尽力而为 */ }
     j.endedAt = null
     j.logs = (j.logs || []).slice(-200)
     j.logs.push({ t: Date.now(), level: 'warn', message: `断点续跑：从「${resumePhase}」继续（已完成阶段复用产物）` })

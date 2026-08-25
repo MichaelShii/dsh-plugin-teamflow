@@ -53,9 +53,9 @@ const PHASE_ICON = {
 }
 const RUN_STATUS_TEXT = { pending: '等待中', running: '进行中', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', superseded: '已取代' }
 const COLUMNS = {
-  req: ['created', 'in-progress', 'pending-acceptance', 'accepted', 'needs-human'],
-  task: ['pending', 'running', 'testable', 'testing', 'pending-acceptance', 'accepted', 'rework', 'needs-human'],
-  bug: ['open', 'claimed', 'fixed', 'verified', 'needs-human'],
+  req: ['created', 'in-progress', 'pending-acceptance', 'accepted', 'closed', 'needs-human'],
+  task: ['pending', 'running', 'testable', 'testing', 'pending-acceptance', 'accepted', 'rework', 'needs-human', 'cancelled'],
+  bug: ['open', 'claimed', 'fixed', 'verified', 'reopened', 'needs-human'],
 }
 const KIND_TITLE = { req: '需求', task: '任务', bug: '缺陷' }
 
