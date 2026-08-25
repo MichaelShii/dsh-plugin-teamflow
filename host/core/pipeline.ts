@@ -10,7 +10,7 @@ import { withRetry, runPool } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
 import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, runFolderName } from '../util.ts'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, resolveStages, STAGE_TOKEN_BUDGET } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
@@ -137,7 +137,7 @@ export async function executePipeline(
           mkdirSync(abs, { recursive: true })
           writeFileSync(`${abs}/meta.json`, JSON.stringify({
             reqId: journal.reqId, runId: journal.id, title: String(requirement).replace(/\s+/g, ' ').trim().slice(0, 80),
-            status: 'running', mode: options.mode || null, createdAt: Date.now(),
+            mode: options.mode || null, createdAt: Date.now(),
           }, null, 2), 'utf8')
         }
         journal.logs.push({ t: Date.now(), level: 'info', message: `任务夹就绪：${journal.runDocs}/（本需求全部产物收口于此；建后不可变，重试/续跑复用）` })
@@ -248,8 +248,18 @@ export async function executePipeline(
       tech = techR.text
       timeline.tech = tech
       mergeStageState('tech', tech)
-      // 提取架构蓝图 JSON → 注入后续阶段（dev 继承蓝图）并用于自动拆任务
-      const bd = extractBlueprint(tech)
+      // 提取架构蓝图 JSON → 注入后续阶段（dev 继承蓝图）并用于自动拆任务。
+      // 优先取 stage 回复输出；模型可能把蓝图写进任务夹 TECHNICAL.md（ADR-0008 收口约定）——回退读文件提取，绝不静默丢蓝图（实锤 r13：蓝图只在文档里，dev 退化为单任务整体开发、M2 拆卡失效）。
+      let bd = extractBlueprint(tech)
+      if (!bd || bd.summary === undefined) {
+        try {
+          const techFile = journal.runDocs && journal.workspacePath
+            ? `${journal.workspacePath}/${journal.runDocs}/TECHNICAL.md`
+            : null
+          if (techFile && existsSync(techFile)) bd = extractBlueprint(readFileSync(techFile, 'utf8'))
+          if (bd) journal.logs.push({ t: Date.now(), level: 'info', message: '蓝图从任务夹 TECHNICAL.md 提取（模型把蓝图写进了文档而非回复输出）' })
+        } catch (e) { /* 回退失败走既有告警 */ }
+      }
       if (bd && bd.summary !== undefined) {
         try {
           state.__runCtx = state.__runCtx || {}
@@ -509,16 +519,10 @@ export async function executePipeline(
         if (req) store.persist()
       }
     } catch (e) { /* 孤儿收尾尽力而为，不影响主收尾 */ }
-    // ADR-0008：任务夹 meta.json 终态回写（status/endedAt），供目录扫描聚合
-    try {
-      if (journal.runDocs && journal.workspacePath) {
-        writeFileSync(`${journal.workspacePath}/${journal.runDocs}/meta.json`, JSON.stringify({
-          reqId: journal.reqId, runId: journal.id, title: String(requirement).replace(/\s+/g, ' ').trim().slice(0, 80),
-          status: journal.status, mode: options.mode || null,
-          createdAt: journal.startedAt, endedAt: journal.endedAt,
-        }, null, 2), 'utf8')
-      }
-    } catch (e) { /* meta 回写失败不影响收尾 */ }
+    // ADR-0008：meta.json 是任务夹「静态标识卡」——reqId/runId/title/mode/createdAt 建夹即定，
+    // 不再终态回写（历史：host 回写 status 导致 ①终态永远晚于 agent 提交 → 提交后再脏、②
+    // run 误判时 meta 快照过时）。status/endedAt 权威在 runs/<runId>.json（journal），目录
+    // 扫描聚合时以 journal 为准，勿从 meta 读动态字段。
     noteRun(journal.workspace || 'default', { id: journal.id, requirement: journal.requirement, verdict: journal.status, runDocs: journal.runDocs })
     deliverCompletion(journal, parent) // 汇总投递回发起会话（主线程）
     console.log(`[teamflow] 运行结束 ${journal.id} → ${journal.status}（工作区 ${scopeKey}）`)
@@ -610,6 +614,11 @@ export function resumeRun(runId: string | null | undefined, sessionId: string | 
   if (!j) return { ok: false, error: `未找到运行：${id}` }
   if (j.status !== 'interrupted' && j.status !== 'failed' && j.status !== 'cancelled') {
     return { ok: false, error: `只有 interrupted/failed/cancelled 可续跑（当前 ${j.status}）` }
+  }
+  // 全阶段已 done 的 failed/cancelled：没有断点可续（阶段全绿≠run 成功，如「需求与现状不符」拦截单），
+  // 续跑只会兜底重跑验收、循环失败——硬拒绝，引导起新流水线（实锤 tf-mt8kxyef-29ruxt）
+  if ((j.stages || []).length > 0 && (j.stages || []).every((s) => s.status === 'done')) {
+    return { ok: false, error: `所有阶段均已完成，无断点可续（run=${j.status}）；如需重跑请启动新需求` }
   }
   const productKey = j.workspace || j.product || 'default'
   if (activeProducts.has(productKey) && activeProducts.get(productKey) !== id) {

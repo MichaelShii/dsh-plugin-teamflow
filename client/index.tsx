@@ -993,7 +993,8 @@ function TeamFlowView(props: TeamFlowViewProps) {
     }
   }
   const activeRun = runs.find((r) => r.id === runId) || runs[0]
-  const canResume = activeRun && (activeRun.status === 'interrupted' || activeRun.status === 'failed' || activeRun.status === 'cancelled')
+  // host 判定字段（list 不返回 stages 全量，只给 incompleteStages 布尔）+ 三态才可续
+  const canResume = activeRun && activeRun.incompleteStages && (activeRun.status === 'interrupted' || activeRun.status === 'failed' || activeRun.status === 'cancelled')
   const onResume = async () => {
     if (!api || !activeRun || busy) return
     setBusy(true)
@@ -1049,8 +1050,9 @@ function TeamFlowView(props: TeamFlowViewProps) {
       h('button', { onClick: refresh, style: { ...btn, marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5 } }, '🔄 刷新'),
       canResume ? h('button', {
         onClick: onResume, disabled: busy,
+        title: `断点续跑 ${activeRun.id}\n当前状态：${RUN_STATUS_TEXT[activeRun.status] || activeRun.status}；跳过已完成阶段，从第一个未完成阶段重跑`,
         style: { ...btn, background: T.error, color: '#fff', border: 'none', fontWeight: 600 },
-      }, busy ? '续跑中…' : '↻ 从断点重跑') : null,
+      }, busy ? '续跑中…' : `↻ 从断点重跑 #${String(activeRun.id).slice(-6)}`) : null,
     ),
 
     err ? h('div', {
@@ -1088,13 +1090,13 @@ function TeamFlowView(props: TeamFlowViewProps) {
       h('button', { onClick: () => setTab('board'), style: tabBtn(tab === 'board') }, '📋 Backlog 看板'),
       h('div', { style: { marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 } },
         activeRun ? h('span', {
+          title: `${activeRun.id}\n${activeRun.requirement || ''}`,
           style: {
             fontSize: 11.5, fontFamily: MONO, padding: '2px 10px', borderRadius: 999,
             background: T.layer2, color: activeRun.status === 'interrupted' ? T.warn : T.text2,
             border: `1px solid ${T.border}`,
           },
-        }, `#${String(activeRun.id).slice(-8)} · ${RUN_STATUS_TEXT[activeRun.status] || activeRun.status}`) : null,
-        total && (total.input + total.cacheRead + total.cacheWrite + total.output) > 0 ? h('span', { style: { fontSize: 11.5, fontFamily: MONO, color: T.text2, cursor: 'help' }, title: '输入(未命中)/输入(命中)/输出 全部阶段合计' }, `∑ ⇅${fmtTokens(total.input)}/⇅${fmtTokens(total.cacheRead)}·⬆${fmtTokens(total.output)}`) : null,
+        }, `#${String(activeRun.id).slice(-8)} · ${RUN_STATUS_TEXT[activeRun.status] || activeRun.status}`) : null,        total && (total.input + total.cacheRead + total.cacheWrite + total.output) > 0 ? h('span', { style: { fontSize: 11.5, fontFamily: MONO, color: T.text2, cursor: 'help' }, title: '输入(未命中)/输入(命中)/输出 全部阶段合计' }, `∑ ⇅${fmtTokens(total.input)}/⇅${fmtTokens(total.cacheRead)}·⬆${fmtTokens(total.output)}`) : null,
       ),
     ),
 
@@ -1119,7 +1121,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
         h('span', { style: { color: T.text2 } }, '历史'),
         runs.length ? runs.map((r) => {
           const sel = r.id === (runId || (runs[0] && runs[0].id))
-          return h('button', { key: r.id, onClick: () => setRunId(r.id), style: chipBtn(sel), title: r.requirement },
+          return h('button', { key: r.id, onClick: () => setRunId(r.id), style: chipBtn(sel), title: `${r.id}\n${r.requirement || ''}` },
             `#${String(r.id).slice(-6)}`)
         }) : h('span', { style: { color: T.text2, fontSize: 11.5 } }, '（暂无）'),
       ) : null,

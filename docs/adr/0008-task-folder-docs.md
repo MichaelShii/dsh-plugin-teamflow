@@ -28,7 +28,7 @@
 ```
 docs/teamflow/
 ├── 20260825-r8-wallkick-toggle/   ← 任务夹（建后不可变；阶段重试/断点续跑复用同夹）
-│   ├── meta.json                  ← host 写：{reqId,title,slug,status,mode,createdAt,endedAt}
+│   ├── meta.json                  ← host 写：{reqId,runId,title,slug,mode,createdAt} 静态标识卡（建夹即定；status/endedAt 权威在 runs/<runId>.json journal，不落 meta——终态回写已废：避免「提交后再脏」与 run 误判时快照过时）
 │   ├── PRD.md                     ← 模型写：meta 头 + 基线声明/取代声明 + 本地 AC 编号(AC-1..n)
 │   ├── DESIGN.md / TECHNICAL.md   ← 按档位出现（needDesign/非 lite），不再归档
 │   ├── QA-REPORT.md
@@ -62,7 +62,7 @@ memory.md 仅在真正新增团队约定时追加一行（幂等：同主题替�
 
 ### 4. host/model 职责切分：结构归 host，内容归 model
 
-- host：建夹、命名、meta.json 全量读写、journal.runDocs/state.__runCtx 注入、checkpoint 时刷 status。
+- host：建夹、命名、meta.json 静态标识卡（建夹一次写入，无终态回写）、journal.runDocs/state.__runCtx 注入；动态状态（status/endedAt）唯一权威 = runs/<runId>.json，目录聚合扫描时以 journal 为准。
 - model：只写自己夹内的产物文件；对索引零写入权。PRD 头部输出一行机器可读 meta
   （`<!-- meta: summary="…" -->`）供未来聚合使用（YAGNI：本轮不做解析消费）。
 
@@ -98,6 +98,6 @@ devPrompt 明确：模块头部 VERSION 是发布版本，仅对外发版时升�
 
 ## 后续
 
-- 用下一条真实需求实测完整生命周期：建夹命名 → 各阶段产物落位 → 续跑复用同夹 → 验收后 meta.status 终态。
+- 用下一条真实需求实测完整生命周期：建夹命名 → 各阶段产物落位 → 续跑复用同夹 → 验收后由 runs/<runId>.json 反映终态。
 - 观察两分支并行迭代的真实合并场景，确认文档层零冲突。
 - 工作台聚合视图（扫 meta.json 渲染产品时间线）作为后续增强候选，本轮不做。

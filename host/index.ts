@@ -98,24 +98,24 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_start',
-    description: '启动团队研发流水线（后台异步执行）：按团队配置执行对应阶段（PRD→设计→技术→开发→QA→验收）。通过 teamId 指定团队（对应 teams.json 配置），或在 UI 通过 "+" 按钮选择团队后发送消息自动匹配。阶段失败自动重试，超阈值打回并需人工介入；每阶段记录 token 用量。注意：调用后实现工作由流水线子代理完成，主线程不得自行改代码或跑验证抢活。requirement 必须忠实转写用户原话，不得自行扩写或补充未经读码核实的文件路径/技术断言（下游各阶段会按它建 PRD）。',
+    description: 'Start the team R&D pipeline (background async): runs the stages per team config (PRD→design→tech→dev→QA→acceptance). Specify teamId (matches teams.json) or pick a team via the UI "+" button first so messages auto-match. Stage failures auto-retry; beyond threshold → rework/human intervention; per-stage token usage recorded. NOTE: after calling, the implementation work is done by pipeline subagents — the main thread MUST NOT write code or run verifications for it. requirement must be a faithful transcription of the user\'s words; do not invent file paths / tech claims without code verification (downstream stages build the PRD from it).',
     parameters: {
-      requirement: { type: 'string', required: true, description: '用户的需求描述——忠实转写用户原话；不要臆造文件路径、技术方案或未经验证的断言' },
-      teamId: { type: 'string', description: '团队 id（对应 teams.json 中的团队；缺省使用当前会话选中的团队）' },
-      needDesign: { type: 'boolean', description: '涉及 UI 改造时设为 true' },
-      needScaffold: { type: 'boolean', description: '项目尚未建立时设为 true' },
-      lite: { type: 'boolean', description: '微功能轻量模式（推荐小改动）：仍跑轻量架构阶段产出架构蓝图（供开发继承，不写完整 TECHNICAL.md 文档），直接开发 → QA → 验收；若 needDesign=true 则保留 UI/UX 设计阶段（省 token/时间，可追溯性保留）' },
-      mode: { type: 'string', description: '需求路由模式：full / medium / lite / tech / patch（缺省自动 triage；可用 teamflow_triage 预判）' },
-      productRoot: { type: 'string', description: '产品线目录（如 products/tetris）' },
-      maxConcurrency: { type: 'integer', description: '开发任务并发数（默认 3，最大 8）' },
+      requirement: { type: 'string', required: true, description: 'The user requirement — faithful transcription of the user\'s words; no fabricated file paths, tech designs, or unverified claims' },
+      teamId: { type: 'string', description: 'Team id (matches teams.json; defaults to the currently selected team of this session)' },
+      needDesign: { type: 'boolean', description: 'Set true when the change involves UI' },
+      needScaffold: { type: 'boolean', description: 'Set true when the project does not exist yet' },
+      lite: { type: 'boolean', description: 'Lightweight mode for small changes (recommended): still runs the lightweight architecture stage (blueprint for dev, no full TECHNICAL.md), then dev → QA → acceptance; if needDesign=true the UI/UX design stage stays (saves tokens/time, traceability preserved)' },
+      mode: { type: 'string', description: 'Route mode: full / medium / lite / tech / patch (auto-triage by default; use teamflow_triage to preview)' },
+      productRoot: { type: 'string', description: 'Product line directory (e.g. products/tetris)' },
+      maxConcurrency: { type: 'integer', description: 'Dev task concurrency (default 3, max 8)' },
       tasks: {
         type: 'array',
-        description: '可拆分的开发任务列表（可选）',
+        description: 'Optional splittable dev task list',
         items: {
           type: 'object', additionalProperties: false,
           properties: {
-            title: { type: 'string', required: true, description: '任务标题' },
-            spec: { type: 'string', description: '任务描述与验收要点' },
+            title: { type: 'string', required: true, description: 'Task title' },
+            spec: { type: 'string', description: 'Task description & acceptance points' },
           },
         },
       },
@@ -161,10 +161,10 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_triage',
-    description: '需求分诊（可选辅助）：缺省情况下 teamflow_start 已自动分诊选模式，无需手动调用本工具。仅当你希望**预先评估**某需求适合的流程、或**强制指定**模式时使用——由一个分诊分析师 Agent 对需求思考一轮，返回建议模式、性质、是否需 UI、复杂度与论据。',
+    description: 'Requirement triage (optional helper): teamflow_start already auto-triages by default — no need to call this manually. Use it only when you want to **pre-evaluate** which pipeline mode a requirement fits, or **force** a mode: a triage analyst Agent thinks one round and returns a suggested mode, nature, UI-need, complexity and rationale.',
     parameters: {
-      requirement: { type: 'string', required: true, description: '用户原始需求描述' },
-      needDesign: { type: 'boolean', description: '涉及 UI 改造时设为 true' },
+      requirement: { type: 'string', required: true, description: 'The user raw requirement' },
+      needDesign: { type: 'boolean', description: 'Set true when the change involves UI' },
     },
     output: { schema: { type: 'object', additionalProperties: true }, render: simpleRender },
     async execute(args, exec) {
@@ -186,8 +186,8 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_status',
-    description: '查询团队研发流水线状态。带 runId 返回该运行完整进度（阶段/每 Agent 状态与 token/日志/结果/是否需人工）；不带 runId 返回当前工作区最近的运行列表。',
-    parameters: { runId: { type: 'string', description: '流水线运行 ID（可选）' } },
+    description: 'Query the team R&D pipeline status. With runId: full progress of that run (stages / per-agent status & tokens / logs / result / human-intervention). Without runId: recent runs of the current workspace.',
+    parameters: { runId: { type: 'string', description: 'Pipeline run id (optional)' } },
     output: { schema: { type: 'object', additionalProperties: true }, render: simpleRender },
     async execute(args, exec) {
       const id = args && typeof args.runId === 'string' ? args.runId : null
@@ -198,15 +198,15 @@ function registerTools(ctx) {
         return { runId: j.id, status: j.status, workspace: j.workspace || null, reminder: running ? '流水线仍在后台执行：不要自行改代码实现该需求或重复跑验证，等待完成汇报。' : null, snapshot: snapshotOf(j) }
       }
       const sc = workspaceScopeOf(exec && exec.agent)
-      const arr = runsFor(sc.projectKey).slice(0, 10).map((j) => ({ id: j.id, status: j.status, startedAt: j.startedAt, endedAt: j.endedAt, agentsStarted: j.agentsStarted, stageCount: j.stages.length, requirement: clip(j.requirement, 60) }))
+      const arr = runsFor(sc.projectKey).slice(0, 10).map((j) => ({ id: j.id, status: j.status, startedAt: j.startedAt, endedAt: j.endedAt, agentsStarted: j.agentsStarted, stageCount: j.stages.length, incompleteStages: (j.stages || []).some((x) => x.status !== 'done'), requirement: clip(j.requirement, 60) }))
       return { runs: arr, workspace: sc }
     },
   })
 
   T({
     name: 'teamflow_backlog',
-    description: '查看团队 backlog：给定产品线（缺省返回当前会话所属工作区/项目）展示需求/任务/缺陷及其状态机。单任务模型：一个需求一张轮转任务卡（待办→开发中→待测试→测试中→待验收→已验收|打回|需人工），任务卡含 devAssign/qaAssign 分配人与真实 token usage。缺陷: 待认领→处理中→已修复待验→已关闭。返回 persistence（mode=fs/durable=true，含真实落盘路径）。',
-    parameters: { product: { type: 'string', description: '产品线目录（如 products/tetris）；缺省按当前会话工作区' } },
+    description: 'Read the team backlog: for the given product line (default = current session workspace/root) shows requirements/tasks/defects with their state machines. Single-task model: one requirement = one rotating task card (待办→开发中→待测试→测试中→待验收→已验收|打回|需人工); the task card carries devAssign/qaAssign and real token usage. Defects: 待认领→处理中→已修复待验→已关闭. Returns persistence (mode=fs/durable=true with real disk paths).',
+    parameters: { product: { type: 'string', description: 'Product line directory (e.g. products/tetris); default = current session workspace' } },
     output: { schema: { type: 'object', additionalProperties: true }, render: simpleRender },
     async execute(args, exec) {
       const product = args && typeof args.product === 'string' && args.product.trim() ? normalizeRoot(args.product) : workspaceScopeOf(exec && exec.agent).projectKey
@@ -216,12 +216,12 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_claim',
-    description: '认领 backlog 里的任务或缺陷（只改 status，不碰 assign）：task role=dev 认领（待办→开发中）/ role=qa 认领（待测试→测试中）；bug 认领（待认领→处理中）；req 立项（→进行中）。分配人请用 teamflow_assign 单独设置。',
+    description: 'Claim a backlog task or defect (status only, no assign): task role=dev (待办→开发中) / role=qa (待测试→测试中); bug (待认领→处理中); req (→进行中). Set the assignee separately via teamflow_assign.',
     parameters: {
       kind: { type: 'string', required: true, description: 'req | task | bug' },
-      id: { type: 'string', required: true, description: '记录 id（如 task-3 / bug-1）' },
-      role: { type: 'string', description: 'task 认领角色：dev（默认，待办→开发中）| qa（待测试→测试中）' },
-      product: { type: 'string', description: '产品线目录（缺省按当前会话工作区）' },
+      id: { type: 'string', required: true, description: 'Record id (e.g. task-3 / bug-1)' },
+      role: { type: 'string', description: 'Task claim role: dev (default, 待办→开发中) | qa (待测试→测试中)' },
+      product: { type: 'string', description: 'Product line directory (default = current session workspace)' },
     },
     output: { schema: simple, render: simpleRender },
     async execute(args, exec) {
@@ -240,13 +240,13 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_update',
-    description: '人工推进/处理 backlog 记录的状态（只改 status，不碰 assign）：task→accepted(完成)/rework(打回)/running(开发中)/testing(测试中)/testable(待测试)/pending-acceptance(待验收)；bug→claimed(认领)/fixed(已修复)/verified(已验证关闭)/reopened(重开)/needs-human；req→accepted(验收通过)/closed(关闭)/needs-human。处理 needs-human 时请用一个合法终态（如 accepted/verified/closed）清除标记。分配人请用 teamflow_assign 单独设置。',
+    description: 'Manually advance a backlog record\'s status (status only, no assign): task→accepted/rework/running/testing/testable/pending-acceptance; bug→claimed/fixed/verified/reopened/needs-human; req→accepted/closed/needs-human. When resolving needs-human, pick a legal terminal state (e.g. accepted/verified/closed) to clear the flag. Set the assignee separately via teamflow_assign.',
     parameters: {
       kind: { type: 'string', required: true, description: 'req | task | bug' },
-      id: { type: 'string', required: true, description: '记录 id' },
-      to: { type: 'string', required: true, description: '目标状态' },
-      product: { type: 'string', description: '产品线目录' },
-      reason: { type: 'string', description: '变更原因' },
+      id: { type: 'string', required: true, description: 'Record id' },
+      to: { type: 'string', required: true, description: 'Target status' },
+      product: { type: 'string', description: 'Product line directory' },
+      reason: { type: 'string', description: 'Change reason' },
     },
     output: { schema: simple, render: simpleRender },
     execute: async (args, exec) => {
@@ -257,13 +257,13 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_assign',
-    description: '分配 backlog 里的任务给某个角色（只写 devAssign/qaAssign/acceptBy 字段，不碰 status，不影响状态流转）。role=dev 写入 devAssign（谁负责开发）、role=qa 写入 qaAssign（谁负责测试）、role=accept 写入 acceptBy（谁验收）。可在任意时刻调用，不依赖当前状态。',
+    description: 'Assign a backlog task to a role (writes devAssign/qaAssign/acceptBy only; no status impact, no state-machine interference). role=dev → devAssign (who develops), role=qa → qaAssign (who tests), role=accept → acceptBy (who accepts). Callable anytime, independent of current state.',
     parameters: {
       kind: { type: 'string', required: true, description: 'req | task | bug' },
-      id: { type: 'string', required: true, description: '记录 id（如 task-1）' },
-      role: { type: 'string', required: true, description: '分配角色：dev | qa | accept' },
-      assignee: { type: 'string', required: true, description: '分配人标识（子代理 ID/人名）' },
-      product: { type: 'string', description: '产品线目录' },
+      id: { type: 'string', required: true, description: 'Record id (e.g. task-1)' },
+      role: { type: 'string', required: true, description: 'Assign role: dev | qa | accept' },
+      assignee: { type: 'string', required: true, description: 'Assignee id (subagent id / person name)' },
+      product: { type: 'string', description: 'Product line directory' },
     },
     output: { schema: simple, render: simpleRender },
     execute: async (args, exec) => {
@@ -274,7 +274,7 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_pause',
-    description: '暂停当前会话的 teamflow 流水线触发：调用后 teamflow_start 返回提示而非启动流水线。用于用户说「别走 teamflow 了」「直接改」「暂停 teamflow」等场景。会话级生效，重启会话自动恢复。',
+    description: 'Pause teamflow triggering for the CURRENT session: after calling, teamflow_start returns a hint instead of launching. For user phrases like「别走 teamflow 了」「直接改」「暂停 teamflow」. Session-scoped; auto-resets on new session.',
     parameters: {},
     output: { schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' }, message: { type: 'string' } } }, render: (args, value) => [{ type: 'text', text: value.message || (value.ok ? '已暂停 teamflow，当前会话不会启动流水线。' : '暂停失败') }] },
     async execute(args, exec) {
@@ -287,7 +287,7 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_resume_session',
-    description: '恢复当前会话的 teamflow 流水线触发（撤销 teamflow_pause）。用户说「恢复 teamflow」「可以走 teamflow 了」时调用。',
+    description: 'Resume teamflow triggering for the CURRENT session (undo teamflow_pause). For user phrases like「恢复 teamflow」「可以走 teamflow 了」.',
     parameters: {},
     output: { schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' }, message: { type: 'string' } } }, render: (args, value) => [{ type: 'text', text: value.message || (value.ok ? '已恢复 teamflow，开发需求可走流水线。' : '恢复失败') }] },
     async execute(args, exec) {
@@ -300,8 +300,8 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_cancel',
-    description: '取消一条正在运行的团队研发流水线。',
-    parameters: { runId: { type: 'string', required: true, description: '流水线运行 ID' } },
+    description: 'Cancel a running team R&D pipeline.',
+    parameters: { runId: { type: 'string', required: true, description: 'Pipeline run id' } },
     output: { schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' } } }, render: (args, value) => [{ type: 'text', text: value.ok ? `已请求取消流水线 ${args.runId}` : '取消失败' }] },
     async execute(args) {
       const id = args && typeof args.runId === 'string' ? args.runId : null
@@ -311,9 +311,9 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_resume',
-    description: '从断点续跑一条中断/失败/已取消的团队研发流水线：跳过已完成阶段（复用产物），从第一个未完成阶段重跑。用于进程重启后发现 interrupted 运行、或阶段失败需要重试的场景。',
+    description: 'Resume an interrupted/failed/cancelled pipeline from its checkpoint: skip completed stages (reuse artifacts), rerun from the first incomplete stage. For interrupted runs found after process restart, or stage-failure retries.',
     parameters: {
-      runId: { type: 'string', required: true, description: '流水线运行 ID' },
+      runId: { type: 'string', required: true, description: 'Pipeline run id' },
     },
     output: { schema: { type: 'object', additionalProperties: false, required: ['ok'], properties: { ok: { type: 'boolean' }, runId: { type: 'string' }, resumedFrom: { type: 'string' }, error: { type: 'string' } } }, render: (args, value) => [{ type: 'text', text: value.ok ? `流水线 ${value.runId} 已从断点「${value.resumedFrom}」续跑` : `续跑失败：${value.error || '未知错误'}` }] },
     async execute(args, exec) {
@@ -396,7 +396,7 @@ export class TeamflowService extends TypertRemoteService {
     const sc = sessionScope(sessionId)
     const arr = runsFor(sc.projectKey)
     return {
-      runs: arr.slice(0, 30).map((j) => ({ id: j.id, status: j.status, startedAt: j.startedAt, endedAt: j.endedAt, agentsStarted: j.agentsStarted, stageCount: j.stages.length, requirement: clip(j.requirement, 60) })),
+      runs: arr.slice(0, 30).map((j) => ({ id: j.id, status: j.status, startedAt: j.startedAt, endedAt: j.endedAt, agentsStarted: j.agentsStarted, stageCount: j.stages.length, incompleteStages: (j.stages || []).some((x) => x.status !== 'done'), requirement: clip(j.requirement, 60) })),
       workspace: sc,
     }
   }
