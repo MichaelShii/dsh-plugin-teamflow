@@ -40,10 +40,10 @@ const FILES = [
   'host/core/triage.ts',
   'host/core/sanity.ts',
   'client/index.tsx',
-  'lib/host.mjs', 'lib/host.mjs.map',
-  'lib/store.mjs', 'lib/store.mjs.map',
-  'lib/descriptors.mjs', 'lib/descriptors.mjs.map',
-  'lib/client.js', 'lib/client.js.map',
+  'lib/host.mjs',
+  'lib/store.mjs',
+  'lib/descriptors.mjs',
+  'lib/client.js',
 ]
 
 if (!existsSync(PROFILE)) {

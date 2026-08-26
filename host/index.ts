@@ -88,13 +88,17 @@ const simple = { type: 'object', additionalProperties: true }
 const simpleRender = (args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2).slice(0, 4000) }]
 
 function registerTools(ctx) {
+  let registeredCount = 0
   // ctx.tools.register() 把 parameters 原样送到 wire：必须先编译成
   // { type: 'object', properties, required } 完整 JSON Schema，否则提供方
   // 以「schema 缺 type: object」拒绝（如 teamflow_backlog invalid_request_error）。
-  const T = (tool) => ctx.tools.register({
-    ...tool,
-    parameters: parameterSchemaSpecToJsonSchema(tool.parameters),
-  })
+  const T = (tool) => {
+    registeredCount++
+    return ctx.tools.register({
+      ...tool,
+      parameters: parameterSchemaSpecToJsonSchema(tool.parameters),
+    })
+  }
 
   T({
     name: 'teamflow_start',
@@ -323,6 +327,7 @@ function registerTools(ctx) {
       return resumeRun(id, parent.session.id)
     },
   })
+  return registeredCount
 }
 
 /* ── Teamflow Service（宿主 Cordis service + Remote 方法）────────── */
@@ -378,10 +383,10 @@ export class TeamflowService extends TypertRemoteService {
       model: { services: [], events: [], objects: [] },
       invocations: TEAMFLOW_DESCRIPTORS,
     })
-    registerTools(ctx)
+    const modelTools = registerTools(ctx)
     console.log(
       `[teamflow] host 就绪：backlog 根 ${teamflowRoot()}，Remote ${TEAMFLOW_DESCRIPTORS.length} 个，`
-      + `工具 8 个${interruptedCount > 0 ? `，⚠ 发现 ${interruptedCount} 条中断的流水线（可用 teamflow_resume 从断点重跑）` : ''}`,
+      + `工具 ${modelTools} 个${interruptedCount > 0 ? `，⚠ 发现 ${interruptedCount} 条中断的流水线（可用 teamflow_resume 从断点重跑）` : ''}`,
     )
   }
 

@@ -22,6 +22,6 @@ export default defineConfig({
   platform: 'node',
   dts: false,
   clean: false,
-  sourcemap: true,
+  sourcemap: false,
   external: [/^@deepseek-ai\//],
 })

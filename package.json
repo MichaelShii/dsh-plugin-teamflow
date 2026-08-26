@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-teamflow",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "TeamFlow 团队研发流水线（TypeScript）：需求→PRD→设计→架构→技术方案→并行开发→QA→验收；backlog 持久化 + 断点续跑 + 完成汇报 + 防假交付；Web 团队工作台（conversation.view tab + 拖拽看板）",
   "type": "module",
   "main": "./lib/host.mjs",
@@ -42,11 +42,23 @@
   "files": [
     "lib",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "README.en.md",
+    "CHANGELOG.md"
   ],
-  "dependencies": {
-    "react": "^18.2.0"
-  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "teamflow",
+    "multi-agent",
+    "pipeline",
+    "agent-team",
+    "llm-agent",
+    "kanban",
+    "coding-agent"
+  ],
+  "dependencies": {},
   "devDependencies": {
     "@types/node": "^26.2.0",
     "@types/react": "^18.3.31",
@@ -54,6 +66,7 @@
     "typescript": "^6.0.3"
   },
   "peerDependencies": {
+    "react": "^18.2.0",
     "@deepseek-ai/dsh-base": "*",
     "@deepseek-ai/dsh-client-locale": "*",
     "@deepseek-ai/dsh-client-runtime": "*",
@@ -62,9 +75,23 @@
     "@deepseek-ai/dsh-tools": "*",
     "@deepseek-ai/dsh-typert-protocol": "*"
   },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-base": { "optional": true },
+    "@deepseek-ai/dsh-client-locale": { "optional": true },
+    "@deepseek-ai/dsh-client-runtime": { "optional": true },
+    "@deepseek-ai/dsh-client-ui-conversation": { "optional": true },
+    "@deepseek-ai/dsh-llm": { "optional": true },
+    "@deepseek-ai/dsh-tools": { "optional": true },
+    "@deepseek-ai/dsh-typert-protocol": { "optional": true },
+    "react": { "optional": true }
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/MichaelShii/dsh-plugin-teamflow.git"
+  },
+  "homepage": "https://github.com/MichaelShii/dsh-plugin-teamflow",
+  "bugs": {
+    "url": "https://github.com/MichaelShii/dsh-plugin-teamflow/issues"
   }
 }

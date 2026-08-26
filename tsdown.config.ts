@@ -22,7 +22,7 @@ export default defineConfig({
   platform: 'browser',
   dts: false,
   clean: false,
-  sourcemap: true,
+  sourcemap: false,
   external: ['react'],
   outputOptions: {
     entryFileNames: 'client.js',
