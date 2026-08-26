@@ -4,14 +4,11 @@
 
 ## [0.1.2] - 2026-08-26
 
+### 修复
+- host 就绪日志工具数改为动态计数（消除「工具 8 个」写死文案，与实际注册数一致）
+
 ### 变更
-- 提示词指令层英文化（方案 A）：指令英文 + 输出契约中文（PRD 头部声明 / QA 缺陷表 / 验收结论等解析器锚点不变）；工具描述英文化
-- backlog 卡片 / 详情抽屉跳转指定 run 的流水线视图（host `backlog` 附带 `runId` 映射）
-- 详情抽屉长文本折叠（概览 / 需求原文默认预览几行，可展开收起）
-- 断点重跑语义修正：阶段全 done 的 failed/cancelled 不再显示续跑按钮（host 硬拒绝兜底）；按钮/pill/chip 补 runId 全名可溯
-- 架构蓝图提取回退任务夹 `TECHNICAL.md`（模型把蓝图写进文档而非回复输出时 M2 拆卡不再退化为整体开发）
-- `meta.json` 改为静态标识卡（废弃终态回写，status/endedAt 权威在 journal）
-- 开源发布元数据：keywords / homepage / bugs；`react` 移入 peerDependencies；README.en.md 与 CHANGELOG.md 显式进包
+- 开源发布收尾：README 中英双语修正（架构计数 17/11、防假交付真实语义、快速上手、环境要求）；npm 元数据（keywords / homepage / bugs）；`react` 移入 peerDependencies + `peerDependenciesMeta`（防私有包 ERESOLVE）；CI 触发扩展 `main` + `release-*`；构建关闭 sourcemap（npm 包 -58%）；新增 SECURITY.md / CONTRIBUTING.md；deploy 同步清单移除 `.map`
 
 ## [0.1.1] - 2026-08-26
 
