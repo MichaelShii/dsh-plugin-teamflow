@@ -1,5 +1,7 @@
 # dsh-plugin-teamflow
 
+中文 | [English](./README.en.md)
+
 TeamFlow 团队研发流水线 —— DeepSeek Harness 可分发插件（`dsh plugin --profile web add` 安装）。
 
 把「用户一句话需求 → 真实研发团队多 Agent 流水线」做成宿主级能力：
@@ -46,17 +48,6 @@ AGENTS.md 会被 harness 无条件注入每个会话，是**团队资产**。Tea
 - **已有项目接入**：检测到 AGENTS.md 已存在 → 绝不重写/重排/覆盖，仅在文末追加托管块（若没有）；团队原有约定一行不动。
 - **退出干净**：团队停用 TeamFlow 后，删除托管块与 `docs/teamflow/` 即完全复原，AGENTS.md 无残留账本。
 
-## 架构决策记录（ADR）
-
-关键设计决策独立存档于 `docs/adr/`，README 只留索引：
-
-- [ADR-0001 断点续跑自研 journal，不引入 LangGraph](docs/adr/0001-self-hosted-journal-vs-langgraph.md)
-- [ADR-0002 AGENTS.md 最小侵入（共识层/运营数据分离）](docs/adr/0002-agents-md-minimal-invasion.md)
-- [ADR-0003 部署生效契约 + token 计量口径（真实累计/当量/观测线）](docs/adr/0003-release-deploy-and-token-metering.md)
-- [ADR-0004 需求分诊路由 + 共享状态分层（full/lite/tech + context bundle）](docs/adr/0004-triage-and-shared-state.md)
-
-新增决策时：`docs/adr/NNNN-<kebab-name>.md`（背景/决策/理由/影响/触发信号），并在本索引追加一行。
-
 ## 架构（阶段 3）
 
 ```
@@ -92,7 +83,6 @@ dsh-plugin-teamflow/
   store.ts            # 持久化层：原子写/备份/损坏自愈 + journal 序列化/加载（可独立测试）
   host/index.ts       # TeamflowService（TS；构建为 lib/host.mjs 供宿主加载）
   client/index.tsx    # 团队工作台（TSX；构建为 lib/client.js）
-  docs/adr/           # 架构决策记录（ADR-0001/0002…）
   test/smoke.js       # 无依赖 smoke 测试（描述符/模块结构/安全加固）
   test/journal.test.js # journal 行为测试（直跑 store.ts 源码）
 ```
@@ -114,6 +104,8 @@ dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 - 浏览器侧会话头部出现「🏭 团队工作台」tab；
 - backlog 写入 `$DSH_HOME/teamflow/<product>/backlog/*.json`。
 
+> 注意：`@deepseek-ai/*` 为宿主私有包，运行需 DeepSeek Harness（dsh）宿主环境；本包不发布也无法独立运行。
+
 ## 开发与验证
 
 ```bash
@@ -131,23 +123,10 @@ npm run bundle          # 构建 client（tsdown → lib/client.js，__ModuleLoa
 改完代码的生效链路（推荐）：`node deploy.mjs`（构建 + 测试 + 同步 profile 副本 + 检测运行中 web 并提示重启）→ 重启 `dsh --profile web`。
 改完代码的生效链路（备用）：`npm run bundle` → profile 副本更新（`pnpm update dsh-plugin-teamflow`，在 `~/.dsh/profiles/web/` 下，若 Already up to date 先删 `node_modules/dsh-plugin-teamflow` 再 update）→ 重启 `dsh --profile web`。
 
-**⚠ 生效前提（易踩坑，详见 ADR-0003）**：运行中的 web **从 profile 部署副本**（`~/.dsh/profiles/web/node_modules/dsh-plugin-teamflow/lib/`）加载 host，不是源码 `plugins/.../lib/`。只构建源码不在 profile 生效；必须 deploy 同步 + 重启进程，否则跑旧逻辑（如 lite 参数被静默忽略）。
+**⚠ 生效前提（易踩坑）**：运行中的 web **从 profile 部署副本**（`~/.dsh/profiles/web/node_modules/dsh-plugin-teamflow/lib/`）加载 host，不是源码 `plugins/.../lib/`。只构建源码不在 profile 生效；必须 deploy 同步 + 重启进程，否则跑旧逻辑（如 lite 参数被静默忽略）。
 
 注意：`lib/` 被 `.gitignore` 排除，但 `.npmignore` 不排除——`file:` 安装与 npm 发布
 都必须带上构建产物（`exports["./client"]` 指向 `./lib/client.js`）。
-
-## 发布
-
-```bash
-# 1) 升版本号（package.json 的 version，遵循 semver）
-# 2) 构建产物（lib/ 已被 .gitignore 排除，但靠 package.json 的 files 白名单随包发布）
-pnpm bundle            # 或 npx tsdown && npx tsdown -c tsdown.host.config.ts
-# 3) 跑测试 + 发布（prepublishOnly 会自动 build + test，可跳过手动 build）
-npm login
-npm publish            # 仅发布 files 白名单内的 lib / cordis.patch.yml / README.md / AGENTS.md / docs/adr
-```
-
-> 注意：`@deepseek-ai/*` 为宿主私有包，运行需 DeepSeek Harness（dsh）宿主环境；本包不发布也无法独立运行。
 
 ## 契约速览
 

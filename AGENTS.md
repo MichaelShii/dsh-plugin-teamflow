@@ -56,6 +56,7 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
   - `pnpm run bundle` —— tsdown → `lib/`（host.mjs/client.js/store.mjs/descriptors.mjs）
   - `pnpm test` —— smoke + journal（smoke 对 host 目录做源码断言：新增/移动函数后要同步指向）
   - **部署**：`node deploy.mjs`（构建+测试+同步 profile 副本 + 检测运行 web 提示）→ **重启 `dsh --profile web` 才生效**（易踩坑，ADR-0003）。
+  - **发布**：`npm publish`（升 `package.json` version 后；`files` 白名单仅含 `lib`/`cordis.patch.yml`/`README.md`，`prepublishOnly` 自动 bundle+test；包名无 scope 默认公开，registry 为 npmjs.org）。
 - **类型**：全 TS；host 必须构建（`node_modules` 下 strip-types 不生效）；`peerDeps`(@deepseek-ai/*) 宿主注入。
 - **运行时**：零新增运行时依赖（依赖 `store.ts` 的 `node:fs` 与宿主 `ctx`）。
 - **数据**：backlog/journal 持久化于 `$DSH_HOME/teamflow/<product>/`；`stores`/`runs`/`activeProducts` 走 `core/context.ts`（进程单例）。
