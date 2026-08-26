@@ -1,7 +1,7 @@
 # ADR-0004：需求分诊路由 + 共享状态分层（full / lite / tech + Context Bundle）
 
 - 状态：已接受为设计方向（实现分二期，见「影响」）
-- 日期：2026-08（v0.8.0 起规划）
+- 日期：2026-08（v0.1.0 起规划）
 - 关联：`host/index.ts`（lite 已实现）、`docs/adr/0001`（编排仍自研，不引入 LangGraph）、`docs/adr/0003`（token 累计口径）
 
 ## 背景
@@ -41,7 +41,7 @@
 
 ## 影响
 
-- 已交付：`lite`（v0.8.0）。`tech` 路由、`teamflow_triage`、Context Bundle B/A 期为下阶段实现项。
+- 已交付：`lite`（v0.1.0）。`tech` 路由、`teamflow_triage`、Context Bundle B/A 期为下阶段实现项。
 - PRD 提示词按 mode 分流；新增 `mode` 选项 + 分诊工具描述。
 - state.json 的构建/失效/并发锁（与现有产品级并发锁共用一个入口）需设计。
 

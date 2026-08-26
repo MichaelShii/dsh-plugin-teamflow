@@ -1,7 +1,7 @@
 # ADR-0007：QA 发现缺陷 → 打回开发修复 → 复验 → 干净才验收（有界循环 + 人工兜底）
 
 - 状态：已接受（Accepted）
-- 日期：2026-08（v0.12）
+- 日期：2026-08（v0.1.0）
 - 关联：`host/core/pipeline.ts`、`host/core/backlog.ts`、`host/constants.ts`、`host/prompts/index.ts`、`test/smoke.js`
 
 ## 背景

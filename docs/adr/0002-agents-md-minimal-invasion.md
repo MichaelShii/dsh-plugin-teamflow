@@ -1,7 +1,7 @@
 # ADR-0002：AGENTS.md 最小侵入（共识层 / 运营数据分离）
 
 - 状态：已接受（Accepted）
-- 日期：2026-08（v0.3.0）
+- 日期：2026-08（v0.1.0）
 - 关联：`host/index.js`（AGENTS_TEMPLATE v2 / MEMORY_TEMPLATE / productCtx 边界约束）
 
 ## 背景

@@ -1,7 +1,7 @@
 # ADR-0008：文档层重构——活文档版本制 → 任务夹收口制（日期+需求+slug，历史不可变）
 
 - 状态：已接受（Accepted）
-- 日期：2026-08（v0.13）
+- 日期：2026-08（v0.1.0）
 - 关联：`host/core/pipeline.ts`、`host/core/triage.ts`、`host/core/state.ts`、`host/core/backlog.ts`、`host/core/sanity.ts`、`host/prompts/index.ts`、`host/constants.ts`、`store.ts`、client 展示层、全部 smoke 断言
 
 ## 背景

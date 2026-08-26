@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-teamflow",
-  "version": "0.7.0",
+  "version": "0.1.0",
   "description": "TeamFlow 团队研发流水线（TypeScript）：需求→PRD→设计→架构→技术方案→并行开发→QA→验收；backlog 持久化 + 断点续跑 + 完成汇报 + 防假交付；Web 团队工作台（conversation.view tab + 拖拽看板）",
   "type": "module",
   "main": "./lib/host.mjs",
@@ -36,8 +36,16 @@
     "watch": "tsdown --watch",
     "deploy": "node deploy.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node test/smoke.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js"
+    "test": "node test/smoke.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js",
+    "prepublishOnly": "npx tsdown && npx tsdown -c tsdown.host.config.ts && node test/smoke.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js"
   },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "AGENTS.md",
+    "docs/adr"
+  ],
   "dependencies": {
     "react": "^18.2.0"
   },

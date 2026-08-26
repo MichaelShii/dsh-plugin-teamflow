@@ -9,3 +9,8 @@ dist/
 *.swp
 package-lock.json
 npm-debug.log*
+
+# 运行产物 + 工作区内存（勿发布）
+.workbuddy/
+docs/teamflow/
+logs/

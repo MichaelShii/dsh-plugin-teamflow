@@ -1,7 +1,7 @@
 # ADR-0006：流水线「认知前置 + 架构落地」重构（质量优先于 token）
 
 - 状态：已接受（Accepted）
-- 日期：2026-08（v0.11）
+- 日期：2026-08（v0.1.0）
 - 关联：`host/core/sanity.ts`（新）、`host/core/pipeline.ts`、`host/core/state.ts`、`host/core/triage.ts`、`host/util.ts`、`host/prompts/index.ts`、`store.ts`
 
 ## 背景

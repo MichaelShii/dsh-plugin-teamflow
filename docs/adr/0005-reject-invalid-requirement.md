@@ -1,7 +1,7 @@
 # ADR-0005：需求无效 → 验收阶段「需求不适用」拦截（不误标 accepted）
 
 - 状态：已接受（Accepted）
-- 日期：2026-08（v0.8.1）
+- 日期：2026-08（v0.1.0）
 - 关联：`host/core/pipeline.ts`（验收段 accVerdict）、`host/prompts/index.ts`（acceptancePrompt）、`host/core/backlog.ts`
 
 ## 背景
@@ -34,5 +34,5 @@
 
 ## 触发信号 / 后续
 
-- 需求有效性前置到 PRD/确认单阶段（一发现不符即停，省去开发与验收整段）：可作为 v0.9 增强。
+- 需求有效性前置到 PRD/确认单阶段（一发现不符即停，省去开发与验收整段）：可作为 v0.1.0 增强。
 - full/medium 档位阶段集差异化执行仍待做（ADR-0004 §影响）。

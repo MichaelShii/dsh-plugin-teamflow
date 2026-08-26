@@ -73,6 +73,35 @@ const chip = (text, color, opts: { style?: Record<string, string>; dot?: boolean
   },
 }, opts.dot ? h('span', { style: { width: 5, height: 5, borderRadius: 999, background: color, display: 'inline-block' } }) : null, text)
 
+/** 可折叠长文本：默认只显示前几行预览，「展开全文」/「收起」双向切换（数据不动，纯展示层——summary/需求原文等富文本不再铺满抽屉）。 */
+function FoldableText({ text, charLimit = 280, lineLimit = 5, style }: { text: unknown; charLimit?: number; lineLimit?: number; style?: Record<string, unknown> }) {
+  const [open, setOpen] = React.useState(false)
+  if (!text) return null
+  const t = String(text)
+  const lines = t.split('\n')
+  const compact = lines.length <= lineLimit && t.length <= charLimit
+  const body = (txt) => h('div', { style: { fontSize: 11.5, color: T.text, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', ...(style || {}) } }, txt)
+  if (compact) return body(t)
+  if (open) return h('div', null,
+    body(t),
+    h('button', {
+      onClick: () => setOpen(false),
+      title: '收起全文',
+      style: { marginTop: 3, font: 'inherit', fontSize: 10.5, fontWeight: 600, color: T.text2, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' },
+    }, '收起'),
+  )
+  const pre = lines.length > lineLimit ? lines.slice(0, lineLimit).join('\n') : t.slice(0, charLimit)
+  const more = lines.length > lineLimit ? `… +${lines.length - lineLimit} 行` : '…'
+  return h('div', null,
+    body(pre),
+    h('button', {
+      onClick: () => setOpen(true),
+      title: '点击查看全文',
+      style: { marginTop: 3, font: 'inherit', fontSize: 10.5, fontWeight: 600, color: T.brand, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' },
+    }, `展开全文${more}`),
+  )
+}
+
 function fmtTime(t) {
   if (!t) return '—'
   const d = new Date(t)
@@ -525,7 +554,7 @@ function PipelinePanel({ active, api, runId, sessionId, sessions }) {
 }
 
 /* ── Backlog 拖拽看板 ────────────────────────────────────────────── */
-function BoardPanel({ backlog, api, onRefresh, sessionId }) {
+function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun }) {
   const [drag, setDrag] = React.useState(null)
   const [over, setOver] = React.useState(null)
   const [det, setDet] = React.useState(null)
@@ -670,14 +699,14 @@ function BoardPanel({ backlog, api, onRefresh, sessionId }) {
         ),
       )
     }),
-    det ? h(ItemDetailDrawer, { det, onClose: () => setDet(null) }) : null,
+    det ? h(ItemDetailDrawer, { det, onClose: () => setDet(null), onShowRun }) : null,
   )
 }
 
 /* ── TeamFlow Backlog 条目详情抽屉 ──────────────────────────────── */
 function fmtAt(ts) { return ts ? new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '—' }
 
-function ItemDetailDrawer({ det, onClose }) {
+function ItemDetailDrawer({ det, onClose, onShowRun }) {
   const d = det && det.data
   const loading = det && det.loading
   const err = det && det.err
@@ -733,8 +762,10 @@ function ItemDetailDrawer({ det, onClose }) {
             /* 概览 */
             h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
               secTitle('概览'),
-              d.spec ? h('div', { style: { fontSize: 12, color: T.text, lineHeight: 1.65, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: T.layer2, borderRadius: 8, padding: '8px 10px' } }, d.spec) : null,
-              d.summary ? h('div', { style: { fontSize: 11.5, color: T.text2, lineHeight: 1.6, wordBreak: 'break-word' } }, d.summary) : null,
+              d.spec ? h(FoldableText, { text: d.spec, charLimit: 300, lineLimit: 4, style: { background: T.layer2, borderRadius: 8, padding: '8px 10px' } }) : null,
+              h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+                d.summary ? h(FoldableText, { text: d.summary }) : null,
+              ),
               h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2 } },
                 d.devAssign ? kv('👨‍💻 dev', d.devAssign.slice(0, 26), true) : null,
                 d.qaAssign ? kv('🧪 qa', d.qaAssign.slice(0, 26), true) : null,
@@ -749,16 +780,23 @@ function ItemDetailDrawer({ det, onClose }) {
             d.runInfo ? (() => {
               const ri = d.runInfo
               return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
-                h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
-                  secTitle('运行'),
-                  h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2 } }, ri.runId),
-                  chip(stText(ri.status), stColor(ri.status)),
+                h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
+                  h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
+                    secTitle('运行'),
+                    h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2, whiteSpace: 'nowrap' } }, ri.runId),
+                    chip(stText(ri.status), stColor(ri.status)),
+                    onShowRun ? h('button', {
+                      onClick: () => onShowRun(ri.runId),
+                      title: `跳转到该需求的流水线视图 #${String(ri.runId).slice(-6)}`,
+                      style: { marginLeft: 'auto', flex: '0 0 auto', whiteSpace: 'nowrap', fontSize: 10.5, fontWeight: 600, padding: '2px 9px', borderRadius: 6, cursor: 'pointer', border: `1px solid color-mix(in srgb, ${T.brand} 38%, transparent)`, background: `color-mix(in srgb, ${T.brand} 10%, transparent)`, color: T.brand, lineHeight: '16px' },
+                    }, '▶ 流水线') : null,
+                  ),
                   (ri.startedAt || ri.endedAt) ? h('span', { style: { fontSize: 10.5, color: T.text2, fontFamily: MONO } }, `${fmtAt(ri.startedAt)} → ${fmtAt(ri.endedAt)} · ${fmtDur(ri.startedAt, ri.endedAt)}`) : null,
                 ),
-                h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-                  secTitle('需求原文'),
-                  h('div', { style: { fontSize: 11.5, color: T.text, lineHeight: 1.65, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: T.layer2, borderRadius: 8, padding: '8px 10px' } }, ri.requirement || '（无原文）'),
-                ),
+                  h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+                    secTitle('需求原文'),
+                    h(FoldableText, { text: ri.requirement || '（无原文）', charLimit: 300, lineLimit: 4, style: { background: T.layer2, borderRadius: 8, padding: '8px 10px' } }),
+                  ),
               )
             })() : null,
             /* 任务夹（ADR-0008） */
@@ -1127,7 +1165,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
       ) : null,
     ),
 
-    tab === 'pipeline' ? h(PipelinePanel, { active, api, runId: activeRun ? activeRun.id : null, sessionId: props.sessionId, sessions: props.sessions }) : h(BoardPanel, { backlog, api, onRefresh: refresh, sessionId: props.sessionId }),
+    tab === 'pipeline' ? h(PipelinePanel, { active, api, runId: activeRun ? activeRun.id : null, sessionId: props.sessionId, sessions: props.sessions }) : h(BoardPanel, { backlog, api, onRefresh: refresh, sessionId: props.sessionId, onShowRun: (rid) => { setTab('pipeline'); setRunId(rid) } }),
   )
 }
 

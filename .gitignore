@@ -22,3 +22,7 @@ npm-debug.log*
 
 # WorkBuddy 工作区数据
 .workbuddy/
+
+# 本地运行产物（含潜在项目信息，勿提交 / 勿发布）
+docs/teamflow/
+logs/

@@ -1,7 +1,7 @@
 # ADR-0003：部署生效契约 + token 计量口径（真实累计 / 当量 / 观测线）
 
 - 状态：已接受（Accepted）
-- 日期：2026-08（v0.8.0）
+- 日期：2026-08（v0.1.0）
 - 关联：`host/index.ts`（accumulateSessionUsage / costTokensOf / COST_BUDGET_TOKENS / deliverCompletion）、`store.ts`（stage.usage/costTokens/handoff）、`deploy.mjs`
 
 ## 背景

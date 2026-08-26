@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18
+          cache: pnpm
+
+      - name: Install (frozen lockfile)
+        run: pnpm install --frozen-lockfile
+
+      - name: Test
+        run: pnpm test
+
+      - name: Bundle
+        run: pnpm bundle
+
+      # 注：typecheck 依赖宿主私有包 @deepseek-ai/* 的类型（由本机 dsh profile 提供），
+      # 公共 CI 无此环境，故不在 CI 跑；请在本地宿主环境下执行 `pnpm typecheck`。

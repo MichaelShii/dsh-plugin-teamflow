@@ -63,17 +63,19 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 
 ## 5. 产品记忆（功能演进）
 
+> v0.3~v0.13 为发布前的内部迭代记录；对外统一归到首次公开发布版本 **v0.1.0**（见 `CHANGELOG.md`）。下表按时间顺序记录各阶段核心变更。
+
 | 版本 | 核心变更 |
 |---|---|
 | v0.3~0.6 | journal 断点续跑（ADR-0001）/ AGENTS 最小侵入（ADR-0002）/ 防假交付(实质校验+熔断)/ 并发池 / QA 缺陷登记 / 完成汇报 |
 | v0.8.0 | token 双口径 + 成本观测线 + lite 模式 + 部署契约（ADR-0003/0004） |
-| v0.8.x(进行) | 领域化重构（11 文件）+ triage 5 档(model 驱动)+ lite/tech/patch 端到端 + 需求无效拦截（ADR-0004/0005 落地） |
-| v0.10(进行) | 多团队架构(teams.json)+UI"+团队"触发+workspace 级隔离(UUID)+单任务轮转+dev 子卡+官方口径 token 展示+会话暂停/resume+state.json 预编译索引+版本切片/一次成型纪律+子代理路由跟随主线程 |
+| v0.8.x | 领域化重构（11 文件）+ triage 5 档(model 驱动)+ lite/tech/patch 端到端 + 需求无效拦截（ADR-0004/0005 落地） |
+| v0.10 | 多团队架构(teams.json)+UI"+团队"触发+workspace 级隔离(UUID)+单任务轮转+dev 子卡+官方口径 token 展示+会话暂停/resume+state.json 预编译索引+版本切片/一次成型纪律+子代理路由跟随主线程 |
 | v0.10.1 | **验收结论解析修复**（误报实锤 run tf-msytlok5：验收 ✅ 通过，记忆回写段「SUMMARY.md 结构无需改动」命中旧正则「无需改动」→ 误判 reject 杀整条流水线）。`parseAcceptanceVerdict` 移入 util.ts：只认显式「验收结论/整体结论」行 + 专用「📝 需求不适用」全文命中，正文散文不再朴素子串匹配；verdict.test.js 回归覆盖 |
 | v0.10.2 | **执行路径基准**（同一持久化需求 A/B）：流水线 38m/164 调用/11.6M billed vs 原生 DSH 27m/115 调用/19.1M billed。流水线省 ~39% token（阶段/子代理上下文隔离），原生快 ~29%（少门禁但单 agent 上下文膨胀）；质量等价。**拆分价值在「上下文隔离」而非并行次数**。详见 `docs/benchmarks/pipeline-vs-native.md` |
 | v0.11 | **「认知前置 + 架构落地」重构（破坏性，ADR-0006）**：① M0 状态核对（core/sanity.ts，start 跑 git 现状注入各阶段，治"认知过期/场外提交"）；② M1 架构阶段全模式启用（lite 也跑轻量架构蓝图，architectPrompt/techPrompt 产结构化 JSON 蓝图，state.__runCtx 统一注入）；③ M2 dev 继承蓝图 + 按蓝图自动拆任务（devTaskDefs 蓝图优先+文件冲突检测合并）；④ M3 质量门禁（QA/验收加架构核验，parseAcceptanceVerdict 识别架构打回）；⑤ triage 架构护栏（持久化/存储/独立模块等 → 强升 medium）。质量优先于 token：不砍「建全局认知」；原生工作流基线见 `docs/benchmarks/native-workflow.md` |
-| v0.12(进行) | **QA 打回修复闭环（ADR-0007）**：QA 发现 P0-P2 阻断缺陷 → 打回开发确认+修复（qaFixPrompt）→ 复验 QA → 干净才进产品验收；`QA_REWORK_LIMIT=2` 上限防无限循环、超限转 needs-human 人工介入；`parseDefects` 容忍 `**P1**` 加粗严重级（修对照实验 tf-mt317a5e 缺陷漏登记）；缺陷卡按 reqId+defectId 幂等登记、复验通过 `verifyReqBugs` 关单（P3 观察项保留）。实证：docs/benchmarks/pipeline-vs-native.md「复核」节 |
-| v0.13(进行) | **文档层重构：活文档版本制 → 任务夹收口制（ADR-0008，破坏性）**：每需求一个自包含任务夹 `docs/teamflow/<yyyyMMdd>-r<N>[-<slug>]/`（PRD/TECHNICAL/QA-REPORT/ACCEPTANCE 收口其中），host 建夹命名+meta.json，`journal.runDocs` 固定需求级身份——重试/续跑复用同夹，双归档/版本虚增/memory 堆积三类 bug 结构性消失；SUMMARY.md 废除（扫描 meta 聚合）、memory.md 收窄为约定层；AC 局部编号+基线依赖/取代声明；代码头 VERSION 解耦为发布版本；triage 新增 slug 输出。存量项目零迁移 |
+| v0.12 | **QA 打回修复闭环（ADR-0007）**：QA 发现 P0-P2 阻断缺陷 → 打回开发确认+修复（qaFixPrompt）→ 复验 QA → 干净才进产品验收；`QA_REWORK_LIMIT=2` 上限防无限循环、超限转 needs-human 人工介入；`parseDefects` 容忍 `**P1**` 加粗严重级（修对照实验 tf-mt317a5e 缺陷漏登记）；缺陷卡按 reqId+defectId 幂等登记、复验通过 `verifyReqBugs` 关单（P3 观察项保留）。实证：docs/benchmarks/pipeline-vs-native.md「复核」节 |
+| v0.1.0（首次公开发布） | **文档层重构：活文档版本制 → 任务夹收口制（ADR-0008，破坏性）**：每需求一个自包含任务夹 `docs/teamflow/<yyyyMMdd>-r<N>[-<slug>]/`（PRD/TECHNICAL/QA-REPORT/ACCEPTANCE 收口其中），host 建夹命名+meta.json，`journal.runDocs` 固定需求级身份——重试/续跑复用同夹，双归档/版本虚增/memory 堆积三类 bug 结构性消失；SUMMARY.md 废除（扫描 meta 聚合）、memory.md 收窄为约定层；AC 局部编号+基线依赖/取代声明；代码头 VERSION 解耦为发布版本；triage 新增 slug 输出。存量项目零迁移 |
 
 ## 6. 已知待办
 

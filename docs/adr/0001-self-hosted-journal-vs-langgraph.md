@@ -1,7 +1,7 @@
 # ADR-0001：断点续跑自研 journal，不引入 LangGraph
 
 - 状态：已接受（Accepted）
-- 日期：2026-08（v0.4.0）
+- 日期：2026-08（v0.1.0）
 - 关联：`store.js`（journal 三件套）、`host/index.js`（executePipeline resume）
 
 ## 背景

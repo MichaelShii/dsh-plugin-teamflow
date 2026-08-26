@@ -521,7 +521,18 @@ export class TeamflowService extends TypertRemoteService {
   /** 工作区级 backlog 视图（自动按当前会话 workspace 隔离）。 */
   backlog(sessionId) {
     const sc = sessionScope(sessionId)
-    return backlogSummary(sc.projectKey)
+    const sum = backlogSummary(sc.projectKey)
+    // 卡片跳流水线：req/task 附带该需求的最近一次 runId（无 run 的历史卡片为 null，不显示跳转）
+    const js = runsFor(sc.projectKey)
+    const runOf = (reqId: string | null | undefined) => {
+      if (!reqId) return null
+      let last: JournalRecord | null = null
+      for (const j of js) if (j.reqId === reqId) last = j
+      return last ? last.id : null
+    }
+    for (const r of sum.requirements) (r as { runId?: string | null }).runId = runOf(r.id)
+    for (const t of sum.tasks) (t as { runId?: string | null }).runId = runOf(t.reqId)
+    return sum
   }
 
   backlogUpdate(kind, id, to, sessionId, reason) {
