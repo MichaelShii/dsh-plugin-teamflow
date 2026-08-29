@@ -20,8 +20,6 @@ requirement → PRD (based on existing patterns / product memory, archived to pr
 
 ## Screenshots
 
-> Placeholders for now. Run `dsh --profile web`, open the "🏭 Team Workbench" tab, capture the shots below (≈800px wide PNG) and **overwrite the same-named files under `docs/screenshots/`** — the README needs no edits afterwards.
-
 1. Pipeline view — stage serpentine lanes + node cards (status / duration / tokens / subagent session)
 
    ![Pipeline view](docs/screenshots/pipeline-view.png)

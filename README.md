@@ -20,8 +20,6 @@ TeamFlow 团队研发流水线 —— DeepSeek Harness 可分发插件（`dsh pl
 
 ## 界面预览
 
-> 截图待补充——当前为占位图。运行 `dsh --profile web` 后打开「🏭 团队工作台」tab，按以下编号截图（建议 800px 宽、PNG），**覆盖 `docs/screenshots/` 下同名文件**即可自动生效（README 无需改动）。
-
 1. 流水线视图——阶段蛇形泳道 + 节点卡片（状态/耗时/token/子代理会话）
 
    ![流水线视图](docs/screenshots/pipeline-view.png)
