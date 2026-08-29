@@ -30,6 +30,9 @@ import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/
 import { loadTeams, findTeam, type TeamConfig } from './core/teams.ts'
 import { runPool, runAgent, withRetry } from './core/runner.ts'
 import { deliverCompletion } from './core/report.ts'
+import { runSanityCheck, gitCmd } from './core/sanity.ts'
+import { join } from 'node:path'
+import { mkdirSync } from 'node:fs'
 import { executePipeline, summarizeTimeline, startPipeline, cancelRun, resumeRun } from './core/pipeline.ts'
 import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, normalizeMode, runTriage } from './core/triage.ts'
 
@@ -102,7 +105,7 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_start',
-    description: 'Start the team R&D pipeline (background async): runs the stages per team config (PRD→design→tech→dev→QA→acceptance). Specify teamId (matches teams.json) or pick a team via the UI "+" button first so messages auto-match. Stage failures auto-retry; beyond threshold → rework/human intervention; per-stage token usage recorded. NOTE: after calling, the implementation work is done by pipeline subagents — the main thread MUST NOT write code or run verifications for it. requirement must be a faithful transcription of the user\'s words; do not invent file paths / tech claims without code verification (downstream stages build the PRD from it).',
+    description: 'Start the team R&D pipeline (background async): runs the stages per team config (PRD→design→tech→dev→QA→acceptance). Specify teamId (matches teams.json) or pick a team via the UI "+" button first so messages auto-match. Stage failures auto-retry; beyond threshold → rework/human intervention; per-stage token usage recorded. NOTE: after calling, the implementation work is done by pipeline subagents — the main thread MUST NOT write code or run verifications for it. requirement must be a faithful transcription of the user\'s words; do not invent file paths / tech claims without code verification (downstream stages build the PRD from it). Branch decision: when the return status is "needs-decision", ASK THE USER to pick one of the options (or take their custom input, e.g. a branch name), then RE-CALL this tool with the chosen branchPolicy / branchName / preAction / commitMessage parameters. Pass branchPolicy="keep" when the user chooses to stay on the current branch.',
     parameters: {
       requirement: { type: 'string', required: true, description: 'The user requirement — faithful transcription of the user\'s words; no fabricated file paths, tech designs, or unverified claims' },
       teamId: { type: 'string', description: 'Team id (matches teams.json; defaults to the currently selected team of this session)' },
@@ -112,6 +115,10 @@ function registerTools(ctx) {
       mode: { type: 'string', description: 'Route mode: full / medium / lite / tech / patch (auto-triage by default; use teamflow_triage to preview)' },
       productRoot: { type: 'string', description: 'Product line directory (e.g. products/tetris)' },
       maxConcurrency: { type: 'integer', description: 'Dev task concurrency (default 3, max 8)' },
+      branchPolicy: { type: 'string', description: 'Branch policy: "auto" (default) — create a feature branch feat/<branchName|slug> from the current HEAD; "keep" — stay on current branch. When auto and a decision is needed (dirty workspace / on main etc.), the tool returns needs-decision for you to ask the user first.' },
+      branchName: { type: 'string', description: 'Custom branch name (used when branchPolicy=auto; defaults to the triage slug; [a-z0-9-_])' },
+      preAction: { type: 'string', description: 'Pre-start handling of dirty workspace: "stash" (stash changes, restore later via git stash pop), "commit" (commit existing changes, custom commitMessage), omit = leave as-is (changes mix into this run)' },
+      commitMessage: { type: 'string', description: 'Custom commit message when preAction=commit' },
       tasks: {
         type: 'array',
         description: 'Optional splittable dev task list',
@@ -125,8 +132,17 @@ function registerTools(ctx) {
       },
     },
     output: {
-      schema: { type: 'object', additionalProperties: false, required: ['runId', 'status'], properties: { runId: { type: 'string' }, status: { type: 'string' } } },
-      render: (args, value) => [{ type: 'text', text: `团队研发流水线已启动（runId=${value.runId}，${value.status}），正在后台执行。【重要】你现在停手：不要自行读取/修改代码实现该需求，不要重复跑测试验证——实现、QA、汇报由流水线各阶段完成。你只需告知用户流水线已启动，等待流水线完成后的官方完成汇报，再向用户转述结果。可用 teamflow_status 查询进度/阶段 token；backlog 已持久化到 $DSH_HOME/teamflow。` }],
+      schema: { type: 'object', additionalProperties: false, required: ['status'], properties: { runId: { type: 'string' }, status: { type: 'string' }, question: { type: 'string' }, options: { type: 'array' }, note: { type: 'string' } } },
+      render: (args, value) => {
+        if (value && value.status === 'needs-decision') {
+          const opts = Array.isArray(value.options) ? value.options.map((o, i) => `${i + 1}. ${o.label}`).join('\n') : ''
+          return [{ type: 'text', text: `【分支决策】${value.question}\n${opts}\n（也可自定义输入）——请询问用户选择，确认后以 teamflow_start 的 branchPolicy/branchName/preAction/commitMessage 参数重新调用。` }]
+        }
+        if (value && value.status === 'needs-confirmation') {
+          return [{ type: 'text', text: `【需求确认】${value.question}\n${value.note || ''}——请按此询问用户后再决定。` }]
+        }
+        return [{ type: 'text', text: `团队研发流水线已启动（runId=${value.runId}，${value.status}），正在后台执行。【重要】你现在停手：不要自行读取/修改代码实现该需求，不要重复跑测试验证——实现、QA、汇报由流水线各阶段完成。你只需告知用户流水线已启动，等待流水线完成后的官方完成汇报，再向用户转述结果。可用 teamflow_status 查询进度/阶段 token；backlog 已持久化到 $DSH_HOME/teamflow。` }]
+      },
     },
     async execute(args, exec) {
       const parent = exec && exec.agent
@@ -143,6 +159,18 @@ function registerTools(ctx) {
       if (!teamId) {
         return { runId: null, status: 'no-team', message: '请先通过输入框旁的 🏭 按钮选择团队，再发送需求消息。未选团队时不走 teamflow。' }
       }
+      // 需求意图预检（ADR-2026-08-28）：疑问/建议/反馈句式（「是不是应该」「要不要」）→ 更像反馈而非明确
+      // 开发需求——不启动，返回确认请求由主线程 Agent 先向用户确认（实锤：用户反馈「是不是应该加个 Toast」
+      // 被误判为需求启动流水线；Agent 记住 teamId 显式传入绕过了团队状态检查）。
+      // 误伤处理：明确需求带疑问词时（如「是不是有 bug」）→ 用户确认一句即可重发，成本低于整条流水线误跑。
+      const rawReq = typeof args.requirement === 'string' ? args.requirement : ''
+      if (/是不是|要不要|需不需要|是否应该|要不要考虑|建议|我感觉|感觉不出|我们是不是|咱是不是/.test(rawReq)) {
+        return {
+          status: 'needs-confirmation',
+          question: `这条消息（「${rawReq.slice(0, 60)}」）更像反馈/建议（含疑问句式）而非明确开发需求。请先向用户确认：是否要实现？`,
+          note: '用户确认要实现后，请把明确需求（如「实现 combo/t-spin 触发 Toast 提示」）作为 requirement 重新调用 teamflow_start；若用户只是表达感受/讨论，直接正常回复即可。',
+        }
+      }
       try {
         const requirement = typeof args.requirement === 'string' && args.requirement.trim() ? args.requirement.trim() : '(未提供需求)'
         const options = {
@@ -154,12 +182,112 @@ function registerTools(ctx) {
           tasks: normalizeTasks(args.tasks),
           productRoot: normalizeRoot(args.productRoot),
           maxConcurrency: args.maxConcurrency,
+          branchPolicy: (args.branchPolicy === 'keep' ? 'keep' : 'auto') as 'auto' | 'keep',
+          branchName: typeof args.branchName === 'string' && args.branchName.trim() ? args.branchName.trim() : null,
+          preAction: (args.preAction === 'stash' || args.preAction === 'commit') ? args.preAction : null,
+          commitMessage: typeof args.commitMessage === 'string' && args.commitMessage.trim() ? args.commitMessage.trim() : null,
+        }
+        // 分支策略决策（ADR-2026-08-27 基调：启动前由用户决定，选项+自定义兜底）。
+        // 四种情况（main+干净 / main+脏 / feature+干净 / feature+脏）在 auto 策略下全部返回 needs-decision，
+        // 由主线程 Agent 询问用户，用户选择后带 branchPolicy/branchName/preAction 重新调用。
+        if (options.branchPolicy === 'auto' && !options.preAction && exec && exec.agent) {
+          const sc = workspaceScopeOf(exec.agent)
+          if (sc.path) {
+            try {
+              const s = runSanityCheck(sc.path)
+              if (s.ok && s.inRepo) {
+                const onMain = !!s.branch && s.branch.trim().toLowerCase() === 'main'
+                const dirty = s.hasDirty
+                const dirtyN = s.dirty.split(/\r?\n/).filter((l) => l.trim()).length
+                let question = ''
+                let optionsList: Array<{ label: string; value: string }> = []
+                if (onMain && !dirty) {
+                  question = `工作区 ${sc.path} 当前在 main 分支（工作区干净）。流水线默认在特性分支上开发，请选择：`
+                  optionsList = [
+                    { label: '基于 main 新建分支开发（推荐，分支名取需求 slug，可自定义）', value: 'auto' },
+                    { label: '直接在 main 上开发', value: 'keep' },
+                  ]
+                } else if (onMain && dirty) {
+                  question = `工作区 ${sc.path} 当前在 main 分支，且有 ${dirtyN} 处未提交改动。请选择启动方式：`
+                  optionsList = [
+                    { label: `stash 现有改动后新建分支开发（推荐，改动暂存，流水线完成后 git stash pop 恢复）`, value: 'stash+auto' },
+                    { label: '提交现有改动后新建分支开发（提交信息可自定义）', value: 'commit+auto' },
+                    { label: '直接在 main 上继续（未提交改动将混入本次开发）', value: 'keep' },
+                  ]
+                } else if (!onMain && !dirty) {
+                  question = `工作区 ${sc.path} 当前在特性分支 ${s.branch}（工作区干净）。请选择启动方式：`
+                  optionsList = [
+                    { label: '沿用当前分支开发（推荐）', value: 'keep' },
+                    { label: '基于当前分支再新建子分支开发', value: 'auto' },
+                  ]
+                } else {
+                  question = `工作区 ${sc.path} 当前在特性分支 ${s.branch}，且有 ${dirtyN} 处未提交改动。请选择启动方式：`
+                  optionsList = [
+                    { label: 'stash 现有改动后沿用当前分支开发（推荐，完成后 git stash pop 恢复）', value: 'stash+keep' },
+                    { label: '直接沿用当前分支（未提交改动混入本次开发）', value: 'keep' },
+                    { label: 'stash 现有改动后新建子分支开发', value: 'stash+auto' },
+                    { label: '提交现有改动后新建子分支开发', value: 'commit+auto' },
+                  ]
+                }
+                return {
+                  status: 'needs-decision',
+                  question,
+                  options: optionsList,
+                  note: '选项之外可自定义输入（如指定分支名）。确认选择后，请以 teamflow_start 的 branchPolicy / branchName / preAction / commitMessage 参数重新调用本工具。',
+                }
+              }
+            } catch (e) { /* 分支检查失败：放行，由 sanity 注入 git 现状 */ }
+          }
         }
         const runId = startPipeline(parent, requirement, options, exec && exec.signal)
         return { runId, status: 'running' }
       } catch (e) {
         throw new Error(`启动流水线失败：${String((e && e.message) || e)}`)
       }
+    },
+  })
+
+  T({
+    name: 'teamflow_merge',
+    description: 'Merge the completed run\'s feature branch back to main — the user-confirmed closing step (ADR-2026-08-27). Valid only after acceptance passed (run status=completed) while on a feature branch ahead of main. **Ask the user first** — the completion report carries the decision invitation (① host merge ② manual command ③ keep). Actions: "merge" — host performs git checkout main && git merge --no-ff <branch>; "command" — print the manual command for the user to run themselves; "keep" — defer, mark run as kept (branch stays).',
+    parameters: {
+      action: { type: 'string', required: true, description: '"merge" (host performs the merge) / "command" (print the manual merge command) / "keep" (defer, mark kept)' },
+      runId: { type: 'string', description: 'Run id (defaults to the latest completed run of this workspace)' },
+    },
+    output: {
+      schema: { type: 'object', additionalProperties: false, required: ['status'], properties: { status: { type: 'string' }, message: { type: 'string' }, command: { type: 'string' } } },
+      render: (args, value) => [{ type: 'text', text: value.message }],
+    },
+    async execute(args, exec) {
+      const action = args && args.action
+      if (action !== 'merge' && action !== 'command' && action !== 'keep') throw new Error('action 必须是 merge / command / keep')
+      const sc = workspaceScopeOf(exec && exec.agent)
+      if (!sc.path) throw new Error('当前会话无项目工作区')
+      const key = sc.projectKey
+      const target = (typeof args.runId === 'string' && args.runId) ? runs.get(args.runId)
+        : [...runs.values()].filter((j) => j.workspace === key && j.status === 'completed').sort((a, b) => (b.endedAt || 0) - (a.endedAt || 0))[0]
+      if (!target) throw new Error('未找到已完成流水线（可传 runId 指定）')
+      const branch = gitCmd(sc.path, ['rev-parse', '--abbrev-ref', 'HEAD'])
+      if (!branch || branch === 'main') return { status: 'noop', message: '当前已在 main 分支，无需合回' }
+      if (action === 'command') {
+        return { status: 'command', command: `git checkout main && git merge --no-ff ${branch}`, message: `请用户在项目目录执行以下命令完成合回（合回后可 git branch -d ${branch} 清理特性分支）：\ngit checkout main && git merge --no-ff ${branch}` }
+      }
+      if (action === 'keep') {
+        target.mergeStatus = 'kept'
+        persistJournal(target)
+        return { status: 'kept', message: `已标记暂不合回：特性分支 ${branch} 保留，后续可随时调用 teamflow_merge 合回` }
+      }
+      // action=merge：host 代为执行（用户已确认）
+      const co = gitCmd(sc.path, ['checkout', 'main'])
+      const mg = co === null ? null : gitCmd(sc.path, ['merge', '--no-ff', branch])
+      if (co === null || mg === null) {
+        target.mergeStatus = 'failed'
+        persistJournal(target)
+        return { status: 'failed', message: `合并失败（工作区可能不干净或有冲突）。请人工处理：先提交/处理当前工作区改动，再执行 git merge --no-ff ${branch}（冲突文件需手动解决）` }
+      }
+      target.mergeStatus = 'merged'
+      persistJournal(target)
+      return { status: 'merged', message: `✅ 已合回 main（git merge --no-ff ${branch}）。如需清理特性分支：git branch -d ${branch}` }
     },
   })
 
@@ -333,8 +461,25 @@ function registerTools(ctx) {
 /* ── Teamflow Service（宿主 Cordis service + Remote 方法）────────── */
 /** 会话级暂停标记：pausedSessions.has(sessionId) → 该会话的 teamflow_start 被拦截。 */
 const pausedSessions = new Set<string>()
-/** 会话级当前团队：activeTeams.get(sessionId) → 当前选中的团队 id。 */
+/** 会话级当前团队：activeTeams.get(sessionId) → 当前选中的团队 id。
+ * 持久化到 $DSH_HOME/teamflow/active-teams.json——重启后恢复（实锤：重启/刷新后内存清空，
+ * UI 显示无团队，但 agent 上下文记忆 teamId 显式传入仍启动流水线，UI 状态与启动通道不一致）。 */
 const activeTeams = new Map<string, string>()
+const ACTIVE_TEAMS_FILE = () => join(teamflowRoot(), 'active-teams.json')
+function loadActiveTeams(): void {
+  try {
+    const raw = readJsonAny(ACTIVE_TEAMS_FILE(), null) as Record<string, unknown> | null
+    if (raw && typeof raw === 'object') {
+      for (const [k, v] of Object.entries(raw)) if (typeof k === 'string' && typeof v === 'string') activeTeams.set(k, v)
+    }
+  } catch (e) { /* 损坏静默 */ }
+}
+function saveActiveTeams(): void {
+  try {
+    mkdirSync(teamflowRoot(), { recursive: true })
+    writeJson(ACTIVE_TEAMS_FILE(), Object.fromEntries(activeTeams))
+  } catch (e) { /* 保存失败静默 */ }
+}
 /** 延迟注入队列：选团队时 agent 可能尚未加载，存入 pending，后续时机补发。 */
 const pendingInjections = new Map<string, { teamName: string; teamIcon: string; teamId: string }>()
 
@@ -360,11 +505,12 @@ function tryFlushPendingInjections(sessionId: string): void {
 }
 
 export class TeamflowService extends TypertRemoteService {
-  static inject = ['agents', 'subagents', 'tokenMeter', 'typert', 'tools']
+  static inject = ['agents', 'subagents', 'tokenMeter', 'typert', 'tools', 'llm']
 
   constructor(ctx) {
     super(ctx, 'teamflow')
-    setRuntime(ctx.get('agents'), ctx.get('subagents'), ctx.get('tokenMeter'), ctx.get('workspaceRegistry'), ctx.get('agentDefaultModel'))
+    setRuntime(ctx.get('agents'), ctx.get('subagents'), ctx.get('tokenMeter'), ctx.get('workspaceRegistry'), ctx.get('agentDefaultModel'), ctx.get('llm'))
+    loadActiveTeams() // 重启后恢复会话→团队映射（UI 状态与启动通道一致）
     // 断点续跑基座：加载磁盘 journal；running/pending 残留 → 标记 interrupted
     let interruptedCount = 0
     try {
@@ -593,6 +739,7 @@ export class TeamflowService extends TypertRemoteService {
     const team = findTeam(teams, tid)
     if (!team) return { ok: false, error: `团队 ${tid} 不存在` }
     activeTeams.set(sid, tid)
+    saveActiveTeams()
     // 注入会话级上下文：告诉模型什么该走 teamflow，什么不该
     const agent = runtime.agents && runtime.agents.get(sid)
     const injectPayload = {
@@ -629,6 +776,7 @@ export class TeamflowService extends TypertRemoteService {
     const sid = typeof sessionId === 'string' ? sessionId : null
     if (!sid) return { ok: false, error: '缺少 sessionId' }
     activeTeams.delete(sid)
+    saveActiveTeams()
     return { ok: true }
   }
 

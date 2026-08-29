@@ -252,11 +252,28 @@ ${clip(tech, 12000)}`
 3. If spec contradicts reality, explain with evidence in the summary instead of claiming completion or expanding scope on your own.
 4. Actually write/modify code (grep + segmented reads to locate; no repeated whole-file reads), then run relevant build/verification to ensure green.
 5. [Engineering action execution] If task spec or PRD 工程约束 includes git actions (e.g. new branch): **execute the action BEFORE writing code** (e.g. git checkout -b <branch>); if the workspace carries unrelated uncommitted changes, do NOT commit/clean them — state the situation in the summary.
+5b. [Git discipline · hard (ADR-2026-08-27, 统一收口提交)] Work ONLY on the current branch: **never** git checkout main / merge / rebase / delete-branch / commit — main-branch actions and the final commit are performed by the host after acceptance (one commit per run: code + task-folder docs together). Just write/modify files; leave everything uncommitted. If a task asks for "merge back to main" or "commit", treat it as "prepare the delivery" (files ready + summary of what was done), do NOT commit or merge.
 6. [Log discipline] Redirect command output to logs/teamflow/${runId || '<runId>'}/.
 7. Output an implementation summary (≤40 lines): changed files, key implementation points, how verified, leftovers. No big code pastes.
 8. [State] End with a state block (phase="dev"), touched = array of changed files, summary = implementation conclusion.${STATE_BLOCK_INSTRUCTION}`
 
-export const qaPrompt = (prd, devSummary, root, runId, state) => `You are a senior QA test engineer. The current workspace IS the target project — functionally test this delivery.
+/** 视觉验证能力条款（ADR-2026-08-27，解锁 browser-use 视觉验证）：
+ * 按当前模型多模态能力动态生成——vision=true 允许截图看图（人眼类项），精确值仍走 DOM 计算断言；
+ * vision=false 禁截图看图（防幻觉/循环，历史禁令动机=模型不识图），只走 DOM 计算断言（evaluate 返回文本）。
+ * 两者都要求：浏览器失败降级不重试。 */
+export const VISUAL_POLICY = (vision: boolean): string => vision
+  ? `[Visual verification · enabled (model supports image input)]
+- Real-browser visual verification IS allowed: launch the page (headless browser / browser-use) and verify layout/pixel/overlay/occlusion items by screenshot + reading the image.
+- **Scripted assertions first** (exact values must come from DOM computation, not eyeballing): evaluate offsetWidth/scrollWidth/clientHeight for overflow, getComputedStyle for exact colors/visibility, element sizes & ratios (e.g. 1:2). Assert on those numbers/strings.
+- Screenshot checks are for human-eye items only: overlay occlusion, animation feel, layout reasonableness. Save screenshots under the task folder (docs/teamflow/.../qa/) for acceptance & human review.
+- On browser launch failure: degrade to jsdom/scripted checks + list remaining items in 「人工补测清单」; do NOT retry more than once.`
+  : `[Visual verification · limited (current model has NO image input)]
+- You CANNOT interpret screenshots (no image input) — do NOT take screenshots to "look" at them (waste loop); do NOT guess layout/pixel state from screenshots.
+- Scripted DOM assertions ARE allowed and preferred: launch the page headless and evaluate TEXT values only — overflow (scrollWidth <= clientWidth), exact colors via getComputedStyle, visibility, element sizes/ratios. Assert on those numbers/strings.
+- Visual-judgment items (occlusion, animation feel, layout aesthetics) that cannot be asserted via DOM values: list them in 「人工补测清单」 (acceptance criterion + method + tool), note「环境限制，非交付缺陷」; do NOT guess, do NOT retry.
+- On any browser failure: degrade to jsdom + 「人工补测清单」, do not retry.`
+
+export const qaPrompt = (prd, devSummary, root, runId, state, vision) => `You are a senior QA test engineer. The current workspace IS the target project — functionally test this delivery.
 ${productCtx(root)}${stateSliceFor(state, 'qa')}${TOKEN_HYGIENE(runId)}[PRD (this change & relevant ACs)]
 ${headTailClip(prd, 5000, 7000)}
 [DEV RESULT SUMMARY]
@@ -266,8 +283,9 @@ ${clip(devSummary, 15000)}
    - If the injected blueprint JSON ("<!-- blueprint -->") is present, verify the implementation follows it (was the to-be-extracted module extracted? deps/assembly per blueprint? any deviations?).
    - Check for **duplicated implementations** (e.g. multiple security wrappers/storage/adapter utilities drifting), **abstraction not extracted where it should be**, **obviously broken existing structure**.
    - Report architecture findings in the defect table format (severity P1, module =「架构」). This is part of the delivery quality gate, not just functional bugs.
-1. [Environment limits · don't waste effort] The sandbox forbids launching CDP-driven Chrome/Edge: real-browser automation (Playwright/Puppeteer/chromedriver/--remote-debugging-port), audio/pixel/timing/multi-browser/screen-reader checks are ALL impossible — this is a policy refusal, not a broken command; don't try, don't retry with alternative tools. Verification must use sandbox-legal paths: build/assembly checks, unit tests, DOM-level E2E (jsdom or equivalent), static audit, adversarial spot-checks.
-2. Acceptance items that cannot be auto-tested (audio/pixel/real timing/dual resolution/offline multi-browser/screen reader etc.): do NOT fail them — instead list each in the report's「人工补测清单」section (acceptance criteria + method + tool), note「环境限制，非交付缺陷」, for human review.
+1. [Environment limits · dynamic by model capability]${VISUAL_POLICY(!!vision)}
+   - Always-available sandbox-legal paths: build/assembly checks, unit tests, DOM-level E2E (jsdom or equivalent), static audit, adversarial spot-checks.
+2. [人工补测清单] Items that cannot be auto-verified (audio output / real-device: 100dvh dynamic toolbar, safe-area, multi-touch / FPS performance / screen-reader): do NOT fail them — instead list each in the report's「人工补测清单」section (acceptance criteria + method + tool), note「环境限制，非交付缺陷」, for human review.
 3. Read AGENTS.md §4 engineering conventions (verify commands) and the code changes first, then actually run those sandbox-legal verifications.
 4. [Log discipline] Redirect command output to logs/teamflow/${runId || '<runId>'}/ (e.g. qa-out.log); no scatter at project root.
 5. Output the test report (body ≤150 lines, verdict first): scope & environment, cases & results (pass/fail/blocked), conclusion (whether acceptance-ready).
@@ -295,7 +313,7 @@ ${(tech && String(tech).trim()) ? clip(tech, 12000) : ''}
 4. Output a fix summary (≤40 lines, Chinese): per defect —「truth judgment + fix」or「false-positive evidence」, changed files, how verified, leftovers. No big code pastes.
 5. [State] End with a state block (phase="dev"), touched = changed files array, summary = fix conclusion.${STATE_BLOCK_INSTRUCTION}`
 
-export const acceptancePrompt = (prd, qa, devSummary, root, runId, state) => `You are the product manager (acceptance lead). Do a final acceptance of this delivery against the PRD acceptance criteria.
+export const acceptancePrompt = (prd, qa, devSummary, root, runId, state, vision) => `You are the product manager (acceptance lead). Do a final acceptance of this delivery against the PRD acceptance criteria.
 ${productCtx(root)}${stateSliceFor(state, 'acceptance')}${TOKEN_HYGIENE(runId)}
 ${ONCE_DISCIPLINE}[PRD (revision log + this run's new ACs)]
 ${headTailClip(prd, 4000, 5000)}
@@ -303,6 +321,7 @@ ${headTailClip(prd, 4000, 5000)}
 ${clip(qa, 10000)}
 [DEV RESULT SUMMARY]
 ${clip(devSummary, 8000)}
+${vision ? '[Visual re-check] If QA saved screenshots under the task folder, spot-check the human-eye items visually (occlusion / layout reasonableness / animation feel) before concluding; otherwise rely on the QA report + 人工补测清单.' : ''}
 [REQUIREMENTS]
 0. [Architecture consistency check · mandatory (M3 quality gate)] Beyond functional ACs, check structural quality:
    - If the injected blueprint JSON ("<!-- blueprint -->") is present: does the implementation follow it (module extracted as planned? assembly order correct? abstraction missing where required?).

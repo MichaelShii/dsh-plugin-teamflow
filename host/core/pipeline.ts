@@ -6,10 +6,10 @@
  */
 import { runtime, runs, inFlight, activeProducts, providerName, workspaceScopeOf } from './context.ts'
 import { initPipelineBacklog, advanceTask, storeFor, parseDefects, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, createSubtask, completeSubtask, noteSubtaskUsage, getSubtasks } from './backlog.ts'
-import { withRetry, runPool } from './runner.ts'
+import { withRetry, runPool, resolveChildRoute } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
-import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, runFolderName } from '../util.ts'
+import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, runFolderName, deriveBranchSlug } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, resolveStages, STAGE_TOKEN_BUDGET } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
@@ -18,7 +18,8 @@ import type { Journal, PipelineOptions, ResumeContext } from '../types.ts'
 import { normalizeMode, runTriage } from './triage.ts'
 import { loadTeams, findTeam, getActiveStages } from './teams.ts'
 import { loadState, extractStateBlock, mergeStateBlock, noteRun } from './state.ts'
-import { runSanityCheck } from './sanity.ts'
+import { runSanityCheck, gitCmd } from './sanity.ts'
+import { currentModelSupportsVision } from './context.ts'
 
 /** 从 journal 已完成阶段重建断点续跑产物（prd/design/scaffold/tech/qa/acceptance/dev）。 */
 export function buildResumeProducts(journal) {
@@ -39,12 +40,17 @@ export function buildResumeProducts(journal) {
 }
 
 /**
- * 断点续跑起点：journal 中第一个未完成阶段（磁盘上 interrupted/running 所在阶段）。
+ * 断点续跑起点：第一个「没有任意 done 尝试」的阶段。
+ * ⚠️ 按阶段而非尝试判断（实锤 tf-mtcomxpq）：PRD 第 1 次尝试 failed（护栏退化）但第 2 次重试 done——
+ * 旧实现取第一个非 done stage → 断点错误回到 PRD，PRD/技术方案被无谓重跑。
  * 全部完成仍被中断（理论极端）→ 从产品验收继续。
  */
 export function interruptedPhaseOf(journal) {
-  const stage = (journal.stages || []).find((s) => s.status !== 'done')
-  if (stage && PHASE_ORDER.indexOf(stage.phase) !== -1) return stage.phase
+  for (const phase of PHASE_ORDER) {
+    const phaseStages = (journal.stages || []).filter((s) => s.phase === phase)
+    if (phaseStages.length === 0) continue
+    if (!phaseStages.some((s) => s.status === 'done')) return phase
+  }
   return '产品验收'
 }
 
@@ -124,6 +130,30 @@ export async function executePipeline(
       const init = initPipelineBacklog(journal, requirement, options)
       journal.reqId = init.reqId
       journal.logs.push({ t: Date.now(), level: 'info', message: `backlog 已建立需求 ${init.reqId}（产品 ${root || 'unknown'}，并发 ${maxConcurrency}）` })
+      // 分支策略 A 落地（ADR-2026-08-27，基调=启动前用户决策，见 index.ts needs-decision 检查）：
+      // auto → 建特性分支 feat/<slug>（从当前 HEAD 派生，main 或 feature 上都建）；keep → 沿用当前分支。
+      // 位置：initBacklog 之后（reqId 已生成——slug fallback 链依赖它；实锤 feat/feature：分支检查早于 reqId → fallback 'feature'）。
+      if (options.branchPolicy !== 'keep' && journal.workspacePath) {
+        try {
+          const s = runSanityCheck(journal.workspacePath)
+          if (s.ok && s.inRepo && !s.hasDirty) {
+            const slug = deriveBranchSlug(requirement, journal.reqId, triageSlug, options.branchName)
+            const branch = `feat/${slug}`
+            const exists = gitCmd(journal.workspacePath, ['branch', '--list', branch])
+            if (exists && exists.trim()) {
+              journal.logs.push({ t: Date.now(), level: 'warn', message: `分支策略：分支 ${branch} 已存在，沿用现有分支` })
+              gitCmd(journal.workspacePath, ['checkout', branch])
+              journal.branch = branch
+            } else {
+              const ok = gitCmd(journal.workspacePath, ['checkout', '-b', branch])
+              journal.logs.push({ t: Date.now(), level: 'info', message: ok !== null ? `分支策略：已创建特性分支 ${branch}（从 ${s.branch} 派生）` : `分支策略：自动建分支 ${branch} 失败（git 异常），沿用当前分支` })
+              if (ok !== null) journal.branch = branch
+            }
+          } else if (s.ok && s.inRepo && s.branch) {
+            journal.logs.push({ t: Date.now(), level: 'warn', message: `分支策略：工作区仍有未提交改动（${s.dirty.split(/\r?\n/).filter((l) => l.trim()).length} 处），跳过建分支，沿用 ${s.branch}——请知悉改动将混入本次开发` })
+          }
+        } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: `分支策略检查失败（降级沿用当前分支）：${String((e && e.message) || e)}` }) }
+      }
     }
     persistJournal(journal)
 
@@ -144,6 +174,26 @@ export async function executePipeline(
       } catch (e) {
         journal.logs.push({ t: Date.now(), level: 'warn', message: `任务夹创建失败（不影响流程）：${String((e && e.message) || e)}` })
       }
+    }
+
+    // 分支策略 preAction（ADR-2026-08-27）：脏工作区的启动前处理，在 sanity 之前执行，
+    // 使状态核对看到「处理后的干净基线」。stash 的改动由用户在流水线完成后自行 pop（完成汇报有提醒）。
+    if (!resume && journal.workspacePath && options.preAction === 'stash') {
+      try {
+        const out = gitCmd(journal.workspacePath, ['stash', 'push', '-m', `teamflow:${journal.id} pre-pipeline`])
+        if (out !== null) {
+          journal.logs.push({ t: Date.now(), level: 'info', message: `分支策略：工作区改动已 stash（teamflow:${journal.id}），流水线完成后 git stash pop 恢复你的改动` })
+        } else {
+          journal.logs.push({ t: Date.now(), level: 'warn', message: '分支策略：stash 执行失败（可能无改动），继续' })
+        }
+      } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: `分支策略：stash 异常：${String((e && e.message) || e)}` }) }
+    } else if (!resume && journal.workspacePath && options.preAction === 'commit') {
+      try {
+        const msg = (typeof options.commitMessage === 'string' && options.commitMessage.trim()) ? options.commitMessage.trim() : `chore(teamflow): 流水线启动前提交现有改动（${journal.id}）`
+        const add = gitCmd(journal.workspacePath, ['add', '-A'])
+        const cm = gitCmd(journal.workspacePath, ['commit', '-m', msg])
+        journal.logs.push({ t: Date.now(), level: 'info', message: (add !== null && cm !== null) ? `分支策略：已提交现有改动（preAction=commit：${msg.slice(0, 60)}）` : '分支策略：commit 执行失败（可能无改动），继续' })
+      } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: `分支策略：commit 异常：${String((e && e.message) || e)}` }) }
     }
 
     // 预编译 state（跨 run 累积索引）：各阶段 prompt 注入 slice；结束后提取/合并 state 块
@@ -345,6 +395,12 @@ export async function executePipeline(
         const req = storeFor(scopeKey).find('req', journal.reqId)
         if (req) { req.humanIntervention = true; storeFor(scopeKey).persist() }
         journal.logs.push({ t: Date.now(), level: 'warn', message: `开发完成，失败任务数：${failedCount}（需人工介入）` })
+        // 开发任务全部失败 → 停止流水线：无产物可测，QA/验收无意义（部分失败仍继续 QA 测成功部分）。
+        // 实锤 tf-mtcnejqj：整体开发失败（stopReason=error）后仍进 QA，对半成品误测浪费。
+        if (failedCount >= devResults.length) {
+          journal.logs.push({ t: Date.now(), level: 'error', message: `开发任务全部失败（${failedCount}/${devResults.length}）：停止流水线，需人工介入——可用 teamflow_resume 从开发阶段重跑` })
+          throw new Error(`开发任务全部失败（${failedCount}/${devResults.length}）：无产物可测，停止流水线`)
+        }
       } else {
         advanceTask(journal, 'testable', null, '开发完成待测试（开发中 → 待测试）', { by: 'dev' })
         journal.logs.push({ t: Date.now(), level: 'info', message: `开发完成，失败任务数：0（任务置为待测试，可指派 QA）` })
@@ -382,7 +438,7 @@ export async function executePipeline(
         round += 1
         const isReverify = round > 1
         const label = isReverify ? `QA 复验 · 第${round - 1}轮修复后` : 'QA 测试工程师 · 功能测试'
-        const qaR = await withRetry(journal, parent, label, 'QA 测试', qaPrompt(prd, qaDevSummary(), root, journal.id, state), signal)
+        const qaR = await withRetry(journal, parent, label, 'QA 测试', qaPrompt(prd, qaDevSummary(), root, journal.id, state, await currentModelSupportsVision(resolveChildRoute(parent).provider, resolveChildRoute(parent).model)), signal)
         if (!qaR.text) { advanceTask(journal, 'needs-human', null, isReverify ? `QA 复验失败（第 ${round - 1} 轮修复后）` : 'QA 失败', { by: 'qa' }); throw stageFailError(isReverify ? 'QA 测试（复验）' : 'QA 测试', qaR) }
         qa = qaR.text
         timeline.qa = qa
@@ -440,7 +496,7 @@ export async function executePipeline(
           advanceTask(journal, 'pending-acceptance', null, '进入验收（待验收）', { by: 'pm' })
         }
       }
-      const accR = await withRetry(journal, parent, '产品经理 · 最终验收', '产品验收', acceptancePrompt(prd, qa, JSON.stringify(timeline.dev), root, journal.id, state), signal)
+      const accR = await withRetry(journal, parent, '产品经理 · 最终验收', '产品验收', acceptancePrompt(prd, qa, JSON.stringify(timeline.dev), root, journal.id, state, await currentModelSupportsVision(resolveChildRoute(parent).provider, resolveChildRoute(parent).model)), signal)
       if (!accR.text) { advanceTask(journal, 'needs-human', null, '验收失败', { by: 'pm' }); throw stageFailError('产品验收', accR) }
       const acceptance = accR.text
       timeline.acceptance = acceptance
@@ -495,6 +551,24 @@ export async function executePipeline(
     journal.endedAt = Date.now()
     inFlight.delete(journal.id)
     activeProducts.delete(scopeKey) // 释放工作区级并发锁
+    // 统一收口提交兜底（ADR-2026-08-27 升级：一个 run 一个 commit，取代子代理零碎提交）：
+    // try 内验收通过后已提交过（幂等：无改动时 commit 跳过）；此处兜底异常路径。
+    // 只有「验收通过」才提交；failed/cancelled/打回超限 needs-human 不提交——工作区保留，人工处理或 resume 修复后再收口。
+    // 结构上消灭文档漏提交（实测 r16 漏 QA-REPORT/ACCEPTANCE；统一 add -A 必然全带）。
+    if (journal.workspacePath && journal.status === 'completed' && !journal.humanIntervention) {
+      try {
+        const reqHead = String(journal.requirement || '').replace(/\s+/g, ' ').trim().slice(0, 80)
+        const add = gitCmd(journal.workspacePath, ['add', '-A'])
+        const cm = add === null ? null : gitCmd(journal.workspacePath, ['commit', '-m', `feat: ${reqHead}（runId=${journal.id}${journal.runDocs ? `，任务夹 ${journal.runDocs}` : ''}）`])
+        if (cm !== null) {
+          journal.logs.push({ t: Date.now(), level: 'info', message: '统一收口提交完成（代码 + 任务夹产物，验收通过后一个 commit）' })
+        } else if (add !== null) {
+          journal.logs.push({ t: Date.now(), level: 'info', message: '统一收口提交：无待提交改动（跳过）' })
+        }
+      } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: `统一收口提交失败（忽略）：${String((e && e.message) || e)}` }) }
+    } else if (journal.workspacePath && journal.runDocs && (journal.status === 'failed' || journal.status === 'cancelled' || journal.status === 'interrupted')) {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: `终态非验收通过：工作区改动与任务夹产物 ${journal.runDocs}/ 保留未提交，供人工处理（resume 修复通过后自动收口提交）` })
+    }
     journal.result = { requirement, options: sanitizeSnapOptions(options), timeline: summarizeTimeline(timeline) }
     persistJournal(journal) // 终态 checkpoint（含日志刷新；阶段全文保留在磁盘+内存，供详情抽屉/断点续跑读取）
     // 孤儿收尾：run 异常/取消时把未到终态的 req/task 落成可见状态（中断不再永远 in-progress；cancelled 保留 resume 入口）
@@ -553,6 +627,7 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
   const productKey = ws.projectKey
   const active = activeProducts.get(productKey)
   if (active) throw new Error(`工作区 ${ws.path || ws.projectKey} 已有流水线 ${active} 运行中——请等待完成、取消（teamflow_cancel）或先处理中断（teamflow_resume）`)
+  // 分支策略决策（ADR-2026-08-27 基调）：已在 teamflow_start 层完成（needs-decision → 用户选择 → 带参重发），此处不再阻断。
   // mode：显式指定 / lite 兼容 / 否则留空 → 由 executePipeline 自动分诊（对调用方透明）
   const mode = normalizeMode(options.mode) ?? (options.lite ? 'lite' : undefined)
   // 发起会话 id：阶段子代理的直接 parent（跨会话跳转子代理时据此判定/兜底）
@@ -574,6 +649,10 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
       tasks: normalizeTasks(options.tasks),
       productRoot: normalizeRoot(options.productRoot),
       maxConcurrency: (Number.isFinite(options.maxConcurrency) && options.maxConcurrency > 0) ? Math.min(options.maxConcurrency, 8) : null,
+      branchPolicy: options.branchPolicy || undefined,
+      branchName: options.branchName || undefined,
+      preAction: options.preAction || undefined,
+      commitMessage: options.commitMessage || undefined,
     },
     startedAt: null, endedAt: null, agentsStarted: 0,
     stages: [], logs: [], result: null, error: null, cancelled: false, humanIntervention: false,

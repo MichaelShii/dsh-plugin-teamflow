@@ -35,7 +35,7 @@ export async function runPool(items, max, fn) {
  * 2. runtime.agentDefaultModel?.currentSelection() —— 全局默认模型当前选择（切换即更新，可选注入）
  * 3. parent.options —— 创建快照（兜底）
  */
-function resolveChildRoute(parent: ParentAgentLike): { provider?: string; model?: string; maxTokens?: number } {
+export function resolveChildRoute(parent: ParentAgentLike): { provider?: string; model?: string; maxTokens?: number } {
   const out: { provider?: string; model?: string; maxTokens?: number } = {}
   try {
     // 1. 最近生效路由（request header config）

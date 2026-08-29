@@ -13,7 +13,7 @@
 import { execFileSync } from 'node:child_process'
 
 /** 单条 git 检查结果（失败返回 null，调用方降级）。 */
-function gitCmd(cwd: string, args: string[], timeoutMs = 8000): string | null {
+export function gitCmd(cwd: string, args: string[], timeoutMs = 8000): string | null {
   try {
     return execFileSync('git', args, { cwd, encoding: 'utf8', timeout: timeoutMs, windowsHide: true }).trim()
   } catch (e) {

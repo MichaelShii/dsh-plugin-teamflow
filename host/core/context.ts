@@ -13,14 +13,16 @@ export const runtime: {
   tokenMeter?: any
   workspaceRegistry?: any
   agentDefaultModel?: any
+  llm?: any
 } = {}
 
-export function setRuntime(agents: unknown, subagents: unknown, tokenMeter: unknown, workspaceRegistry?: unknown, agentDefaultModel?: unknown): void {
+export function setRuntime(agents: unknown, subagents: unknown, tokenMeter: unknown, workspaceRegistry?: unknown, agentDefaultModel?: unknown, llm?: unknown): void {
   runtime.agents = agents
   runtime.subagents = subagents
   runtime.tokenMeter = tokenMeter
   runtime.workspaceRegistry = workspaceRegistry
   runtime.agentDefaultModel = agentDefaultModel
+  runtime.llm = llm
 }
 
 /** 运行期 run 注册表（runId → Journal）。 */
@@ -39,6 +41,32 @@ export function providerName(): string | null {
   const names = subagents.list()
   if (names.indexOf('spawn') !== -1) return 'spawn'
   return names.length > 0 ? names[0] : null
+}
+
+/** LlmModelInfo 鸭子形状（DSH llm.resolveModelInfo 返回；含 inputModalities）。 */
+interface LlmModelInfoLike { inputModalities?: readonly string[] }
+
+/**
+ * 探测指定 provider/model 是否支持图像输入（多模态）。
+ * 用途：QA/验收的视觉验证条款按能力条件化——不支持视觉的模型禁止「截图看图」（防幻觉/循环），
+ * 只走 DOM 计算断言（evaluate 返回文本）；探测失败/未知 → false（安全侧）。
+ */
+export async function currentModelSupportsVision(provider?: string | null, model?: string | null): Promise<boolean> {
+  try {
+    const llm = runtime.llm as { resolveModelInfo?: (p: string, m: string) => Promise<LlmModelInfoLike | undefined | null> } | null | undefined
+    if (!llm || typeof llm.resolveModelInfo !== 'function') return false
+    const p = (provider && provider.trim()) || providerName()
+    const m = (model && model.trim()) || (() => {
+      const adm = runtime.agentDefaultModel as { currentSelection?: () => { model?: string } } | { model?: string } | null | undefined
+      if (adm && typeof (adm as { currentSelection?: () => { model?: string } }).currentSelection === 'function') {
+        try { return (adm as { currentSelection: () => { model?: string } }).currentSelection()?.model } catch (e) { return undefined }
+      }
+      return (adm as { model?: string } | undefined)?.model
+    })()
+    if (!p || !m) return false
+    const info = await llm.resolveModelInfo(p, m)
+    return !!info && Array.isArray(info.inputModalities) && info.inputModalities.includes('image')
+  } catch (e) { return false }
 }
 
 /** 会话/Agent 鸭子形状（只读所需叶子字段）。 */

@@ -5,6 +5,7 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { clip } from '../util.ts'
 import { MODE_REGISTRY } from './triage.ts'
+import { gitCmd } from './sanity.ts'
 import type { Journal, ParentAgentLike } from '../types.ts'
 
 /**
@@ -56,6 +57,29 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
     const stagesLine = stages.length === 0
       ? '尚未进入任何阶段'
       : `${stages.length} 个阶段 · ${done} 完成${failed > 0 ? ` · ${failed} 失败` : ''}${cancelledStages > 0 ? ` · ${cancelledStages} 取消` : ''}`
+    // 分支策略 A 收尾（ADR-2026-08-27）：验收通过 + 当前在特性分支 + 领先 main → 合回指引。
+    // 合回由用户确认验收后人工执行（host 不自动合回）；非仓库/异常静默降级。
+    // 收尾决策（ADR-2026-08-27 交互模式）：验收通过 + 特性分支领先 main → 决策邀请。
+    // 与前置 needs-decision 对称：汇报带明确「请询问用户」的选项，用户确认后由 teamflow_merge 执行。
+    let mergeHint = ''
+    if (journal.status === 'completed' && !journal.error && journal.workspacePath) {
+      try {
+        const branch = gitCmd(journal.workspacePath, ['rev-parse', '--abbrev-ref', 'HEAD'])
+        if (branch && branch !== 'main') {
+          const ahead = gitCmd(journal.workspacePath, ['rev-list', '--count', 'main..HEAD'])
+          if (ahead && Number(ahead) > 0) {
+            journal.mergeStatus = journal.mergeStatus || 'pending'
+            mergeHint = `🧩 合回决策：验收已通过，当前在特性分支 ${branch}（领先 main ${ahead} 个提交）。请**询问用户**是否合回，并按用户选择调用 teamflow_merge：\n   ① host 代为合回 → action="merge"\n   ② 给出命令用户自行合回 → action="command"\n   ③ 暂不合回 → action="keep"\n（选项之外用户自定义输入亦可，如实转述）`
+          }
+        }
+        // preAction=stash：提醒用户恢复启动前暂存的改动
+        const pa = (journal.options || {}).preAction
+        if (pa === 'stash') {
+          const stashHint = '🧩 启动前 stash 的改动仍在暂存区：流水线完成后请执行 git stash pop 恢复你的改动'
+          mergeHint = mergeHint ? `${mergeHint}\n${stashHint}` : stashHint
+        }
+      } catch (e) { /* 非仓库/查询失败：跳过合回指引 */ }
+    }
     const text = [
       `【团队研发流水线汇报】runId=${journal.id}`,
       `状态：${statusLine}${journal.error ? `（${clip(journal.error, 300)}）` : ''}`,
@@ -71,6 +95,7 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
           : ''
       })(),
       `backlog：需求 ${journal.reqId || '—'}（$DSH_HOME/teamflow/ 持久化）`,
+      mergeHint,
       '用户可打开「🏭 团队工作台」tab 查看阶段泳道、拖拽看板与 token 明细。',
       '如需继续处理：可认领缺陷（teamflow_claim）、人工流转（teamflow_update）、断点重跑（teamflow_resume）。',
       '若用户在场请简明转述以上要点；若无人值守仅记录即可，不必长篇回复。',

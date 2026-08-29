@@ -2,6 +2,29 @@
 
 > 本插件首次公开发布版本为 **v0.1.0**；发布前的内部迭代（v0.3~v0.13）记录于 `AGENTS.md` §5，对外统一归到 v0.1.0。
 
+## [0.1.3] - 2026-08-29
+
+### 新增
+- **分支策略闭环（ADR-2026-08-27）**：启动前用户决策（`needs-decision` 四情况：main+干净/main+脏/feature+干净/feature+脏，stash/commit/新建/沿用/自定义兜底）；`branchPolicy`/`branchName`/`preAction`/`commitMessage` 决策参数；auto=建 `feat/<slug|branchName>`、keep=沿用；`preAction`（stash/commit）在 sanity 前执行
+- **收尾合回决策（对称交互）**：完成汇报带「合回决策邀请」，新工具 `teamflow_merge`（host 代为合回 / 给命令自行合回 / 暂缓）；`journal.mergeStatus` 持久化（pending/merged/kept/failed）
+- **统一收口提交**：子代理只改不提交（Git discipline 硬约束），host 验收通过后单 commit（代码+任务夹产物）；结构性消灭文档漏提交与未验收中间态
+- **视觉验证能力条件化**：`llm.resolveModelInfo` 探测模型多模态能力 → QA/验收视觉条款动态生成（支持视觉=DOM 计算断言+截图看图+人工收窄；不支持=禁截图看图防幻觉/循环，只走 DOM 断言）；QA 人工补测清单收窄为音频/真机/FPS/读屏
+- **需求意图预检**：疑问/建议/反馈句式（「是不是应该」「要不要」等）→ `needs-confirmation` 不启动，主线程先向用户确认
+- **activeTeams 持久化**：会话→团队映射落盘，重启/刷新后恢复（UI 状态与启动通道一致）
+
+### 修复
+- **护栏注入通道**：`subagents.start` 句柄无 inject → 改用 DSH 官方 `session.append('user/message')`；注入改安全窗口（step/end 后 flush，防插进 tool_calls→tool/result 序列导致 provider 400，实测 tf-mtcnejqj 烧 1.98M）
+- **复读检测重复计数 bug**：轮询重复收集事件导致计数虚增（实际 4 次 × 3 轮 = 12 压线误杀，实测 tf-mtcomxpq 开发两次）→ 增量收集
+- **`isUnretryable` 覆盖 400/invalid_request**（provider 客户端拒绝不再重试烧钱）
+- **开发任务全部失败停止流水线**（无产物可测时不再继续 QA 误测；部分失败仍继续）
+- **resume 断点按阶段定位**（PRD 重试成功后不再被失败尝试带回重跑）
+- **分支 slug 派生**（branchName > triageSlug > 需求英文词 > r<N> > feature；分支检查移到 initBacklog 之后）
+- **journal.options 透传 branchPolicy 等决策参数**（keep 不再被吞，实测 tf-mtd6mbeq）
+- **DSH 0.1.2-alpha.1 事件词汇适配**（text-chunks/reasoning-chunks → assistant/chunk 双兼容）；schema 校验兼容（needs-decision 不返回 runId 字段）
+
+### 其他
+- 执行路径基准（小需求样本）与假优化判定收敛：`docs/benchmarks/hold-pipeline-vs-native.md`（多花 44% 是质量预算非浪费，cacheRead 命中价≈1/10）
+
 ## [0.1.2] - 2026-08-26
 
 ### 修复

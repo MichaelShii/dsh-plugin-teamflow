@@ -39,6 +39,14 @@ export interface PipelineOptions {
   mode?: PipelineMode
   /** 团队 id：指定走哪个团队的流水线（从 teams.json 读取阶段配置）。 */
   teamId?: string
+  /** 分支策略（ADR-2026-08-27 基调：启动前用户决策）：'auto'（默认）——建特性分支 feat/<branchName|slug>（从当前 HEAD 派生）；'keep'——沿用当前分支不建。需要决策的场景由 teamflow_start 返回 needs-decision，用户选择后带本参数重发。 */
+  branchPolicy?: 'auto' | 'keep'
+  /** 自定义分支名（branchPolicy=auto 时生效；缺省用 triage slug；仅 [a-z0-9-_]，host 校验）。 */
+  branchName?: string | null
+  /** 脏工作区的启动前处理（配合 needs-decision 选择）：'stash'（推荐，改动暂存，完成后 git stash pop）；'commit'（提交现有改动，commitMessage 缺省用默认信息）；缺省不处理（改动混入开发）。 */
+  preAction?: 'stash' | 'commit' | null
+  /** preAction=commit 时的提交信息。 */
+  commitMessage?: string | null
 }
 /** 断点续跑上下文。 */
 export interface ResumeContext {
@@ -51,6 +59,8 @@ export interface SubagentRunLike {
   result: Promise<unknown>
   dispose(): Promise<void> | void
   localAgent?: { session?: unknown }
+  /** 观测→执行闭环：token 护栏注入轻提醒（不打断，下一轮 step 可见）。 */
+  inject?: (m: unknown) => void
 }
 /** 父 Agent 句柄的鸭子类型（deliverCompletion / runAgent 共用）。 */
 export interface ParentAgentLike {

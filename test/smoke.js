@@ -65,7 +65,7 @@ const hostSrc = [
 const utilSrc = readFileSync(join(here, '../host/util.ts'), 'utf8')
 const constantsSrc = readFileSync(join(here, '../host/constants.ts'), 'utf8')
 ok(/class TeamflowService extends TypertRemoteService/.test(hostSrc), 'TeamflowService extends TypertRemoteService')
-ok(/static inject = \['agents', 'subagents', 'tokenMeter', 'typert', 'tools'\]/.test(hostSrc), 'static inject 完整')
+ok(/static inject = \['agents', 'subagents', 'tokenMeter', 'typert', 'tools', 'llm'\]/.test(hostSrc), 'static inject 完整')
 ok(/ctx\.typert\.register\(\{[\s\S]*invocations: TEAMFLOW_DESCRIPTORS/.test(hostSrc), 'typert.register 注册 strict descriptors')
 for (const m of ['ping', 'list', 'snapshot', 'start', 'cancel', 'backlog', 'backlogUpdate', 'assign', 'pause', 'resumeSession', 'listTeams', 'selectTeam', 'getActiveTeam', 'clearTeam', 'resume', 'stageDetail', 'itemDetail']) {
   ok(new RegExp(`\\n  ${m}\\(`).test(hostSrc), `Remote 方法 ${m}()`)

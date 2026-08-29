@@ -62,6 +62,10 @@ export interface JournalRecord {
     tasks?: Array<{ title: string; files?: string[]; spec?: string }>
   } | null
   product?: string | null
+  /** 分支策略 A 自动创建的特性分支名（feat/<slug>；非 main 沿用/keep 时为 null）。 */
+  branch?: string | null
+  /** 收尾合回状态（ADR-2026-08-27 交互模式）：验收通过后由 teamflow_merge 设置——'pending'（验收通过未决策）/ 'merged'（host 已合回）/ 'kept'（用户暂缓）/ 'failed'（合并冲突）。 */
+  mergeStatus?: 'pending' | 'merged' | 'kept' | 'failed' | null
   reqId?: string | null
   /** ADR-0008 任务夹相对路径（docs/teamflow/<yyyyMMdd>-r<N>[-<slug>]；需求级身份，建夹后固定，重试/续跑复用）。 */
   runDocs?: string | null

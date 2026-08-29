@@ -36,6 +36,36 @@ function normalizeFragment(s: string): string {
   return String(s || '').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '')
 }
 
+/** 观测→执行闭环：向运行中的子代理注入轻提醒（不打断，下一轮 step 可见）。
+ * 通道：subagents.start 句柄无 inject——用 DSH 官方 session.append('user/message')（in-process driver 同款用法）。
+ * ⚠️ 安全窗口（实锤 tf-mtcnejqj）：绝不能插在 assistant(tool_calls) → tool/result 之间——
+ * provider 校验「tool 消息必须响应前序 tool_calls」，插入 user 消息会 400 invalid_request_error。
+ * 因此只入队（pendingInjects），在观察到 step/end（该 step 的 tool/result 已写入）后统一 flush。 */
+function injectReminder(run: SubagentRunLike, text: string): void {
+  const queue = (run as unknown as { __teamflowPending?: string[] })
+  try {
+    if (!Array.isArray(queue.__teamflowPending)) (queue as { __teamflowPending: string[] }).__teamflowPending = []
+    ;(queue as { __teamflowPending: string[] }).__teamflowPending.push(text)
+  } catch (e) { /* 入队失败静默 */ }
+}
+
+function flushReminders(run: SubagentRunLike): void {
+  try {
+    const queue = (run as unknown as { __teamflowPending?: string[] }).__teamflowPending
+    if (!queue || queue.length === 0) return
+    const local = run.localAgent as { session?: { append?: (type: string, payload: unknown, opts?: { surfaceOp?: string }) => void } } | null | undefined
+    if (!local || typeof local.session?.append !== 'function') return
+    for (const text of queue.splice(0)) {
+      local.session.append('user/message', {
+        id: crypto.randomUUID(),
+        role: 'user',
+        content: [{ type: 'text', text }],
+        source: { kind: 'plugin', plugin: 'teamflow' },
+      }, { surfaceOp: 'append' })
+    }
+  } catch (e) { /* 注入失败静默 */ }
+}
+
 export interface StageGuardTarget {
   run: SubagentRunLike
   journal: Journal
@@ -63,10 +93,13 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
   const scriptCounts = new Map<string, number>()
   const warnedScripts = new Set<string>()
 
-  function warnOnce(key: string, set: Set<string>, message: string) {
+  function warnOnce(key: string, set: Set<string>, message: string, hint?: string) {
     if (set.has(key)) return
     set.add(key)
     try { journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} [token 观测] ${message}` }) } catch (e) { /* ignore */ }
+    // 观测→执行闭环：轻提醒入队（不打断；安全窗口=step/end 后 flush，避免插进 tool_calls→tool/result 序列）。
+    // 只提醒不强制——重复读常是写断言的合理需求。
+    if (hint) injectReminder(run, `[TOKEN GUARD · reminder] ${hint}`)
   }
 
   function fire(reason: string, outcome: 'degenerated' | 'stalled') {
@@ -86,40 +119,53 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
     try {
       const events = eventsOf(run)
 
-      // A. 复读检测：收集流式文本片段，滑窗内逐字重复即判真退化
-      for (const ev of events.slice(-400)) {
-        const e = ev as { type?: string; data?: { texts?: unknown }; texts?: unknown } | null
-        if (!e || (e.type !== 'text-chunks' && e.type !== 'reasoning-chunks')) continue
-        const arr = (e.data && e.data.texts) || e.texts
-        if (!Array.isArray(arr)) continue
-        for (const t of arr) {
-          const s = normalizeFragment(String(t))
-          if (s.length < 12) continue
-          window.push(s)
+      // A. 复读检测 + token 观测 + 提醒注入：共用一次增量（只处理新事件，processed 单一指针）。
+      // ⚠️ 必须增量收集（实锤 tf-mtcomxpq 开发两次「恰好 12 次」压线）：轮询每 15s 把 events.slice(-400)
+      // 重新收集（window 不清空），同一片段被重复计数（实际 4 次 × 3 轮轮询 = 12）——调研型推理
+      // （正常引用同一代码 3-4 次）被误杀为退化。
+      if (events.length > processed) {
+        const newEvents = events.slice(processed)
+        for (const ev of newEvents) {
+          const e = ev as { type?: string; data?: { texts?: unknown; chunk?: { type?: string; text?: string } } | null; texts?: unknown } | null
+          if (!e) continue
+          let streamText: string | null = null
+          if (e.type === 'text-chunks' || e.type === 'reasoning-chunks') {
+            const arr = (e.data && e.data.texts) || e.texts
+            if (Array.isArray(arr)) streamText = arr.map(String).join('')
+          } else if (e.type === 'assistant/chunk') {
+            const chunk = (e.data && e.data.chunk) || null
+            if (chunk && (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') && typeof chunk.text === 'string') {
+              streamText = chunk.text
+            }
+          }
+          if (streamText !== null && streamText.length > 0) {
+            const s = normalizeFragment(streamText)
+            if (s.length >= 12) window.push(s)
+            // 文本在流出 → 会话仍活着
+            lastGrowthAt = Date.now()
+          }
         }
-        // 文本在流出 → 会话仍活着
-        lastGrowthAt = Date.now()
-      }
-      if (window.length > GUARD_WINDOW_SIZE) window.splice(0, window.length - GUARD_WINDOW_SIZE)
-      const counts = new Map<string, number>()
-      for (const w of window) counts.set(w, (counts.get(w) || 0) + 1)
-      for (const [, n] of counts) {
-        if (n >= GUARD_REPEAT_LIMIT) {
-          fire(`推理复读（同一片段在近 ${window.length} 条流式片段中出现 ${n} 次）`, 'degenerated')
-          return
+        if (window.length > GUARD_WINDOW_SIZE) window.splice(0, window.length - GUARD_WINDOW_SIZE)
+        const counts = new Map<string, number>()
+        for (const w of window) counts.set(w, (counts.get(w) || 0) + 1)
+        for (const [, n] of counts) {
+          if (n >= GUARD_REPEAT_LIMIT) {
+            fire(`推理复读（同一片段在近 ${window.length} 条流式片段中出现 ${n} 次）`, 'degenerated')
+            return
+          }
         }
+        // token 观测（只记 warning）：增量处理新完成的工具调用
+        observeToolCalls(newEvents)
+        // 提醒注入安全窗口（实锤 tf-mtcnejqj）：step/end 出现 = 该 step 的 tool/result 已全部写入，
+        // 此刻 flush user/message 不会插进 assistant(tool_calls)→tool/result 序列（否则 provider 400）。
+        if (newEvents.some((ev) => (ev as { type?: string })?.type === 'step/end')) flushReminders(run)
+        processed = events.length
       }
 
-      // 工具活动信号
+      // 工具活动信号（空转检测 C 依赖）：每次轮询扫描最近 200 条事件
       for (const ev of events.slice(-200)) {
         const e = ev as { type?: string } | null
         if (e && (e.type === 'tool-call-chunks' || e.type === 'tool/call')) { seenToolCall = true; lastToolSignalAt = Date.now(); break }
-      }
-
-      // token 观测（只记 warning）：增量处理新完成的工具调用
-      if (events.length > processed) {
-        observeToolCalls(events.slice(processed))
-        processed = events.length
       }
 
       // B. 挂死检测：事件数完全不增长超过 GUARD_SILENCE_MS（provider 挂起/静默死亡）
@@ -155,14 +201,14 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
         const key = m[1].replace(/\\\\/g, '\\').toLowerCase()
         const n = (readCounts.get(key) || 0) + 1
         readCounts.set(key, n)
-        if (n === 3) warnOnce(key, warnedReads, `同一文件重复 read ${n} 次：${m[1].split(/[\\\\/]/).pop()}（TOKEN_HYGIENE 上限 1 次，多余读取在为后续每一步付 cache 重放费）`)
+        if (n === 3) warnOnce(key, warnedReads, `同一文件重复 read ${n} 次：${m[1].split(/[\\\\/]/).pop()}（TOKEN_HYGIENE 上限 1 次，多余读取在为后续每一步付 cache 重放费）`, `你已整读 ${m[1].split(/[\\\\/]/).pop()} 第 3 次（TOKEN_HYGIENE 上限 1 次）。停止整读：需要确认细节时用 grep 定位行号 + 限量片段读取。`)
       } else if (/bash|pwsh|shell|powershell/i.test(name || '')) {
         const sm = String(args).match(/(verify-[a-z0-9-]+\.cjs|assembly-check\.cjs|qa-e2e-jsdom\.cjs)/)
         if (!sm) continue
         const key = sm[1]
         const n = (scriptCounts.get(key) || 0) + 1
         scriptCounts.set(key, n)
-        if (n === 3) warnOnce(key, warnedScripts, `验证脚本重复执行 ${n} 次：${key}（批量修复纪律：一次修完所有失败再跑，≤3 轮）`)
+        if (n === 3) warnOnce(key, warnedScripts, `验证脚本重复执行 ${n} 次：${key}（批量修复纪律：一次修完所有失败再跑，≤3 轮）`, `验证脚本 ${key} 已重复执行 3 次。遵守批量修复纪律：一次读完所有失败用例 → 一次全修 → 再跑一次；超出 3 轮请输出诊断摘要并停止。`)
       }
     }
   }

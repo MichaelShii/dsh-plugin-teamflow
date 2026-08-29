@@ -83,6 +83,18 @@ export function normalizeSignal(s) {
   return (s && typeof s === 'object' && typeof s.addEventListener === 'function' && typeof s.aborted === 'boolean') ? s : SAFE_SIGNAL
 }
 
+/** 分支 slug 派生（ADR-2026-08-27）：branchName > triageSlug > 需求中的英文标识词 > reqId 数字 > 'feature'。
+ * 实锤 feat/feature：lite 显式时 triage 不跑（无 slug）+ 分支检查早于 reqId 生成 → fallback 'feature'。 */
+export function deriveBranchSlug(requirement: string | null | undefined, reqId: string | null | undefined, triageSlug?: string | null, branchName?: string | null): string {
+  if (branchName && /^[a-z0-9][a-z0-9-_]*$/i.test(branchName)) return String(branchName).replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 40)
+  if (triageSlug && /^[a-z0-9-]{3,24}$/i.test(triageSlug)) return triageSlug
+  const en = String(requirement || '').match(/[a-zA-Z][a-zA-Z0-9-]{2,23}/g)
+  if (en && en.length) return en[0].toLowerCase().slice(0, 40)
+  const num = String(reqId || '').match(/\d+/)
+  if (num) return `r${num[0]}`
+  return 'feature'
+}
+
 /** 产出物实质校验：非空 + 无拒绝词 + 达到阶段长度下限。 */
 export function hasSubstance(phase: string, text: string | null | undefined): boolean {
   if (!text || !text.trim()) return false
@@ -91,10 +103,11 @@ export function hasSubstance(phase: string, text: string | null | undefined): bo
   return text.trim().length >= min
 }
 
-/** 不可重试的失败原因（上下文耗尽/超长等——重试同一 prompt 大概率复现）。 */
+/** 不可重试的失败原因（上下文耗尽/超长/provider 客户端拒绝等——重试同一 prompt 大概率复现）。
+ * 实锤 tf-mtcnejqj：opencode-go 400 invalid_request_error（tool 消息序列非法）被当作可重试 → 烧 1.98M 熔断。 */
 export function isUnretryable(reason: unknown, outcome: unknown): boolean {
   const r = String(reason || outcome || '')
-  return /context|limit|max-token|token|tool-error/i.test(r)
+  return /context|limit|max-token|token|tool-error|400|invalid_request|INVALID_REQUEST/i.test(r)
 }
 
 /** 阶段产出 → 精简交接摘要（供审计/展示；产出含显式 <!-- handoff --> 块则优先取块内内容）。 */
