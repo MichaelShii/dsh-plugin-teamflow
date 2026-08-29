@@ -18,6 +18,30 @@ requirement → PRD (based on existing patterns / product memory, archived to pr
             → product acceptance (update product memory)
 ```
 
+## Screenshots
+
+> Placeholders for now. Run `dsh --profile web`, open the "🏭 Team Workbench" tab, capture the shots below (≈800px wide PNG) and **overwrite the same-named files under `docs/screenshots/`** — the README needs no edits afterwards.
+
+1. Pipeline view — stage serpentine lanes + node cards (status / duration / tokens / subagent session)
+
+   ![Pipeline view](docs/screenshots/pipeline-view.png)
+
+2. Backlog board — draggable lanes for requirements / tasks / defects
+
+   ![Backlog board](docs/screenshots/board.png)
+
+3. Stage detail drawer — full stage artifacts + token breakdown + "🎬 jump to subagent session"
+
+   ![Stage detail](docs/screenshots/stage-detail.png)
+
+4. Board task detail — task-card drawer (requirement text / assignments / event timeline / subtasks / defects / tokens)
+
+   ![Board task detail](docs/screenshots/board-task-detail.png)
+
+5. Team selector — 🏭 button + team dropdown
+
+   ![Team selector](docs/screenshots/team-selector.png)
+
 ## Core Features
 
 - **Anti-fake-delivery**: ① Substantive validation — outputs containing rejection phrases ("I cannot complete", etc.) or below the per-stage length floor are treated as undelivered and routed to retry / human intervention; ② Token circuit breaker — a single stage accumulating 60k budget stops retries; ③ Context-exhaustion failures are not retried (retrying the same prompt likely reproduces); ④ Product-level concurrency lock — only one active pipeline per product at a time, preventing requirement state from stepping on itself; ⑤ Full stage outputs are retained (memory + disk) for the detail drawer and checkpoint resume.

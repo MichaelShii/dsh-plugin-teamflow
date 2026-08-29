@@ -18,6 +18,30 @@ TeamFlow 团队研发流水线 —— DeepSeek Harness 可分发插件（`dsh pl
      → 产品验收（更新产品记忆）
 ```
 
+## 界面预览
+
+> 截图待补充——当前为占位图。运行 `dsh --profile web` 后打开「🏭 团队工作台」tab，按以下编号截图（建议 800px 宽、PNG），**覆盖 `docs/screenshots/` 下同名文件**即可自动生效（README 无需改动）。
+
+1. 流水线视图——阶段蛇形泳道 + 节点卡片（状态/耗时/token/子代理会话）
+
+   ![流水线视图](docs/screenshots/pipeline-view.png)
+
+2. Backlog 看板——需求/任务/缺陷拖拽泳道
+
+   ![Backlog 看板](docs/screenshots/board.png)
+
+3. 阶段详情抽屉——阶段性产物全文 + token 明细 +「🎬 跳转子代理会话」
+
+   ![阶段详情](docs/screenshots/stage-detail.png)
+
+4. 看板任务详情——任务卡抽屉（需求原文/分配/事件时间线/子卡/缺陷/token）
+
+   ![看板任务详情](docs/screenshots/board-task-detail.png)
+
+5. 团队选择——🏭 按钮 + 团队下拉
+
+   ![团队选择](docs/screenshots/team-selector.png)
+
 ## 核心特性
 
 - **防假交付**：① 实质校验——拒绝措辞（"我无法完成"等）或低于阶段长度下限的输出视为未交付，走重试/需人工；② token 熔断——单阶段累计 60k 预算，超限停止重试；③ 上下文耗尽类失败不重试（重试同一 prompt 大概率复现）；④ 产品级并发锁——同一产品同时只允许一条活跃流水线，防需求状态互踩；⑤ 阶段产物全文保留（内存 + 磁盘，供详情抽屉与断点续跑读取）。
