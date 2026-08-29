@@ -105,7 +105,7 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_start',
-    description: 'Start the team R&D pipeline (background async): runs the stages per team config (PRD→design→tech→dev→QA→acceptance). Specify teamId (matches teams.json) or pick a team via the UI "+" button first so messages auto-match. Stage failures auto-retry; beyond threshold → rework/human intervention; per-stage token usage recorded. NOTE: after calling, the implementation work is done by pipeline subagents — the main thread MUST NOT write code or run verifications for it. requirement must be a faithful transcription of the user\'s words; do not invent file paths / tech claims without code verification (downstream stages build the PRD from it). Branch decision: when the return status is "needs-decision", ASK THE USER to pick one of the options (or take their custom input, e.g. a branch name), then RE-CALL this tool with the chosen branchPolicy / branchName / preAction / commitMessage parameters. Pass branchPolicy="keep" when the user chooses to stay on the current branch.',
+    description: 'Start the team R&D pipeline (background async): runs the stages per team config (PRD→design→tech→dev→QA→acceptance). Specify teamId (matches teams.json) or pick a team via the UI "+" button first so messages auto-match. Stage failures auto-retry; beyond threshold → rework/human intervention; per-stage token usage recorded. NOTE: after calling, the implementation work is done by pipeline subagents — the main thread MUST NOT write code or run verifications for it. requirement must be a faithful transcription of the user\'s words; do not invent file paths / tech claims without code verification (downstream stages build the PRD from it). Branch decision: when the return status is "needs-decision", ASK THE USER to pick one of the options (or take their custom input, e.g. a branch name), then RE-CALL this tool passing the CHOSEN OPTION VALUE as branchPolicy ("new" = confirmed create branch, "keep" = stay), optionally combined with preAction / branchName / commitMessage. Pass branchPolicy="keep" when the user chooses to stay on the current branch.',
     parameters: {
       requirement: { type: 'string', required: true, description: 'The user requirement — faithful transcription of the user\'s words; no fabricated file paths, tech designs, or unverified claims' },
       teamId: { type: 'string', description: 'Team id (matches teams.json; defaults to the currently selected team of this session)' },
@@ -115,7 +115,7 @@ function registerTools(ctx) {
       mode: { type: 'string', description: 'Route mode: full / medium / lite / tech / patch (auto-triage by default; use teamflow_triage to preview)' },
       productRoot: { type: 'string', description: 'Product line directory (e.g. products/tetris)' },
       maxConcurrency: { type: 'integer', description: 'Dev task concurrency (default 3, max 8)' },
-      branchPolicy: { type: 'string', description: 'Branch policy: "auto" (default) — create a feature branch feat/<branchName|slug> from the current HEAD; "keep" — stay on current branch. When auto and a decision is needed (dirty workspace / on main etc.), the tool returns needs-decision for you to ask the user first.' },
+      branchPolicy: { type: 'string', description: 'Branch policy: "auto" (default, triggers needs-decision when not yet confirmed) — create a feature branch feat/<branchName|slug> from the current HEAD; "keep" — stay on current branch; "new" — the confirmed value returned by needs-decision options (user already picked "create branch"), pass it back as-is to proceed. When auto and a decision is needed (dirty workspace / on main etc.), the tool returns needs-decision for you to ask the user first.' },
       branchName: { type: 'string', description: 'Custom branch name (used when branchPolicy=auto; defaults to the triage slug; [a-z0-9-_])' },
       preAction: { type: 'string', description: 'Pre-start handling of dirty workspace: "stash" (stash changes, restore later via git stash pop), "commit" (commit existing changes, custom commitMessage), omit = leave as-is (changes mix into this run)' },
       commitMessage: { type: 'string', description: 'Custom commit message when preAction=commit' },
@@ -136,7 +136,7 @@ function registerTools(ctx) {
       render: (args, value) => {
         if (value && value.status === 'needs-decision') {
           const opts = Array.isArray(value.options) ? value.options.map((o, i) => `${i + 1}. ${o.label}`).join('\n') : ''
-          return [{ type: 'text', text: `【分支决策】${value.question}\n${opts}\n（也可自定义输入）——请询问用户选择，确认后以 teamflow_start 的 branchPolicy/branchName/preAction/commitMessage 参数重新调用。` }]
+          return [{ type: 'text', text: `【分支决策】${value.question}\n${opts}\n（也可自定义输入）——请询问用户选择，确认后把所选选项的 value 作为 branchPolicy 重新调用 teamflow_start（如 'new'/'keep'；脏工作区选项可拆为 branchPolicy + preAction 组合），自定义分支名则传 branchName。` }]
         }
         if (value && value.status === 'needs-confirmation') {
           return [{ type: 'text', text: `【需求确认】${value.question}\n${value.note || ''}——请按此询问用户后再决定。` }]
@@ -190,7 +190,10 @@ function registerTools(ctx) {
         // 分支策略决策（ADR-2026-08-27 基调：启动前由用户决定，选项+自定义兜底）。
         // 四种情况（main+干净 / main+脏 / feature+干净 / feature+脏）在 auto 策略下全部返回 needs-decision，
         // 由主线程 Agent 询问用户，用户选择后带 branchPolicy/branchName/preAction 重新调用。
-        if (options.branchPolicy === 'auto' && !options.preAction && exec && exec.agent) {
+        // 已确认信号：branchPolicy='new'（needs-decision 选项回传值，=已确认新建分支）或显式 branchName / preAction
+        // ——否则裸 'auto'（默认值）无法区分「未决策」与「已确认新建」，重发后再次 needs-decision 死循环（实锤 run）。
+        const branchConfirmed = args.branchPolicy === 'new'
+        if (options.branchPolicy === 'auto' && !branchConfirmed && !options.branchName && !options.preAction && exec && exec.agent) {
           const sc = workspaceScopeOf(exec.agent)
           if (sc.path) {
             try {
@@ -204,7 +207,7 @@ function registerTools(ctx) {
                 if (onMain && !dirty) {
                   question = `工作区 ${sc.path} 当前在 main 分支（工作区干净）。流水线默认在特性分支上开发，请选择：`
                   optionsList = [
-                    { label: '基于 main 新建分支开发（推荐，分支名取需求 slug，可自定义）', value: 'auto' },
+                    { label: '基于 main 新建分支开发（推荐，分支名取需求 slug，可自定义）', value: 'new' },
                     { label: '直接在 main 上开发', value: 'keep' },
                   ]
                 } else if (onMain && dirty) {
@@ -218,7 +221,7 @@ function registerTools(ctx) {
                   question = `工作区 ${sc.path} 当前在特性分支 ${s.branch}（工作区干净）。请选择启动方式：`
                   optionsList = [
                     { label: '沿用当前分支开发（推荐）', value: 'keep' },
-                    { label: '基于当前分支再新建子分支开发', value: 'auto' },
+                    { label: '基于当前分支再新建子分支开发', value: 'new' },
                   ]
                 } else {
                   question = `工作区 ${sc.path} 当前在特性分支 ${s.branch}，且有 ${dirtyN} 处未提交改动。请选择启动方式：`
@@ -233,7 +236,7 @@ function registerTools(ctx) {
                   status: 'needs-decision',
                   question,
                   options: optionsList,
-                  note: '选项之外可自定义输入（如指定分支名）。确认选择后，请以 teamflow_start 的 branchPolicy / branchName / preAction / commitMessage 参数重新调用本工具。',
+                  note: '选项之外可自定义输入（如指定分支名）。确认选择后，请以 teamflow_start 的 branchPolicy（回传所选选项 value，如 new/keep）与 branchName/preAction/commitMessage 参数重新调用本工具。',
                 }
               }
             } catch (e) { /* 分支检查失败：放行，由 sanity 注入 git 现状 */ }

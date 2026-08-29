@@ -5,7 +5,7 @@
  * 展开实际执行阶段集（resolveStages），再与团队阶段取交集——见 ADR-0004。
  */
 import { runtime, runs, inFlight, activeProducts, providerName, workspaceScopeOf } from './context.ts'
-import { initPipelineBacklog, advanceTask, storeFor, parseDefects, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, createSubtask, completeSubtask, noteSubtaskUsage, getSubtasks } from './backlog.ts'
+import { initPipelineBacklog, advanceTask, storeFor, parseDefects, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, createSubtask, completeSubtask, noteSubtaskUsage, getSubtasks, hasOpenBlockingBugs } from './backlog.ts'
 import { withRetry, runPool, resolveChildRoute } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
@@ -46,12 +46,29 @@ export function buildResumeProducts(journal) {
  * 全部完成仍被中断（理论极端）→ 从产品验收继续。
  */
 export function interruptedPhaseOf(journal) {
+  // QA 打回未闭环（实锤 run tf-mte906e9）：P0-P2 缺陷仍 open → 无论如何回到 QA 修复-复验闭环。
+  // 必须在「第一个无 done 阶段」之前判定——否则验收阶段失败过（无 done）时断点又定位到验收，
+  // 带缺陷继续验收必再次失败（用户实锤：resume 进验收 2 次失败，再 resume 仍定位验收，缺陷未闭环）。
+  if (hasOpenBlockingBugs(journal)) return 'QA 测试'
   for (const phase of PHASE_ORDER) {
     const phaseStages = (journal.stages || []).filter((s) => s.phase === phase)
     if (phaseStages.length === 0) continue
     if (!phaseStages.some((s) => s.status === 'done')) return phase
   }
   return '产品验收'
+}
+
+/** 开发任务定义（单一来源）：架构蓝图自动拆 > 调用方显式 tasks > 整体开发兜底。
+ * resume 补跑与正常执行共用（defByTitle 按 title 匹配失败子卡）。 */
+function buildDevTaskDefs(journal, tasks): Array<{ title: string; spec: string; files: string[] }> {
+  const blueprintTasks = (journal.blueprint && Array.isArray(journal.blueprint.tasks) && journal.blueprint.tasks.length)
+    ? journal.blueprint.tasks.map((t) => ({ title: t.title || '开发任务', files: Array.isArray(t.files) ? t.files : [], spec: t.spec || '' }))
+    : []
+  return blueprintTasks.length
+    ? blueprintTasks
+    : tasks.length > 0
+      ? tasks.map((t) => ({ title: t.title, spec: t.spec, files: [] }))
+      : [{ title: '整体开发', spec: '按技术方案/需求实现全部改动', files: [] }]
 }
 
 /**
@@ -328,21 +345,42 @@ export async function executePipeline(
     let devResults = null
     if (resumed('开发')) {
       devResults = resume.products.dev || []
-      timeline.dev = devResults
-      logSkip('开发')
+      // 提测门禁后 resume 补跑（方案 A，实锤 r26）：复用 done 任务产物，仅重跑 failed 子卡——
+      // 否则 needs-human 后 resume 直接复用失败产物进 QA，拦截无意义
+      const store = storeFor(scopeKey)
+      const failedSubs = (store.tasks || []).filter((t) => t.reqId === journal.reqId && t.parentId === journal.taskId && (t.status === 'failed' || t.failed === true))
+      if (failedSubs.length > 0) {
+        const defs = buildDevTaskDefs(journal, tasks)
+        const defByTitle = new Map(defs.map((d) => [d.title, d]))
+        const rerunDefs = failedSubs
+          .map((s) => {
+            const key = String(s.title || '').replace(/^开发 · /, '')
+            return defByTitle.get(key) || { title: key, spec: s.spec || '按技术方案实现该任务改动', files: [] }
+          })
+          .filter(Boolean)
+        const reused = devResults.filter((r) => r && !rerunDefs.some((d) => d.title === r.title))
+        journal.logs.push({ t: Date.now(), level: 'warn', message: `断点续跑开发：复用 ${reused.length} 个已完成任务，补跑 ${rerunDefs.length} 个失败任务` })
+        const rerun = await runPool(rerunDefs, maxConcurrency, async (task) => {
+          const devR = await withRetry(journal, parent, `开发 · ${task.title}（补跑）`, '开发', devPrompt(task, tech, prd, root, journal.id, state), signal)
+          const ok = !!devR.text
+          return { title: task.title, failed: !ok, output: devR.text || '开发失败（Agent 未产出结果）' }
+        })
+        for (const t of rerun) {
+          const sub = failedSubs.find((s) => String(s.title || '').replace(/^开发 · /, '') === t.title)
+          if (sub) completeSubtask(journal, sub.id, t.failed, t.output ? snippet(t.output, 1000) : null, null)
+        }
+        devResults = [...reused, ...rerun]
+        timeline.dev = devResults
+      } else {
+        timeline.dev = devResults
+        logSkip('开发')
+      }
     } else {
       journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：开发' })
       // 开发任务来源（按优先级）：架构蓝图自动拆 > 调用方显式 tasks > 整体开发兜底。
       // M2「认知前置 + 架构落地」：架构师（tech/architect 阶段）已按文件边界拆好蓝图 tasks，
       // dev 继承蓝图在既有架构上实现；无蓝图时退化为整体开发或调用方 tasks。
-      const blueprintTasks = (journal.blueprint && Array.isArray(journal.blueprint.tasks) && journal.blueprint.tasks.length)
-        ? journal.blueprint.tasks.map((t) => ({ title: t.title || '开发任务', files: Array.isArray(t.files) ? t.files : [], spec: t.spec || '' }))
-        : []
-      const devTaskDefs: Array<{ title: string; spec: string; files: string[] }> = blueprintTasks.length
-        ? blueprintTasks
-        : tasks.length > 0
-          ? tasks.map((t) => ({ title: t.title, spec: t.spec, files: [] }))
-          : [{ title: '整体开发', spec: '按技术方案/需求实现全部改动', files: [] }]
+      const devTaskDefs = buildDevTaskDefs(journal, tasks)
       // 冲突检测：蓝图任务文件有交集 → 合并（保证并发不写同一文件）；无交集才可并行
       const mergedDefs: Array<{ title: string; files: string[]; spec: string }> = []
       for (const t of devTaskDefs) {
@@ -357,7 +395,7 @@ export async function executePipeline(
           mergedDefs.push({ title: t.title, files: t.files || [], spec: t.spec || '' })
         }
       }
-      journal.logs.push({ t: Date.now(), level: 'info', message: `开发阶段开始，任务数：${mergedDefs.length}（并发 ${maxConcurrency}${blueprintTasks.length ? '，源自架构蓝图自动拆解' : ''}）` })
+      journal.logs.push({ t: Date.now(), level: 'info', message: `开发阶段开始，任务数：${mergedDefs.length}（并发 ${maxConcurrency}${journal.blueprint && Array.isArray(journal.blueprint.tasks) && journal.blueprint.tasks.length ? '，源自架构蓝图自动拆解' : ''}）` })
       advanceTask(journal, 'running', null, '开发开始（待办 → 开发中）', { by: 'dev' })
       // 为每个 dev 子任务建一张子卡（并行 agent 各自独立跟踪）
       const subCards = mergedDefs.map((dt) => createSubtask(journal, dt.title, dt.spec))
@@ -394,13 +432,11 @@ export async function executePipeline(
         advanceTask(journal, 'needs-human', null, '开发失败，需人工介入', { by: 'dev' })
         const req = storeFor(scopeKey).find('req', journal.reqId)
         if (req) { req.humanIntervention = true; storeFor(scopeKey).persist() }
-        journal.logs.push({ t: Date.now(), level: 'warn', message: `开发完成，失败任务数：${failedCount}（需人工介入）` })
-        // 开发任务全部失败 → 停止流水线：无产物可测，QA/验收无意义（部分失败仍继续 QA 测成功部分）。
-        // 实锤 tf-mtcnejqj：整体开发失败（stopReason=error）后仍进 QA，对半成品误测浪费。
-        if (failedCount >= devResults.length) {
-          journal.logs.push({ t: Date.now(), level: 'error', message: `开发任务全部失败（${failedCount}/${devResults.length}）：停止流水线，需人工介入——可用 teamflow_resume 从开发阶段重跑` })
-          throw new Error(`开发任务全部失败（${failedCount}/${devResults.length}）：无产物可测，停止流水线`)
-        }
+        // 提测门禁（方案 A，实锤 r26）：任务 failed = 已知缺口——QA 检查轮必然重复报告同一缺项
+        // （r26：T2 failed → QA 450k 白烧，D1-D4 全是 T2 缺项；修复子代理补做任务过重复读 27 次挂掉）。
+        // 一律停止流水线不进 QA；人工处理后 teamflow_resume 从开发补跑 failed 任务（done 任务复用）。
+        journal.logs.push({ t: Date.now(), level: 'error', message: `开发失败任务数：${failedCount}/${devResults.length}（提测门禁拦截）：停止流水线，需人工介入——处理后可 teamflow_resume 从开发阶段补跑失败任务（已完成任务复用）` })
+        throw new Error(`开发失败任务 ${failedCount}/${devResults.length}：提测门禁拦截，不进 QA（已知缺口，QA 检查轮必然重复报告）`)
       } else {
         advanceTask(journal, 'testable', null, '开发完成待测试（开发中 → 待测试）', { by: 'dev' })
         journal.logs.push({ t: Date.now(), level: 'info', message: `开发完成，失败任务数：0（任务置为待测试，可指派 QA）` })
@@ -416,7 +452,8 @@ export async function executePipeline(
       // 档位阶段集无 QA（patch）或团队未启用 QA：跳过独立 QA
       journal.logs.push({ t: Date.now(), level: 'info', message: '当前档位阶段集不含独立 QA：跳过（单点修复，开发自测兜底）' })
       qa = '（独立 QA 跳过：当前档位由开发自测兜底）'
-    } else if (resumed('QA 测试')) {
+    } else if (resumed('QA 测试') && !hasOpenBlockingBugs(journal)) {
+      // 复用旧 QA 产物（QA 干净/仅 P3 时续跑）；QA 打回缺陷未闭环时不复用——重走修复-复验闭环
       qa = resume.products.qa
       timeline.qa = qa
       logSkip('QA 测试')
@@ -735,7 +772,7 @@ export function resumeRun(runId: string | null | undefined, sessionId: string | 
     j.endedAt = null
     j.logs = (j.logs || []).slice(-200)
     j.logs.push({ t: Date.now(), level: 'warn', message: `断点续跑：从「${resumePhase}」继续（已完成阶段复用产物）` })
-    j.stages = (j.stages || []).filter((s) => s.status === 'done') // 清理未完成 stage
+    j.stages = (j.stages || []).filter((s) => s.status !== 'running' && s.status !== 'pending') // 清理未完成 stage；保留 done/failed 历史（失败痕迹不消失）
     runs.set(id, j) // 内存换用磁盘完整版（含 output 全文）
     persistJournal(j)
     executePipeline(j, agent, j.requirement, j.options, undefined, { phase: resumePhase, products })

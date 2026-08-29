@@ -191,11 +191,16 @@ export async function withRetry(
       journal.humanIntervention = true
       return { text: null, attempts, stageTokens }
     }
-    // 护栏中止（degenerated）= 主动止损而非失控烧钱：豁免预算门，允许一次干净重试
-    // （实证 tf-mt5afdch：死循环尝试 481 万 token 零产出，续跑干净重试仅 ~100 万即全量通过）
-    const guardedRetry = !!(lastStage && lastStage.outcome === 'degenerated')
+    // 护栏中止（degenerated）= 主动止损：退化会话内自动重试大概率复现且烧钱（实证 run tf-mte906e9：
+    // 6 次中止全部自动重试失败，复读计数 12→27 递增；resume 以全新会话续跑一次成功）→ 不再自动重试，
+    // 直接 needs-human，引导 teamflow_resume（全新子代理会话 = 干净上下文）
+    if (lastStage && lastStage.outcome === 'degenerated') {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 进行中护栏中止（退化/推理复读），不再自动重试（污染会话内重试大概率复现且烧钱）；可 teamflow_resume 以全新会话续跑` })
+      journal.humanIntervention = true
+      return { text: null, attempts, stageTokens }
+    }
     // token 熔断：本阶段累计总消耗超预算 → 停止重试
-    if (!guardedRetry && stageTokens >= STAGE_TOKEN_BUDGET) {
+    if (stageTokens >= STAGE_TOKEN_BUDGET) {
       journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 累计 token ${Math.round(stageTokens / 1000)}k 超出阶段预算 ${Math.round(STAGE_TOKEN_BUDGET / 1000)}k，熔断，需人工介入` })
       journal.humanIntervention = true
       return { text: null, attempts, stageTokens }

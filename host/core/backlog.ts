@@ -377,3 +377,14 @@ export function verifyReqBugs(journal) {
   }
   if (touched) store.persist()
 }
+
+/** 该需求是否存在未闭环的阻断缺陷（P0/P1/P2 仍 open）——resume 断点定位与 QA 复用判定依赖。
+ * 实锤 run tf-mte906e9：QA 修复子代理失败 → run failed，但 QA 阶段本身 done（缺陷已登记），
+ * 旧 interruptedPhaseOf 直接定位产品验收 → 带缺陷代码进验收。
+ * ⚠️ store key 与 resumeRun/storeFor 解析一致（workspace || product || default），否则查错 store 误判无缺陷。 */
+export function hasOpenBlockingBugs(journal): boolean {
+  try {
+    const store = storeFor(journal.workspace || journal.product || 'default')
+    return store.bugs.some((b) => b.reqId === journal.reqId && b.status === 'open' && b.severity !== 'P3')
+  } catch (e) { return false }
+}

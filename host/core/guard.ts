@@ -7,12 +7,16 @@
  *    的健康节奏工作到第 25 分钟被击落（tf-mt8fbavd dev 尝试一）。
  *
  * 设计原则：【只看进度信号，无任何时间配额】慢吞吐的合法任务永远不该被打断：
- *  A. 复读检测：滑动窗口内同一规范化流式片段出现 ≥ GUARD_REPEAT_LIMIT 次（逐字复读 = 真退化）
- *     → outcome='degenerated'（豁免预算门，允许一次干净重试）。
+ *  A. 复读检测：滑动窗口内同一规范化流式片段出现 ≥ GUARD_REPEAT_LIMIT 次，且窗口内零变更进展
+ *     （无 edit/write 等写操作）→ 真退化（纯推理打转）→ outcome='degenerated'（豁免预算门，允许一次干净重试）。
+ *     ⚠️ 状态判定（实锤 run tf-mte906e9）：大文件 read-edit 循环是正常模式——模型反复 read 同一大文件
+ *     （每次 edit 后内容已变，必须重读确认）、输出高度相似的「读后分析」，逐字片段在 400 条窗口内
+ *     可累积 ≥12 次——伴随 edit/write 变更调用时只记录观察，不中止（否则大文件修改任务全被误杀）。
  *  B. 挂死检测：连续 GUARD_SILENCE_MS 一个新事件都没有（provider 层挂起/连接静默死亡）
  *     → outcome='stalled'（走正常预算门 → 熔断转人工，不自动重试烧钱）。
  *  C. 空转检测：会话仍在产出事件，但连续 GUARD_NO_TOOL_MS 没有任何工具调用
  *    （纯推理打转/改写式循环；正常 agent 每分钟都在调工具）→ outcome='stalled'。
+ *    兜底关系：复读判定放宽后，edit 后陷入死循环的漏网场景由 C（长时间无工具调用）兜住。
  *
  * 中止方式：run.dispose() → run.result 结算。outcome 命名刻意避开 isUnretryable 的
  * /token|context|limit/ 正则；只有 'degenerated' 享受干净重试豁免（runner.withRetry）。
@@ -20,6 +24,12 @@
 import { GUARD_NO_TOOL_MS, GUARD_POLL_MS, GUARD_REPEAT_LIMIT, GUARD_SILENCE_MS, GUARD_WINDOW_SIZE } from '../constants.ts'
 import type { Journal, SubagentRunLike } from '../types.ts'
 import type { JournalStage } from '../../store.ts'
+
+/** 进展工具（复读状态判定）：变更类写操作 + 脚本执行。
+ * 「有进展」= 大文件 read-edit 循环（dev）或只读分析任务的 read+跑脚本循环（QA/验收）均属正常模式；
+ * 纯 read 循环（反复整读同一文件却无变更/无脚本执行）= 真退化。实锤 run tf-mte906e9：QA 重跑
+ * 只读分析（不 edit）→ 旧判定「零变更进展」误杀，第 2 次 provider error 后 450k 熔断。 */
+const PROGRESS_TOOLS = /^(edit|write|create|apply_patch|patch|remove|delete|rm|mkdir|move|rename|append|bash|pwsh|shell|powershell)$/i
 
 /** 与 metering 同款事件访问器（session.events 可能是数组或返回数组的函数）。 */
 function eventsOf(run: { localAgent?: { session?: unknown } } | null | undefined): unknown[] {
@@ -92,6 +102,10 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
   const warnedReads = new Set<string>()
   const scriptCounts = new Map<string, number>()
   const warnedScripts = new Set<string>()
+  // 进展信号（复读状态判定）：出现过变更写操作或脚本执行 = 会话有实际产出能力。
+  // 初始 0 表示「尚未动手」——读文件读到复读仍未 edit/跑脚本 = 真退化；动手过之后只读不写再久也是正常模式。
+  let lastMutationAt = 0
+  let repeatWarned = false
 
   function warnOnce(key: string, set: Set<string>, message: string, hint?: string) {
     if (set.has(key)) return
@@ -150,8 +164,19 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
         for (const w of window) counts.set(w, (counts.get(w) || 0) + 1)
         for (const [, n] of counts) {
           if (n >= GUARD_REPEAT_LIMIT) {
-            fire(`推理复读（同一片段在近 ${window.length} 条流式片段中出现 ${n} 次）`, 'degenerated')
-            return
+            // 状态判定（实锤 run tf-mte906e9）：大文件 read-edit 循环 = 正常模式——模型反复 read 同一文件、
+            // 输出高度相似的读后分析，逐字片段可在 400 条窗口内累积 ≥12 次。此类循环伴随 edit/write 变更
+            // 调用（有实际进展），不应中止；只有「复读 + 窗口内零变更调用」（纯推理打转，还没动手或已无产出）
+            // 才是真退化。edit 后陷入死循环的漏网场景由 C 空转检测（长时间无工具调用）兜底。
+            if (lastMutationAt > 0) {
+              if (!repeatWarned) {
+                repeatWarned = true
+                try { journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 复读计数达阈值但检测到变更进展（read-edit 循环属正常模式），不中止；仅零变更进展的纯复读才中止` }) } catch (e) { /* ignore */ }
+              }
+            } else {
+              fire(`推理复读（同一片段在近 ${window.length} 条流式片段中出现 ${n} 次，且窗口内零变更进展）`, 'degenerated')
+              return
+            }
           }
         }
         // token 观测（只记 warning）：增量处理新完成的工具调用
@@ -162,10 +187,17 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
         processed = events.length
       }
 
-      // 工具活动信号（空转检测 C 依赖）：每次轮询扫描最近 200 条事件
+      // 工具活动信号（空转检测 C 依赖）：每次轮询扫描最近 200 条事件；同时提取变更类写操作
+      // （edit/write/create/patch 等——复读状态判定依赖：有过写操作 = 会话有产出能力）
       for (const ev of events.slice(-200)) {
-        const e = ev as { type?: string } | null
-        if (e && (e.type === 'tool-call-chunks' || e.type === 'tool/call')) { seenToolCall = true; lastToolSignalAt = Date.now(); break }
+        const e = ev as { type?: string; data?: { name?: string } } | null
+        if (!e) continue
+        if (e.type === 'tool-call-chunks' || e.type === 'tool/call') {
+          seenToolCall = true; lastToolSignalAt = Date.now()
+          const d = e.data || (e as unknown as { name?: string })
+          if (d && typeof d.name === 'string' && PROGRESS_TOOLS.test(d.name)) lastMutationAt = Date.now()
+          break
+        }
       }
 
       // B. 挂死检测：事件数完全不增长超过 GUARD_SILENCE_MS（provider 挂起/静默死亡）

@@ -2,6 +2,24 @@
 
 > 本插件首次公开发布版本为 **v0.1.0**；发布前的内部迭代（v0.3~v0.13）记录于 `AGENTS.md` §5，对外统一归到 v0.1.0。
 
+## [0.1.4] - 2026-08-29
+
+### 修复
+- **分支决策死循环**：裸 `auto` 无法区分「未决策」与「已确认新建分支」，重发 `branchPolicy=auto` 再次触发 needs-decision（实锤 run：用户已选新建分支仍循环）。修复：新建分支选项 value 改显式确认值 `'new'`（选项 value 即回传协议），显式 `branchName`/`preAction` 视为确认信号
+- **护栏复读判定升级为状态判定**：大文件 read-edit 循环（有 edit/write 变更进展）不再被误杀，仅零变更进展的纯复读中止（实锤 tf-mte906e9：一次 run 6 次误杀，技术方案/T2/QA 修复/验收全挂）
+- **进展信号扩展含脚本执行**：QA/验收等只读分析任务（read + 跑测试脚本）不再被误杀
+- **退化中止不再自动重试**：污染会话内重试实证全失败（12→27 递增）→ 直接 needs-human 引导 `teamflow_resume`（全新会话一次成功）
+- **resume 断点尊重 QA 缺陷未闭环**：P0-P2 缺陷仍 open → 断点回 QA 修复-复验闭环（不再带缺陷代码进验收；判定提前防验收失败后仍定位验收）
+- **resume 不再删除失败 stage 记录**（历史失败痕迹保留）
+- `hasOpenBlockingBugs` store key 统一（workspace||product||default），防老 run 查错 store
+
+### 新增
+- **提测门禁**：开发任务失败（哪怕 1 个）→ needs-human 拦截不进 QA（failed = 已知缺口，QA 检查轮必然重复报告）；resume 精确补跑 failed 子卡（done 任务产物复用）
+- **README 界面预览**：5 张真实工作台截图（流水线视图/看板/阶段详情/看板任务详情/团队选择）
+
+### 其他
+- pnpm-lockfile 同步（react 移 peerDependencies 后 lockfile 未更新 → CI frozen-lockfile 失败）
+
 ## [0.1.3] - 2026-08-29
 
 ### 新增
