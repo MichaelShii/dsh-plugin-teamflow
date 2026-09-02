@@ -113,9 +113,7 @@ export const STAGE_POLICY: Record<StageMode, StageRule[]> = {
     { key: 'prd' },
     { key: 'design', when: (o) => !!o.needDesign },
     { key: 'scaffold', when: (o) => !!o.needScaffold },
-    { key: 'tech' },
     { key: 'dev' },
-    { key: 'acceptance' },
   ],
 }
 

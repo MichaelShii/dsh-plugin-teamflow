@@ -297,13 +297,14 @@ export async function executePipeline(
       }
     }
 
-    /* ── 技术方案/架构阶段（全模式启用；lite/tech/patch 轻量产架构蓝图，不写文档） ── */
+    /* ── 技术方案/架构阶段（按档位阶段集；lite/tech 轻量产架构蓝图；patch 无 tech——单 agent 直改，见 STAGE_POLICY） ── */
     let tech = null
-    if (resumed('技术方案')) {
-      tech = resume.products.tech
-      timeline.tech = tech
-      logSkip('技术方案')
-    } else {
+    if (enabled('tech')) {
+      if (resumed('技术方案')) {
+        tech = resume.products.tech
+        timeline.tech = tech
+        logSkip('技术方案')
+      } else {
       const isHeavy = !options.lite && options.mode !== 'tech' && options.mode !== 'patch'
       journal.logs.push({ t: Date.now(), level: 'phase', message: isHeavy ? '进入阶段：技术方案' : '进入阶段：架构蓝图' })
       const label = isHeavy ? '高级全栈工程师 · 技术方案' : '架构师 · 架构蓝图'
@@ -339,6 +340,7 @@ export async function executePipeline(
       }
       noteTaskStageUsage(journal)
       if (journal.cancelled) return
+      }
     }
 
     /* ── 开发阶段（并发池；resume 到 QA/验收时复用旧结果） ── */
@@ -524,7 +526,20 @@ export async function executePipeline(
     persistJournal(journal)
 
     /* ── 产品验收阶段（QA 打回未超限才执行；超限时需求已置 needs-human，跳过验收） ── */
-    if (!qaBlocked) {
+    if (!enabled('acceptance')) {
+      // patch 档：单 agent 直改 + 自测即交付（无独立 QA/验收，STAGE_POLICY 兑现 desc）——
+      // dev 成功即收尾（req/task → accepted + run completed），统一收口提交走现有门控
+      journal.logs.push({ t: Date.now(), level: 'info', message: 'patch 档交付完成：单 agent 直改 + 自测即收口（无独立 QA/验收）' })
+      advanceTask(journal, 'accepted', null, 'patch 直改交付（自测通过）', { by: 'dev' })
+      const store = storeFor(scopeKey)
+      const req = store.find('req', journal.reqId)
+      if (req && req.status !== 'accepted') {
+        store.pushEvent(req, req.status, 'accepted', 'patch 交付通过（自测）')
+        req.status = 'accepted'
+        store.persist()
+      }
+      journal.status = 'completed'
+    } else if (!qaBlocked) {
       journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：产品验收' })
       // 单任务模型：验收前任务置「待验收」（patch/无独立 QA 时 task 仍在 testable）
       {

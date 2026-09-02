@@ -35,49 +35,37 @@ export const MODE_REGISTRY: Record<PipelineMode, ModeSpec> = {
   patch: { key: 'patch', label: 'patch（热修）', prdForm: 'confirm', needDesignDefault: false, independentQA: false, techDoc: false, desc: '单行/常量/版本号/hotfix：单 agent 直改+自测即交付（无独立 QA）' },
 }
 
-/** 关键词信号集（命中 → 加重某档倾向）。 */
-const SIGNALS: Array<{ mode: 'patch' | 'tech' | 'lite' | 'medium' | 'full'; words: string[] }> = [
-  { mode: 'patch', words: ['hotfix', '热修', '修复 bug', '修 bug', '改个 bug', '版本号', '常量', '一行', 'bump', '回滚', '卫生', '笔误', '拼写'] },
-  { mode: 'tech', words: ['重构', '优化', '升级', '架构', '性能', '依赖', '脚手架', '缓存', '清理', '遗留债', '工程', '内部改造', '技术债'] },
-  { mode: 'lite', words: ['微功能', '小功能', '小增强', '加个', '补一个', '轻微', '顺手'] },
-  { mode: 'medium', words: ['界面', 'UI', '视觉', '页面', '按钮', '样式', '交互', '布局', '组件', '持久化', 'localStorage', '本地存储', '存储', '保存', '恢复', '存档', '独立模块', '抽象', '存储层', 'sessionStorage', 'IndexedDB', '跨模块', '数据层'] },
-  { mode: 'full', words: ['跨模块', '完整', '大型', '对接', '集成', '模块化', '重构为', '二期', '平台'] },
-]
+/** 确定性护栏关键词（双语，仅 fallback 兜底用；主路由是模型——TRIAGE_PROMPT 语义判断）。
+ * 架构信号：持久化/存储/独立模块/抽象/跨模块——防「轻档位局部实现塌方」（M1 架构护栏）。
+ * UI 信号：UI 相关需求不得落 patch/tech（无设计/QA 的档位）——最低 lite。 */
+const ARCH_SIGNALS = ['持久化', '存储', '保存', '恢复', '存档', '独立模块', '抽象', '存储层', 'localStorage', 'sessionStorage', 'IndexedDB', '跨模块', '数据层', 'persistence', 'storage', 'database', '数据库', 'standalone module', 'abstraction']
+const UI_SIGNALS = ['界面', 'UI', '视觉', '页面', '按钮', '样式', '交互', '布局', '组件', 'page', 'button', 'style', 'layout', 'component', 'visual', 'interaction']
 
-/** 对原始需求做启发式分诊。返回建议 mode + 判定理由 + 置信。 */
+/** 对原始需求做启发式分诊（兜底路径专用）。返回建议 mode + 判定理由 + 置信。
+ * 只做确定性护栏（架构强升/UI 禁轻档/needDesign 升档）——不再逐词匹配五档信号：
+ * 主路由是模型（TRIAGE_PROMPT 语义判断，天然双语），正则兜底在模型不可用时宁重勿漏（默认 full）。 */
 export function suggestMode(requirement: string, opts?: { needDesign?: boolean; tasks?: unknown }): { mode: PipelineMode; kind: string; rationale: string[]; confidence: 'high' | 'medium' | 'low' } {
   const text = String(requirement || '')
-  const hits: Array<{ mode: PipelineMode; word: string }> = []
-  for (const sig of SIGNALS) {
-    for (const w of sig.words) {
-      if (text.includes(w)) hits.push({ mode: sig.mode, word: w })
-    }
-  }
-  const rationale = hits.map((h) => `命中「${h.word}」→ ${h.mode}`)
-  const countOf = (m: PipelineMode) => hits.filter((h) => h.mode === m).length
-
+  const rationale: string[] = []
   let mode: PipelineMode = 'full' // 默认完整（护栏优先，宁重勿漏）
-  if (countOf('patch') > 0) mode = 'patch'
-  else if (countOf('tech') > 0 && countOf('medium') === 0 && countOf('full') === 0) mode = 'tech'
-  else if (countOf('lite') > 0 && countOf('medium') === 0) mode = 'lite'
-  else if (countOf('medium') > 0 || opts && opts.needDesign) mode = 'medium'
-  else if (hits.length === 0) mode = 'full'
 
-  // 护栏兜底：patch 不适用于"需求含测试/验收/跨文件"场景；UI 需求不得落 patch/tech
-  if ((mode === 'patch' || mode === 'tech') && (opts && opts.needDesign)) mode = 'medium'
-  if ((mode === 'patch') && (countOf('tech') > 0 || text.includes('新增') || text.includes('功能'))) mode = 'lite'
-
-  // M1 架构护栏：命中"架构性"信号（持久化/存储/独立模块/抽象/跨模块等）→ 不得落 lite/tech/patch，
-  // 强制 medium+（必须有架构阶段产蓝图）。架构性改动靠局部视角会塌，不能当微功能/改造处理。
-  const architectureSignals = ['持久化', 'localStorage', '本地存储', '存储', '保存', '恢复', '存档', '独立模块', '抽象', '存储层', 'sessionStorage', 'IndexedDB', '跨模块', '数据层']
-  if ((mode === 'lite' || mode === 'tech' || mode === 'patch') && architectureSignals.some((w) => text.includes(w))) {
+  const archHit = ARCH_SIGNALS.find((w) => text.includes(w))
+  if (archHit) {
     mode = 'medium'
-    rationale.push(`架构护栏：需求含「${architectureSignals.find((w) => text.includes(w))}」→ 强升 medium（需架构阶段）`)
+    rationale.push(`架构护栏：需求含「${archHit}」→ 强升 medium（需架构阶段产蓝图，防塌）`)
   }
-
-  const kind = mode === 'patch' ? '热修/单点' : mode === 'tech' ? '技术驱动改造' : mode === 'lite' ? '微功能' : mode === 'medium' ? '标准功能(含UI)' : '完整需求'
-  const confidence: 'high' | 'medium' | 'low' = mode === 'patch' ? 'high' : hits.length >= 2 ? 'medium' : 'low'
-  if (rationale.length === 0) rationale.push('无强信号，默认 full（护栏优先）')
+  const uiHit = !archHit ? UI_SIGNALS.find((w) => text.includes(w)) : undefined
+  if (uiHit) {
+    mode = mode === 'full' ? 'lite' : mode // UI 信号最低 lite（不得落 patch/tech）
+    rationale.push(`UI 护栏：需求含「${uiHit}」→ 不低于 lite（UI 改动需 QA/验收）`)
+  }
+  if (opts && opts.needDesign && mode !== 'medium') {
+    mode = 'medium'
+    rationale.push('needDesign=true → 强升 medium（显式要求设计阶段）')
+  }
+  if (rationale.length === 0) rationale.push('无强护栏信号，默认 full（模型不可用时宁重勿漏）')
+  const kind = mode === 'medium' ? '标准功能(含UI)' : mode === 'lite' ? '微功能' : '完整需求'
+  const confidence: 'high' | 'medium' | 'low' = mode === 'medium' && !opts?.needDesign ? 'medium' : 'low'
   return { mode, kind, rationale, confidence }
 }
 
@@ -144,7 +132,9 @@ function fallbackVerdict(requirement: string, opts?: { needDesign?: boolean }): 
   }
 }
 
-/** 模型驱动分诊：spawn「分诊分析师」子代理思考一轮；子代理不可用/超时/解析失败 → 正则兜底。 */
+/** 模型驱动分诊：spawn「分诊分析师」子代理思考一轮；子代理不可用/超时/解析失败 → 正则兜底。
+ * 解析失败先带纠错提示重试一次（实锤 run tf-mtfo8exi：模型输出「Let me output the JSON.」开场白
+ * 后无 JSON——首轮输出预算被思考耗尽/模型停早；重试提示直接输出 JSON 对象本身）。 */
 export async function runTriage(
   requirement: string,
   opts?: { needDesign?: boolean },
@@ -154,22 +144,29 @@ export async function runTriage(
   const subagents = runtime.subagents as { start?: (provider: string, init: unknown) => Promise<{ result: Promise<{ output?: unknown; stopReason?: string }>; dispose?: () => Promise<void> | void }> } | undefined
   if (!subagents || typeof subagents.start !== 'function') return fallbackVerdict(requirement, opts)
   const pre = suggestMode(requirement, opts)
-  let run: { result: Promise<{ output?: unknown; stopReason?: string }>; dispose?: () => Promise<void> | void } | null = null
-  try {
-    run = await subagents.start(providerName() as string, {
-      label: '需求分诊',
-      prompt: [{ type: 'text', text: TRIAGE_PROMPT(requirement, opts, pre) }],
-      parent,
-      signal,
-    })
-    const result = await Promise.race([
-      run.result,
-      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('triage 超时（90s）')), 90000)),
-    ]) as { output?: unknown; stopReason?: string }
-    const parsed = parseVerdictText(extractText(result && result.output))
-    if (parsed) return parsed
-  } catch (e) { /* 超时/失败 → 走兜底 */ } finally {
-    if (run && run.dispose) { try { await run.dispose() } catch (e) { /* ignore */ } }
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let run: { result: Promise<{ output?: unknown; stopReason?: string }>; dispose?: () => Promise<void> | void } | null = null
+    try {
+      const hint = attempt > 1
+        ? 'Your previous reply contained only a preface (e.g. "Let me output the JSON.") with NO JSON object — that is a failed reply. Reply now with the JSON object ITSELF as the first and only content, starting with {.'
+        : ''
+      run = await subagents.start(providerName() as string, {
+        label: '需求分诊',
+        prompt: [{ type: 'text', text: TRIAGE_PROMPT(requirement, opts, pre, hint) }],
+        parent,
+        signal,
+      })
+      const result = await Promise.race([
+        run.result,
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error('triage 超时（90s）')), 90000)),
+      ]) as { output?: unknown; stopReason?: string }
+      const parsed = parseVerdictText(extractText(result && result.output))
+      if (parsed) return parsed
+    } catch (e) {
+      if (attempt === 2) { /* 超时/失败 → 走兜底 */ }
+    } finally {
+      if (run && run.dispose) { try { await run.dispose() } catch (e) { /* ignore */ } }
+    }
   }
   return fallbackVerdict(requirement, opts)
 }

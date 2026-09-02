@@ -139,12 +139,14 @@ export async function runAgent(
     }
     stage.status = 'failed'
     stage.outcome = (stop === 'completed' && text) ? 'insubstantial' : (stop || 'error')
+    // provider 错误细节记录（观测改进：此前只有 stopReason=error，无从排查瞬时/持久）
+    const errDetail = result && (result as { error?: unknown }).error
     if (stage.outcome === 'insubstantial') {
       stage.summary = '产出未通过实质校验（含拒绝措辞或内容过短），视为未交付'
       journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 产出未通过实质校验（拒绝措辞/内容过短）` })
     } else {
-      stage.summary = `未产出有效结果（stopReason=${stop || 'unknown'}）`
-      journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 未产出有效结果（stopReason=${stop || 'unknown'}）` })
+      stage.summary = `未产出有效结果（stopReason=${stop || 'unknown'}${errDetail ? `，error=${String(errDetail).slice(0, 200)}` : ''}）`
+      journal.logs.push({ t: Date.now(), level: 'error', message: `${label} ${stage.summary}` })
     }
     return null
   } catch (e) {
@@ -188,6 +190,14 @@ export async function withRetry(
     // 不可重试失败（上下文耗尽等）：重试同一 prompt 大概率复现 → 直接需人工
     if (lastStage && isUnretryable(lastStage.outcome, lastStage.outcome)) {
       journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 失败原因不可重试（${lastStage.outcome}），跳过重试，需人工介入` })
+      journal.humanIntervention = true
+      return { text: null, attempts, stageTokens }
+    }
+    // 外部中止（aborted：用户重启/进程被杀等）：非模型失败、非烧钱——不熔断、不自动重试，
+    // needs-human 引导 resume 续跑（resume 精确补跑失败任务，已完成任务复用；实证 r29 重启后 resume 成功）。
+    // 旧行为结算成「熔断」误导（stageTokens 是阶段累计，含成功任务消耗；真实原因是外部中止）。
+    if (lastStage && lastStage.outcome === 'aborted') {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 被外部中止（aborted），未正常产出——非预算问题；可 teamflow_resume 续跑（补跑失败任务，已完成任务复用）` })
       journal.humanIntervention = true
       return { text: null, attempts, stageTokens }
     }

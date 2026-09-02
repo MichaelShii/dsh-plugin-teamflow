@@ -35,9 +35,9 @@ console.log('── 5) tech：技术变更单路径（显式 flag 仍生效）�
 eq(resolveStages('tech'), ['prd', 'tech', 'dev', 'qa', 'acceptance'], 'tech 默认 5 段')
 eq(resolveStages('tech', { needDesign: true, needScaffold: true }), ['prd', 'design', 'scaffold', 'tech', 'dev', 'qa', 'acceptance'], 'tech + 显式 design/scaffold → 含入（不缺省导出的固定排除）')
 
-console.log('── 6) patch：热修无独立 QA，但显式 flag 不吞 ──')
-eq(resolveStages('patch'), ['prd', 'tech', 'dev', 'acceptance'], 'patch 默认无 qa/design/scaffold')
-eq(resolveStages('patch', { needDesign: true, needScaffold: true }), ['prd', 'design', 'scaffold', 'tech', 'dev', 'acceptance'], 'patch + 显式 design/scaffold → 含入，但始终无独立 QA')
+console.log('── 6) patch：单 agent 直改（无 tech/QA/验收），但显式 flag 不吞 ──')
+eq(resolveStages('patch'), ['prd', 'dev'], 'patch 默认仅确认单 + 直改（兑现「单 agent 直改+自测即交付」）')
+eq(resolveStages('patch', { needDesign: true, needScaffold: true }), ['prd', 'design', 'scaffold', 'dev'], 'patch + 显式 design/scaffold → 含入，但始终无 tech/QA/验收')
 
 console.log('── 7) 档位边界 ──')
 eq(resolveStages('bogus'), ['prd', 'tech', 'dev', 'qa', 'acceptance'], '未知档回退 full 默认')

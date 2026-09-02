@@ -89,7 +89,12 @@ export function deriveBranchSlug(requirement: string | null | undefined, reqId: 
   if (branchName && /^[a-z0-9][a-z0-9-_]*$/i.test(branchName)) return String(branchName).replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 40)
   if (triageSlug && /^[a-z0-9-]{3,24}$/i.test(triageSlug)) return triageSlug
   const en = String(requirement || '').match(/[a-zA-Z][a-zA-Z0-9-]{2,23}/g)
-  if (en && en.length) return en[0].toLowerCase().slice(0, 40)
+  if (en && en.length) {
+    // 排除档位词/虚词——否则「显式的用 patch 模式」会把档位词「patch」当成分支名（实锤 feat/patch）
+    const NOISE = new Set(['patch', 'lite', 'tech', 'full', 'medium', 'mode', 'the', 'and', 'for', 'with', 'use', 'using'])
+    const hit = en.find((w) => !NOISE.has(w.toLowerCase()))
+    if (hit) return hit.toLowerCase().slice(0, 40)
+  }
   const num = String(reqId || '').match(/\d+/)
   if (num) return `r${num[0]}`
   return 'feature'

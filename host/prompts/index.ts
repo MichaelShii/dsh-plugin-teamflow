@@ -335,8 +335,8 @@ ${vision ? '[Visual re-check] If QA saved screenshots under the task folder, spo
 6. [State] End with a state block (phase="acceptance"), summary = acceptance conclusion, verdict = "accepted/rework/reject/needs-human", extra.done = confirmation of this delivery.${STATE_BLOCK_INSTRUCTION}`
 
 /** 需求分诊模型 prompt（模型驱动 triage；供 core/triage.runTriage 使用）。 */
-export const TRIAGE_PROMPT = (requirement: string, opts: { needDesign?: boolean } | undefined, pre: { rationale: string[] }): string => `You are a senior research-dev triage analyst. Do ONE thing: analyze which pipeline mode this dev requirement fits, then give the conclusion. No code, no scope speculation.
-[RAW REQUIREMENT]
+export const TRIAGE_PROMPT = (requirement: string, opts: { needDesign?: boolean } | undefined, pre: { rationale: string[] }, retryHint?: string): string => `You are a senior research-dev triage analyst. Do ONE thing: analyze which pipeline mode this dev requirement fits, then give the conclusion. No code, no scope speculation.
+${retryHint ? `[RETRY — YOUR LAST REPLY FAILED]\n${retryHint}\n` : ''}[RAW REQUIREMENT]
 ${requirement}
 ${pre.rationale.length ? `\n[REGEX PRE-FILTER SIGNALS (reference only; judge semantically, don't blindly follow)]\n${pre.rationale.join('\n')}` : ''}
 \n[OPTIONAL SIGNAL] UI work needed: ${(opts && opts.needDesign) ? 'yes' : 'not flagged'}
@@ -350,12 +350,12 @@ ${pre.rationale.length ? `\n[REGEX PRE-FILTER SIGNALS (reference only; judge sem
 
 [JUDGMENT POINTS]
 1. Distinguish "user-visible functional change" vs "internal tech change": refactors/optimizations, even large code volume, usually go tech, not full.
-2. UI/visual/interaction/buttons/pages involved → at least medium (excludes patch/tech).
+2. **UI feature work** (new screens/components/interactions/pages) → at least medium (excludes patch/tech). **UI micro-adjustments** — moving a button, relocating a control, changing copy/labels, spacing/padding, color tweaks, "move the button", "switch the button position" — are patch-or-lite material, NOT medium: no new interaction logic, no design phase worth the token cost. The line: does it change behavior/interaction logic (medium) or just placement/appearance of existing elements (patch/lite)?
 3. hotfix/single-point/pure numeric/pure docs → patch; clear "add feature X" → pick lite/medium/full by size.
 4. Focused change (even with tests/regression) → lite/tech by nature; not necessarily full.
 5. [M1 ARCHITECTURE CRITERION (important)] **Architecture-level changes** — persistence/localStorage/database/standalone module/abstraction/cross-many-files without an existing reusable wrapper (like a localStorage wrapper, storage layer, state management) — even if they look like "small features", go **at least medium** (must pass the architecture stage and produce a blueprint, avoiding scattered local implementations by dev); such changes collapse under a light "micro feature" tier. Tech-driven rework (refactor/optimize/arch upgrade) is itself tech (tech also runs the lightweight blueprint now).
 
-[OUTPUT] one JSON object only (no other text):
+[OUTPUT] JSON object ONLY — no commentary, no preface, no closing text. The FIRST character of your reply must be '{'. Do NOT say anything like "here is the JSON" or "Let me output the JSON" — output the object itself:
 { "mode": "patch|lite|tech|medium|full", "slug": "<topic words> (3-24 lowercase letters/digits/hyphens, e.g. wallkick-toggle, 7bag-random; used to name the task folder)", "kind": "one-word nature", "needDesign": true|false, "complexity": "small|medium|large", "rationale": ["key argument 1","key argument 2"], "confidence": "high|medium|low" }`
 
 /** tech 档 PRD：技术变更单（无功能 AC，重范围/目标/改动面/回归）。 */
