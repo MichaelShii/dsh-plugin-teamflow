@@ -263,7 +263,12 @@ ${clip(tech, 12000)}`
 5. [Engineering action execution] If task spec or PRD 工程约束 includes git actions (e.g. new branch): **execute the action BEFORE writing code** (e.g. git checkout -b <branch>); if the workspace carries unrelated uncommitted changes, do NOT commit/clean them — state the situation in the summary.
 5b. [Git discipline · policy (ADR-2026-08-27, 统一收口提交)] Work ONLY on the current branch: **never** git checkout main / merge / rebase / delete-branch / commit — main-branch actions and the final commit are performed by the host after acceptance (one commit per run: code + task-folder docs together). Just write/modify files; leave everything uncommitted. If a task asks for "merge back to main" or "commit", treat it as "prepare the delivery" (files ready + summary of what was done), do NOT commit or merge.
 6. [Log discipline] Redirect command output to logs/teamflow/${runId || '<runId>'}/.
-7. Output an implementation summary (≤40 lines): changed files, key implementation points, how verified, leftovers. No big code pastes.
+7. Output an implementation summary (≤40 lines): changed files, key implementation points, leftovers. No big code pastes.
+7b. [Verification evidence · policy] **Mandatory block at the end of the reply (before the state block)** — host stores it verbatim for audit, cross-checkable against your command output in logs/teamflow/${runId || '<runId>'}/; missing block = contract not honored (warn only, never interrupts):
+[Verification evidence]
+- cmd: <exact command> → exit <code>, <passed>/<failed> asserts (<file>:<line> for failures)
+- ...（one line per verification run）
+- N/A: <explicit reason>（when nothing runnable — pure config/docs change, no test suite, etc.）
 8. [State] End with a state block (phase="dev"), touched = array of changed files, summary = implementation conclusion.${STATE_BLOCK_INSTRUCTION}`
 
 /** 视觉验证能力条款（ADR-2026-08-27，解锁 browser-use 视觉验证）：
@@ -319,7 +324,12 @@ ${(tech && String(tech).trim()) ? clip(tech, 12000) : ''}
    — confirmed → fix it directly; QA false positive / contradicts reality → state evidence explicit in the summary (no fabricated changes, and no ignoring real defects either).
 2. Touch ONLY defect-related files (grep to locate; no whole-file reads of irrelevant big files); respect existing architecture & code style.
 3. After fixing, run relevant verification to ensure green (regression floor: existing verify suites pass untouched); redirect output to logs/teamflow/${runId || '<runId>'}/.
-4. Output a fix summary (≤40 lines, Chinese): per defect —「truth judgment + fix」or「false-positive evidence」, changed files, how verified, leftovers. No big code pastes.
+4. Output a fix summary (≤40 lines, Chinese): per defect —「truth judgment + fix」or「false-positive evidence」, changed files, leftovers. No big code pastes.
+4b. [Verification evidence · policy] **Mandatory block at the end of the reply (before the state block)** — host stores it verbatim for audit, cross-checkable against your command output in logs/teamflow/${runId || '<runId>'}/; missing block = contract not honored (warn only, never interrupts):
+[Verification evidence]
+- cmd: <exact command> → exit <code>, <passed>/<failed> asserts (<file>:<line> for failures)
+- ...（one line per verification run; the re-verified defect cases must be listed）
+- N/A: <explicit reason>（when nothing runnable — pure config/docs change, no test suite, etc.）
 5. [State] End with a state block (phase="dev"), touched = changed files array, summary = fix conclusion.${STATE_BLOCK_INSTRUCTION}`
 
 export const acceptancePrompt = (prd, qa, devSummary, root, runId, state, vision) => `You are the product manager (acceptance lead). Do a final acceptance of this delivery against the PRD acceptance criteria.

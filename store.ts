@@ -32,6 +32,8 @@ export interface JournalStage {
   guardReason?: string | null
   /** 护栏中止分类：degenerated（复读，可干净重试）/ stalled（挂死/空转，走预算门转人工）。 */
   guardOutcome?: 'degenerated' | 'stalled' | null
+  /** dev/qaFix 回复中的「验证证据」块原文（提取自 [Verification evidence] 块；审计用，可对照 logs/ 命令输出）。 */
+  verifyEvidence?: string | null
 }
 
 /** 运行日志（journal）——运行时对象与磁盘可持久化形态的公共形状。 */

@@ -85,6 +85,7 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 | 任务夹文档制 | 每需求一个自包含任务夹 `docs/teamflow/<yyyyMMdd>-r<N>[-<slug>]/`（PRD/TECHNICAL/QA-REPORT/ACCEPTANCE 收口），journal.runDocs 固定身份、重试/续跑复用同夹；SUMMARY.md 废除、memory.md 收窄为约定层；AC 局部编号（ADR-0008） |
 | 重试/护栏 | withRetry 重试附诊断包（上次 outcome/summary/护栏原因/产出尾部）；退化（degenerated）与挂死/空转（stalled）不自动重试（needs-human 引导 resume）；护栏=进度信号非配额 |
 | prompt 约束分级 | prompt 内**禁止自称 hard constraint**（措辞硬与 enforcement 脱节→模型对 high-signal 词脱敏，实证 17 条 warn 零削减）；分级 `[HOST-ENFORCED]`（host 真实强制：单轨产物/验收结论行，必须描述真实后果）+ `[policy]`（自律 + guard warn/轻提醒） |
+| 验证证据块 | dev/qaFix 回复末尾强制 `[Verification evidence]` 块（命令+退出码+断言计数+失败行引用，或显式 N/A）→ host 提取存证 `stage.verifyEvidence`（stageDetail 可见，可与 logs/ 命令输出对照）；policy 级——缺失记 warn 不中断 |
 
 ## 6. 变更记录（指针）
 

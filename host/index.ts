@@ -585,6 +585,7 @@ export class TeamflowService extends TypertRemoteService {
       childId: s.childId || null, startedAt: s.startedAt, endedAt: s.endedAt,
       ownerSession: j.ownerSession || null,
       usage: s.usage || null,
+      verifyEvidence: s.verifyEvidence || null,
       summary: clip(s.summary || '', 3000),
       output: clip(toText(s.output) || toText(s.handoff) || '', 24000),
     }

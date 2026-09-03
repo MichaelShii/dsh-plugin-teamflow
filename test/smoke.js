@@ -221,6 +221,14 @@ ok(/Doc boundary · policy/.test(promptsSrc) && /AGENTS\.md boundary · policy/.
 ok(/Reply = brief summary only · HOST-ENFORCED/.test(promptsSrc) && /missing file = hard failure \(needs-human, pipeline stops\)/.test(promptsSrc), 'prompts：QA/验收单轨制标 HOST-ENFORCED 且描述真实后果（文件缺失=停线人工）')
 ok(/Acceptance report · HOST-ENFORCED/.test(promptsSrc) && /Defect format · HOST-ENFORCED/.test(promptsSrc), 'prompts：验收报告/缺陷表标 HOST-ENFORCED（host 解析/导入强制）')
 
+console.log('── 3n) dev/qaFix 验证证据块（单方宣称 → 可审计的具体自述）──')
+ok(/Verification evidence · policy/.test(promptsSrc) && /\[Verification evidence\]/.test(promptsSrc), 'prompts：dev/qaFix 强制验证证据块（policy 级：命令+退出码+断言计数+失败行引用，或显式 N/A）')
+ok(/cross-checkable against your command output in logs\/teamflow/.test(promptsSrc), 'prompts：证据块与命令输出日志对照（审计轨迹，伪造可发现）')
+ok(/export function extractVerificationEvidence/.test(utilSrc), 'util：证据块提取纯函数（到 state 块前截断）')
+ok(/noteVerifyEvidence\(journal, devR\.text\)/.test(pipelineSrc) && /noteVerifyEvidence\(journal, fixR\.text\)/.test(pipelineSrc), 'pipeline：dev 主路径/补跑/qaFix 三处提取存证（stage.verifyEvidence）')
+ok(/缺少 \[Verification evidence\] 块（契约未兑现，已记录不中断）/.test(pipelineSrc), 'pipeline：证据块缺失 → 记 warn 不中断（policy 级，防误杀）')
+ok(/verifyEvidence: s\.verifyEvidence \|\| null/.test(hostSrc), 'host：stageDetail 返回 verifyEvidence（审计可见）')
+
 console.log('── 4) 其他文件 ──')
 for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../descriptors.ts', '../client/index.tsx', '../host/index.ts', '../store.ts']) {
   ok(existsSync(join(here, f)), `存在 ${f}`)

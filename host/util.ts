@@ -20,6 +20,19 @@ export function extractText(blocks) {
   return blocks.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n')
 }
 
+/** 从 dev/qaFix 回复中提取「验证证据」块（`[Verification evidence]` 行起，到 state 块/结尾止）。
+ * dev 阶段无独立对抗校验（QA 有 QA-REPORT.md 结构化证据，dev 只有自述）——证据块是「可审计的
+ * 具体自述」：命令+退出码+断言计数+失败行引用，可对照 logs/teamflow/<runId>/ 命令输出日志核实；
+ * 模型仍可伪造，但具体细节难编造一致（具体性压力）且伪造可发现（审计轨迹）。
+ * 找不到块（契约未兑现）→ null，host 记 warn 不中断（policy 级）。 */
+export function extractVerificationEvidence(text) {
+  const s = toText(text)
+  const m = s.match(/\[Verification evidence\]([\s\S]*?)(?=<!--\s*state|$)/)
+  if (!m || !m[1]) return null
+  const ev = m[1].trim()
+  return ev.length > 0 ? ev : null
+}
+
 /**
  * ADR-0008 任务夹命名：<yyyyMMdd>-r<N>[-<slug>]。
  * - date 用本地时区（用户在东八区晚上建的需求不能落到"明天"）
