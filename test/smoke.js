@@ -207,6 +207,12 @@ ok(/未落盘\/为空——单轨契约/.test(pipelineSrc) && /stageFailError\('
 ok(/ACCEPTANCE\.md 未落盘/.test(pipelineSrc) && /stageFailError\('产品验收', \{ attempts: accR\.attempts/.test(pipelineSrc), 'pipeline：ACCEPTANCE.md 缺失 → 硬失败（防「无结论行 → 保守 accepted」误放行）')
 ok(/qa = artifactText\(journal, 'QA-REPORT\.md'\) \|\| resume\.products\.qa/.test(pipelineSrc), 'pipeline：resume 复用 QA 产物文件优先、journal 兜底（兼容存量 run）')
 
+console.log('── 3l) 验收结论契约强度（漏报护栏：结论行字面量模板 + 无结论行 → needs-human）──')
+ok(/验收结论：✅ 通过 ／ ⚠️ 有条件通过 ／ ❌ 不通过 ／ 📝 需求不适用/.test(promptsSrc), 'prompts：验收结论行字面量模板（回复 verdict line 固定格式）')
+ok(/MUST be the LAST line of the file, verbatim one of: 验收结论：✅ 通过/.test(promptsSrc) && /missing it = contract violation/.test(promptsSrc), 'prompts：ACCEPTANCE.md 最后一行必须为字面量结论行（缺失=契约违例停线）')
+ok(/if \(!accLine\) return 'needs-human'/.test(utilSrc), 'util：parseAcceptanceVerdict 无结论行 → needs-human（不再默认 accepted——漏报=假交付）')
+ok(/accVerdict === 'needs-human'/.test(pipelineSrc) && /缺少验收结论行（契约未兑现），需人工确认/.test(pipelineSrc), 'pipeline：无结论行 → needs-human 拦截（对齐 reject 模式：needs-human + humanIntervention + throw）')
+
 console.log('── 4) 其他文件 ──')
 for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../descriptors.ts', '../client/index.tsx', '../host/index.ts', '../store.ts']) {
   ok(existsSync(join(here, f)), `存在 ${f}`)

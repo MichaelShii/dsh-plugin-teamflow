@@ -584,8 +584,21 @@ export async function executePipeline(
       noteTaskStageUsage(journal) // 验收角色的真实 usage 累计
       const accStage = journal.stages.find((s) => s.phase === '产品验收' && s.childId)
       noteTaskAssign(journal, 'accept', accStage ? String(accStage.childId).slice(0, 8) : '验收组')
-      // 结论解析：见 parseAcceptanceVerdict（只认结论行，避免正文「无需改动」等否定/引用话术误杀整条流水线）
+      // 结论解析：见 parseAcceptanceVerdict（只认结论行，避免正文「无需改动」等否定/引用话术误杀整条流水线；
+      // 无结论行 → needs-human，不猜结论——防模型写 ❌ 但漏「验收结论：」前缀被默认 accepted）
       const accVerdict = parseAcceptanceVerdict(acceptance)
+      if (accVerdict === 'needs-human') {
+        // 契约未兑现：ACCEPTANCE.md 无「验收结论」行（prompt 已强制最后一行字面量模板）。
+        // 宁严勿松：误拦截=人工看一眼，误放行=假交付（旧实现无结论行默认 accepted=漏报）
+        journal.logs.push({ t: Date.now(), level: 'error', message: 'ACCEPTANCE.md 缺少「验收结论：」行（字面量模板未兑现）——不自动判通过，需人工确认结论' })
+        advanceTask(journal, 'needs-human', snippet(acceptance, 3000), 'ACCEPTANCE.md 缺少验收结论行（契约未兑现），需人工确认', { by: 'pm' })
+        const store = storeFor(scopeKey)
+        const req = store.find('req', journal.reqId)
+        if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', '验收结论行缺失，需人工确认') }
+        journal.humanIntervention = true
+        persistJournal(journal)
+        throw new Error('ACCEPTANCE.md 缺少验收结论行，需人工确认结论')
+      }
       if (accVerdict === 'reject') {
         // 需求与现状不符（无有效变更）→ 拦截：task needs-human、req needs-human、流水线中断（非 accepted）
         advanceTask(journal, 'needs-human', snippet(acceptance, 3000), '需求与现状不符（无需改动），需人工决定调整或取消需求', { by: 'pm' })

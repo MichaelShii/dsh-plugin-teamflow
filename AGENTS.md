@@ -81,7 +81,7 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 | 多团队/工作台 | teams.json + workspace 级隔离 + 单任务轮转 + dev 子卡 + 会话暂停/resume + state.json 预编译索引 + 子代理路由跟随主线程 + 分支策略启动前 needs-decision（ADR-2026-08-27） |
 | 认知前置 + 架构落地 | M0 sanity 状态核对 / M1 蓝图全模式启用 / M2 dev 按蓝图拆任务 / M3 QA+验收架构核验（打回=rework）/ triage 架构护栏强升 medium（ADR-0006）。质量优先于 token |
 | QA 打回闭环 | QA P0-P2 → 打回开发确认+修复（qaFixPrompt）→ 复验 ≤2 轮；缺陷按 reqId+defectId 幂等登记、复验通过关单（P3 观察项保留）；parseDefects 容忍 `**P1**` 加粗（ADR-0007） |
-| 输出单轨制 | QA/验收文件即产物、回复仅摘要；文件缺失硬失败；parseAcceptanceVerdict 只认显式结论行 + 「📝 需求不适用」全文命中 |
+| 输出单轨制 | QA/验收文件即产物、回复仅摘要；文件缺失硬失败；parseAcceptanceVerdict 只认显式结论行（结论行字面量模板：最后一行「验收结论：✅/⚠️/❌/📝」），**无结论行 → needs-human（不猜结论）**，📝 需求不适用全文命中仍优先 |
 | 任务夹文档制 | 每需求一个自包含任务夹 `docs/teamflow/<yyyyMMdd>-r<N>[-<slug>]/`（PRD/TECHNICAL/QA-REPORT/ACCEPTANCE 收口），journal.runDocs 固定身份、重试/续跑复用同夹；SUMMARY.md 废除、memory.md 收窄为约定层；AC 局部编号（ADR-0008） |
 | 重试/护栏 | withRetry 重试附诊断包（上次 outcome/summary/护栏原因/产出尾部）；退化（degenerated）与挂死/空转（stalled）不自动重试（needs-human 引导 resume）；护栏=进度信号非配额 |
 

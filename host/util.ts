@@ -157,8 +157,11 @@ export function buildRetryDiagnostic(attempt: number, stage: { outcome?: string 
  *  - 「📝 需求不适用」是验收负责人专用的强结论词，允许全文命中；
  *  - 其余 reject 词（需求与实际不符/站不住/无效/无需改动等）仅在结论行且该行不含「通过/✅/⚠️」时才算；
  *  - rework 词仅认结论行（且不与「✅ 通过」同现）。
+ * 反向护栏（漏报实锤 2026-09-03）：模型写「❌ 不通过」但漏写「验收结论：」前缀 → accLine 为空 →
+ * 旧实现落回默认 accepted（最乐观默认值，质量门禁漏报=假交付）。现改为 **找不到结论行 → needs-human**
+ * （宁严勿松：误拦截=人工看一眼，误放行=假交付；📝 全文命中与架构红词仍优先于该默认）。
  * @param {unknown} text 验收报告全文
- * @returns {'accepted'|'rework'|'reject'}
+ * @returns {'accepted'|'rework'|'reject'|'needs-human'}
  */
 export function parseAcceptanceVerdict(text) {
   const acc = String(text || '')
@@ -176,6 +179,9 @@ export function parseAcceptanceVerdict(text) {
   if (/❌\s*不通过|需返工|未通过/.test(accLine) && !/✅\s*通过/.test(accLine)) return 'rework'
   if (/📝\s*需求不适用/.test(acc)) return 'reject'
   if (!/通过|✅|⚠️/.test(accLine) && /需求不适用|需求与实际不符|需求站不住|需求无效|无需改动|无需修改/.test(accLine)) return 'reject'
+  // 找不到「验收结论/整体结论」行：不猜结论——最乐观默认（accepted）=漏报假交付；
+  // 需人工确认（prompt 已强制结论行字面量模板，缺失=契约未兑现）
+  if (!accLine) return 'needs-human'
   return 'accepted'
 }
 
