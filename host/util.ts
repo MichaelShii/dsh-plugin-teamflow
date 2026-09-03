@@ -123,6 +123,32 @@ export function handoffBrief(text: string | null | undefined): string {
   return clip(brief, 2000)
 }
 
+/** 拒绝词命中点：返回命中的具体短语 + 原文上下文片段（供重试诊断回灌，比事后从截断尾巴重算可靠）。 */
+export function refusalHit(text: string | null | undefined): { phrase: string; context: string } | null {
+  const s = String(text || '')
+  const m = REFUSAL_PATTERN.exec(s)
+  if (!m || m.index < 0) return null
+  const start = Math.max(0, m.index - 40)
+  const end = Math.min(s.length, m.index + String(m[0]).length + 40)
+  return { phrase: m[0], context: s.slice(start, end).replace(/\s+/g, ' ').trim() }
+}
+
+/** 重试诊断包：上一轮失败详情回灌进重试 prompt（盲试 → 带因重试）。
+ * 失败分类/详情/护栏原因取自 stage；产出尾部截断 1000 字符供自查修正。 */
+export function buildRetryDiagnostic(attempt: number, stage: { outcome?: string | null; summary?: string | null; guardReason?: string | null; output?: string | null }): string {
+  const lines: string[] = []
+  lines.push(`[重试诊断 · 第 ${attempt} 次尝试] 上一轮尝试未成功。这不是新任务——请先阅读以下失败详情，再执行原任务并修正上一轮的问题。`)
+  lines.push(`- 失败分类：${stage.outcome || 'unknown'}`)
+  if (stage.guardReason) lines.push(`- 护栏中止原因：${stage.guardReason}`)
+  if (stage.summary) lines.push(`- 详情：${stage.summary}`)
+  const out = String(stage.output || '')
+  if (out) {
+    const tail = out.length > 1000 ? `…${out.slice(-1000)}` : out
+    lines.push(`- 上一轮产出末尾（节选，供自查修正）：\n${tail}`)
+  }
+  return `\n\n${lines.join('\n')}\n[/重试诊断结束]`
+}
+
 /**
  * 验收结论解析：只以显式「验收结论 / 整体结论」行为准（acceptancePrompt 强制 4 档固定话术），
  * 不做正文散文朴素子串匹配。历史误报实锤（run tf-msytlok5）：验收报告 ✅ 通过，其记忆回写段一句

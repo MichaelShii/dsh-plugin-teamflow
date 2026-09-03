@@ -170,7 +170,7 @@ const guardSrc = readFileSync(join(here, '../host/core/guard.ts'), 'utf8')
 ok(/export function startStageGuard/.test(guardSrc) && /GUARD_REPEAT_LIMIT/.test(guardSrc) && /GUARD_SILENCE_MS/.test(guardSrc) && /GUARD_NO_TOOL_MS/.test(guardSrc), 'guard：护栏 v2（复读/挂死/空转三信号，无时间配额——慢吞吐合法任务不误杀）')
 ok(/GUARD_POLL_MS/.test(constantsSrc) && /GUARD_REPEAT_LIMIT = 12/.test(constantsSrc) && /GUARD_SILENCE_MS/.test(constantsSrc) && /GUARD_NO_TOOL_MS/.test(constantsSrc) && !/GUARD_WALL_CLOCK_MS/.test(constantsSrc), 'constants：护栏阈值常量（裸墙钟已废除）')
 ok(/startStageGuard\(\{ run, journal, label, stage \}\)/.test(hostSrc), 'runner：runAgent 接入单调用护栏')
-ok(/stage\.guardOutcome \|\| 'degenerated'/.test(hostSrc), 'runner：复读=degenerated（污染会话自动重试必挂，直接 needs-human 引导 resume）；挂死/空转=stalled 走预算门转人工')
+ok(/stage\.guardOutcome \|\| 'degenerated'/.test(hostSrc), 'runner：复读=degenerated / 挂死空转=stalled（护栏中止分类；两者均不再自动重试）')
 ok(/if \(lastStage && lastStage\.outcome === 'degenerated'\) \{\r?\n\s+journal\.logs\.push/.test(hostSrc) && !/guardedRetry/.test(hostSrc), 'runner：退化中止不再自动重试（实证 tf-mte906e9 6 次全失败 12→27 递增；resume 新会话一次成功）——直接 needs-human，引导 teamflow_resume')
 ok(/j\.humanIntervention = false/.test(pipelineSrc), 'pipeline：resumeRun 重置 humanIntervention（完成汇报不再误标 ⚠️）')
 ok(/const stageFailError = /.test(pipelineSrc) && (pipelineSrc.match(/stageFailError\(/g) || []).length >= 7, 'pipeline：阶段失败文案带真实次数/outcome/熔断语义（7 处 throw 收口）')
@@ -191,6 +191,12 @@ ok(!/VERSION_SLICE_BLOCK|mv 归档|history\/v<旧版>/.test(promptsSrc), 'prompt
 ok(/基线依赖|取代：/.test(promptsSrc) && /Number ACs from AC-1/.test(promptsSrc), 'prompts：局部 AC 编号（本夹内 AC-1 起）+ 基线依赖/取代声明')
 ok(/slug/.test(readFileSync(join(here, '../host/core/triage.ts'), 'utf8')) && /TRIAGE_PROMPT/.test(promptsSrc) && /topic words/.test(promptsSrc), 'triage：slug 输出字段（受控命名来源）')
 ok(!/SUMMARY\.md/.test(promptsSrc), 'prompts：SUMMARY.md 已废除（索引由 host 扫描 meta.json 聚合）')
+
+console.log('── 3j) 重试诊断包（盲试 → 带因重试）+ stalled 不再自动重试 ──')
+ok(/export function buildRetryDiagnostic/.test(utilSrc) && /export function refusalHit/.test(utilSrc), 'util：重试诊断纯函数 + 拒绝词命中点（短语+原文上下文）')
+ok(/promptNow = attempt > 1 && \w+Stage \? prompt \+ buildRetryDiagnostic/.test(hostSrc), 'runner：重试 prompt 附诊断块（上次 outcome/summary/护栏原因/产出尾部）')
+ok(/命中拒绝词「/.test(hostSrc) && /内容过短（\$\{text\.trim\(\).length\} 字符/.test(hostSrc), 'runner：insubstantial 细分（拒绝词命中点 vs 长度不足），失败产出截断落盘 stage.output')
+ok(/outcome === 'stalled'\) \{[\s\S]*不再自动重试/.test(hostSrc), 'runner：挂死/空转（stalled）不再自动重试（对齐 guard 注释语义，needs-human 引导 resume）')
 
 console.log('── 4) 其他文件 ──')
 for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../descriptors.ts', '../client/index.tsx', '../host/index.ts', '../store.ts']) {

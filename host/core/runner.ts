@@ -5,8 +5,8 @@
 import { runtime, inFlight, providerName } from './context.ts'
 import { accumulateSessionUsage, totalTokensOf } from './metering.ts'
 import { startStageGuard } from './guard.ts'
-import { clip, extractText, normalizeSignal, hasSubstance, isUnretryable, handoffBrief } from '../util.ts'
-import { RETRY_LIMIT, STAGE_TOKEN_BUDGET } from '../constants.ts'
+import { clip, extractText, normalizeSignal, hasSubstance, isUnretryable, handoffBrief, refusalHit, buildRetryDiagnostic } from '../util.ts'
+import { RETRY_LIMIT, STAGE_TOKEN_BUDGET, STAGE_MIN_LENGTH } from '../constants.ts'
 import type { Journal, ParentAgentLike } from '../types.ts'
 import type { JournalStage } from '../../store.ts'
 
@@ -134,6 +134,7 @@ export async function runAgent(
       stage.status = 'failed'
       stage.outcome = stage.guardOutcome || 'degenerated'
       stage.summary = `进行中护栏中止（${stage.guardReason}），本次尝试无有效产出`
+      if (text) stage.output = clip(text, 4000) // 失败产出截断落盘（重试诊断/详情浮层）
       journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} ${stage.summary}` })
       return null
     }
@@ -142,11 +143,20 @@ export async function runAgent(
     // provider 错误细节记录（观测改进：此前只有 stopReason=error，无从排查瞬时/持久）
     const errDetail = result && (result as { error?: unknown }).error
     if (stage.outcome === 'insubstantial') {
-      stage.summary = '产出未通过实质校验（含拒绝措辞或内容过短），视为未交付'
-      journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 产出未通过实质校验（拒绝措辞/内容过短）` })
+      // 拒绝词命中点回灌（重试诊断需要「哪段输出被判拒绝」）；否则细分内容过短
+      const hit = refusalHit(text)
+      if (hit) {
+        stage.summary = `产出未通过实质校验：命中拒绝词「${hit.phrase}」（原文：${hit.context}），视为未交付`
+        journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 产出命中拒绝词「${hit.phrase}」` })
+      } else {
+        stage.summary = `产出未通过实质校验：内容过短（${text.trim().length} 字符 < ${STAGE_MIN_LENGTH[phase] ?? 100} 下限），视为未交付`
+        journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 产出过短（${text.trim().length} 字符），未通过实质校验` })
+      }
+      if (text) stage.output = clip(text, 4000)
     } else {
       stage.summary = `未产出有效结果（stopReason=${stop || 'unknown'}${errDetail ? `，error=${String(errDetail).slice(0, 200)}` : ''}）`
       journal.logs.push({ t: Date.now(), level: 'error', message: `${label} ${stage.summary}` })
+      if (text) stage.output = clip(text, 4000) // 半截产出（如 stopReason=length）也落盘供诊断
     }
     return null
   } catch (e) {
@@ -176,12 +186,16 @@ export async function withRetry(
 ): Promise<{ text: string | null; attempts: number; stageTokens: number }> {
   let attempts = 0
   let stageTokens = 0
+  let lastStage: JournalStage | null | undefined = null
   for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
     attempts = attempt
     const labelNow = attempt > 1 ? `${label}（第 ${attempt} 次重试）` : label
-    const result = await runAgent(journal, parent, labelNow, phase, prompt, signal)
+    // 重试诊断包：原样重试=盲试（子代理不知道上次为什么失败，重试即碰运气）。
+    // 诊断源现成：stage.summary（含拒绝词命中点/过短/stopReason 细节）+ guardReason + 失败产出尾部。
+    const promptNow = attempt > 1 && lastStage ? prompt + buildRetryDiagnostic(attempt, lastStage) : prompt
+    const result = await runAgent(journal, parent, labelNow, phase, promptNow, signal)
+    lastStage = journal.stages[journal.stages.length - 1] || null
     // 累计本阶段各次尝试的总消耗（官方口径：input+cacheRead+cacheWrite+output）
-    const lastStage = journal.stages[journal.stages.length - 1]
     if (lastStage && lastStage.phase === phase) {
       stageTokens += totalTokensOf(lastStage.usage)
     }
@@ -209,6 +223,13 @@ export async function withRetry(
       journal.humanIntervention = true
       return { text: null, attempts, stageTokens }
     }
+    // 护栏中止（stalled = 挂死/空转）：对齐 guard 注释「走预算门转人工，不自动重试烧钱」——
+    // 挂死无产出可救、空转已在烧钱，自动重试大概率复现（实证与 degenerated 同理）→ needs-human 引导 resume
+    if (lastStage && lastStage.outcome === 'stalled') {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 进行中护栏中止（挂死/空转），不再自动重试（会话已无有效产出）；可 teamflow_resume 以全新会话续跑` })
+      journal.humanIntervention = true
+      return { text: null, attempts, stageTokens }
+    }
     // token 熔断：本阶段累计总消耗超预算 → 停止重试
     if (stageTokens >= STAGE_TOKEN_BUDGET) {
       journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 累计 token ${Math.round(stageTokens / 1000)}k 超出阶段预算 ${Math.round(STAGE_TOKEN_BUDGET / 1000)}k，熔断，需人工介入` })
@@ -216,7 +237,7 @@ export async function withRetry(
       return { text: null, attempts, stageTokens }
     }
     if (attempt < RETRY_LIMIT) {
-      journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 第 ${attempt} 次尝试未成功，自动重试…` })
+      journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 第 ${attempt} 次尝试未成功（${lastStage ? lastStage.outcome || 'unknown' : 'unknown'}），自动重试（重试 prompt 已附上一轮失败诊断）…` })
     } else {
       journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 连续 ${RETRY_LIMIT} 次尝试失败，超出重试阈值，需人工介入` })
       journal.humanIntervention = true
