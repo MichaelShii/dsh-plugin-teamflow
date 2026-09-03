@@ -19,6 +19,8 @@
  *   标注时描述真实机制（warn-only / cache 重放费），不声称「hard constraint」。
  * - 禁止：prompt 内自称 hard constraint——措辞层面「hard」与 enforcement 脱节会训练模型
  *   对 high-signal 词脱敏（实证：17 条 warn 零削减，guard 注入闭环后才见效）。
+ * 【中英混排纪律】约束句/标签用英文（模型对英文指令注意力高）、被约束对象/内容用中文；
+ * 列表分隔符随内容语言（文件路径等 ASCII 内容用英文逗号），不混用中文标点。
  */
 import { clip } from '../util.ts'
 import { stateSliceFor, STATE_BLOCK_INSTRUCTION } from '../core/state.ts'
@@ -248,7 +250,7 @@ ${clip(prd, 12000)}
 export const devPrompt = (task, tech, prd, root, runId, state) => `You are a senior full-stack engineer (implementation executor). The current workspace IS the target project — actually implement the following task.
 ${productCtx(root)}${stateSliceFor(state, 'dev')}${TOKEN_HYGIENE(runId)}[CONTEXT PACK]
 [TASK TITLE] ${task.title}
-${task.files && task.files.length ? `[TASK TARGET FILES] ${task.files.join('，')}` : ''}
+${task.files && task.files.length ? `[TASK TARGET FILES] ${task.files.join(', ')}` : ''}
 [TASK BRIEF] ${task.spec || '(see technical design)'}
 ${(tech && String(tech).trim())
   ? `[TECH DESIGN SUMMARY (grep details on demand, don't full re-read)]
