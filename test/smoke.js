@@ -213,6 +213,14 @@ ok(/MUST be the LAST line of the file, verbatim one of: 验收结论：✅ 通�
 ok(/if \(!accLine\) return 'needs-human'/.test(utilSrc), 'util：parseAcceptanceVerdict 无结论行 → needs-human（不再默认 accepted——漏报=假交付）')
 ok(/accVerdict === 'needs-human'/.test(pipelineSrc) && /缺少验收结论行（契约未兑现），需人工确认/.test(pipelineSrc), 'pipeline：无结论行 → needs-human 拦截（对齐 reject 模式：needs-human + humanIntervention + throw）')
 
+console.log('── 3m) prompt 约束分级（hard 自称与 enforcement 脱节 → HOST-ENFORCED / policy 分级）──')
+ok(!/· hard constraint\]/.test(promptsSrc), 'prompts：不再自称 hard constraint（措辞硬=装饰，脱敏实证 17 条 warn 零削减）')
+ok(/TOKEN HYGIENE · policy/.test(promptsSrc) && /warn \+ live reminder only \(never interrupts\)/.test(promptsSrc), 'prompts：TOKEN_HYGIENE 诚实标注 policy（真实机制=warn+轻提醒，从不中断）')
+ok(/ONE-SHOT WRITE · policy/.test(promptsSrc) && /cache replay fees/.test(promptsSrc), 'prompts：ONCE_DISCIPLINE 诚实标注 policy（真实后果=cache 重放费，不再声称 violating burns tokens）')
+ok(/Doc boundary · policy/.test(promptsSrc) && /AGENTS\.md boundary · policy/.test(promptsSrc) && /Git discipline · policy/.test(promptsSrc), 'prompts：纯 prompt 约束（Doc/AGENTS/Git）统一标 policy')
+ok(/Reply = brief summary only · HOST-ENFORCED/.test(promptsSrc) && /missing file = hard failure \(needs-human, pipeline stops\)/.test(promptsSrc), 'prompts：QA/验收单轨制标 HOST-ENFORCED 且描述真实后果（文件缺失=停线人工）')
+ok(/Acceptance report · HOST-ENFORCED/.test(promptsSrc) && /Defect format · HOST-ENFORCED/.test(promptsSrc), 'prompts：验收报告/缺陷表标 HOST-ENFORCED（host 解析/导入强制）')
+
 console.log('── 4) 其他文件 ──')
 for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../descriptors.ts', '../client/index.tsx', '../host/index.ts', '../store.ts']) {
   ok(existsSync(join(here, f)), `存在 ${f}`)

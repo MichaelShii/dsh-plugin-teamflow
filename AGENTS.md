@@ -84,6 +84,7 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 | 输出单轨制 | QA/验收文件即产物、回复仅摘要；文件缺失硬失败；parseAcceptanceVerdict 只认显式结论行（结论行字面量模板：最后一行「验收结论：✅/⚠️/❌/📝」），**无结论行 → needs-human（不猜结论）**，📝 需求不适用全文命中仍优先 |
 | 任务夹文档制 | 每需求一个自包含任务夹 `docs/teamflow/<yyyyMMdd>-r<N>[-<slug>]/`（PRD/TECHNICAL/QA-REPORT/ACCEPTANCE 收口），journal.runDocs 固定身份、重试/续跑复用同夹；SUMMARY.md 废除、memory.md 收窄为约定层；AC 局部编号（ADR-0008） |
 | 重试/护栏 | withRetry 重试附诊断包（上次 outcome/summary/护栏原因/产出尾部）；退化（degenerated）与挂死/空转（stalled）不自动重试（needs-human 引导 resume）；护栏=进度信号非配额 |
+| prompt 约束分级 | prompt 内**禁止自称 hard constraint**（措辞硬与 enforcement 脱节→模型对 high-signal 词脱敏，实证 17 条 warn 零削减）；分级 `[HOST-ENFORCED]`（host 真实强制：单轨产物/验收结论行，必须描述真实后果）+ `[policy]`（自律 + guard warn/轻提醒） |
 
 ## 6. 变更记录（指针）
 

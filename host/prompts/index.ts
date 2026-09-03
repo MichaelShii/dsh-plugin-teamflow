@@ -10,6 +10,15 @@
  * - 回归基线：新 PRD 头部「基线依赖：<其他任务夹>」声明；跨代变更用「取代：<夹>#AC-n」；
  *   硬保障在项目 verify-* 可执行套件。
  * - 命令输出日志照旧收口 logs/teamflow/<runId>/。
+ *
+ * 【约束分级约定】（2026-09-03，防 high-signal 词脱敏）
+ * - [HOST-ENFORCED]：host 有真实校验/解析/硬失败后果（如单轨产物文件缺失→needs-human 停线、
+ *   验收结论行缺失→需人工确认）。标注后**必须**在同一句内描述真实后果（缺失=停线），
+ *   不得只堆措辞。新增此类约束 = 先加 host 代码再标词。
+ * - [policy]：无 host 强制，靠模型自律 + guard 观测注入（warn + 轻提醒，从不中断）。
+ *   标注时描述真实机制（warn-only / cache 重放费），不声称「hard constraint」。
+ * - 禁止：prompt 内自称 hard constraint——措辞层面「hard」与 enforcement 脱节会训练模型
+ *   对 high-signal 词脱敏（实证：17 条 warn 零削减，guard 注入闭环后才见效）。
  */
 import { clip } from '../util.ts'
 import { stateSliceFor, STATE_BLOCK_INSTRUCTION } from '../core/state.ts'
@@ -104,8 +113,8 @@ export function productCtx(root) {
 Before starting: read ${base}/AGENTS.md (team rules & doc index — read the summary first, then details on demand; no aimless full reads).
 [Task-folder docs · ADR-0008] Each requirement gets a self-contained task folder docs/teamflow/<yyyyMMdd-rN-slug>/ (folder path given per stage below); ALL artifacts of this requirement (PRD/DESIGN/TECHNICAL/QA-REPORT/ACCEPTANCE) live inside it. The folder is immutable after creation — **no archiving, no versioning** — retries/resumes write to the same folder. Cross-requirement product docs only: ${TF_DOCS}/memory.md (conventions/todos) and architecture/.
 [Baseline] New PRD declares "基线依赖：<prior task folder>" at top; cross-generation behavior changes are explicitly marked "取代：<folder>#AC-n" — historical folders are never modified.
-[Doc boundary · hard] TeamFlow contract docs are written ONLY under ${base}/${TF_DOCS}/ (create dirs if missing); **never write host docs/<role>/ and never scatter log files at project root**; command output logs go to logs/teamflow/<runId>/.
-[AGENTS.md boundary · hard] AGENTS.md is team property (injected unconditionally — consensus/index/managed zone only): **do NOT append changelog-style sections during iterations (product memory / todos / change log)** — such data belongs in ${TF_DOCS}/memory.md and task folders; besides the <!-- teamflow:begin/end --> managed zone, no stage may rewrite, reorder, or overwrite any other part of AGENTS.md.
+[Doc boundary · policy] TeamFlow contract docs are written ONLY under ${base}/${TF_DOCS}/ (create dirs if missing); **never write host docs/<role>/ and never scatter log files at project root**; command output logs go to logs/teamflow/<runId>/.
+[AGENTS.md boundary · policy] AGENTS.md is team property (injected unconditionally — consensus/index/managed zone only): **do NOT append changelog-style sections during iterations (product memory / todos / change log)** — such data belongs in ${TF_DOCS}/memory.md and task folders; besides the <!-- teamflow:begin/end --> managed zone, no stage may rewrite, reorder, or overwrite any other part of AGENTS.md.
 Backlog (req/task/bug) source of truth is the persisted mirror $DSH_HOME/teamflow/<workspace>/ under ${base}/backlog/: single rotating task card model (待办→开发中→待测试→测试中→待验收→已验收); devAssign/qaAssign live on the task card.
 `
 }
@@ -117,7 +126,7 @@ function headTailClip(text: unknown, head: number, tail: number): string {
   return s.slice(0, head) + '\n...\n[CHANGED SECTION]\n' + s.slice(-tail)
 }
 
-export const TOKEN_HYGIENE = (runId) => `[TOKEN HYGIENE · hard constraint] Context is expensive. Budget discipline below (violations only log a warning, never interrupt):
+export const TOKEN_HYGIENE = (runId) => `[TOKEN HYGIENE · policy] Context is expensive. Budget discipline below — host enforcement is warn + live reminder only (never interrupts), follow it as self-discipline:
 - [File scope] Whole-file read is allowed ONLY for target files explicitly listed in the task spec. To understand other files' interfaces, use grep for keywords (do not read whole files). Never whole-file read source files outside the task scope.
 - [No duplicate reads] Same file: read ≤1 times. To verify a change, grep the change point instead of re-reading the whole file.
 - [grep first] Before writing code, locate with one comprehensive grep pass, then batch-read in segments; avoid repeated small read/grep passes on the same file.
@@ -130,7 +139,7 @@ export const TOKEN_HYGIENE = (runId) => `[TOKEN HYGIENE · hard constraint] Cont
 `
 
 /** 一次成型纪律：目标文档 write ≤1 次 + read ≤2 次，严禁 read→edit→read 循环。 */
-export const ONCE_DISCIPLINE = `[ONE-SHOT WRITE · hard constraint] The most important efficiency rule; violating it burns tokens:
+export const ONCE_DISCIPLINE = `[ONE-SHOT WRITE · policy] The most important efficiency rule; repeated write/read cycles pay cache replay fees (warn + reminder at 3rd read, never interrupt):
 - The target delivery doc (PRD/DESIGN/TECHNICAL/QA-REPORT/ACCEPTANCE/memory) allows only **1 write of the complete new version** + **at most 2 reads** (1 to confirm structure before writing, ≤1 to verify format after).
 - **No read→edit→read loops**: never reopen the same document to "tweak"; never re-read the whole file just to confirm a change.
 - Use grep + limited segments for details; never whole-file read big documents.
@@ -252,7 +261,7 @@ ${clip(tech, 12000)}`
 3. If spec contradicts reality, explain with evidence in the summary instead of claiming completion or expanding scope on your own.
 4. Actually write/modify code (grep + segmented reads to locate; no repeated whole-file reads), then run relevant build/verification to ensure green.
 5. [Engineering action execution] If task spec or PRD 工程约束 includes git actions (e.g. new branch): **execute the action BEFORE writing code** (e.g. git checkout -b <branch>); if the workspace carries unrelated uncommitted changes, do NOT commit/clean them — state the situation in the summary.
-5b. [Git discipline · hard (ADR-2026-08-27, 统一收口提交)] Work ONLY on the current branch: **never** git checkout main / merge / rebase / delete-branch / commit — main-branch actions and the final commit are performed by the host after acceptance (one commit per run: code + task-folder docs together). Just write/modify files; leave everything uncommitted. If a task asks for "merge back to main" or "commit", treat it as "prepare the delivery" (files ready + summary of what was done), do NOT commit or merge.
+5b. [Git discipline · policy (ADR-2026-08-27, 统一收口提交)] Work ONLY on the current branch: **never** git checkout main / merge / rebase / delete-branch / commit — main-branch actions and the final commit are performed by the host after acceptance (one commit per run: code + task-folder docs together). Just write/modify files; leave everything uncommitted. If a task asks for "merge back to main" or "commit", treat it as "prepare the delivery" (files ready + summary of what was done), do NOT commit or merge.
 6. [Log discipline] Redirect command output to logs/teamflow/${runId || '<runId>'}/.
 7. Output an implementation summary (≤40 lines): changed files, key implementation points, how verified, leftovers. No big code pastes.
 8. [State] End with a state block (phase="dev"), touched = array of changed files, summary = implementation conclusion.${STATE_BLOCK_INSTRUCTION}`
@@ -288,8 +297,8 @@ ${clip(devSummary, 15000)}
 2. [人工补测清单] Items that cannot be auto-verified (audio output / real-device: 100dvh dynamic toolbar, safe-area, multi-touch / FPS performance / screen-reader): do NOT fail them — instead list each in the report's「人工补测清单」section (acceptance criteria + method + tool), note「环境限制，非交付缺陷」, for human review.
 3. Read AGENTS.md §4 engineering conventions (verify commands) and the code changes first, then actually run those sandbox-legal verifications.
 4. [Log discipline] Redirect command output to logs/teamflow/${runId || '<runId>'}/ (e.g. qa-out.log); no scatter at project root.
-5. [Reply = brief summary only] Output a short reply (≤12 lines, Chinese): verdict one-liner (whether acceptance-ready) + the QA report path docs/teamflow/.../QA-REPORT.md. **Do NOT repeat the report body in the reply** — the host imports QA-REPORT.md as the single source of truth.
-6. [Defect format] Report found defects as the structured table below (for direct import by the defect tracker) — the table must be in QA-REPORT.md:
+5. [Reply = brief summary only · HOST-ENFORCED] Output a short reply (≤12 lines, Chinese): verdict one-liner (whether acceptance-ready) + the QA report path docs/teamflow/.../QA-REPORT.md. **Do NOT repeat the report body in the reply** — the host imports QA-REPORT.md as the single source of truth; missing file = hard failure (needs-human, pipeline stops).
+6. [Defect format · HOST-ENFORCED] Report found defects as the structured table below (for direct import by the defect tracker) — the table must be in QA-REPORT.md:
    | 编号 | 严重级(P0/P1/P2/P3) | 功能模块 | 复现步骤 | 期望行为 | 实际行为 | 关联验收项 |
    If no defects: explicitly output 「未发现缺陷」.
 7. Chinese Markdown, concrete & executable; write the **complete** report to ${RUN(state)}/QA-REPORT.md (write once, tight body) — **this file IS the deliverable**: scope & environment, cases & results (pass/fail/blocked), 人工补测清单, defect table (if any), conclusion (whether acceptance-ready). [Boundary] only under ${TF_DOCS}/.
@@ -328,9 +337,9 @@ ${vision ? '[Visual re-check] If QA saved screenshots under the task folder, spo
    - Any obvious **duplicated implementation / adapter drift / broken existing structure** (this is a code-quality floor, not optional).
    - **Verdict impact**: only functionally green but with 「deviates from blueprint / duplicated impl / should-have-extracted」 → verdict should be **⚠️ 有条件通过** (architecture rework items listed, re-accept after rework); **significant deviation / broken structure → ❌ 不通过**. Never treat "verify all green" as the sole evidence of "no rework needed".
 1. Verify each PRD acceptance criterion one by one.
-2. [Reply = brief summary only] Output a short reply (≤10 lines, Chinese): **verdict line — verbatim: 验收结论：✅ 通过 ／ ⚠️ 有条件通过 ／ ❌ 不通过 ／ 📝 需求不适用**（pick one）+ the acceptance report path docs/teamflow/.../ACCEPTANCE.md. **Do NOT repeat the report body in the reply** — the host imports ACCEPTANCE.md as the single source of truth.
+2. [Reply = brief summary only · HOST-ENFORCED] Output a short reply (≤10 lines, Chinese): **verdict line — verbatim: 验收结论：✅ 通过 ／ ⚠️ 有条件通过 ／ ❌ 不通过 ／ 📝 需求不适用**（pick one）+ the acceptance report path docs/teamflow/.../ACCEPTANCE.md. **Do NOT repeat the report body in the reply** — the host imports ACCEPTANCE.md as the single source of truth.
 3. [Not-applicable judgment] If the PRD/tech-change/confirm doc already states「需求与现状不符」, or the dev result is explicitly「无需改动」, the verdict must be **「📝 需求不适用」** with reasons — do NOT mark ✅ 通过 just for "no defects".
-4. [Acceptance report] Write the **complete** report to ${RUN(state)}/ACCEPTANCE.md (write once) — **this file IS the deliverable**: verdict line, per-criterion check table, opinions & leftovers. **The verdict line MUST be the LAST line of the file, verbatim one of: 验收结论：✅ 通过 / 验收结论：⚠️ 有条件通过 / 验收结论：❌ 不通过 / 验收结论：📝 需求不适用** — the host parses ONLY this line; missing it = contract violation → the run stops for human review. [Memory write-back · convention changes ONLY] Update docs/teamflow/memory.md only if this requirement introduces new conventions/tech-stack decisions, or the 已知待办 list changes (same-topic line replace, idempotent, no changelog appending); otherwise don't touch memory. [Boundary] only under ${TF_DOCS}/; never modify AGENTS.md beyond the <!-- teamflow --> managed zone.
+4. [Acceptance report · HOST-ENFORCED] Write the **complete** report to ${RUN(state)}/ACCEPTANCE.md (write once) — **this file IS the deliverable**: verdict line, per-criterion check table, opinions & leftovers. **The verdict line MUST be the LAST line of the file, verbatim one of: 验收结论：✅ 通过 / 验收结论：⚠️ 有条件通过 / 验收结论：❌ 不通过 / 验收结论：📝 需求不适用** — the host parses ONLY this line; missing it = contract violation → the run stops for human review; missing file = hard failure (needs-human, pipeline stops). [Memory write-back · convention changes ONLY] Update docs/teamflow/memory.md only if this requirement introduces new conventions/tech-stack decisions, or the 已知待办 list changes (same-topic line replace, idempotent, no changelog appending); otherwise don't touch memory. [Boundary] only under ${TF_DOCS}/; never modify AGENTS.md beyond the <!-- teamflow --> managed zone.
 5. Chinese Markdown.
 6. [State] End with a state block (phase="acceptance"), summary = acceptance conclusion, verdict = "accepted/rework/reject/needs-human", extra.done = confirmation of this delivery.${STATE_BLOCK_INSTRUCTION}`
 
