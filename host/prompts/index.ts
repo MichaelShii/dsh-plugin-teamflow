@@ -288,11 +288,11 @@ ${clip(devSummary, 15000)}
 2. [人工补测清单] Items that cannot be auto-verified (audio output / real-device: 100dvh dynamic toolbar, safe-area, multi-touch / FPS performance / screen-reader): do NOT fail them — instead list each in the report's「人工补测清单」section (acceptance criteria + method + tool), note「环境限制，非交付缺陷」, for human review.
 3. Read AGENTS.md §4 engineering conventions (verify commands) and the code changes first, then actually run those sandbox-legal verifications.
 4. [Log discipline] Redirect command output to logs/teamflow/${runId || '<runId>'}/ (e.g. qa-out.log); no scatter at project root.
-5. Output the test report (body ≤150 lines, verdict first): scope & environment, cases & results (pass/fail/blocked), conclusion (whether acceptance-ready).
-6. [Defect format] Report found defects as the structured table below (for direct import by the defect tracker):
+5. [Reply = brief summary only] Output a short reply (≤12 lines, Chinese): verdict one-liner (whether acceptance-ready) + the QA report path docs/teamflow/.../QA-REPORT.md. **Do NOT repeat the report body in the reply** — the host imports QA-REPORT.md as the single source of truth.
+6. [Defect format] Report found defects as the structured table below (for direct import by the defect tracker) — the table must be in QA-REPORT.md:
    | 编号 | 严重级(P0/P1/P2/P3) | 功能模块 | 复现步骤 | 期望行为 | 实际行为 | 关联验收项 |
    If no defects: explicitly output 「未发现缺陷」.
-7. Chinese Markdown, concrete & executable; write the report to ${RUN(state)}/QA-REPORT.md (write once, tight body). [Boundary] only under ${TF_DOCS}/.
+7. Chinese Markdown, concrete & executable; write the **complete** report to ${RUN(state)}/QA-REPORT.md (write once, tight body) — **this file IS the deliverable**: scope & environment, cases & results (pass/fail/blocked), 人工补测清单, defect table (if any), conclusion (whether acceptance-ready). [Boundary] only under ${TF_DOCS}/.
 8. [State] End with a state block (phase="qa"), summary = test conclusion / blocked items, extra = { "verifyScripts": [...] }.${STATE_BLOCK_INSTRUCTION}`
 
 /** QA 打回后的开发修复 prompt：确认缺陷是否属实 → 修复 → 复验交接（QA→dev 打回闭环用）。 */
@@ -328,9 +328,9 @@ ${vision ? '[Visual re-check] If QA saved screenshots under the task folder, spo
    - Any obvious **duplicated implementation / adapter drift / broken existing structure** (this is a code-quality floor, not optional).
    - **Verdict impact**: only functionally green but with 「deviates from blueprint / duplicated impl / should-have-extracted」 → verdict should be **⚠️ 有条件通过** (architecture rework items listed, re-accept after rework); **significant deviation / broken structure → ❌ 不通过**. Never treat "verify all green" as the sole evidence of "no rework needed".
 1. Verify each PRD acceptance criterion one by one.
-2. Output the acceptance verdict (body ≤80 lines): ✅ 通过 / ⚠️ 有条件通过 / ❌ 不通过 / 📝 需求不适用, with a per-criterion check table, opinions & leftovers.
+2. [Reply = brief summary only] Output a short reply (≤10 lines, Chinese): verdict one-liner (✅ 通过 / ⚠️ 有条件通过 / ❌ 不通过 / 📝 需求不适用) + the acceptance report path docs/teamflow/.../ACCEPTANCE.md. **Do NOT repeat the report body in the reply** — the host imports ACCEPTANCE.md as the single source of truth.
 3. [Not-applicable judgment] If the PRD/tech-change/confirm doc already states「需求与现状不符」, or the dev result is explicitly「无需改动」, the verdict must be **「📝 需求不适用」** with reasons — do NOT mark ✅ 通过 just for "no defects".
-4. [Acceptance report] Write to ${RUN(state)}/ACCEPTANCE.md (write once, matching the body). [Memory write-back · convention changes ONLY] Update docs/teamflow/memory.md only if this requirement introduces new conventions/tech-stack decisions, or the 已知待办 list changes (same-topic line replace, idempotent, no changelog appending); otherwise don't touch memory. [Boundary] only under ${TF_DOCS}/; never modify AGENTS.md beyond the <!-- teamflow --> managed zone.
+4. [Acceptance report] Write the **complete** report to ${RUN(state)}/ACCEPTANCE.md (write once) — **this file IS the deliverable**: verdict line, per-criterion check table, opinions & leftovers. [Memory write-back · convention changes ONLY] Update docs/teamflow/memory.md only if this requirement introduces new conventions/tech-stack decisions, or the 已知待办 list changes (same-topic line replace, idempotent, no changelog appending); otherwise don't touch memory. [Boundary] only under ${TF_DOCS}/; never modify AGENTS.md beyond the <!-- teamflow --> managed zone.
 5. Chinese Markdown.
 6. [State] End with a state block (phase="acceptance"), summary = acceptance conclusion, verdict = "accepted/rework/reject/needs-human", extra.done = confirmation of this delivery.${STATE_BLOCK_INSTRUCTION}`
 

@@ -39,6 +39,18 @@ export function buildResumeProducts(journal) {
   return products
 }
 
+/** 任务夹产物读取（单轨契约：文件即产物——QA/验收 host 只读文件，回复仅摘要）。
+ * 缺失/空/读取异常返回 null（调用方决定硬失败或 journal 兜底）。 */
+function artifactText(journal: { workspacePath?: string | null; runDocs?: string | null }, fileName: string): string | null {
+  const path = journal && journal.workspacePath && journal.runDocs ? `${journal.workspacePath}/${journal.runDocs}/${fileName}` : null
+  if (!path) return null
+  try {
+    if (!existsSync(path)) return null
+    const t = readFileSync(path, 'utf8').trim()
+    return t ? t : null
+  } catch (e) { return null }
+}
+
 /**
  * 断点续跑起点：第一个「没有任意 done 尝试」的阶段。
  * ⚠️ 按阶段而非尝试判断（实锤 tf-mtcomxpq）：PRD 第 1 次尝试 failed（护栏退化）但第 2 次重试 done——
@@ -456,7 +468,8 @@ export async function executePipeline(
       qa = '（独立 QA 跳过：当前档位由开发自测兜底）'
     } else if (resumed('QA 测试') && !hasOpenBlockingBugs(journal)) {
       // 复用旧 QA 产物（QA 干净/仅 P3 时续跑）；QA 打回缺陷未闭环时不复用——重走修复-复验闭环
-      qa = resume.products.qa
+      // 单轨契约：文件即产物——QA-REPORT.md 优先，journal 兜底（兼容存量 run/文件缺失）
+      qa = artifactText(journal, 'QA-REPORT.md') || resume.products.qa
       timeline.qa = qa
       logSkip('QA 测试')
     } else {
@@ -479,9 +492,17 @@ export async function executePipeline(
         const label = isReverify ? `QA 复验 · 第${round - 1}轮修复后` : 'QA 测试工程师 · 功能测试'
         const qaR = await withRetry(journal, parent, label, 'QA 测试', qaPrompt(prd, qaDevSummary(), root, journal.id, state, await currentModelSupportsVision(resolveChildRoute(parent).provider, resolveChildRoute(parent).model)), signal)
         if (!qaR.text) { advanceTask(journal, 'needs-human', null, isReverify ? `QA 复验失败（第 ${round - 1} 轮修复后）` : 'QA 失败', { by: 'qa' }); throw stageFailError(isReverify ? 'QA 测试（复验）' : 'QA 测试', qaR) }
-        qa = qaR.text
+        // 单轨契约：文件即产物——QA-REPORT.md 是缺陷表/补测清单/结论的唯一事实来源；
+        // state 块仍在回复尾部（host 机器元数据，不进文件）
+        mergeStageState('qa', qaR.text)
+        qa = artifactText(journal, 'QA-REPORT.md')
+        if (!qa) {
+          // 硬失败而非回退解析回复：回复仅摘要无缺陷表，回退=「QA 未发现缺陷」静默假交付（本次要治的病）
+          journal.logs.push({ t: Date.now(), level: 'error', message: `QA 子代理回复成功但 ${journal.runDocs ? journal.runDocs + '/' : ''}QA-REPORT.md 未落盘/为空——单轨契约（文件即产物）未兑现，需人工介入` })
+          advanceTask(journal, 'needs-human', null, 'QA-REPORT.md 未落盘（单轨契约未兑现）', { by: 'qa' })
+          throw stageFailError('QA 测试', { attempts: qaR.attempts, stageTokens: qaR.stageTokens })
+        }
         timeline.qa = qa
-        mergeStageState('qa', qa)
         noteTaskStageUsage(journal) // QA 角色的真实 usage 累计
         noteTaskAssign(journal, 'qa', qaStageChildren())
         defects = parseDefects(qa)
@@ -550,12 +571,19 @@ export async function executePipeline(
       }
       const accR = await withRetry(journal, parent, '产品经理 · 最终验收', '产品验收', acceptancePrompt(prd, qa, JSON.stringify(timeline.dev), root, journal.id, state, await currentModelSupportsVision(resolveChildRoute(parent).provider, resolveChildRoute(parent).model)), signal)
       if (!accR.text) { advanceTask(journal, 'needs-human', null, '验收失败', { by: 'pm' }); throw stageFailError('产品验收', accR) }
-      const acceptance = accR.text
+      // 单轨契约：文件即产物——ACCEPTANCE.md 是结论行/核对表唯一事实来源；state 块仍在回复尾部
+      mergeStageState('acceptance', accR.text)
+      const acceptance = artifactText(journal, 'ACCEPTANCE.md')
+      if (!acceptance) {
+        // 硬失败而非回退解析回复：回复仅摘要无结论行，回退=保守 accepted 误放行（无结论行默认过）
+        journal.logs.push({ t: Date.now(), level: 'error', message: `验收子代理回复成功但 ${journal.runDocs ? journal.runDocs + '/' : ''}ACCEPTANCE.md 未落盘/为空——单轨契约（文件即产物）未兑现，需人工介入` })
+        advanceTask(journal, 'needs-human', null, 'ACCEPTANCE.md 未落盘（单轨契约未兑现）', { by: 'pm' })
+        throw stageFailError('产品验收', { attempts: accR.attempts, stageTokens: accR.stageTokens })
+      }
       timeline.acceptance = acceptance
       noteTaskStageUsage(journal) // 验收角色的真实 usage 累计
       const accStage = journal.stages.find((s) => s.phase === '产品验收' && s.childId)
       noteTaskAssign(journal, 'accept', accStage ? String(accStage.childId).slice(0, 8) : '验收组')
-      mergeStageState('acceptance', acceptance)
       // 结论解析：见 parseAcceptanceVerdict（只认结论行，避免正文「无需改动」等否定/引用话术误杀整条流水线）
       const accVerdict = parseAcceptanceVerdict(acceptance)
       if (accVerdict === 'reject') {
