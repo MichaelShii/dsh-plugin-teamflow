@@ -248,14 +248,14 @@ export async function executePipeline(
       const block = extractStateBlock(output)
       if (block) mergeStateBlock(journal.workspace || 'default', block, phaseKey)
     }
-    // 验证证据块存证（dev/qaFix 契约；policy 级——缺失记 warn 不中断）。写最近一个
-    // 同 phase 且未存证的 stage；并行子任务并发完成时可能错位一格（审计信息，可接受）。
-    const noteVerifyEvidence = (output, phaseKey = '开发') => {
+    // 验证证据块存证（dev/qaFix 契约；policy 级——缺失记 warn 不中断）。
+    // 按 withRetry 返回的 stage 引用直写——并发 dev 下绝不错位（reverse().find
+    // 取「最后一个无证据同 phase stage」会把 A 的证据挂到 B 的 stage，审计特性自毁）。
+    const noteVerifyEvidence = (stage, output) => {
       try {
         const ev = extractVerificationEvidence(output)
-        if (!ev) { journal.logs.push({ t: Date.now(), level: 'warn', message: `${phaseKey} 回复缺少 [Verification evidence] 块（契约未兑现，已记录不中断）` }); return }
-        const st = [...journal.stages].reverse().find((s) => s.phase === phaseKey && !s.verifyEvidence)
-        if (st) st.verifyEvidence = ev
+        if (!ev) { journal.logs.push({ t: Date.now(), level: 'warn', message: `${stage ? stage.phase : '开发'} 回复缺少 [Verification evidence] 块（契约未兑现，已记录不中断）` }); return }
+        if (stage) stage.verifyEvidence = ev
       } catch (e) { /* 存证失败不影响流水线 */ }
     }
 
@@ -386,7 +386,7 @@ export async function executePipeline(
         journal.logs.push({ t: Date.now(), level: 'warn', message: `断点续跑开发：复用 ${reused.length} 个已完成任务，补跑 ${rerunDefs.length} 个失败任务` })
         const rerun = await runPool(rerunDefs, maxConcurrency, async (task) => {
           const devR = await withRetry(journal, parent, `开发 · ${task.title}（补跑）`, '开发', devPrompt(task, tech, prd, root, journal.id, state), signal)
-          noteVerifyEvidence(journal, devR.text)
+          noteVerifyEvidence(devR.stage, devR.text)
           const ok = !!devR.text
           return { title: task.title, failed: !ok, output: devR.text || '开发失败（Agent 未产出结果）' }
         })
@@ -433,14 +433,14 @@ export async function executePipeline(
           if (subLive) { subLive.status = 'running'; subLive.startedAt = Date.now(); store.persist(); persistJournal(journal) }
         }
         const devR = await withRetry(journal, parent, `开发 · ${task.title}`, '开发', devPrompt(task, tech, prd, root, journal.id, state), signal)
-        noteVerifyEvidence(journal, devR.text)
+        noteVerifyEvidence(devR.stage, devR.text)
         const ok = !!devR.text
         // 完成子卡：记录状态 + childId + 摘要
         if (sub) {
           completeSubtask(journal, sub.id, !ok, devR.text ? snippet(devR.text, 1000) : null, null)
-          // 把对应 stage 的 usage 累计到子卡
-          const devStage = journal.stages.filter((s) => s.phase === '开发').pop()
-          if (devStage) noteSubtaskUsage(journal, sub.id, devStage)
+          // 把对应 stage 的 usage 累计到子卡（withRetry 返回的 stage 引用——并发下
+          // filter().pop() 会取错 stage：后完成的任务吸收先创建任务的 usage，且被多次累计超计）
+          if (devR.stage) noteSubtaskUsage(journal, sub.id, devR.stage)
         }
         return { title: task.title, failed: !ok, output: devR.text || '开发失败（Agent 未产出结果）' }
       })
@@ -542,7 +542,7 @@ export async function executePipeline(
         journal.logs.push({ t: Date.now(), level: 'warn', message: `QA 发现 ${blocking.length} 个阻断缺陷（第 ${round} 轮），打回开发确认修复后复验` })
         advanceTask(journal, 'rework', snippet(qa, 3000), `QA 打回开发修复（第 ${round}/${QA_REWORK_LIMIT + 1} 轮）`, { by: 'qa' })
         const fixR = await withRetry(journal, parent, `开发 · QA 缺陷修复（第 ${round} 轮）`, '开发', qaFixPrompt(blocking, qa, tech, prd, root, journal.id, state), signal)
-        noteVerifyEvidence(journal, fixR.text)
+        noteVerifyEvidence(fixR.stage, fixR.text)
         if (!fixR.text) { advanceTask(journal, 'needs-human', null, 'QA 打回后开发修复失败', { by: 'qa' }); throw stageFailError('开发（QA 打回修复）', fixR) }
         devFixRounds.push(snippet(fixR.text, 3000))
         noteTaskStageUsage(journal) // 修复子代理真实 usage 累计到任务卡

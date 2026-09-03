@@ -107,6 +107,7 @@ console.log('── 3e) 工作区隔离 + 单任务模型 + 真实 token（v0.9�
 const contextSrc = readFileSync(join(here, '../host/core/context.ts'), 'utf8')
 const backlogSrc = readFileSync(join(here, '../host/core/backlog.ts'), 'utf8')
 const pipelineSrc = readFileSync(join(here, '../host/core/pipeline.ts'), 'utf8')
+const runnerSrc = readFileSync(join(here, '../host/core/runner.ts'), 'utf8')
 const promptsSrc = readFileSync(join(here, '../host/prompts/index.ts'), 'utf8')
 // 1) workspace 级团队工作台（workspace = 项目根 = 会话 cwd，无需额外声明）
 ok(/workspaceScopeOf/.test(contextSrc) && /session\.header\.cwd/.test(contextSrc), 'workspace 由会话 cwd 推导（项目根即工作区）')
@@ -211,6 +212,8 @@ console.log('── 3l) 验收结论契约强度（漏报护栏：结论行字�
 ok(/验收结论：✅ 通过 ／ ⚠️ 有条件通过 ／ ❌ 不通过 ／ 📝 需求不适用/.test(promptsSrc), 'prompts：验收结论行字面量模板（回复 verdict line 固定格式）')
 ok(/MUST be the LAST line of the file, verbatim one of: 验收结论：✅ 通过/.test(promptsSrc) && /missing it = contract violation/.test(promptsSrc), 'prompts：ACCEPTANCE.md 最后一行必须为字面量结论行（缺失=契约违例停线）')
 ok(/if \(!accLine\) return 'needs-human'/.test(utilSrc), 'util：parseAcceptanceVerdict 无结论行 → needs-human（不再默认 accepted——漏报=假交付）')
+ok(/if \(!\/通过\|✅\|⚠️\|❌\|📝\/\.test\(accLine\)\) return 'needs-human'/.test(utilSrc), 'util：空结论行（前缀残留非空）→ needs-human——四档词白名单校验覆盖 accepted 分支')
+ok(/不通过\|需返工\|未通过/.test(utilSrc) && /无\\s\*不通过\|未发现不通过\|未出现不通过/.test(utilSrc), 'util：裸「不通过」→ rework（不再被「通过」子串吞成 accepted）+ 双重否定保护')
 ok(/accVerdict === 'needs-human'/.test(pipelineSrc) && /缺少验收结论行（契约未兑现），需人工确认/.test(pipelineSrc), 'pipeline：无结论行 → needs-human 拦截（对齐 reject 模式：needs-human + humanIntervention + throw）')
 
 console.log('── 3m) prompt 约束分级（hard 自称与 enforcement 脱节 → HOST-ENFORCED / policy 分级）──')
@@ -225,9 +228,13 @@ console.log('── 3n) dev/qaFix 验证证据块（单方宣称 → 可审计�
 ok(/Verification evidence · policy/.test(promptsSrc) && /\[Verification evidence\]/.test(promptsSrc), 'prompts：dev/qaFix 强制验证证据块（policy 级：命令+退出码+断言计数+失败行引用，或显式 N/A）')
 ok(/cross-checkable against your command output in logs\/teamflow/.test(promptsSrc), 'prompts：证据块与命令输出日志对照（审计轨迹，伪造可发现）')
 ok(/export function extractVerificationEvidence/.test(utilSrc), 'util：证据块提取纯函数（到 state 块前截断）')
-ok(/noteVerifyEvidence\(journal, devR\.text\)/.test(pipelineSrc) && /noteVerifyEvidence\(journal, fixR\.text\)/.test(pipelineSrc), 'pipeline：dev 主路径/补跑/qaFix 三处提取存证（stage.verifyEvidence）')
+ok(/noteVerifyEvidence\(devR\.stage, devR\.text\)/.test(pipelineSrc) && /noteVerifyEvidence\(fixR\.stage, fixR\.text\)/.test(pipelineSrc), 'pipeline：dev 主路径/补跑/qaFix 三处提取存证（按 withRetry 返回的 stage 引用直写，并发不错位）')
+ok(/noteSubtaskUsage\(journal, sub\.id, devR\.stage\)/.test(pipelineSrc), 'pipeline：子卡 usage 按 withRetry stage 引用累计（并发下 filter().pop() 会取错 stage 且超计）')
 ok(/缺少 \[Verification evidence\] 块（契约未兑现，已记录不中断）/.test(pipelineSrc), 'pipeline：证据块缺失 → 记 warn 不中断（policy 级，防误杀）')
 ok(/verifyEvidence: s\.verifyEvidence \|\| null/.test(hostSrc), 'host：stageDetail 返回 verifyEvidence（审计可见）')
+ok(/🔬 验证证据/.test(clientSrc) && /st\.phase === '开发'/.test(clientSrc), 'client：阶段详情抽屉渲染验证证据块（有值展示 / 缺失置灰提示——契约未兑现可见）')
+ok(/const beforeLen = journal\.stages\.length/.test(runnerSrc) && /lastStage = journal\.stages\[beforeLen\] \|\| null/.test(runnerSrc), 'runner：withRetry 按调用前长度取本次尝试 stage——并发安全（防证据/重试诊断/usage 累计串位）')
+ok(/stage: JournalStage \| null/.test(runnerSrc), 'runner：withRetry 返回携带 stage 引用')
 
 console.log('── 4) 其他文件 ──')
 for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../descriptors.ts', '../client/index.tsx', '../host/index.ts', '../store.ts']) {

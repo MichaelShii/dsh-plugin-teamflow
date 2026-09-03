@@ -390,6 +390,13 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
           : hasChild ? h('div', { style: { fontSize: 10.5, color: T.text2, textAlign: 'center', lineHeight: 1.55 } },
             '跳转成功后，请切「对话」tab 查看该子代理的完整会话轨迹') : null,
       ),
+      /* 验证证据（dev/qaFix 契约；policy 级——缺失已记 warn，此处置灰提示可见） */
+      (st && st.phase === '开发') ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
+        h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, '🔬 验证证据'),
+        (d && d.verifyEvidence)
+          ? h('div', { style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11.5, lineHeight: 1.62, color: T.text, background: `color-mix(in srgb, ${T.layer2} 55%, transparent)`, border: `1px solid ${T.border}`, borderRadius: 10, padding: '10px 12px', maxHeight: 180, overflowY: 'auto', fontFamily: MONO } }, d.verifyEvidence)
+          : h('div', { style: { fontSize: 11, color: T.warn, background: `color-mix(in srgb, ${T.warn} 8%, transparent)`, border: `1px dashed color-mix(in srgb, ${T.warn} 45%, transparent)`, borderRadius: 10, padding: '8px 12px', lineHeight: 1.55 } }, '（缺失——契约未兑现，host 已记警告；可与 logs/teamflow/<runId>/ 命令输出日志对照）'),
+      ) : null,
       /* 产物全文 */
       h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
         h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, '📄 阶段性产物'),
