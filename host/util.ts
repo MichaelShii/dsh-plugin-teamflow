@@ -189,12 +189,17 @@ export function parseAcceptanceVerdict(text) {
   const archNegated =
     /无返工|无.*返工|不返工|无架构打回|无.*打回|非漂移|无.*重复|无.*偏离|无.*抽象.*问题|无.*蓝图.*问题|架构一致性.*(PASS|良好|达标|通过|无问题)|M3.*(PASS|通过|达标)|架构.*(达标|无问题|良好)/.test(acc)
   if (hasArchRedFlag && !archNegated) return 'rework'
-  if (/❌\s*不通过|需返工|未通过/.test(accLine) && !/✅\s*通过/.test(accLine)) return 'rework'
   if (/📝\s*需求不适用/.test(acc)) return 'reject'
+  // 结论行显式否定 → rework；✅ 通过同现时通过词优先；双重否定保护（无不通过/未发现不通过=通过）
+  if (/不通过|需返工|未通过/.test(accLine) && !/无\s*不通过|未发现不通过|未出现不通过/.test(accLine)) {
+    if (/✅\s*通过/.test(accLine)) return 'accepted'
+    return 'rework'
+  }
   if (!/通过|✅|⚠️/.test(accLine) && /需求不适用|需求与实际不符|需求站不住|需求无效|无需改动|无需修改/.test(accLine)) return 'reject'
-  // 找不到「验收结论/整体结论」行：不猜结论——最乐观默认（accepted）=漏报假交付；
-  // 需人工确认（prompt 已强制结论行字面量模板，缺失=契约未兑现）
   if (!accLine) return 'needs-human'
+  // 结论行存在但未命中任何四档词（空结论行「验收结论：」/待定/无结论）→ 不猜结论（漏报变体：
+  // 旧实现只对「无结论行」→ needs-human，前缀残留的空行因 accLine 非空漏回 accepted）
+  if (!/通过|✅|⚠️|❌|📝/.test(accLine)) return 'needs-human'
   return 'accepted'
 }
 
