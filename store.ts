@@ -230,6 +230,7 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
       handoff: clip(s.handoff || '', 2000),
       summary: clip(s.summary || '', 3000),
       output: clip(s.output || s.summary || '', STAGE_OUTPUT_CLIP),
+      verifyEvidence: s.verifyEvidence ? clip(s.verifyEvidence, 8000) : null,
     })),
     logs: (journal.logs || []).slice(-300).map((l) => ({ t: l.t, level: l.level, message: clip(l.message, 500) })),
   }
