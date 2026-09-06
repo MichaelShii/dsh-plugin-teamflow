@@ -249,6 +249,9 @@ ok(/taskKey: taskKey \|\| null/.test(runnerSrc) && /taskKey\?: string \| null/.t
 ok(/taskKey: s\.taskKey \|\| null/.test(storeSrc), 'store：serializeJournal 序列化 taskKey')
 ok(/s\.taskKey \|\| String\(s\.label/.test(pipelineSrc), 'pipeline：devTaskStatuses 按 taskKey 聚合（label 仅旧数据兜底）')
 ok(/scripts\/migrate-phase-en\.mjs/.test(readFileSync(join(here, '../package.json'), 'utf8') || '') || true, '迁移脚本存在（scripts/migrate-phase-en.mjs）')
+ok(/多源回退（实锤 json-parse r1/.test(guardSrc) && /snapshotEvents/.test(guardSrc) && /ownEvents/.test(guardSrc), 'guard：eventsOf 多源回退（events→snapshotEvents→ownEvents 取最长——r1 QA 误杀 root cause 修复）')
+ok(/isAgentBusy\(run\)/.test(guardSrc) && /busyWarned/.test(guardSrc), 'guard：挂死守卫（agent 非 idle + 已动手 → 视图失明不误杀，记诊断继续观察）')
+ok(/挂死诊断：/.test(guardSrc), 'guard：stalled 触发前记录事件源视图长度（events/snap/own——排查失明）')
 ok(/agent\.inject\(createUserMessage\(/.test(hostSrc) && /const injectPayload = createUserMessage\(/.test(hostSrc), 'host：团队上下文注入经 createUserMessage（宿主 v2 校验要求 user/message 带 id/role——裸 payload 落盘加载即 lacks an identified message）')
 
 console.log('── 4) 其他文件 ──')

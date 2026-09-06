@@ -31,14 +31,46 @@ import type { JournalStage } from '../../store.ts'
  * 只读分析（不 edit）→ 旧判定「零变更进展」误杀，第 2 次 provider error 后 450k 熔断。 */
 const PROGRESS_TOOLS = /^(edit|write|create|apply_patch|patch|remove|delete|rm|mkdir|move|rename|append|bash|pwsh|shell|powershell)$/i
 
-/** 与 metering 同款事件访问器（session.events 可能是数组或返回数组的函数）。 */
+/** Agent 活动守卫（2026-09-06 实锤 r1）：QA 子代理正常干活却被判「10 分钟无事件」——
+ * 事件视图可能失明（session.events 缓存快照不增长）。若 agent 仍非 idle（phase 在跑）
+ * 且本会话动过手（lastMutationAt>0）→ 不是挂死，跳过本次判定（不中止）。
+ * 纯启动静默挂死（未动手）不受影响——照常 B 触发。 */
+function isAgentBusy(run: { localAgent?: unknown } | null | undefined): boolean {
+  try {
+    const agent = run && (run as { localAgent?: { phase?: { kind?: string } } }).localAgent
+    const kind = agent && agent.phase && agent.phase.kind
+    return !!kind && kind !== 'idle'
+  } catch (e) { return false }
+}
+
+/** 与 metering 同款事件访问器（session.events 可能是数组或返回数组的函数）。
+ * 2026-09-06 多源回退（实锤 json-parse r1：QA 子代理正常干活 254 事件 43 step 却被判「10 分钟
+ * 无任何新事件」——session.events 缓存快照视图对某些子代理不增长）。回退链：
+ * events（快照 getter）→ snapshotEvents()（宿主官方 API）→ ownEvents()（fork 后事件）——
+ * 取信息最多（最长）的源；全部失效返回 []（stalled 触发前会记录诊断，见 fire()）。 */
 function eventsOf(run: { localAgent?: { session?: unknown } } | null | undefined): unknown[] {
-  const local = run && (run as { localAgent?: { session?: unknown } }).localAgent
-  const session = (local && local.session) as { events?: unknown } | null | undefined
-  if (!session) return []
-  const raw = session.events
-  const events = Array.isArray(raw) ? raw : typeof raw === 'function' ? (raw as () => unknown[] | null)() : null
-  return Array.isArray(events) ? events : []
+  try {
+    const local = run && (run as { localAgent?: { session?: unknown } }).localAgent
+    const session = (local && local.session) as { events?: unknown; snapshotEvents?: () => unknown; ownEvents?: () => unknown } | null | undefined
+    if (!session) return []
+    const candidates: unknown[] = []
+    try {
+      const raw = (session as { events?: unknown }).events
+      if (Array.isArray(raw)) candidates.push(raw)
+      else if (typeof raw === 'function') candidates.push((raw as () => unknown)())
+    } catch (e) { /* 快照 getter 异常——降级下一源 */ }
+    try {
+      if (typeof session.snapshotEvents === 'function') candidates.push(session.snapshotEvents())
+    } catch (e) { /* 忽略 */ }
+    try {
+      if (typeof session.ownEvents === 'function') candidates.push(session.ownEvents())
+    } catch (e) { /* 忽略 */ }
+    const valid = candidates.filter((c) => Array.isArray(c)) as unknown[][]
+    if (valid.length === 0) return []
+    // 信息最多优先：最长视图（失明的缓存快照长度 < 真实日志）
+    valid.sort((a, b) => b.length - a.length)
+    return valid[0]
+  } catch (e) { return [] }
 }
 
 /** 规范化文本片段：小写 + 仅保留字母数字/CJK，供逐字重复比对。 */
@@ -106,6 +138,7 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
   // 初始 0 表示「尚未动手」——读文件读到复读仍未 edit/跑脚本 = 真退化；动手过之后只读不写再久也是正常模式。
   let lastMutationAt = 0
   let repeatWarned = false
+  let busyWarned = false
 
   function warnOnce(key: string, set: Set<string>, message: string, hint?: string) {
     if (set.has(key)) return
@@ -122,6 +155,21 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
     clearInterval(timer)
     stage.guardReason = reason
     stage.guardOutcome = outcome
+    // 挂死诊断（2026-09-06 实锤 r1：QA 正常干活被判「10 分钟无事件」——记录各事件源视图长度，
+    // 排查 session.events 快照失明：失明时 snapshotEvents/ownEvents 应 > events）
+    if (outcome === 'stalled') {
+      try {
+        const local = (run as { localAgent?: { session?: { events?: unknown; snapshotEvents?: () => unknown; ownEvents?: () => unknown } } }).localAgent
+        const session = local && local.session
+        const lens: string[] = []
+        if (session) {
+          try { const r = session.events; lens.push(`events=${Array.isArray(r) ? r.length : typeof r === 'function' ? (r() as unknown[]).length : '?'}`) } catch (e) { lens.push('events=err') }
+          try { lens.push(`snap=${typeof session.snapshotEvents === 'function' ? (session.snapshotEvents() as unknown[]).length : '-'}`) } catch (e) { lens.push('snap=err') }
+          try { lens.push(`own=${typeof session.ownEvents === 'function' ? (session.ownEvents() as unknown[]).length : '-'}`) } catch (e) { lens.push('own=err') }
+        }
+        journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 挂死诊断：${lens.join(' / ') || 'session 不可访问'}` })
+      } catch (e) { /* 诊断失败不影响中止 */ }
+    }
     try {
       journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 触发进行中护栏并中止本次尝试（${outcome}）：${reason}` })
     } catch (e) { /* ignore */ }
@@ -205,8 +253,18 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
         lastEventCount = events.length
         lastGrowthAt = Date.now()
       } else if (Date.now() - lastGrowthAt > GUARD_SILENCE_MS) {
-        fire(`挂死（${Math.round(GUARD_SILENCE_MS / 60000)} 分钟无任何新事件）`, 'stalled')
-        return
+        // 挂死守卫（实锤 r1：QA 正常干活 254 事件却被判「10 分钟无事件」——事件视图失明）。
+        // agent 仍非 idle 且本会话动过手 → 不是挂死：记一次诊断并给新窗口，不中止。
+        if (lastMutationAt > 0 && isAgentBusy(run)) {
+          if (!busyWarned) {
+            busyWarned = true
+            try { journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 事件视图零增长但 agent 仍活动（会话已动手）——视为视图失明而非挂死，继续观察（护栏诊断见 stall 分支）` }) } catch (e) { /* ignore */ }
+          }
+          lastGrowthAt = Date.now()
+        } else {
+          fire(`挂死（${Math.round(GUARD_SILENCE_MS / 60000)} 分钟无任何新事件）`, 'stalled')
+          return
+        }
       }
 
       // C. 空转检测：事件仍在增长但长期没有工具调用（正常 agent 每分钟都在调工具；
