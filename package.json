@@ -23,7 +23,7 @@
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-modules",
         "@deepseek-ai/dsh-client-ui-conversation"
       ],
       "immediately": false
@@ -69,7 +69,7 @@
     "react": "^18.2.0",
     "@deepseek-ai/dsh-base": "*",
     "@deepseek-ai/dsh-client-locale": "*",
-    "@deepseek-ai/dsh-client-runtime": "*",
+    "@deepseek-ai/dsh-client-modules": "*",
     "@deepseek-ai/dsh-client-ui-conversation": "*",
     "@deepseek-ai/dsh-llm": "*",
     "@deepseek-ai/dsh-tools": "*",
@@ -82,7 +82,7 @@
     "@deepseek-ai/dsh-client-locale": {
       "optional": true
     },
-    "@deepseek-ai/dsh-client-runtime": {
+    "@deepseek-ai/dsh-client-modules": {
       "optional": true
     },
     "@deepseek-ai/dsh-client-ui-conversation": {
