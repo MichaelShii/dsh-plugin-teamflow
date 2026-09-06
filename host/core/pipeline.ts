@@ -9,7 +9,7 @@ import { initPipelineBacklog, advanceTask, storeFor, parseDefects, syncQaDefects
 import { withRetry, runPool, resolveChildRoute } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
-import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, runFolderName, deriveBranchSlug } from '../util.ts'
+import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, resolveStages, STAGE_TOKEN_BUDGET } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
@@ -385,7 +385,12 @@ export async function executePipeline(
         const reused = devResults.filter((r) => r && !rerunDefs.some((d) => d.title === r.title))
         journal.logs.push({ t: Date.now(), level: 'warn', message: `断点续跑开发：复用 ${reused.length} 个已完成任务，补跑 ${rerunDefs.length} 个失败任务` })
         const rerun = await runPool(rerunDefs, maxConcurrency, async (task) => {
-          const devR = await withRetry(journal, parent, `开发 · ${task.title}（补跑）`, '开发', devPrompt(task, tech, prd, root, journal.id, state), signal)
+          // resume 补跑诊断（缺口修复 2026-09-04）：resume 是全新子代理会话，不拼诊断=盲试
+          // （与 withRetry 自动重试同构的问题——模型不知道上次为何失败，会重复踩同一坑）。
+          // 找该任务上次失败 stage（同 title 的最近失败），附 buildRetryDiagnostic（outcome/summary/产出尾部）。
+          const prevStage = [...journal.stages].reverse().find((s) => s.phase === '开发' && s.status !== 'done' && (s.label || '').includes(String(task.title || '')))
+          const resumePrompt = devPrompt(task, tech, prd, root, journal.id, state) + (prevStage ? buildRetryDiagnostic(2, prevStage) : '')
+          const devR = await withRetry(journal, parent, `开发 · ${task.title}（补跑）`, '开发', resumePrompt, signal)
           noteVerifyEvidence(devR.stage, devR.text)
           const ok = !!devR.text
           return { title: task.title, failed: !ok, output: devR.text || '开发失败（Agent 未产出结果）' }
