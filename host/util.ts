@@ -91,9 +91,13 @@ export function sanitizeSnapOptions(o) {
     tasks: Array.isArray(opts.tasks) ? opts.tasks.map((t) => ({ title: String((t && t.title) || ''), spec: String((t && t.spec) || '') })) : [],
   }
 }
-export const SAFE_SIGNAL = { aborted: false, addEventListener: () => {}, removeEventListener: () => {} }
+// 安全信号兜底：宿主（09-04+）在 subagents.start 内部调用 signal.throwIfAborted()——
+// 缺该方法会「启动/执行失败：options?.signal?.throwIfAborted is not a function」（实锤 r1-json-tree-view
+// 3 任务 3 轮 resume 全失败）。SAFE_SIGNAL 永不 abort（aborted 恒 false），空实现语义正确。
+export const SAFE_SIGNAL = { aborted: false, addEventListener: () => {}, removeEventListener: () => {}, throwIfAborted: () => {} }
 export function normalizeSignal(s) {
-  return (s && typeof s === 'object' && typeof s.addEventListener === 'function' && typeof s.aborted === 'boolean') ? s : SAFE_SIGNAL
+  // 真 AbortSignal 判定：须具备 throwIfAborted（宿主硬依赖）；伪 signal 一律降级 SAFE_SIGNAL
+  return (s && typeof s === 'object' && typeof s.addEventListener === 'function' && typeof s.aborted === 'boolean' && typeof s.throwIfAborted === 'function') ? s : SAFE_SIGNAL
 }
 
 /** 分支 slug 派生（ADR-2026-08-27）：branchName > triageSlug > 需求中的英文标识词 > reqId 数字 > 'feature'。

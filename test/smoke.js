@@ -237,6 +237,12 @@ ok(/🔬 验证证据/.test(clientSrc) && /st\.phase === '开发'/.test(clientSr
 ok(/const beforeLen = journal\.stages\.length/.test(runnerSrc) && /lastStage = journal\.stages\[beforeLen\] \|\| null/.test(runnerSrc), 'runner：withRetry 按调用前长度取本次尝试 stage——并发安全（防证据/重试诊断/usage 累计串位）')
 ok(/stage: JournalStage \| null/.test(runnerSrc), 'runner：withRetry 返回携带 stage 引用')
 ok(/resumePrompt = devPrompt\(task, tech, prd, root, journal\.id, state\) \+ \(prevStage \? buildRetryDiagnostic\(2, prevStage\) : ''\)/.test(pipelineSrc), 'pipeline：resume 补跑附上次失败诊断（全新会话不再盲试——r37 实证 PowerShell 坑第三次踩）')
+ok(/throwIfAborted: \(\) => \{\}/.test(utilSrc) && /typeof s\.throwIfAborted === 'function'/.test(utilSrc), 'util：SAFE_SIGNAL 补 throwIfAborted + 真 AbortSignal 判定（宿主 09-04+ 硬依赖——r1 json 树图 3 任务 3 轮 resume 全失败 root cause）')
+ok(/function devTaskStatuses/.test(pipelineSrc) && /有 done stage = 任务已成功/.test(pipelineSrc), 'pipeline：任务级聚合 devTaskStatuses（journal 驱动——有 done stage 即任务成功，历史失败尝试不算失败）')
+ok(/const todo = buildDevTaskDefs\(journal, tasks\)\.filter/.test(pipelineSrc) && /!st \|\| !st\.done/.test(pipelineSrc), 'pipeline：resume 开发分支统一补跑「未成功任务」+ 复用已完成产物（json-parse r1 实锤根治——不再读 backlog 子卡）')
+ok(/if \(phase === '开发'\)/.test(pipelineSrc) && /\[\.\.\.statuses\.values\(\)\]\.some\(\(st\) => !st\.done\)/.test(pipelineSrc), 'pipeline：interruptedPhaseOf 任务级聚合——任务全 done = 阶段完成（部分成功阶段 resume 起点回开发补跑）')
+ok(/同名复用（2026-09-06/.test(backlogSrc) && /store\.tasks\.find\(\(t\) => t\.reqId === journal\.reqId/.test(backlogSrc), 'backlog：createSubtask 同名复用（业务任务实体一张卡 + retries 计数；执行历史在 journal）')
+ok(/agent\.inject\(createUserMessage\(/.test(hostSrc) && /const injectPayload = createUserMessage\(/.test(hostSrc), 'host：团队上下文注入经 createUserMessage（宿主 v2 校验要求 user/message 带 id/role——裸 payload 落盘加载即 lacks an identified message）')
 
 console.log('── 4) 其他文件 ──')
 for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../descriptors.ts', '../client/index.tsx', '../host/index.ts', '../store.ts']) {

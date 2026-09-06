@@ -498,11 +498,12 @@ function tryFlushPendingInjections(sessionId: string): void {
   const agent = runtime.agents ? runtime.agents.get(sessionId) : undefined
   if (!agent || typeof agent.inject !== 'function') return
   try {
-    agent.inject({
-      type: 'user',
+    // 必须经 createUserMessage（宿主 v2 校验要求 user/message 带非空 id/role/source——
+    // 裸 payload 落盘后加载即「lacks an identified message」（实锤 session-8c3f9888 seq 10））
+    agent.inject(createUserMessage({
       content: [{ type: 'text', text: teamflowContextText(pending.teamIcon, pending.teamName, pending.teamId) }],
-      source: { kind: 'plugin', plugin: 'dsh-plugin-teamflow', form: 'context' },
-    })
+      source: { kind: 'plugin', plugin: 'dsh-plugin-teamflow', form: 'instructions' },
+    }))
     pendingInjections.delete(sessionId)
   } catch (e) { /* inject 失败静默 */ }
 }
@@ -570,7 +571,9 @@ export class TeamflowService extends TypertRemoteService {
     return j ? snapshotOf(j) : null
   }
 
-  /** 阶段详情：卡片点击查看 —— 状态/耗时/官方 usage + 产物全文（超 24k 截断）。 */
+  /** 阶段详情：卡片点击查看 —— 状态/耗时/官方 usage + 产物全文（超 24k 截断）。
+   * 2026-09-06 状态机化：返回同任务全部尝试（attempts 聚合——同 label 去重试/补跑后缀，
+   * 按 seq 排序）——client 弹窗单次渲染现状、多次渲染时间线。 */
   stageDetail(runId, seq, sessionId) {
     if (typeof runId !== 'string' || !runId || seq === undefined || seq === null) return null
     const sc = sessionScope(sessionId)
@@ -580,6 +583,25 @@ export class TeamflowService extends TypertRemoteService {
     if (j.workspace && sc.projectKey && j.workspace !== sc.projectKey && sc.projectKey !== 'default') return null
     const s = (j.stages || []).find((st) => Number(st.seq) === Number(seq))
     if (!s) return null
+    const taskKey = String(s.label || '').replace(/^开发 · /, '').replace(/（第 \d+ 次重试|补跑）$/, '').trim()
+    const attempts = taskKey
+      ? (j.stages || [])
+          .filter((x) => x.phase === s.phase && String(x.label || '').replace(/^开发 · /, '').replace(/（第 \d+ 次重试|补跑）$/, '').trim() === taskKey)
+          .sort((a, b) => Number(a.seq) - Number(b.seq))
+          .map((x) => ({
+            seq: x.seq,
+            label: x.label,
+            status: x.status,
+            outcome: x.outcome || null,
+            summary: clip(x.summary || '', 1500),
+            output: clip(toText(x.output) || toText(x.handoff) || '', 12000),
+            usage: x.usage || null,
+            verifyEvidence: x.verifyEvidence || null,
+            childId: x.childId || null,
+            startedAt: x.startedAt,
+            endedAt: x.endedAt,
+          }))
+      : null
     return {
       seq: s.seq, label: s.label, phase: s.phase, status: s.status, outcome: s.outcome,
       childId: s.childId || null, startedAt: s.startedAt, endedAt: s.endedAt,
@@ -588,6 +610,7 @@ export class TeamflowService extends TypertRemoteService {
       verifyEvidence: s.verifyEvidence || null,
       summary: clip(s.summary || '', 3000),
       output: clip(toText(s.output) || toText(s.handoff) || '', 24000),
+      attempts,
     }
   }
 
@@ -746,11 +769,11 @@ export class TeamflowService extends TypertRemoteService {
     saveActiveTeams()
     // 注入会话级上下文：告诉模型什么该走 teamflow，什么不该
     const agent = runtime.agents && runtime.agents.get(sid)
-    const injectPayload = {
-      type: 'user' as const,
-      content: [{ type: 'text' as const, text: teamflowContextText(team.icon, team.name, tid) }],
-      source: { kind: 'plugin' as const, plugin: 'dsh-plugin-teamflow', form: 'context' as const },
-    }
+    // 必须经 createUserMessage（同上：裸 payload 缺 id/role → 宿主 v2 加载校验失败）
+    const injectPayload = createUserMessage({
+      content: [{ type: 'text', text: teamflowContextText(team.icon, team.name, tid) }],
+      source: { kind: 'plugin', plugin: 'dsh-plugin-teamflow', form: 'instructions' },
+    })
     if (agent && typeof agent.inject === 'function') {
       try { agent.inject(injectPayload) } catch (e) { /* inject 失败不影响主流程 */ }
     } else {

@@ -65,9 +65,32 @@ export function interruptedPhaseOf(journal) {
   for (const phase of PHASE_ORDER) {
     const phaseStages = (journal.stages || []).filter((s) => s.phase === phase)
     if (phaseStages.length === 0) continue
-    if (!phaseStages.some((s) => s.status === 'done')) return phase
+    if (phase === '开发') {
+      // 任务级聚合（状态机 2026-09-06）：任务有 done stage = 成功；存在未成功任务 → 阶段未完成。
+      // 历史失败尝试不算失败（同名任务已有 done stage）——dev 部分完成时 resume 起点 = 开发（补跑未完成）。
+      const statuses = devTaskStatuses(phaseStages)
+      if ([...statuses.values()].some((st) => !st.done)) return phase
+    } else {
+      if (!phaseStages.some((s) => s.status === 'done')) return phase
+    }
   }
   return '产品验收'
+}
+
+/** 任务级聚合（journal 驱动，2026-09-06 状态机化）：按 label 去「开发 ·」前缀与
+ * （第 N 次重试）/（补跑）后缀分组——有 done stage = 任务已成功（历史失败尝试不算失败）。
+ * resume 补跑判定/阶段完成判定共用；不读 backlog（两块业务线解耦——残留失败卡污染判定实锤 json-parse r1）。 */
+function devTaskStatuses(stages: Array<{ label?: string; seq?: number; status?: string }>): Map<string, { done: boolean; lastStatus: string | null; lastSeq: number }> {
+  const m = new Map<string, { done: boolean; lastStatus: string | null; lastSeq: number }>()
+  for (const s of stages || []) {
+    const title = String(s.label || '').replace(/^开发 · /, '').replace(/（第 \d+ 次重试|补跑）$/, '').trim()
+    if (!title) continue
+    const cur = m.get(title) || { done: false, lastStatus: null, lastSeq: -1 }
+    if ((s.seq || 0) > cur.lastSeq) { cur.lastSeq = s.seq || 0; cur.lastStatus = s.status || null }
+    if (s.status === 'done') cur.done = true
+    m.set(title, cur)
+  }
+  return m
 }
 
 /** 开发任务定义（单一来源）：架构蓝图自动拆 > 调用方显式 tasks > 整体开发兜底。
@@ -367,24 +390,23 @@ export async function executePipeline(
 
     /* ── 开发阶段（并发池；resume 到 QA/验收时复用旧结果） ── */
     let devResults = null
-    if (resumed('开发')) {
+    if (resume) {
+      // resume 场景（状态机 2026-09-06）：无论起点在开发之前还是开发本身——
+      // 开发 = 复用已完成产物 + 仅补跑「任务级聚合后未成功」的任务；全完成 → 跳过。
+      // 判定完全基于 journal stages（devTaskStatuses），不读 backlog 子卡。
       devResults = resume.products.dev || []
-      // 提测门禁后 resume 补跑（方案 A，实锤 r26）：复用 done 任务产物，仅重跑 failed 子卡——
-      // 否则 needs-human 后 resume 直接复用失败产物进 QA，拦截无意义
-      const store = storeFor(scopeKey)
-      const failedSubs = (store.tasks || []).filter((t) => t.reqId === journal.reqId && t.parentId === journal.taskId && (t.status === 'failed' || t.failed === true))
-      if (failedSubs.length > 0) {
-        const defs = buildDevTaskDefs(journal, tasks)
-        const defByTitle = new Map(defs.map((d) => [d.title, d]))
-        const rerunDefs = failedSubs
-          .map((s) => {
-            const key = String(s.title || '').replace(/^开发 · /, '')
-            return defByTitle.get(key) || { title: key, spec: s.spec || '按技术方案实现该任务改动', files: [] }
-          })
-          .filter(Boolean)
-        const reused = devResults.filter((r) => r && !rerunDefs.some((d) => d.title === r.title))
-        journal.logs.push({ t: Date.now(), level: 'warn', message: `断点续跑开发：复用 ${reused.length} 个已完成任务，补跑 ${rerunDefs.length} 个失败任务` })
-        const rerun = await runPool(rerunDefs, maxConcurrency, async (task) => {
+      const taskStatuses = devTaskStatuses(journal.stages || [])
+      const todo = buildDevTaskDefs(journal, tasks).filter((d) => {
+        const st = taskStatuses.get(String(d.title || '').trim())
+        return !st || !st.done
+      })
+      if (todo.length === 0) {
+        timeline.dev = devResults
+        logSkip('开发')
+      } else {
+        const reused = devResults.filter((r) => r && !todo.some((d) => d.title === r.title))
+        journal.logs.push({ t: Date.now(), level: 'warn', message: `断点续跑开发：复用 ${reused.length} 个已完成任务，补跑 ${todo.length} 个失败任务` })
+        const rerun = await runPool(todo, maxConcurrency, async (task) => {
           // resume 补跑诊断（缺口修复 2026-09-04）：resume 是全新子代理会话，不拼诊断=盲试
           // （与 withRetry 自动重试同构的问题——模型不知道上次为何失败，会重复踩同一坑）。
           // 找该任务上次失败 stage（同 title 的最近失败），附 buildRetryDiagnostic（outcome/summary/产出尾部）。
@@ -396,14 +418,12 @@ export async function executePipeline(
           return { title: task.title, failed: !ok, output: devR.text || '开发失败（Agent 未产出结果）' }
         })
         for (const t of rerun) {
-          const sub = failedSubs.find((s) => String(s.title || '').replace(/^开发 · /, '') === t.title)
+          // 子卡同步：createSubtask 同名复用（业务任务实体一张卡）+ completeSubtask 更新状态
+          const sub = createSubtask(journal, t.title, t.spec || '')
           if (sub) completeSubtask(journal, sub.id, t.failed, t.output ? snippet(t.output, 1000) : null, null)
         }
         devResults = [...reused, ...rerun]
         timeline.dev = devResults
-      } else {
-        timeline.dev = devResults
-        logSkip('开发')
       }
     } else {
       journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：开发' })
