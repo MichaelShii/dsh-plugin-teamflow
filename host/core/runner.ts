@@ -76,12 +76,13 @@ export function resolveChildRoute(parent: ParentAgentLike): { provider?: string;
 
 /** 运行单个阶段子代理：执行 + 产出实质校验 + token 双口径计量 + stage 状态流转。 */
 export async function runAgent(
-  journal: Journal, parent: ParentAgentLike, label: string, phase: string, prompt: string, signal: unknown,
+  journal: Journal, parent: ParentAgentLike, label: string, phase: string, prompt: string, signal: unknown, taskKey?: string | null,
 ): Promise<string | null> {
   const maxSeq = journal.stages.length ? Math.max(...journal.stages.map((s) => s.seq)) : 0
   let stageText = null
   const stage: JournalStage = {
     seq: maxSeq + 1, label, phase, status: 'running', outcome: null,
+    taskKey: taskKey || null,
     childId: null, startedAt: Date.now(), endedAt: null, summary: null,
     usage: null, handoff: null, output: null,
   }
@@ -182,7 +183,7 @@ export async function runAgent(
 
 /** 单阶段重试 + token 熔断（官方口径：input+cacheRead+cacheWrite+output 累计）。 */
 export async function withRetry(
-  journal: Journal, parent: unknown, label: string, phase: string, prompt: string, signal: unknown,
+  journal: Journal, parent: unknown, label: string, phase: string, prompt: string, signal: unknown, taskKey?: string | null,
 ): Promise<{ text: string | null; attempts: number; stageTokens: number; stage: JournalStage | null }> {
   let attempts = 0
   let stageTokens = 0
@@ -197,7 +198,7 @@ export async function withRetry(
     // runAgent 同步 push 本次尝试的 stage（第一个 await 前），期间其他任务的 runAgent
     // 可能已 push 新 stage；用 length-1 取 stage 会错位（证据块/重试诊断/usage 累计全串）。
     const beforeLen = journal.stages.length
-    const result = await runAgent(journal, parent, labelNow, phase, promptNow, signal)
+    const result = await runAgent(journal, parent, labelNow, phase, promptNow, signal, taskKey)
     lastStage = journal.stages[beforeLen] || null
     // 累计本阶段各次尝试的总消耗（官方口径：input+cacheRead+cacheWrite+output）
     if (lastStage && lastStage.phase === phase) {

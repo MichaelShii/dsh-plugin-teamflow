@@ -22,7 +22,7 @@ import type { JournalRecord, JournalStage } from '../store.ts'
 import type {
   Journal, BacklogItem, PipelineOptions, ResumeContext, SubagentRunLike, ParentAgentLike, UsageBuckets,
 } from './types.ts'
-import { RETRY_LIMIT, STAGE_TOKEN_BUDGET, STATUS, PHASE_ORDER, PHASE_KEY_OF, PHASE_KEY_BY_NAME } from './constants.ts'
+import { RETRY_LIMIT, STAGE_TOKEN_BUDGET, STATUS, PHASE_ORDER, PHASE_KEY_OF, PHASE_KEY_BY_NAME, phaseKeyOf } from './constants.ts'
 import { toText, clip, extractText, normalizeRoot, normalizeTasks, sanitizeSnapOptions, normalizeSignal, hasSubstance, isUnretryable, handoffBrief } from './util.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, devPrompt, qaPrompt, acceptancePrompt } from './prompts/index.ts'
 import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, workspaceScopeOf } from './core/context.ts'
@@ -572,7 +572,7 @@ export class TeamflowService extends TypertRemoteService {
   }
 
   /** 阶段详情：卡片点击查看 —— 状态/耗时/官方 usage + 产物全文（超 24k 截断）。
-   * 2026-09-06 状态机化：返回同任务全部尝试（attempts 聚合——同 label 去重试/补跑后缀，
+   * 2026-09-06 状态机化：返回同任务全部尝试（attempts 聚合——按 stage.taskKey（旧数据 label 兜底），
    * 按 seq 排序）——client 弹窗单次渲染现状、多次渲染时间线。 */
   stageDetail(runId, seq, sessionId) {
     if (typeof runId !== 'string' || !runId || seq === undefined || seq === null) return null
@@ -583,10 +583,11 @@ export class TeamflowService extends TypertRemoteService {
     if (j.workspace && sc.projectKey && j.workspace !== sc.projectKey && sc.projectKey !== 'default') return null
     const s = (j.stages || []).find((st) => Number(st.seq) === Number(seq))
     if (!s) return null
-    const taskKey = String(s.label || '').replace(/^开发 · /, '').replace(/（第 \d+ 次重试|补跑）$/, '').trim()
+    const taskKeyOf = (x) => String(x.taskKey || String(x.label || '').replace(/^开发 · /, '').replace(/（(?:第 \d+ 次重试|补跑)）$/, '').trim())
+    const taskKey = taskKeyOf(s)
     const attempts = taskKey
       ? (j.stages || [])
-          .filter((x) => x.phase === s.phase && String(x.label || '').replace(/^开发 · /, '').replace(/（第 \d+ 次重试|补跑）$/, '').trim() === taskKey)
+          .filter((x) => phaseKeyOf(x.phase) === phaseKeyOf(s.phase) && taskKeyOf(x) === taskKey)
           .sort((a, b) => Number(a.seq) - Number(b.seq))
           .map((x) => ({
             seq: x.seq,

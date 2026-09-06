@@ -18,7 +18,10 @@ import { homedir } from 'node:os'
 export interface JournalStage {
   seq: number
   label: string
+  /** 阶段英文键（2026-09-06 英文化：prd/design/scaffold/tech/dev/qa/acceptance；存量中文经迁移脚本映射）。 */
   phase: string
+  /** 任务键（dev 子任务聚合用：任务 title 数据值；非任务型阶段为 null）。 */
+  taskKey?: string | null
   status: string
   outcome?: string | null
   childId?: string | null
@@ -221,6 +224,7 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
       seq: s.seq,
       label: s.label,
       phase: s.phase,
+      taskKey: s.taskKey || null,
       status: s.status,
       outcome: s.outcome || null,
       childId: s.childId || null,

@@ -263,13 +263,16 @@ export function createSubtask(journal, title, spec) {
   // 同名复用（2026-09-06，实锤 json-parse r1）：子卡 = 业务任务实体（同名一张，状态流转），
   // 执行历史在 journal stages（每次尝试独立记录）——不因重试/补跑新建卡导致看板膨胀。
   // retries 语义 = 本任务已被执行的次数 - 1（复用即递增）。
-  const existing = store.tasks.find((t) => t.reqId === journal.reqId && t.parentId === journal.taskId && t.title === fullTitle)
+  // 匹配键 = taskKey（2026-09-06 英文化：title 仅展示，代码匹配走 taskKey；存量卡无 taskKey 时 title 兜底）。
+  const existing = store.tasks.find((t) => t.reqId === journal.reqId && t.parentId === journal.taskId
+    && ((t.taskKey && t.taskKey === title) || (!t.taskKey && t.title === fullTitle)))
   if (existing) {
     existing.status = 'pending'
     existing.failed = false
     existing.summary = null
     existing.endedAt = null
     existing.retries = (existing.retries || 0) + 1
+    existing.taskKey = existing.taskKey || title
     existing.updatedAt = Date.now()
     store.persist()
     persistJournal(journal)
@@ -278,7 +281,7 @@ export function createSubtask(journal, title, spec) {
   const id = store.nextId('dev')
   const sub = {
     id, reqId: journal.reqId, parentId: journal.taskId, product: journal.workspace || 'default',
-    type: 'subtask', title: fullTitle, spec: spec || '',
+    type: 'subtask', title: fullTitle, taskKey: title, spec: spec || '',
     status: 'pending', devAssign: (mainTask && mainTask.devAssign) || null, owner: null,
     retries: 0, humanIntervention: false, createdAt: Date.now(), updatedAt: Date.now(),
     events: [], bugIds: [], usage: null, byRole: {},
