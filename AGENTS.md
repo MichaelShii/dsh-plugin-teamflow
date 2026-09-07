@@ -27,7 +27,7 @@
 | 决策记录 | `docs/adr/0001~0007` | 自研 journal(不引 LangGraph) / AGENTS 最小侵入 / 部署+token 口径 / triage+共享状态 / 需求无效→验收「需求不适用」拦截 / 认知前置+架构落地重构(质量优先) / **QA 打回修复有界闭环(ADR-0007)** |
 | 开发日志 | `docs/devlog.md` | 迭代变更流水 + 功能演进史（历史；不注入会话，按需查阅） |
 | 待办 | `docs/TODO.md` | 未完成事项（需人决策；不注入会话——agent 不主动做产品改进） |
-| 测试 | `test/smoke.js` `test/stages.test.js` `test/verdict.test.js` `test/journal.test.js` `test/diagnostic.test.js` `test/evidence.test.js` | 结构/描述符 smoke + 档位阶段集 + 验收结论 + journal 行为 + 重试诊断 + 验证证据块 |
+| 测试 | `test/smoke.js` `test/stages.test.js` `test/verdict.test.js` `test/journal.test.js` `test/diagnostic.test.js` `test/evidence.test.js` `test/metering.test.js` | 结构/描述符 smoke + 档位阶段集 + 验收结论 + journal 行为 + 重试诊断 + 验证证据块 + token 计量宿主适配（多源回退/usage 双路径） |
 | 评测层（L1+L2） | `test/prompt-contract.test.js` `test/conformance.test.js` `docs/benchmarks/corpus/` | **评测 prompt/注入改动**：L1 行为级契约（工厂产出锚点，含 HOST-ENFORCED/policy 分级，改 prompt 必跑）+ L2 回放语料一致性（冻结真实产物喂宿主解析器，golden corpus 门禁，零 LLM 成本）；语料/清单只增不改 |
 
 ## 3. 工程结构（领域划分，单向依赖）
@@ -60,7 +60,7 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 - **构建/验证**（插件目录下）：
   - `pnpm run typecheck` —— tsc --noEmit（改 type 后必跑）
   - `pnpm run bundle` —— tsdown → `lib/`（host.mjs/client.js/store.mjs/descriptors.mjs）
-  - `pnpm test` —— smoke + journal + verdict + stages + diagnostic + evidence + prompt-contract + conformance（smoke 对 host 目录做源码断言：新增/移动函数后要同步指向；**改 prompt/注入必跑 L1 prompt-contract + L2 conformance**）
+  - `pnpm test` —— smoke + journal + verdict + stages + diagnostic + evidence + metering + prompt-contract + conformance（smoke 对 host 目录做源码断言：新增/移动函数后要同步指向；**改 prompt/注入必跑 L1 prompt-contract + L2 conformance；改计量/宿主适配必跑 metering**）
   - **部署**：`node deploy.mjs`（构建+测试+同步 profile 副本 + 检测运行 web 提示）→ **重启 `dsh --profile web` 才生效**（易踩坑，ADR-0003）。
   - **发布**：`npm publish`（升 `package.json` version 后；`files` 白名单仅含 `lib`/`cordis.patch.yml`/`README.md`，`prepublishOnly` 自动 bundle+test；包名无 scope 默认公开，registry 为 npmjs.org）。
 - **类型**：全 TS；host 必须构建（`node_modules` 下 strip-types 不生效）；`peerDeps`(@deepseek-ai/*) 宿主注入。
