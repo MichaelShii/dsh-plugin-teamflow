@@ -38,8 +38,8 @@ const journal = {
   taskMap: {}, agentsStarted: 2, humanIntervention: false, cancelled: false, interrupted: false, interruptedAt: null,
   supersededBy: null, startedAt: 1000, endedAt: null, error: null,
   stages: [
-    { seq: 1, label: '产品经理 · 梳理 PRD', phase: 'PRD 产品需求', status: 'done', outcome: 'completed', childId: 'c1', startedAt: 1000, endedAt: 2000, tokens: 500, summary: 'PRD 摘要', output: '【完整 PRD 全文】...' },
-    { seq: 2, label: '开发 · 整体开发', phase: '开发', status: 'running', outcome: null, childId: 'c2', startedAt: 3000, endedAt: null, tokens: null, usage: null, summary: null, output: null },
+    { seq: 1, label: '产品经理 · 梳理 PRD', phase: 'prd', status: 'done', outcome: 'completed', childId: 'c1', startedAt: 1000, endedAt: 2000, tokens: 500, summary: 'PRD 摘要', output: '【完整 PRD 全文】...' },
+    { seq: 2, label: '开发 · 整体开发', phase: 'dev', status: 'running', outcome: null, childId: 'c2', startedAt: 3000, endedAt: null, tokens: null, usage: null, summary: null, output: null },
   ],
   logs: [{ t: 1000, level: 'info', message: 'backlog 已建立' }],
   result: null,

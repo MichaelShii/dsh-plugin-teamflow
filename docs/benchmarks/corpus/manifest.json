@@ -1,0 +1,85 @@
+{
+  "version": 1,
+  "note": "TeamFlow L2 回放语料清单：冻结真实形状的阶段产物（含历史实证坑），改 prompt/解析器后跑 test/conformance.test.js 验证 host 解析边界不回归。parser 必须是 test/conformance.test.js 支持的真实解析器。语料文件只增不改（改动 = 新文件 + 新条目，保留历史样本）。",
+  "parsers": {
+    "parseDefects": "host/core/backlog.ts（QA 缺陷表 → 结构化缺陷；容忍 **P1** 加粗、跳过表头/OBS）",
+    "parseAcceptanceVerdict": "host/util.ts（验收报告 → accepted/rework/reject/needs-human）",
+    "extractVerificationEvidence": "host/util.ts（dev/qaFix 回复 → 证据块原文或 null）",
+    "extractBlueprint": "host/util.ts（tech/architect 产出 → 架构蓝图对象或 null；含畸形 JSON 抢救）"
+  },
+  "cases": [
+    {
+      "id": "qa-defects-p1-bold",
+      "file": "qa-report-defects.md",
+      "parser": "parseDefects",
+      "note": "BUG-P1-1 打回形态：**P1** 加粗严重级必须解析到；OBS 观察项跳过",
+      "expect": [
+        { "id": "BUG-1", "severity": "P1", "module": "persist.js" },
+        { "id": "BUG-2", "severity": "P2", "module": "audio.js" }
+      ]
+    },
+    {
+      "id": "qa-no-defects",
+      "file": "qa-report-no-defects.md",
+      "parser": "parseDefects",
+      "note": "「未发现缺陷」报告 → 空数组（表头/结论行不误登）",
+      "expect": []
+    },
+    {
+      "id": "acc-pass",
+      "file": "acceptance-pass.md",
+      "parser": "parseAcceptanceVerdict",
+      "note": "结论行 ✅ 通过 → accepted",
+      "expect": "accepted"
+    },
+    {
+      "id": "acc-pass-noise-word",
+      "file": "acceptance-pass-noise-word.md",
+      "parser": "parseAcceptanceVerdict",
+      "note": "回归陷阱 tf-msytlok5：正文散文「无需改动」不触发 reject（只认结论行）",
+      "expect": "accepted"
+    },
+    {
+      "id": "acc-rework-arch",
+      "file": "acceptance-rework-arch.md",
+      "parser": "parseAcceptanceVerdict",
+      "note": "M3 架构门禁：功能绿但重复适配器 → rework（⚠️ 有条件通过 + 架构红词）",
+      "expect": "rework"
+    },
+    {
+      "id": "acc-no-conclusion",
+      "file": "acceptance-no-conclusion.md",
+      "parser": "parseAcceptanceVerdict",
+      "note": "无结论行 → needs-human（漏报护栏，不猜结论）",
+      "expect": "needs-human"
+    },
+    {
+      "id": "acc-reject-not-applicable",
+      "file": "acceptance-reject-not-applicable.md",
+      "parser": "parseAcceptanceVerdict",
+      "note": "📝 需求不适用 → reject（ADR-0005 拦截形态）",
+      "expect": "reject"
+    },
+    {
+      "id": "dev-evidence-present",
+      "file": "dev-reply-evidence.md",
+      "parser": "extractVerificationEvidence",
+      "note": "证据块整体提取（含 cmd 行；state 块前截断）",
+      "expect": { "contains": ["node test/verify-persist.cjs", "12/12 passed"] }
+    },
+    {
+      "id": "dev-evidence-missing",
+      "file": "dev-reply-no-evidence.md",
+      "parser": "extractVerificationEvidence",
+      "note": "无 [Verification evidence] 块 → null（契约未兑现，r33 实证）",
+      "expect": null
+    },
+    {
+      "id": "tech-blueprint-malformed",
+      "file": "tech-blueprint-malformed.md",
+      "parser": "extractBlueprint",
+      "note": "畸形蓝图 JSON（duplications 后提前闭合，tf-mt85o5jj）→ 抢救解析出 2 任务",
+      "expect": { "nonNull": true, "taskCount": 2, "summaryContains": "persist.js" }
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-teamflow",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "TeamFlow 团队研发流水线（TypeScript）：需求→PRD→设计→架构→技术方案→并行开发→QA→验收；backlog 持久化 + 断点续跑 + 完成汇报 + 防假交付；Web 团队工作台（conversation.view tab + 拖拽看板）",
   "type": "module",
   "main": "./lib/host.mjs",
@@ -23,7 +23,7 @@
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-modules",
         "@deepseek-ai/dsh-client-ui-conversation"
       ],
       "immediately": false
@@ -36,8 +36,8 @@
     "watch": "tsdown --watch",
     "deploy": "node deploy.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node test/smoke.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js",
-    "prepublishOnly": "npx tsdown && npx tsdown -c tsdown.host.config.ts && node test/smoke.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js"
+    "test": "node test/smoke.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/diagnostic.test.js && node test/evidence.test.js && node test/metering.test.js && node test/prompt-contract.test.js && node test/conformance.test.js",
+    "prepublishOnly": "npx tsdown && npx tsdown -c tsdown.host.config.ts && node test/smoke.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/diagnostic.test.js && node test/evidence.test.js && node test/metering.test.js && node test/prompt-contract.test.js && node test/conformance.test.js"
   },
   "files": [
     "lib",
@@ -69,7 +69,7 @@
     "react": "^18.2.0",
     "@deepseek-ai/dsh-base": "*",
     "@deepseek-ai/dsh-client-locale": "*",
-    "@deepseek-ai/dsh-client-runtime": "*",
+    "@deepseek-ai/dsh-client-modules": "*",
     "@deepseek-ai/dsh-client-ui-conversation": "*",
     "@deepseek-ai/dsh-llm": "*",
     "@deepseek-ai/dsh-tools": "*",
@@ -82,7 +82,7 @@
     "@deepseek-ai/dsh-client-locale": {
       "optional": true
     },
-    "@deepseek-ai/dsh-client-runtime": {
+    "@deepseek-ai/dsh-client-modules": {
       "optional": true
     },
     "@deepseek-ai/dsh-client-ui-conversation": {

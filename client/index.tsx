@@ -46,10 +46,15 @@ const STATUS_COLOR = {
   rework: T.error, failed: T.error, 'needs-human': T.error, cancelled: T.text2, closed: T.text2,
   interrupted: T.warn, superseded: T.text2,
 }
+/** 阶段英文键 → 图标/中文展示名（2026-09-06 英文化：journal.phase 为英文键，展示名统一走映射——未来 i18n 换表即换语言）。 */
 const PHASE_ICON = {
-  'PRD 产品需求': '📋', 'UI/UX 设计': '🎨', '架构规划': '🏗️', '技术方案': '📐',
-  开发: '💻', 'QA 测试': '🧪', '产品验收': '✅',
+  prd: '📋', design: '🎨', scaffold: '🏗️', tech: '📐', dev: '💻', qa: '🧪', acceptance: '✅',
 }
+const PHASE_NAME = { prd: 'PRD 产品需求', design: 'UI/UX 设计', scaffold: '架构规划', tech: '技术方案', dev: '开发', qa: 'QA 测试', acceptance: '产品验收' }
+const phaseNameOf = (p) => PHASE_NAME[p] || p || '—'
+const phaseIconOf = (p) => PHASE_ICON[p] || '⚙️'
+/** phase 归一：英文键直通；存量中文映射（防御性——新数据全英文）。 */
+const phaseKeyOf = (p) => ({ 'PRD 产品需求': 'prd', 'UI/UX 设计': 'design', '架构规划': 'scaffold', '技术方案': 'tech', '开发': 'dev', 'QA 测试': 'qa', '产品验收': 'acceptance' })[p] || String(p || '')
 const RUN_STATUS_TEXT = { pending: '等待中', running: '进行中', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', superseded: '已取代' }
 const COLUMNS = {
   req: ['created', 'in-progress', 'pending-acceptance', 'accepted', 'closed', 'needs-human'],
@@ -254,7 +259,8 @@ function FlowStageCard(s, key, onOpen) {
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
       running ? h('span', { style: { width: 7, height: 7, borderRadius: 999, background: color, animation: 'tf-pulse 1.15s ease-in-out infinite' } })
         : h('span', { style: { width: 6, height: 6, borderRadius: 2, background: color } }),
-      h('span', { title: s.label, style: { flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, s.label),
+      h('span', { title: s.label, style: { flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, s.__taskKey || s.label),
+      (s.attempts && s.attempts.length > 1) ? h('span', { title: `重试 ${s.attempts.length - 1} 次（共 ${s.attempts.length} 次尝试）`, style: { fontFamily: MONO, fontSize: 10, fontWeight: 800, color: T.warn, background: `color-mix(in srgb, ${T.warn} 14%, transparent)`, borderRadius: 999, padding: '0 6px', lineHeight: '15px', flex: '0 0 auto' } }, `↻${s.attempts.length - 1}`) : null,
       chip(stText(s.status), color, { dot: true }),
       h('span', { style: { color: T.text2, fontSize: 11, opacity: 0.5 } }, '↗'),
     ),
@@ -296,8 +302,8 @@ function FlowNode(node, onOpen) {
         border: `1px solid color-mix(in srgb, ${g.headColor} 30%, transparent)`,
       },
     },
-      h('span', { style: { fontSize: 13.5 } }, PHASE_ICON[g.phase] || '⚙️'),
-      h('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, g.phase),
+      h('span', { style: { fontSize: 13.5 } }, phaseIconOf(g.phase)),
+      h('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, phaseNameOf(g.phase)),
       g.stages.length > 1 ? h('span', { style: { fontFamily: MONO, fontSize: 10, fontWeight: 800, background: `color-mix(in srgb, ${g.headColor} 16%, transparent)`, borderRadius: 999, padding: '0 7px', lineHeight: '16px' } }, `×${g.stages.length}`) : null,
       running ? h('span', { style: { width: 8, height: 8, borderRadius: 999, background: g.headColor, animation: 'tf-pulse 1.4s ease-in-out infinite' } }) : null,
     ),
@@ -308,22 +314,28 @@ function FlowNode(node, onOpen) {
   )
 }
 
-/** 阶段详情抽屉（卡片点击打开；浮于画布右侧，不参与拖动/缩放）。 */
+/** 阶段详情抽屉（卡片点击打开；浮于画布右侧，不参与拖动/缩放）。
+ * 2026-09-06 状态机化：同任务多次尝试 → 顶部尝试时间线 + 选中展开（默认最新）；
+ * 单次尝试保持现状（不渲染时间线）。 */
 function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
+  const [sel, setSel] = React.useState(null)
   const st = det.stage
   const d = det.data
+  const attempts = (d && d.attempts && d.attempts.length > 1) ? d.attempts : null
+  const selIdx = attempts ? (sel === null ? attempts.length - 1 : sel) : null
+  const cur = attempts ? (attempts[selIdx] || d) : d
   const color = (st && st.status) ? stColor(st.status) : T.text2
   // 跨会话判定：该 run 由另一会话发起（ownerSession ≠ 当前会话）→ 禁用跳转（DSH 目录按父会话加载，跨父导航暂不支持）
   const ownerSession = (d && d.ownerSession) ? String(d.ownerSession) : null
   const mySession = sessionId ? String(sessionId) : null
   const crossSession = !!ownerSession && !!mySession && ownerSession !== mySession
-  const hasChild = !!(!crossSession && d && d.childId && sessions && typeof sessions.openSubagent === 'function')
+  const hasChild = !!(!crossSession && cur && cur.childId && sessions && typeof sessions.openSubagent === 'function')
   const openChild = () => {
     if (crossSession || !hasChild) return
-    try { sessions.openSubagent({ parentSessionId: (ownerSession || sessionId), childSessionId: d.childId, mode: 'one-shot' }) } catch (e) { /* 会话跳转失败忽略 */ }
+    try { sessions.openSubagent({ parentSessionId: (ownerSession || sessionId), childSessionId: cur.childId, mode: 'one-shot' }) } catch (e) { /* 会话跳转失败忽略 */ }
   }
-  const outText = d && d.output ? d.output
-    : d && d.summary ? `（该 run 未保存完整正文，展示摘要）\n\n${d.summary}`
+  const outText = cur && cur.output ? cur.output
+    : cur && cur.summary ? `（该 run 未保存完整正文，展示摘要）\n\n${cur.summary}`
     : det.err ? `⚠ 加载失败：${det.err}`
     : det.loading ? '加载中…'
     : '（无产物正文）'
@@ -352,7 +364,7 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
   },
     /* 头 */
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 9, padding: '12px 14px', borderBottom: `1px solid ${T.border}`, background: `linear-gradient(135deg, color-mix(in srgb, ${color} 14%, transparent), transparent 62%)` } },
-      h('span', { style: { fontSize: 17 } }, PHASE_ICON[st && st.phase] || '⚙️'),
+      h('span', { style: { fontSize: 17 } }, phaseIconOf(st && st.phase)),
       h('div', { style: { flex: 1, minWidth: 0 } },
         h('div', { title: st ? st.label : undefined, style: { fontSize: 12.5, fontWeight: 700, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, st ? st.label : '阶段详情'),
         h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 1, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' } },
@@ -366,8 +378,33 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
       /* usage 明细（官方口径全字段） */
       h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
         h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, 'TOKEN · 官方口径'),
-        h('span', { style: { fontSize: 11.5, fontFamily: MONO, color: T.text, lineHeight: 1.65 } }, usageDetail(d || st || {})),
+        h('span', { style: { fontSize: 11.5, fontFamily: MONO, color: T.text, lineHeight: 1.65 } }, usageDetail(cur || st || {})),
       ),
+      /* 尝试历史时间线（同任务多次尝试；单次不渲染——保持现状简洁） */
+      attempts ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
+        h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, `↻ 尝试历史（${attempts.length} 次 · 点击查看该次详情）`),
+        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+          attempts.map((a, idx) => {
+            const aColor = a.status === 'done' ? T.success : (a.status === 'failed' ? T.error : T.warn)
+            const sel = idx === selIdx
+            return h('div', {
+              key: a.seq, onClick: () => setSel(idx),
+              title: (a.summary || a.outcome || '').slice(0, 200),
+              style: {
+                cursor: 'pointer', borderRadius: 9, padding: '6px 9px', display: 'flex', gap: 7, alignItems: 'center',
+                border: `1px solid ${sel ? color : T.border}`,
+                background: sel ? `color-mix(in srgb, ${color} 10%, transparent)` : T.layer1,
+              },
+            },
+              h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2, flex: '0 0 52px' } }, `#${a.seq}`),
+              h('span', { style: { fontSize: 11, color: aColor, flex: '0 0 64px', fontWeight: 700 } }, a.status === 'done' ? '✅ 成功' : a.status === 'failed' ? `❌ ${a.outcome || '失败'}` : '⏳ 进行中'),
+              h('span', { style: { flex: 1, minWidth: 0, fontSize: 10.5, color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, (a.summary || a.outcome || '（无摘要）').slice(0, 80)),
+              h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2, flex: '0 0 auto' } }, a.startedAt ? fmtDur(a.startedAt, a.endedAt) : '—'),
+              h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2, flex: '0 0 auto' } }, a.usage ? fmtTokens(totalTokens(a.usage)) : ''),
+            )
+          }),
+        ),
+      ) : null,
       /* 跳子代理会话（当前 DSH 未暴露"切 conversation.view 视图"接口：openSubagent 仅完成跳转，
          完整轨迹需到「对话」tab 查看；待官方 conversation.setView 支持后再一键直达，见 AGENTS §6 待办） */
       h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
@@ -390,6 +427,13 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
           : hasChild ? h('div', { style: { fontSize: 10.5, color: T.text2, textAlign: 'center', lineHeight: 1.55 } },
             '跳转成功后，请切「对话」tab 查看该子代理的完整会话轨迹') : null,
       ),
+      /* 验证证据（dev/qaFix 契约；policy 级——缺失已记 warn，此处置灰提示可见） */
+      (st && phaseKeyOf(st.phase) === 'dev') ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
+        h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, '🔬 验证证据'),
+        (cur && cur.verifyEvidence)
+          ? h('div', { style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11.5, lineHeight: 1.62, color: T.text, background: `color-mix(in srgb, ${T.layer2} 55%, transparent)`, border: `1px solid ${T.border}`, borderRadius: 10, padding: '10px 12px', maxHeight: 180, overflowY: 'auto', fontFamily: MONO } }, cur.verifyEvidence)
+          : h('div', { style: { fontSize: 11, color: T.warn, background: `color-mix(in srgb, ${T.warn} 8%, transparent)`, border: `1px dashed color-mix(in srgb, ${T.warn} 45%, transparent)`, borderRadius: 10, padding: '8px 12px', lineHeight: 1.55 } }, '（缺失——契约未兑现，host 已记警告；可与 logs/teamflow/<runId>/ 命令输出日志对照）'),
+      ) : null,
       /* 产物全文 */
       h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
         h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, '📄 阶段性产物'),
@@ -406,10 +450,26 @@ function PipelinePanel({ active, api, runId, sessionId, sessions }) {
     h('div', { style: { fontSize: 28, marginBottom: 8 } }, '🏭'),
     '暂无运行中的流水线——让模型调用 teamflow_start，或在上方输入需求')
   const groups = []
+  // 任务键（2026-09-06 英文化）：stage.taskKey 优先（结构化）；存量数据 label 兜底（去中文结构标记）
+  const taskKeyOf = (s) => String(s.taskKey || String(s.label || '').replace(/^开发 · /, '').replace(/（(?:第 \d+ 次重试|补跑)）$/, '').trim())
   for (const st of active.stages || []) {
     let g = groups.length ? groups[groups.length - 1] : null
     if (!g || g.phase !== st.phase) { g = { phase: st.phase, stages: [] }; groups.push(g) }
-    g.stages.push(st)
+    // 任务级聚合（状态机 2026-09-06，全阶段通用——QA 单 agent 阶段同样收敛）：同任务多次尝试
+    // 合成一张卡（重试角标），不再逐尝试膨胀；单次尝试 = 原样单卡（零回归）
+    const key = taskKeyOf(st)
+    const prev = g.stages.find((x) => x.__taskKey === key)
+    if (prev) {
+      prev.attempts = prev.attempts || [prev]
+      prev.attempts.push(st)
+      if ((st.seq || 0) > (prev.seq || 0)) {
+        for (const f of ['status', 'outcome', 'usage', 'output', 'summary', 'childId', 'startedAt', 'endedAt', 'verifyEvidence']) prev[f] = st[f]
+        prev.seq = st.seq
+        prev.label = st.label
+      }
+    } else {
+      g.stages.push({ ...st, __taskKey: key, attempts: [st] })
+    }
   }
   const wrapRef = React.useRef(null)
   const [vw, setVw] = React.useState(900)

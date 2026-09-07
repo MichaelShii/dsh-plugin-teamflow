@@ -9,9 +9,9 @@ import { initPipelineBacklog, advanceTask, storeFor, parseDefects, syncQaDefects
 import { withRetry, runPool, resolveChildRoute } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
-import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, runFolderName, deriveBranchSlug } from '../util.ts'
+import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
-import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, resolveStages, STAGE_TOKEN_BUDGET } from '../constants.ts'
+import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, STAGE_TOKEN_BUDGET } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext } from '../types.ts'
@@ -26,17 +26,29 @@ export function buildResumeProducts(journal) {
   const products: Record<string, unknown> = {}
   for (const s of journal.stages) {
     if (s.status !== 'done' || !s.output) continue
-    const key = PHASE_KEY_BY_NAME[s.phase]
+    const key = phaseKeyOf(s.phase)
     if (!key) continue
     if (key === 'dev') {
       products.dev = journal.stages
-        .filter((x) => x.phase === '开发' && x.status === 'done' && x.output)
-        .map((x) => ({ title: x.label.replace(/^开发 · /, ''), failed: false, output: x.output }))
+        .filter((x) => phaseKeyOf(x.phase) === 'dev' && x.status === 'done' && x.output)
+        .map((x) => ({ title: x.taskKey || x.label.replace(/^开发 · /, ''), failed: false, output: x.output }))
     } else {
       products[key] = s.output
     }
   }
   return products
+}
+
+/** 任务夹产物读取（单轨契约：文件即产物——QA/验收 host 只读文件，回复仅摘要）。
+ * 缺失/空/读取异常返回 null（调用方决定硬失败或 journal 兜底）。 */
+function artifactText(journal: { workspacePath?: string | null; runDocs?: string | null }, fileName: string): string | null {
+  const path = journal && journal.workspacePath && journal.runDocs ? `${journal.workspacePath}/${journal.runDocs}/${fileName}` : null
+  if (!path) return null
+  try {
+    if (!existsSync(path)) return null
+    const t = readFileSync(path, 'utf8').trim()
+    return t ? t : null
+  } catch (e) { return null }
 }
 
 /**
@@ -49,13 +61,36 @@ export function interruptedPhaseOf(journal) {
   // QA 打回未闭环（实锤 run tf-mte906e9）：P0-P2 缺陷仍 open → 无论如何回到 QA 修复-复验闭环。
   // 必须在「第一个无 done 阶段」之前判定——否则验收阶段失败过（无 done）时断点又定位到验收，
   // 带缺陷继续验收必再次失败（用户实锤：resume 进验收 2 次失败，再 resume 仍定位验收，缺陷未闭环）。
-  if (hasOpenBlockingBugs(journal)) return 'QA 测试'
+  if (hasOpenBlockingBugs(journal)) return 'qa'
   for (const phase of PHASE_ORDER) {
-    const phaseStages = (journal.stages || []).filter((s) => s.phase === phase)
+    const phaseStages = (journal.stages || []).filter((s) => phaseKeyOf(s.phase) === phase)
     if (phaseStages.length === 0) continue
-    if (!phaseStages.some((s) => s.status === 'done')) return phase
+    if (phase === 'dev') {
+      // 任务级聚合（状态机 2026-09-06）：任务有 done stage = 成功；存在未成功任务 → 阶段未完成。
+      // 历史失败尝试不算失败（同名任务已有 done stage）——dev 部分完成时 resume 起点 = 开发（补跑未完成）。
+      const statuses = devTaskStatuses(phaseStages)
+      if ([...statuses.values()].some((st) => !st.done)) return phase
+    } else {
+      if (!phaseStages.some((s) => s.status === 'done')) return phase
+    }
   }
-  return '产品验收'
+  return 'acceptance'
+}
+
+/** 任务级聚合（journal 驱动，2026-09-06 状态机化）：按 stage.taskKey（旧数据 label 兜底）分组——
+ * 有 done stage = 任务已成功（历史失败尝试不算失败）。
+ * resume 补跑判定/阶段完成判定共用；不读 backlog（两块业务线解耦——残留失败卡污染判定实锤 json-parse r1）。 */
+function devTaskStatuses(stages: Array<{ taskKey?: string | null; label?: string; seq?: number; status?: string }>): Map<string, { done: boolean; lastStatus: string | null; lastSeq: number }> {
+  const m = new Map<string, { done: boolean; lastStatus: string | null; lastSeq: number }>()
+  for (const s of stages || []) {
+    const title = String(s.taskKey || String(s.label || '').replace(/^开发 · /, '').replace(/（(?:第 \d+ 次重试|补跑)）$/, '').trim())
+    if (!title) continue
+    const cur = m.get(title) || { done: false, lastStatus: null, lastSeq: -1 }
+    if ((s.seq || 0) > cur.lastSeq) { cur.lastSeq = s.seq || 0; cur.lastStatus = s.status || null }
+    if (s.status === 'done') cur.done = true
+    m.set(title, cur)
+  }
+  return m
 }
 
 /** 开发任务定义（单一来源）：架构蓝图自动拆 > 调用方显式 tasks > 整体开发兜底。
@@ -133,16 +168,16 @@ export async function executePipeline(
   const logSkip = (phase) => journal.logs.push({ t: Date.now(), level: 'warn', message: `跳过已完成阶段：${phase}（断点续跑）` })
   /** 阶段失败错误：带真实尝试次数/末次结果/累计消耗与熔断语义（取代千篇一律的「重试 N 次后仍无产出」）。 */
   const stageFailError = (label: string, r: { attempts?: number; stageTokens?: number }): Error => {
-    const last = [...(journal.stages || [])].reverse().find((s) => s.phase === label)
+    const last = [...(journal.stages || [])].reverse().find((s) => phaseKeyOf(s.phase) === label)
     const attempts = r && r.attempts ? r.attempts : RETRY_LIMIT
     const burnt = Math.round(((r && r.stageTokens) || 0) / 1000)
     const breaker = ((r && r.stageTokens) || 0) >= STAGE_TOKEN_BUDGET ? '，超出阶段预算熔断' : ''
     const detail = last ? `末次 ${last.outcome || 'unknown'}${last.summary ? `（${last.summary}）` : ''}` : '无阶段记录'
-    return new Error(`${label} 阶段失败：${attempts} 次尝试未交付，${detail}，累计消耗 ${burnt}k token${breaker}，需人工介入`)
+    return new Error(`${PHASE_KEY_OF[label] || label} 阶段失败：${attempts} 次尝试未交付，${detail}，累计消耗 ${burnt}k token${breaker}，需人工介入`)
   }
   try {
     if (resume) {
-      journal.logs.push({ t: Date.now(), level: 'info', message: `断点续跑：复用 backlog（req=${journal.reqId}），从「${resume.phase}」继续` })
+      journal.logs.push({ t: Date.now(), level: 'info', message: `断点续跑：复用 backlog（req=${journal.reqId}），从「${PHASE_KEY_OF[resume.phase] || resume.phase}」继续` })
     } else {
       const init = initPipelineBacklog(journal, requirement, options)
       journal.reqId = init.reqId
@@ -236,13 +271,23 @@ export async function executePipeline(
       const block = extractStateBlock(output)
       if (block) mergeStateBlock(journal.workspace || 'default', block, phaseKey)
     }
+    // 验证证据块存证（dev/qaFix 契约；policy 级——缺失记 warn 不中断）。
+    // 按 withRetry 返回的 stage 引用直写——并发 dev 下绝不错位（reverse().find
+    // 取「最后一个无证据同 phase stage」会把 A 的证据挂到 B 的 stage，审计特性自毁）。
+    const noteVerifyEvidence = (stage, output) => {
+      try {
+        const ev = extractVerificationEvidence(output)
+        if (!ev) { journal.logs.push({ t: Date.now(), level: 'warn', message: `${stage ? (PHASE_KEY_OF[phaseKeyOf(stage.phase)] || stage.phase) : '开发'} 回复缺少 [Verification evidence] 块（契约未兑现，已记录不中断）` }); return }
+        if (stage) stage.verifyEvidence = ev
+      } catch (e) { /* 存证失败不影响流水线 */ }
+    }
 
     /* ── PRD 阶段 ── */
     let prd = null
-    if (resumed('PRD 产品需求')) {
+    if (resumed('prd')) {
       prd = resume.products.prd
       timeline.prd = prd
-      logSkip('PRD 产品需求')
+      logSkip(PHASE_KEY_OF.prd)
     } else {
       journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：PRD 产品需求' })
       const pForm = options.mode === 'tech'
@@ -250,8 +295,8 @@ export async function executePipeline(
         : options.mode === 'patch'
           ? { label: '工程师 · 单点确认', fn: patchConfirmPrompt }
           : { label: '产品经理 · 梳理 PRD', fn: prdPrompt }
-      const prdR = await withRetry(journal, parent, pForm.label, 'PRD 产品需求', pForm.fn(requirement, root, journal.id, state), signal)
-      if (!prdR.text) { throw stageFailError('PRD 产品需求', prdR) }
+      const prdR = await withRetry(journal, parent, pForm.label, 'prd', pForm.fn(requirement, root, journal.id, state), signal)
+      if (!prdR.text) { throw stageFailError('prd', prdR) }
       prd = prdR.text
       timeline.prd = prd
       mergeStageState('prd', prd)
@@ -262,14 +307,14 @@ export async function executePipeline(
     /* ── UI/UX 设计阶段（档位阶段集启用；lite+needDesign 也保留，显式要求的 UI 需求不被吞） ── */
     let design = null
     if (enabled('design')) {
-      if (resumed('UI/UX 设计')) {
+      if (resumed('design')) {
         design = resume.products.design
         timeline.design = design
-        logSkip('UI/UX 设计')
+        logSkip(PHASE_KEY_OF.design)
       } else {
         journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：UI/UX 设计' })
-        const designR = await withRetry(journal, parent, 'UI/UX 设计师 · 设计说明', 'UI/UX 设计', designPrompt(prd, root, journal.id, state), signal)
-        if (!designR.text) { throw stageFailError('UI/UX 设计', designR) }
+        const designR = await withRetry(journal, parent, 'UI/UX 设计师 · 设计说明', 'design', designPrompt(prd, root, journal.id, state), signal)
+        if (!designR.text) { throw stageFailError('design', designR) }
         design = designR.text
         timeline.design = design
         mergeStageState('design', design)
@@ -281,14 +326,14 @@ export async function executePipeline(
     /* ── 架构规划阶段（档位阶段集启用：显式 needScaffold 才含，见 STAGE_POLICY） ── */
     let scaffold = null
     if (enabled('scaffold')) {
-      if (resumed('架构规划')) {
+      if (resumed('scaffold')) {
         scaffold = resume.products.scaffold
         timeline.scaffold = scaffold
-        logSkip('架构规划')
+        logSkip(PHASE_KEY_OF.scaffold)
       } else {
         journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：架构规划' })
-        const scR = await withRetry(journal, parent, '架构师 · 脚手架规划与落地', '架构规划', scaffoldPrompt(requirement, design, root, journal.id, state), signal)
-        if (!scR.text) { throw stageFailError('架构规划', scR) }
+        const scR = await withRetry(journal, parent, '架构师 · 脚手架规划与落地', 'scaffold', scaffoldPrompt(requirement, design, root, journal.id, state), signal)
+        if (!scR.text) { throw stageFailError('scaffold', scR) }
         scaffold = scR.text
         timeline.scaffold = scaffold
         mergeStageState('scaffold', scaffold)
@@ -300,10 +345,10 @@ export async function executePipeline(
     /* ── 技术方案/架构阶段（按档位阶段集；lite/tech 轻量产架构蓝图；patch 无 tech——单 agent 直改，见 STAGE_POLICY） ── */
     let tech = null
     if (enabled('tech')) {
-      if (resumed('技术方案')) {
+      if (resumed('tech')) {
         tech = resume.products.tech
         timeline.tech = tech
-        logSkip('技术方案')
+        logSkip(PHASE_KEY_OF.tech)
       } else {
       const isHeavy = !options.lite && options.mode !== 'tech' && options.mode !== 'patch'
       journal.logs.push({ t: Date.now(), level: 'phase', message: isHeavy ? '进入阶段：技术方案' : '进入阶段：架构蓝图' })
@@ -311,7 +356,7 @@ export async function executePipeline(
       const prompt = isHeavy
         ? techPrompt(prd, design, scaffold, tasks, root, journal.id, state)
         : architectPrompt(prd, root, journal.id, state)
-      const techR = await withRetry(journal, parent, label, '技术方案', prompt, signal)
+      const techR = await withRetry(journal, parent, label, 'tech', prompt, signal)
       if (!techR.text) { throw stageFailError(label, techR) }
       tech = techR.text
       timeline.tech = tech
@@ -345,37 +390,40 @@ export async function executePipeline(
 
     /* ── 开发阶段（并发池；resume 到 QA/验收时复用旧结果） ── */
     let devResults = null
-    if (resumed('开发')) {
+    if (resume) {
+      // resume 场景（状态机 2026-09-06）：无论起点在开发之前还是开发本身——
+      // 开发 = 复用已完成产物 + 仅补跑「任务级聚合后未成功」的任务；全完成 → 跳过。
+      // 判定完全基于 journal stages（devTaskStatuses），不读 backlog 子卡。
       devResults = resume.products.dev || []
-      // 提测门禁后 resume 补跑（方案 A，实锤 r26）：复用 done 任务产物，仅重跑 failed 子卡——
-      // 否则 needs-human 后 resume 直接复用失败产物进 QA，拦截无意义
-      const store = storeFor(scopeKey)
-      const failedSubs = (store.tasks || []).filter((t) => t.reqId === journal.reqId && t.parentId === journal.taskId && (t.status === 'failed' || t.failed === true))
-      if (failedSubs.length > 0) {
-        const defs = buildDevTaskDefs(journal, tasks)
-        const defByTitle = new Map(defs.map((d) => [d.title, d]))
-        const rerunDefs = failedSubs
-          .map((s) => {
-            const key = String(s.title || '').replace(/^开发 · /, '')
-            return defByTitle.get(key) || { title: key, spec: s.spec || '按技术方案实现该任务改动', files: [] }
-          })
-          .filter(Boolean)
-        const reused = devResults.filter((r) => r && !rerunDefs.some((d) => d.title === r.title))
-        journal.logs.push({ t: Date.now(), level: 'warn', message: `断点续跑开发：复用 ${reused.length} 个已完成任务，补跑 ${rerunDefs.length} 个失败任务` })
-        const rerun = await runPool(rerunDefs, maxConcurrency, async (task) => {
-          const devR = await withRetry(journal, parent, `开发 · ${task.title}（补跑）`, '开发', devPrompt(task, tech, prd, root, journal.id, state), signal)
+      const taskStatuses = devTaskStatuses(journal.stages || [])
+      const todo = buildDevTaskDefs(journal, tasks).filter((d) => {
+        const st = taskStatuses.get(String(d.title || '').trim())
+        return !st || !st.done
+      })
+      if (todo.length === 0) {
+        timeline.dev = devResults
+        logSkip('开发')
+      } else {
+        const reused = devResults.filter((r) => r && !todo.some((d) => d.title === r.title))
+        journal.logs.push({ t: Date.now(), level: 'warn', message: `断点续跑开发：复用 ${reused.length} 个已完成任务，补跑 ${todo.length} 个失败任务` })
+        const rerun = await runPool(todo, maxConcurrency, async (task) => {
+          // resume 补跑诊断（缺口修复 2026-09-04）：resume 是全新子代理会话，不拼诊断=盲试
+          // （与 withRetry 自动重试同构的问题——模型不知道上次为何失败，会重复踩同一坑）。
+          // 找该任务上次失败 stage（同 title 的最近失败），附 buildRetryDiagnostic（outcome/summary/产出尾部）。
+          const prevStage = [...journal.stages].reverse().find((s) => phaseKeyOf(s.phase) === 'dev' && s.status !== 'done' && ((s.taskKey && s.taskKey === String(task.title || '')) || (!s.taskKey && (s.label || '').includes(String(task.title || '')))))
+          const resumePrompt = devPrompt(task, tech, prd, root, journal.id, state) + (prevStage ? buildRetryDiagnostic(2, prevStage) : '')
+          const devR = await withRetry(journal, parent, `开发 · ${task.title}（补跑）`, 'dev', resumePrompt, signal, task.title)
+          noteVerifyEvidence(devR.stage, devR.text)
           const ok = !!devR.text
           return { title: task.title, failed: !ok, output: devR.text || '开发失败（Agent 未产出结果）' }
         })
         for (const t of rerun) {
-          const sub = failedSubs.find((s) => String(s.title || '').replace(/^开发 · /, '') === t.title)
+          // 子卡同步：createSubtask 同名复用（业务任务实体一张卡）+ completeSubtask 更新状态
+          const sub = createSubtask(journal, t.title, t.spec || '')
           if (sub) completeSubtask(journal, sub.id, t.failed, t.output ? snippet(t.output, 1000) : null, null)
         }
         devResults = [...reused, ...rerun]
         timeline.dev = devResults
-      } else {
-        timeline.dev = devResults
-        logSkip('开发')
       }
     } else {
       journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：开发' })
@@ -409,14 +457,15 @@ export async function executePipeline(
           const subLive = store.find('task', sub.id)
           if (subLive) { subLive.status = 'running'; subLive.startedAt = Date.now(); store.persist(); persistJournal(journal) }
         }
-        const devR = await withRetry(journal, parent, `开发 · ${task.title}`, '开发', devPrompt(task, tech, prd, root, journal.id, state), signal)
+        const devR = await withRetry(journal, parent, `开发 · ${task.title}`, 'dev', devPrompt(task, tech, prd, root, journal.id, state), signal, task.title)
+        noteVerifyEvidence(devR.stage, devR.text)
         const ok = !!devR.text
         // 完成子卡：记录状态 + childId + 摘要
         if (sub) {
           completeSubtask(journal, sub.id, !ok, devR.text ? snippet(devR.text, 1000) : null, null)
-          // 把对应 stage 的 usage 累计到子卡
-          const devStage = journal.stages.filter((s) => s.phase === '开发').pop()
-          if (devStage) noteSubtaskUsage(journal, sub.id, devStage)
+          // 把对应 stage 的 usage 累计到子卡（withRetry 返回的 stage 引用——并发下
+          // filter().pop() 会取错 stage：后完成的任务吸收先创建任务的 usage，且被多次累计超计）
+          if (devR.stage) noteSubtaskUsage(journal, sub.id, devR.stage)
         }
         return { title: task.title, failed: !ok, output: devR.text || '开发失败（Agent 未产出结果）' }
       })
@@ -427,7 +476,7 @@ export async function executePipeline(
       }
       // 累计全部 dev stage usage 到主卡（汇总）
       noteTaskStageUsage(journal)
-      const devStages = journal.stages.filter((s) => s.phase === '开发')
+      const devStages = journal.stages.filter((s) => phaseKeyOf(s.phase) === 'dev')
       noteTaskAssign(journal, 'dev', devStages.map((s) => (s.childId || '').slice(0, 8)).filter(Boolean).join(',') || '开发组')
       const failedCount = devResults.filter((r) => r && r.failed).length
       if (failedCount > 0) {
@@ -454,16 +503,17 @@ export async function executePipeline(
       // 档位阶段集无 QA（patch）或团队未启用 QA：跳过独立 QA
       journal.logs.push({ t: Date.now(), level: 'info', message: '当前档位阶段集不含独立 QA：跳过（单点修复，开发自测兜底）' })
       qa = '（独立 QA 跳过：当前档位由开发自测兜底）'
-    } else if (resumed('QA 测试') && !hasOpenBlockingBugs(journal)) {
+    } else if (resumed('qa') && !hasOpenBlockingBugs(journal)) {
       // 复用旧 QA 产物（QA 干净/仅 P3 时续跑）；QA 打回缺陷未闭环时不复用——重走修复-复验闭环
-      qa = resume.products.qa
+      // 单轨契约：文件即产物——QA-REPORT.md 优先，journal 兜底（兼容存量 run/文件缺失）
+      qa = artifactText(journal, 'QA-REPORT.md') || resume.products.qa
       timeline.qa = qa
-      logSkip('QA 测试')
+      logSkip(PHASE_KEY_OF.qa)
     } else {
       journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：QA 测试' })
       advanceTask(journal, 'testing', null, 'QA 开始（待测试 → 测试中）', { by: 'qa' })
       const store = storeFor(scopeKey)
-      const qaStageChildren = () => journal.stages.filter((s) => s.phase === 'QA 测试').map((s) => (s.childId || '').slice(0, 8)).filter(Boolean).join(',') || '测试组'
+      const qaStageChildren = () => journal.stages.filter((s) => phaseKeyOf(s.phase) === 'qa').map((s) => (s.childId || '').slice(0, 8)).filter(Boolean).join(',') || '测试组'
       // QA → 开发修复 → 复验 打回闭环：QA 发现 P0-P2 缺陷则打回开发确认/修复，干净才进验收；超 QA_REWORK_LIMIT 轮需人工。
       let round = 0
       let qaClean = false
@@ -477,11 +527,19 @@ export async function executePipeline(
         round += 1
         const isReverify = round > 1
         const label = isReverify ? `QA 复验 · 第${round - 1}轮修复后` : 'QA 测试工程师 · 功能测试'
-        const qaR = await withRetry(journal, parent, label, 'QA 测试', qaPrompt(prd, qaDevSummary(), root, journal.id, state, await currentModelSupportsVision(resolveChildRoute(parent).provider, resolveChildRoute(parent).model)), signal)
-        if (!qaR.text) { advanceTask(journal, 'needs-human', null, isReverify ? `QA 复验失败（第 ${round - 1} 轮修复后）` : 'QA 失败', { by: 'qa' }); throw stageFailError(isReverify ? 'QA 测试（复验）' : 'QA 测试', qaR) }
-        qa = qaR.text
+        const qaR = await withRetry(journal, parent, label, 'qa', qaPrompt(prd, qaDevSummary(), root, journal.id, state, await currentModelSupportsVision(resolveChildRoute(parent).provider, resolveChildRoute(parent).model)), signal)
+        if (!qaR.text) { advanceTask(journal, 'needs-human', null, isReverify ? `QA 复验失败（第 ${round - 1} 轮修复后）` : 'QA 失败', { by: 'qa' }); throw stageFailError('qa', qaR) }
+        // 单轨契约：文件即产物——QA-REPORT.md 是缺陷表/补测清单/结论的唯一事实来源；
+        // state 块仍在回复尾部（host 机器元数据，不进文件）
+        mergeStageState('qa', qaR.text)
+        qa = artifactText(journal, 'QA-REPORT.md')
+        if (!qa) {
+          // 硬失败而非回退解析回复：回复仅摘要无缺陷表，回退=「QA 未发现缺陷」静默假交付（本次要治的病）
+          journal.logs.push({ t: Date.now(), level: 'error', message: `QA 子代理回复成功但 ${journal.runDocs ? journal.runDocs + '/' : ''}QA-REPORT.md 未落盘/为空——单轨契约（文件即产物）未兑现，需人工介入` })
+          advanceTask(journal, 'needs-human', null, 'QA-REPORT.md 未落盘（单轨契约未兑现）', { by: 'qa' })
+          throw stageFailError('qa', { attempts: qaR.attempts, stageTokens: qaR.stageTokens })
+        }
         timeline.qa = qa
-        mergeStageState('qa', qa)
         noteTaskStageUsage(journal) // QA 角色的真实 usage 累计
         noteTaskAssign(journal, 'qa', qaStageChildren())
         defects = parseDefects(qa)
@@ -508,7 +566,8 @@ export async function executePipeline(
         // 打回开发确认/修复 → 下一轮复验
         journal.logs.push({ t: Date.now(), level: 'warn', message: `QA 发现 ${blocking.length} 个阻断缺陷（第 ${round} 轮），打回开发确认修复后复验` })
         advanceTask(journal, 'rework', snippet(qa, 3000), `QA 打回开发修复（第 ${round}/${QA_REWORK_LIMIT + 1} 轮）`, { by: 'qa' })
-        const fixR = await withRetry(journal, parent, `开发 · QA 缺陷修复（第 ${round} 轮）`, '开发', qaFixPrompt(blocking, qa, tech, prd, root, journal.id, state), signal)
+        const fixR = await withRetry(journal, parent, `开发 · QA 缺陷修复（第 ${round} 轮）`, 'dev', qaFixPrompt(blocking, qa, tech, prd, root, journal.id, state), signal, null)
+        noteVerifyEvidence(fixR.stage, fixR.text)
         if (!fixR.text) { advanceTask(journal, 'needs-human', null, 'QA 打回后开发修复失败', { by: 'qa' }); throw stageFailError('开发（QA 打回修复）', fixR) }
         devFixRounds.push(snippet(fixR.text, 3000))
         noteTaskStageUsage(journal) // 修复子代理真实 usage 累计到任务卡
@@ -548,16 +607,36 @@ export async function executePipeline(
           advanceTask(journal, 'pending-acceptance', null, '进入验收（待验收）', { by: 'pm' })
         }
       }
-      const accR = await withRetry(journal, parent, '产品经理 · 最终验收', '产品验收', acceptancePrompt(prd, qa, JSON.stringify(timeline.dev), root, journal.id, state, await currentModelSupportsVision(resolveChildRoute(parent).provider, resolveChildRoute(parent).model)), signal)
-      if (!accR.text) { advanceTask(journal, 'needs-human', null, '验收失败', { by: 'pm' }); throw stageFailError('产品验收', accR) }
-      const acceptance = accR.text
+      const accR = await withRetry(journal, parent, '产品经理 · 最终验收', 'acceptance', acceptancePrompt(prd, qa, JSON.stringify(timeline.dev), root, journal.id, state, await currentModelSupportsVision(resolveChildRoute(parent).provider, resolveChildRoute(parent).model)), signal)
+      if (!accR.text) { advanceTask(journal, 'needs-human', null, '验收失败', { by: 'pm' }); throw stageFailError('acceptance', accR) }
+      // 单轨契约：文件即产物——ACCEPTANCE.md 是结论行/核对表唯一事实来源；state 块仍在回复尾部
+      mergeStageState('acceptance', accR.text)
+      const acceptance = artifactText(journal, 'ACCEPTANCE.md')
+      if (!acceptance) {
+        // 硬失败而非回退解析回复：回复仅摘要无结论行，回退=保守 accepted 误放行（无结论行默认过）
+        journal.logs.push({ t: Date.now(), level: 'error', message: `验收子代理回复成功但 ${journal.runDocs ? journal.runDocs + '/' : ''}ACCEPTANCE.md 未落盘/为空——单轨契约（文件即产物）未兑现，需人工介入` })
+        advanceTask(journal, 'needs-human', null, 'ACCEPTANCE.md 未落盘（单轨契约未兑现）', { by: 'pm' })
+        throw stageFailError('acceptance', { attempts: accR.attempts, stageTokens: accR.stageTokens })
+      }
       timeline.acceptance = acceptance
       noteTaskStageUsage(journal) // 验收角色的真实 usage 累计
-      const accStage = journal.stages.find((s) => s.phase === '产品验收' && s.childId)
+      const accStage = journal.stages.find((s) => phaseKeyOf(s.phase) === 'acceptance' && s.childId)
       noteTaskAssign(journal, 'accept', accStage ? String(accStage.childId).slice(0, 8) : '验收组')
-      mergeStageState('acceptance', acceptance)
-      // 结论解析：见 parseAcceptanceVerdict（只认结论行，避免正文「无需改动」等否定/引用话术误杀整条流水线）
+      // 结论解析：见 parseAcceptanceVerdict（只认结论行，避免正文「无需改动」等否定/引用话术误杀整条流水线；
+      // 无结论行 → needs-human，不猜结论——防模型写 ❌ 但漏「验收结论：」前缀被默认 accepted）
       const accVerdict = parseAcceptanceVerdict(acceptance)
+      if (accVerdict === 'needs-human') {
+        // 契约未兑现：ACCEPTANCE.md 无「验收结论」行（prompt 已强制最后一行字面量模板）。
+        // 宁严勿松：误拦截=人工看一眼，误放行=假交付（旧实现无结论行默认 accepted=漏报）
+        journal.logs.push({ t: Date.now(), level: 'error', message: 'ACCEPTANCE.md 缺少「验收结论：」行（字面量模板未兑现）——不自动判通过，需人工确认结论' })
+        advanceTask(journal, 'needs-human', snippet(acceptance, 3000), 'ACCEPTANCE.md 缺少验收结论行（契约未兑现），需人工确认', { by: 'pm' })
+        const store = storeFor(scopeKey)
+        const req = store.find('req', journal.reqId)
+        if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', '验收结论行缺失，需人工确认') }
+        journal.humanIntervention = true
+        persistJournal(journal)
+        throw new Error('ACCEPTANCE.md 缺少验收结论行，需人工确认结论')
+      }
       if (accVerdict === 'reject') {
         // 需求与现状不符（无有效变更）→ 拦截：task needs-human、req needs-human、流水线中断（非 accepted）
         advanceTask(journal, 'needs-human', snippet(acceptance, 3000), '需求与现状不符（无需改动），需人工决定调整或取消需求', { by: 'pm' })

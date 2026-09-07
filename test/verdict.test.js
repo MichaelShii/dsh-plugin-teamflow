@@ -29,7 +29,21 @@ const passWithChg = `## 验收结论：✅ 通过（其他模块代码无需改�
 expect(parseAcceptanceVerdict(passWithChg), 'accepted', '结论行含「通过」+「无需改动」→ accepted（通过词优先）')
 
 const noConclusion = `主体内容未按格式写结论行。需求无效这类词出现在正文讨论里，不应判拒绝。`
-expect(parseAcceptanceVerdict(noConclusion), 'accepted', '无结论行 + 正文出现 reject 词 → 保守 accepted（不误杀）')
+expect(parseAcceptanceVerdict(noConclusion), 'needs-human', '无结论行 → needs-human（不再默认 accepted——防漏报，需人工确认）')
+
+console.log('── 漏报护栏（2026-09-03）：模型写 ❌ 但漏写「验收结论：」前缀 → 不得判 accepted ──')
+expect(parseAcceptanceVerdict('逐条核对后，❌ 不通过，存在 P0 缺陷。'), 'needs-human', '正文写 ❌ 但无结论行 → needs-human（旧实现漏报为 accepted）')
+expect(parseAcceptanceVerdict('## 验收结论：❌ 不通过\n存在 P0 缺陷。'), 'rework', '结论行 ❌ 不通过（有前缀）→ rework（正常路径不受影响）')
+expect(parseAcceptanceVerdict('## 验收结论：✅ 通过\n全部 AC 绿。'), 'accepted', '结论行 ✅ 通过 → accepted（正常路径不受影响）')
+expect(parseAcceptanceVerdict('逐条核对后 📝 需求不适用，现状已满足。'), 'reject', '无结论行但全文「📝 需求不适用」→ reject（强结论词优先于 needs-human）')
+
+console.log('── 空结论行 / 裸否定词（2026-09-03）：四档词校验只覆盖 reject 分支的漏报变体 ──')
+expect(parseAcceptanceVerdict('## 验收结论：\n全部 AC 绿。'), 'needs-human', '空结论行（前缀残留非空，旧实现漏回 accepted）→ needs-human')
+expect(parseAcceptanceVerdict('## 验收结论：（待定）\n人工确认后再定。'), 'needs-human', '结论行无四档词（待定）→ needs-human')
+expect(parseAcceptanceVerdict('## 验收结论：不通过\n存在 P0 缺陷。'), 'rework', '裸「不通过」（无 ❌ 前缀，旧实现被「通过」子串吞成 accepted）→ rework')
+expect(parseAcceptanceVerdict('## 验收结论：未通过\n存在 P1 缺陷。'), 'rework', '结论行「未通过」→ rework（正常路径）')
+expect(parseAcceptanceVerdict('## 验收结论：✅ 通过（未发现不通过项）'), 'accepted', '✅ 通过 + 双重否定（未发现不通过项）→ accepted（否定保护不误杀）')
+expect(parseAcceptanceVerdict('## 验收结论：✅ 通过\n全部 AC 绿。'), 'accepted', '结论行 ✅ 通过 → accepted（正常路径不受影响）')
 
 console.log('── 真 reject / rework 仍能识别 ──')
 expect(parseAcceptanceVerdict('## 验收结论：📝 需求不适用\n开发结果已满足现状，无有效变更。'), 'reject', '📝 需求不适用 → reject')

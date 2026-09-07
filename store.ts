@@ -18,7 +18,10 @@ import { homedir } from 'node:os'
 export interface JournalStage {
   seq: number
   label: string
+  /** 阶段英文键（2026-09-06 英文化：prd/design/scaffold/tech/dev/qa/acceptance；存量中文经迁移脚本映射）。 */
   phase: string
+  /** 任务键（dev 子任务聚合用：任务 title 数据值；非任务型阶段为 null）。 */
+  taskKey?: string | null
   status: string
   outcome?: string | null
   childId?: string | null
@@ -32,6 +35,8 @@ export interface JournalStage {
   guardReason?: string | null
   /** 护栏中止分类：degenerated（复读，可干净重试）/ stalled（挂死/空转，走预算门转人工）。 */
   guardOutcome?: 'degenerated' | 'stalled' | null
+  /** dev/qaFix 回复中的「验证证据」块原文（提取自 [Verification evidence] 块；审计用，可对照 logs/ 命令输出）。 */
+  verifyEvidence?: string | null
 }
 
 /** 运行日志（journal）——运行时对象与磁盘可持久化形态的公共形状。 */
@@ -219,6 +224,7 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
       seq: s.seq,
       label: s.label,
       phase: s.phase,
+      taskKey: s.taskKey || null,
       status: s.status,
       outcome: s.outcome || null,
       childId: s.childId || null,
@@ -228,6 +234,7 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
       handoff: clip(s.handoff || '', 2000),
       summary: clip(s.summary || '', 3000),
       output: clip(s.output || s.summary || '', STAGE_OUTPUT_CLIP),
+      verifyEvidence: s.verifyEvidence ? clip(s.verifyEvidence, 8000) : null,
     })),
     logs: (journal.logs || []).slice(-300).map((l) => ({ t: l.t, level: l.level, message: clip(l.message, 500) })),
   }

@@ -20,6 +20,19 @@ export function extractText(blocks) {
   return blocks.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n')
 }
 
+/** 从 dev/qaFix 回复中提取「验证证据」块（`[Verification evidence]` 行起，到 state 块/结尾止）。
+ * dev 阶段无独立对抗校验（QA 有 QA-REPORT.md 结构化证据，dev 只有自述）——证据块是「可审计的
+ * 具体自述」：命令+退出码+断言计数+失败行引用，可对照 logs/teamflow/<runId>/ 命令输出日志核实；
+ * 模型仍可伪造，但具体细节难编造一致（具体性压力）且伪造可发现（审计轨迹）。
+ * 找不到块（契约未兑现）→ null，host 记 warn 不中断（policy 级）。 */
+export function extractVerificationEvidence(text) {
+  const s = toText(text)
+  const m = s.match(/\[Verification evidence\]([\s\S]*?)(?=<!--\s*state|$)/)
+  if (!m || !m[1]) return null
+  const ev = m[1].trim()
+  return ev.length > 0 ? ev : null
+}
+
 /**
  * ADR-0008 任务夹命名：<yyyyMMdd>-r<N>[-<slug>]。
  * - date 用本地时区（用户在东八区晚上建的需求不能落到"明天"）
@@ -78,9 +91,13 @@ export function sanitizeSnapOptions(o) {
     tasks: Array.isArray(opts.tasks) ? opts.tasks.map((t) => ({ title: String((t && t.title) || ''), spec: String((t && t.spec) || '') })) : [],
   }
 }
-export const SAFE_SIGNAL = { aborted: false, addEventListener: () => {}, removeEventListener: () => {} }
+// 安全信号兜底：宿主（09-04+）在 subagents.start 内部调用 signal.throwIfAborted()——
+// 缺该方法会「启动/执行失败：options?.signal?.throwIfAborted is not a function」（实锤 r1-json-tree-view
+// 3 任务 3 轮 resume 全失败）。SAFE_SIGNAL 永不 abort（aborted 恒 false），空实现语义正确。
+export const SAFE_SIGNAL = { aborted: false, addEventListener: () => {}, removeEventListener: () => {}, throwIfAborted: () => {} }
 export function normalizeSignal(s) {
-  return (s && typeof s === 'object' && typeof s.addEventListener === 'function' && typeof s.aborted === 'boolean') ? s : SAFE_SIGNAL
+  // 真 AbortSignal 判定：须具备 throwIfAborted（宿主硬依赖）；伪 signal 一律降级 SAFE_SIGNAL
+  return (s && typeof s === 'object' && typeof s.addEventListener === 'function' && typeof s.aborted === 'boolean' && typeof s.throwIfAborted === 'function') ? s : SAFE_SIGNAL
 }
 
 /** 分支 slug 派生（ADR-2026-08-27）：branchName > triageSlug > 需求中的英文标识词 > reqId 数字 > 'feature'。
@@ -123,6 +140,32 @@ export function handoffBrief(text: string | null | undefined): string {
   return clip(brief, 2000)
 }
 
+/** 拒绝词命中点：返回命中的具体短语 + 原文上下文片段（供重试诊断回灌，比事后从截断尾巴重算可靠）。 */
+export function refusalHit(text: string | null | undefined): { phrase: string; context: string } | null {
+  const s = String(text || '')
+  const m = REFUSAL_PATTERN.exec(s)
+  if (!m || m.index < 0) return null
+  const start = Math.max(0, m.index - 40)
+  const end = Math.min(s.length, m.index + String(m[0]).length + 40)
+  return { phrase: m[0], context: s.slice(start, end).replace(/\s+/g, ' ').trim() }
+}
+
+/** 重试诊断包：上一轮失败详情回灌进重试 prompt（盲试 → 带因重试）。
+ * 失败分类/详情/护栏原因取自 stage；产出尾部截断 1000 字符供自查修正。 */
+export function buildRetryDiagnostic(attempt: number, stage: { outcome?: string | null; summary?: string | null; guardReason?: string | null; output?: string | null }): string {
+  const lines: string[] = []
+  lines.push(`[重试诊断 · 第 ${attempt} 次尝试] 上一轮尝试未成功。这不是新任务——请先阅读以下失败详情，再执行原任务并修正上一轮的问题。`)
+  lines.push(`- 失败分类：${stage.outcome || 'unknown'}`)
+  if (stage.guardReason) lines.push(`- 护栏中止原因：${stage.guardReason}`)
+  if (stage.summary) lines.push(`- 详情：${stage.summary}`)
+  const out = String(stage.output || '')
+  if (out) {
+    const tail = out.length > 1000 ? `…${out.slice(-1000)}` : out
+    lines.push(`- 上一轮产出末尾（节选，供自查修正）：\n${tail}`)
+  }
+  return `\n\n${lines.join('\n')}\n[/重试诊断结束]`
+}
+
 /**
  * 验收结论解析：只以显式「验收结论 / 整体结论」行为准（acceptancePrompt 强制 4 档固定话术），
  * 不做正文散文朴素子串匹配。历史误报实锤（run tf-msytlok5）：验收报告 ✅ 通过，其记忆回写段一句
@@ -131,8 +174,11 @@ export function handoffBrief(text: string | null | undefined): string {
  *  - 「📝 需求不适用」是验收负责人专用的强结论词，允许全文命中；
  *  - 其余 reject 词（需求与实际不符/站不住/无效/无需改动等）仅在结论行且该行不含「通过/✅/⚠️」时才算；
  *  - rework 词仅认结论行（且不与「✅ 通过」同现）。
+ * 反向护栏（漏报实锤 2026-09-03）：模型写「❌ 不通过」但漏写「验收结论：」前缀 → accLine 为空 →
+ * 旧实现落回默认 accepted（最乐观默认值，质量门禁漏报=假交付）。现改为 **找不到结论行 → needs-human**
+ * （宁严勿松：误拦截=人工看一眼，误放行=假交付；📝 全文命中与架构红词仍优先于该默认）。
  * @param {unknown} text 验收报告全文
- * @returns {'accepted'|'rework'|'reject'}
+ * @returns {'accepted'|'rework'|'reject'|'needs-human'}
  */
 export function parseAcceptanceVerdict(text) {
   const acc = String(text || '')
@@ -147,9 +193,17 @@ export function parseAcceptanceVerdict(text) {
   const archNegated =
     /无返工|无.*返工|不返工|无架构打回|无.*打回|非漂移|无.*重复|无.*偏离|无.*抽象.*问题|无.*蓝图.*问题|架构一致性.*(PASS|良好|达标|通过|无问题)|M3.*(PASS|通过|达标)|架构.*(达标|无问题|良好)/.test(acc)
   if (hasArchRedFlag && !archNegated) return 'rework'
-  if (/❌\s*不通过|需返工|未通过/.test(accLine) && !/✅\s*通过/.test(accLine)) return 'rework'
   if (/📝\s*需求不适用/.test(acc)) return 'reject'
+  // 结论行显式否定 → rework；✅ 通过同现时通过词优先；双重否定保护（无不通过/未发现不通过=通过）
+  if (/不通过|需返工|未通过/.test(accLine) && !/无\s*不通过|未发现不通过|未出现不通过/.test(accLine)) {
+    if (/✅\s*通过/.test(accLine)) return 'accepted'
+    return 'rework'
+  }
   if (!/通过|✅|⚠️/.test(accLine) && /需求不适用|需求与实际不符|需求站不住|需求无效|无需改动|无需修改/.test(accLine)) return 'reject'
+  if (!accLine) return 'needs-human'
+  // 结论行存在但未命中任何四档词（空结论行「验收结论：」/待定/无结论）→ 不猜结论（漏报变体：
+  // 旧实现只对「无结论行」→ needs-human，前缀残留的空行因 accLine 非空漏回 accepted）
+  if (!/通过|✅|⚠️|❌|📝/.test(accLine)) return 'needs-human'
   return 'accepted'
 }
 

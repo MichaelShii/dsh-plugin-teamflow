@@ -22,17 +22,29 @@ export const GUARD_NO_TOOL_MS = 15 * 60_000
 /** 假阳性完成检测：明确拒绝/放弃模式的输出视为未产出。 */
 export const REFUSAL_PATTERN = /(无法完成|不能完成|无法继续|抱歉|对不起|我(无法|不能)|无法执行|cannot complete|unable to)/i
 /** 各阶段最小产出长度（防"假完成"：空话/一句话冒充交付）。 */
-export const STAGE_MIN_LENGTH = { prd: 400, design: 250, arch: 250, tech: 350, dev: 60, qa: 250, acceptance: 150 }
+export const STAGE_MIN_LENGTH = { prd: 400, design: 250, scaffold: 250, arch: 250, tech: 350, dev: 60, qa: 250, acceptance: 150 }
 /** backlog 状态机（需求/任务/缺陷）。 */
 export const STATUS = {
   req: ['created', 'in-progress', 'pending-acceptance', 'accepted', 'needs-human', 'closed'],
   task: ['pending', 'running', 'testable', 'testing', 'pending-acceptance', 'accepted', 'rework', 'needs-human', 'cancelled'],
   bug: ['open', 'claimed', 'fixed', 'verified', 'reopened', 'needs-human'],
 }
-/** 流水线阶段顺序与 key 映射（resume/pipeline 用）。 */
-export const PHASE_ORDER = ['PRD 产品需求', 'UI/UX 设计', '架构规划', '技术方案', '开发', 'QA 测试', '产品验收']
-export const PHASE_KEY_OF = { prd: 'PRD 产品需求', design: 'UI/UX 设计', scaffold: '架构规划', tech: '技术方案', dev: '开发', qa: 'QA 测试', acceptance: '产品验收' }
-export const PHASE_KEY_BY_NAME = { 'PRD 产品需求': 'prd', 'UI/UX 设计': 'design', '架构规划': 'scaffold', '技术方案': 'tech', '开发': 'dev', 'QA 测试': 'qa', '产品验收': 'acceptance' }
+/**
+ * 流水线阶段（2026-09-06 英文化改造）：内部一律英文键（journal.stage.phase / 代码判断 / 状态机）。
+ * 中文阶段名只作为展示 label（client UI 映射，未来 i18n 与 dsh 中英对齐）。
+ */
+export const PHASE_ORDER = ['prd', 'design', 'scaffold', 'tech', 'dev', 'qa', 'acceptance']
+/** 英文键 → 中文展示名（仅 UI/label/日志文案使用，不得用于代码判断）。 */
+export const PHASE_KEY_OF: Record<StageKey, string> = { prd: 'PRD 产品需求', design: 'UI/UX 设计', scaffold: '架构规划', tech: '技术方案', dev: '开发', qa: 'QA 测试', acceptance: '产品验收' }
+/** 中文阶段名 → 英文键（存量 journal/backlog 兼容映射；迁移脚本执行后仅防御性保留）。 */
+export const PHASE_KEY_BY_NAME: Record<string, StageKey> = { 'PRD 产品需求': 'prd', 'UI/UX 设计': 'design', '架构规划': 'scaffold', '技术方案': 'tech', '开发': 'dev', 'QA 测试': 'qa', '产品验收': 'acceptance' }
+/** phase 归一：中文（存量）或英文（新数据）输入 → 英文键；未知回退原值小写化。 */
+export function phaseKeyOf(phase: unknown): string {
+  const p = String(phase || '')
+  if (!p) return ''
+  if (PHASE_KEY_BY_NAME[p]) return PHASE_KEY_BY_NAME[p]
+  return p
+}
 
 /**
  * 角色键单一事实来源（byRole token 分段 / stateSliceFor 切片 / noteTaskAssign 写入共用）。
@@ -40,15 +52,15 @@ export const PHASE_KEY_BY_NAME = { 'PRD 产品需求': 'prd', 'UI/UX 设计': 'd
  */
 export const ROLE_KEYS = ['pm', 'design', 'arch', 'tech', 'dev', 'qa', 'acceptance'] as const
 export type RoleKey = (typeof ROLE_KEYS)[number]
-/** 阶段显示名 → 角色键（任务卡 byRole 累计用；未知阶段归 'other'）。 */
+/** 阶段英文键 → 角色键（任务卡 byRole 累计用；未知阶段归 'other'）。 */
 export const PHASE_ROLE: Record<string, RoleKey> = {
-  'PRD 产品需求': 'pm',
-  'UI/UX 设计': 'design',
-  '架构规划': 'arch',
-  '技术方案': 'tech',
-  '开发': 'dev',
-  'QA 测试': 'qa',
-  '产品验收': 'acceptance',
+  prd: 'pm',
+  design: 'design',
+  scaffold: 'arch',
+  tech: 'tech',
+  dev: 'dev',
+  qa: 'qa',
+  acceptance: 'acceptance',
 }
 
 /**
