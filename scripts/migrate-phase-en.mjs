@@ -39,10 +39,12 @@ function migrateFile(file) {
           journalStageFixed++
           changed = true
         }
-if (s && s.phase === 'dev' && (!s.taskKey || /（第/.test(String(s.taskKey)) || String(s.taskKey).endsWith('）') || String(s.taskKey).endsWith('（')) && typeof s.label === 'string') {
-          // 清洗：taskKey 缺失或含历史正则残留（「（第 2 次重试）替换不干净的多出 ）」）→ 从 label 重新提取
+        if (s && s.phase === 'dev' && typeof s.label === 'string') {
+          // 清洗 taskKey：缺失或 ≠ 从 label 提取的干净 title 时重写。
+          // 用「现值 ≠ 目标值」判定而非「以 ）/（ 结尾即残留」——合法任务标题常以中文括号结尾
+          //（如「…归一加固（单点防御）」），旧条件误判为历史残留（实锤 r38 3 处假阳性，幂等无损但虚增计数）。
           const title = String(s.label).replace(/^开发 · /, '').replace(/（(?:第 \d+ 次重试|补跑)）$/, '').trim()
-          if (title) { s.taskKey = title; taskKeyAdded++; changed = true }
+          if (title && (typeof s.taskKey !== 'string' || s.taskKey !== title)) { s.taskKey = title; taskKeyAdded++; changed = true }
         }
       }
     }
@@ -51,9 +53,10 @@ if (s && s.phase === 'dev' && (!s.taskKey || /（第/.test(String(s.taskKey)) ||
     // backlog tasks：子卡补 taskKey（title 前缀 `开发 · ` 提取）
     let any = false
     for (const t of obj) {
-      if (t && t.type === 'subtask' && (!t.taskKey || /（第/.test(String(t.taskKey)) || String(t.taskKey).endsWith('）') || String(t.taskKey).endsWith('（')) && typeof t.title === 'string' && t.title.startsWith('开发 · ')) {
-        t.taskKey = t.title.replace(/^开发 · /, '').replace(/（(?:第 \d+ 次重试|补跑)）$/, '').trim()
-        any = true
+      if (t && t.type === 'subtask' && typeof t.title === 'string' && t.title.startsWith('开发 · ')) {
+        // 同上：现值 == 干净 title 则不重写（合法括号结尾不误判）
+        const tk = t.title.replace(/^开发 · /, '').replace(/（(?:第 \d+ 次重试|补跑)）$/, '').trim()
+        if (tk && (typeof t.taskKey !== 'string' || t.taskKey !== tk)) { t.taskKey = tk; any = true }
       }
     }
     if (any) { backlogFixed++; changed = true }
