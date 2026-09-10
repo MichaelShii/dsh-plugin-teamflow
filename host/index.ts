@@ -28,6 +28,7 @@ import { toText, clip, extractText, normalizeRoot, normalizeTasks, sanitizeSnapO
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, devPrompt, qaPrompt, acceptancePrompt } from './prompts/index.ts'
 import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, setSessionProjections, workspaceScopeOf } from './core/context.ts'
 import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/backlog.ts'
+import { runsFor, runAddress, productKeyOf, runVisibleIn, runBrief, productMetaOf, listProducts } from './core/products.ts'
 import { loadTeams, findTeam, type TeamConfig } from './core/teams.ts'
 import { runPool, runAgent, withRetry } from './core/runner.ts'
 import { deliverCompletion } from './core/report.ts'
@@ -53,19 +54,7 @@ import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, normalizeMode, runTriage } 
 
 /* 流水线入口/取消/断点续跑见 core/pipeline.ts（startPipeline/cancelRun/resumeRun）。 */
 
-/** 按工作区作用域过滤运行（sessionId 推导出 workspace slug；未落 workspace 的旧运行只见于 default）。 */
-function runsFor(ws: string | null | undefined) {
-  const arr = []
-  for (const j of runs.values()) {
-    if (ws) {
-      const jws = j.workspace || (ws === 'default' ? 'default' : null)
-      if (jws !== ws) continue
-    }
-    arr.push(j)
-  }
-  arr.sort((a, b) => (b.startedAt || 0) - (a.startedAt || 0))
-  return arr
-}
+/** 按工作区作用域过滤运行见 core/products.ts（runsFor；全局面板与远程面共用）。 */
 
 /** 由 sessionId 推导会话所属 workspace（项目）作用域。 */
 function sessionScope(sessionId: string | null | undefined) {
@@ -77,6 +66,8 @@ function sessionScope(sessionId: string | null | undefined) {
 function snapshotOf(j) {
   return {
     id: j.id, name: j.name, status: j.status, startedAt: j.startedAt, endedAt: j.endedAt,
+    // 右栏 run 详情 tab 的地址（host 生成；client 直接 openResource）
+    address: runAddress(j.workspace || 'default', j.id),
     requirement: clip(j.requirement, 2000), options: sanitizeSnapOptions(j.options), agentsStarted: j.agentsStarted,
     humanIntervention: j.humanIntervention === true,
     stages: j.stages.map((s) => ({ seq: s.seq, label: s.label, phase: s.phase, status: s.status, outcome: s.outcome, childId: s.childId, startedAt: s.startedAt, endedAt: s.endedAt, usage: s.usage, summary: clip(s.summary || '', 3000) })),
@@ -86,6 +77,7 @@ function snapshotOf(j) {
 }
 
 /* backlog 视图/流转见 core/backlog.ts（backlogSummary/transitionBacklog）。 */
+/* 产品线装配（runsFor/runAddress/runBrief/productMetaOf/listProducts）见 core/products.ts。 */
 
 /* ── 模型工具注册 ─────────────────────────────────────────────────── */
 const simple = { type: 'object', additionalProperties: true }
@@ -557,22 +549,21 @@ export class TeamflowService extends TypertRemoteService {
   list(sessionId) {
     const sc = sessionScope(sessionId)
     const arr = runsFor(sc.projectKey)
-    return {
-      runs: arr.slice(0, 30).map((j) => ({ id: j.id, status: j.status, startedAt: j.startedAt, endedAt: j.endedAt, agentsStarted: j.agentsStarted, stageCount: j.stages.length, incompleteStages: (j.stages || []).some((x) => x.status !== 'done'), requirement: clip(j.requirement, 60) })),
-      workspace: sc,
-    }
+    return { runs: arr.slice(0, 30).map(runBrief), workspace: sc }
   }
 
-  snapshot(runId, sessionId) {
-    const sc = sessionScope(sessionId)
+  /** run 详情（快照）。productOverride：全局面板按产品线 key 寻址时传入（跳过会话推导）。 */
+  snapshot(runId, sessionId, productOverride?) {
+    const key = productOverride ? productKeyOf(productOverride) : sessionScope(sessionId).projectKey
+    if (!key) return null
     if (runId && typeof runId === 'string') {
       const j = runs.get(runId)
       if (!j) return null
       // 跨 workspace 的 run 不可见（除无工作区会话的 default 兜底）
-      if (j.workspace && sc.projectKey && j.workspace !== sc.projectKey && sc.projectKey !== 'default') return null
+      if (!runVisibleIn(j, key)) return null
       return snapshotOf(j)
     }
-    const latest = runsFor(sc.projectKey)[0]
+    const latest = runsFor(key)[0]
     if (!latest) return null
     const j = runs.get(latest.id)
     return j ? snapshotOf(j) : null
@@ -581,13 +572,14 @@ export class TeamflowService extends TypertRemoteService {
   /** 阶段详情：卡片点击查看 —— 状态/耗时/官方 usage + 产物全文（超 24k 截断）。
    * 2026-09-06 状态机化：返回同任务全部尝试（attempts 聚合——按 stage.taskKey（旧数据 label 兜底），
    * 按 seq 排序）——client 弹窗单次渲染现状、多次渲染时间线。 */
-  stageDetail(runId, seq, sessionId) {
+  stageDetail(runId, seq, sessionId, productOverride?) {
     if (typeof runId !== 'string' || !runId || seq === undefined || seq === null) return null
-    const sc = sessionScope(sessionId)
+    const key = productOverride ? productKeyOf(productOverride) : sessionScope(sessionId).projectKey
+    if (!key) return null
     const j = runs.get(runId)
     if (!j) return null
     // 跨 workspace 的 run 不可见（同 snapshot 守卫）
-    if (j.workspace && sc.projectKey && j.workspace !== sc.projectKey && sc.projectKey !== 'default') return null
+    if (!runVisibleIn(j, key)) return null
     const s = (j.stages || []).find((st) => Number(st.seq) === Number(seq))
     if (!s) return null
     const taskKeyOf = (x) => String(x.taskKey || String(x.label || '').replace(/^开发 · /, '').replace(/（(?:第 \d+ 次重试|补跑)）$/, '').trim())
@@ -623,11 +615,12 @@ export class TeamflowService extends TypertRemoteService {
   }
 
   /** Backlog 条目详情：卡片点击查看 —— 完整字段 + 流转时间线 + 关联（子卡/缺陷）+ 任务夹路径。 */
-  itemDetail(kind, id, sessionId) {
+  itemDetail(kind, id, sessionId, productOverride?) {
     const k = typeof kind === 'string' && ['req', 'task', 'bug'].indexOf(kind) !== -1 ? kind : null
     if (!k || typeof id !== 'string' || !id) return null
-    const sc = sessionScope(sessionId)
-    const store = storeFor(sc.projectKey)
+    const key = productOverride ? productKeyOf(productOverride) : sessionScope(sessionId).projectKey
+    if (!key) return null
+    const store = storeFor(key)
     const item = store.find(k, id)
     if (!item) return null
     const reqId = k === 'req' ? item.id : (item.reqId || null)
@@ -635,7 +628,7 @@ export class TeamflowService extends TypertRemoteService {
     let runDocs: string | null = null
     let runDocsRoot: string | null = null
     let runInfo: { runId: string; status: string; requirement: string; startedAt: number | null; endedAt: number | null } | null = null
-    for (const j of runsFor(sc.projectKey)) {
+    for (const j of runsFor(key)) {
       if (j.reqId !== reqId) continue
       if (j.runDocs && !runDocs) { runDocs = j.runDocs; runDocsRoot = j.workspacePath || null }
       if (!runInfo) runInfo = { runId: j.id, status: j.status, requirement: String(j.requirement || ''), startedAt: j.startedAt || null, endedAt: j.endedAt || null }
@@ -695,6 +688,48 @@ export class TeamflowService extends TypertRemoteService {
     }
   }
 
+  /* ── 全局面板（root scope，无会话上下文）：按产品线 key 寻址 ──────────
+   * 侧边栏图标 + main 面板没有会话上下文，宿主据产品线 key 装配；与上面按
+   * sessionId 寻址的方法同源（productOverride 走同一实现），只是入口键不同。 */
+
+  /** 产品线清单 + 当前会话所属产品线（client 用它做默认选中）。 */
+  products(sessionId) {
+    const sc = sessionScope(sessionId)
+    return { current: sc.projectKey || null, products: listProducts() }
+  }
+
+  /** 产品线视图：元信息 + backlog + run 列表（全局面板一次取全，少往返）。 */
+  productView(product) {
+    const key = productKeyOf(product)
+    if (!key) return null
+    return {
+      product: productMetaOf(key),
+      backlog: this.backlog(null, key),
+      runs: runsFor(key).slice(0, 50).map(runBrief),
+    }
+  }
+
+  /** 产品线级 run 详情（右栏 tab 与面板内联共用同一形状）。 */
+  productRunDetail(product, runId) {
+    const key = productKeyOf(product)
+    if (!key) return null
+    return this.snapshot(runId, null, key)
+  }
+
+  /** 产品线级阶段详情（同 stageDetail 形状：attempts 聚合 + 验证证据）。 */
+  productStageDetail(product, runId, seq) {
+    const key = productKeyOf(product)
+    if (!key) return null
+    return this.stageDetail(runId, seq, null, key)
+  }
+
+  /** 产品线级 backlog 条目详情（sessionId 可选：仅用于把任务夹产物地址绑到某个会话）。 */
+  productItemDetail(product, kind, id, sessionId) {
+    const key = productKeyOf(product)
+    if (!key) return null
+    return this.itemDetail(kind, id, sessionId, key)
+  }
+
   start(sessionId, requirement, options) {
     const sid = typeof sessionId === 'string' ? sessionId : null
     const req = typeof requirement === 'string' && requirement.trim() ? requirement.trim() : null
@@ -719,12 +754,13 @@ export class TeamflowService extends TypertRemoteService {
     return { ok: cancelRun(id) }
   }
 
-  /** 工作区级 backlog 视图（自动按当前会话 workspace 隔离）。 */
-  backlog(sessionId) {
-    const sc = sessionScope(sessionId)
-    const sum = backlogSummary(sc.projectKey)
+  /** 工作区级 backlog 视图（自动按当前会话 workspace 隔离）。productOverride：全局面板按产品线 key 寻址。 */
+  backlog(sessionId, productOverride?) {
+    const key = productOverride ? productKeyOf(productOverride) : sessionScope(sessionId).projectKey
+    if (!key) return null
+    const sum = backlogSummary(key)
     // 卡片跳流水线：req/task 附带该需求的最近一次 runId（无 run 的历史卡片为 null，不显示跳转）
-    const js = runsFor(sc.projectKey)
+    const js = runsFor(key)
     const runOf = (reqId: string | null | undefined) => {
       if (!reqId) return null
       let last: JournalRecord | null = null

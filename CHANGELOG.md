@@ -2,6 +2,19 @@
 
 > 本插件首次公开发布版本为 **v0.1.0**；发布前的内部迭代（v0.3~v0.13）记录于 `AGENTS.md` §5，对外统一归到 v0.1.0。
 
+## [0.1.8] - 未发布
+
+### 新增
+- **全局团队工作台（`sidebar.panellist` + `main`）**：工作台从「某个会话里的一个 tab」升级为应用级主面板——左侧边栏多一个图标（inline SVG，跟随选中态），点开中央主区即整块换成 TeamFlow：左栏是**产品线**列表（`$DSH_HOME/teamflow/<key>` 扫描，含 run 计数/活跃数/最近需求与验收结论/磁盘路径），右栏是该产品线的 **run 列表 + backlog 分组**（需求/任务/缺陷，含按角色 token）。**不依附会话**：面板在 root scope（无 `useSession`/`useProjection`），所以数据面新增按**产品线 key** 寻址的 remote 方法（`products` / `productView` / `productRunDetail` / `productStageDetail` / `productItemDetail`），与会话内工作台同源装配（同一批 journal 与 state.json，非新数据模型）
+- **run 详情进右侧栏 tab**：注册 `teamflow-run` tab 类型（认领 `dsh-resource://teamflow/run/**`），点 run 即在该会话右侧栏打开完整详情（阶段表 + 官方口径 token + 阶段详情/尝试聚合/验证证据/产出/日志）。地址由 host 生成（client 不拼地址）——与产物预览同一条原则。右侧栏不可用（无挂载会话等）时**自动降级**为面板内联详情；会话内工作台也补了「⇥ 右栏打开」入口，可与任务夹产物并排看
+
+### 改进
+- **客户端展示层收拢**：主题 token / 状态词表 / 格式化（token 官方口径、时间、耗时、折叠文本）从 1286 行的 `client/index.tsx` 抽到 `client/shared.tsx`，会话内工作台与全局面板共用一份——两处展示语言不会再各自漂移
+- **宿主 slot 契约对齐**：`dsh.client.inject` 补 3 个 slot owner 包（`ui-layout` / `ui-sidebar` / `ui-sidebar-right`，注册进谁的 slot 就列谁）+ 对应 optional peer 声明，避免加载顺序不确定导致的「slot 不存在」
+
+### 已知待办
+- 全局面板目前**只读**（未提供 backlog 流转写路径）；两处渲染组件仍分叉（`shared.tsx` 只统一了词表/格式化）；run tab 未注册 `sidebar.right.pane.tab.title` seat（chip 标题取自类型定义）。见 `docs/TODO.md`
+
 ## [0.1.7] - 2026-09-11
 
 ### 新增

@@ -56,12 +56,14 @@ TeamFlow 团队研发流水线 —— DeepSeek Harness 可分发插件（`dsh pl
 - **token 计量（官方口径）**：每阶段记录 `usage` = **输入(缓存未命中)/输入(缓存命中)/写缓存/输出 + 调用数**（由子代理会话逐事件累计）+ **缓存命中率**（cacheRead/(input+cacheRead)）。工作台卡片/任务卡/完成汇报均按此口径展示，模型无关、与官方账单一致。
 - **lite 模式**：微功能轻量——`teamflow_start(lite:true)` 跳过独立技术方案文档阶段（PRD 即契约），直接 **PRD → 开发 → QA → 验收**；配套 `needDesign:true` 时**保留 UI/UX 设计阶段**。实测较完整 7 段省 ~64% 时间、~88% token。
 - **token 熔断**：单阶段官方总消耗（input+cacheRead+cacheWrite+output 累计）超 `STAGE_TOKEN_BUDGET`（默认 60k）时停止重试、需人工介入。
-- **🏭 团队工作台（Web tab）**：与 chat / 轨迹并列的会话头部 tab，含：
-  - 流水线图形工作流（阶段泳道 + 节点卡片：状态/耗时/token/子代理会话，2s 实时刷新）
-  - **Backlog 拖拽看板**（需求/任务/缺陷三组状态泳道，卡片拖拽流转，原生 HTML5 DnD 零依赖）
-  - 成本中心（每阶段 token + 总计 + 运行时长）
-  - 人工介入中心（needs-human 项聚合 + 一键终态）
-  - 历史 run 切换 + 产品切换
+- **🏭 团队工作台（双入口）**：
+  - **会话内 tab**：与 chat / 轨迹并列的会话头部 tab，含：
+    - 流水线图形工作流（阶段泳道 + 节点卡片：状态/耗时/token/子代理会话，2s 实时刷新）
+    - **Backlog 拖拽看板**（需求/任务/缺陷三组状态泳道，卡片拖拽流转，原生 HTML5 DnD 零依赖）
+    - 成本中心（每阶段 token + 总计 + 运行时长）
+    - 人工介入中心（needs-human 项聚合 + 一键终态）
+    - 历史 run 切换 + 产品切换 + 「⇥ 右栏打开 run 详情」
+  - **全局面板**（v0.1.8）：侧边栏图标 → 中央主区整块切换为**产品线视角**——左栏产品线列表（`$DSH_HOME/teamflow/<key>`，含 run 计数/活跃数/最近需求与结论），右栏该产品线的 run 列表 + backlog 分组（不依附会话，跨会话可用）。点 run 在**右侧栏**打开完整详情（阶段/尝试/验证证据/产出/日志），可与任务夹产物并排看；右侧栏不可用时自动降级为面板内联
 
 ## AGENTS.md 最小侵入原则（重要）
 
@@ -78,12 +80,14 @@ AGENTS.md 会被 harness 无条件注入每个会话，是**团队资产**。Tea
 web profile 宿主组合
 ├── teamflow-host   (dsh-plugin-teamflow/host)      Cordis service `teamflow`
 │     └── TeamflowService extends TypertRemoteService
-│           ├── ctx.typert.register(strict descriptors)   ← 17 个 Remote 方法
+│           ├── ctx.typert.register(strict descriptors)   ← 22 个 Remote 方法
 │           ├── ctx.tools.register(teamflow_*)            ← 11 个模型工具
 │           └── node:fs → $DSH_HOME/teamflow/...
 └── teamflow-client (dsh-plugin-teamflow/client，自动扫描)  ← package.json 声明 dsh.client，
       └── ctx.remote.$mount(TEAMFLOW_REMOTE_CONTRIBUTION)     无需 patch 行，clientModules 自动注册
-            └── conversation.view tab「🏭 团队工作台」
+            ├── conversation.view tab「🏭 团队工作台」（会话内）
+            ├── sidebar.panellist + main/teamflow（全局产品线面板）
+            └── sidebarRightTabs「teamflow-run」（右栏 run 详情 tab）
 ```
 
 **为什么不用 @Remote 装饰器**：宿主插件以纯 JS 分发，避免装饰器语法/TS 编译要求；
@@ -106,8 +110,12 @@ dsh-plugin-teamflow/
   descriptors.ts      # Remote 描述符（纯数据，host/client 共用）
   store.ts            # 持久化层：原子写/备份/损坏自愈 + journal 序列化/加载（可独立测试）
   host/index.ts       # TeamflowService（TS；构建为 lib/host.mjs 供宿主加载）
-  client/index.tsx    # 团队工作台（TSX；构建为 lib/client.js）
+  host/core/products.ts # 产品线装配（全局面板数据面：清单/摘要/地址）
+  client/index.tsx    # 会话内团队工作台 + 全部 slot 注册（TSX；构建为 lib/client.js）
+  client/panel.tsx    # 全局面板（sidebar.panellist + main）+ 右栏 run 详情 tab
+  client/shared.tsx   # 共享展示层（主题 token / 状态词表 / 格式化）
   test/smoke.js       # 无依赖 smoke 测试（描述符/模块结构/安全加固）
+  test/product-scope.test.js # 产品线装配测试（地址/白名单/过滤/摘要/空态）
   test/journal.test.js # journal 行为测试（直跑 store.ts 源码）
 ```
 
@@ -146,7 +154,7 @@ dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 
 安装后**重启** `dsh --profile web`，宿主行 `teamflow-host` 生效：
 - 模型侧出现 11 个 `teamflow_*` 工具：`start / triage / status / backlog / claim / update / assign / cancel / resume / pause / resume_session`；
-- 浏览器侧会话头部出现「🏭 团队工作台」tab；
+- 浏览器侧：会话头部「🏭 团队工作台」tab（会话内）+ **左侧边栏「团队工作台」图标**（全局面板，产品线视角）；
 - backlog 写入 `$DSH_HOME/teamflow/<product>/backlog/*.json`。
 
 > 注意：`@deepseek-ai/*` 为宿主私有包，运行需 DeepSeek Harness（dsh）宿主环境；本包不发布也无法独立运行。
@@ -155,7 +163,7 @@ dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 
 1. **选团队**：会话输入框旁点「🏭」按钮，选择团队（或选「无团队」= 不走流水线，直接对话）；
 2. **发需求**：直接说需求，模型会自动调用 `teamflow_start`（自动分诊模式：patch / lite / tech / medium / full）——也可以用「直接跑 medium 模式做这个」等指定档位；
-3. **看进展**：会话头部切到「🏭 团队工作台」tab——流水线图实时刷新（每阶段 token / 耗时 / 子代理会话），Backlog 看板可拖拽流转、点卡片看详情；
+3. **看进展**：会话头部切到「🏭 团队工作台」tab——流水线图实时刷新（每阶段 token / 耗时 / 子代理会话），Backlog 看板可拖拽流转、点卡片看详情；点「⇥ 右栏打开」把该 run 详情放到右侧栏（与任务夹产物并排）。想看**跨会话/全局**的情况，点左侧边栏「团队工作台」图标（产品线视角：产品线 → run 列表 + backlog）；
 4. **收结果**：流水线完成后自动向当前会话汇报（状态 / 阶段统计 / token / 后续指引）；中断/失败的运行可「↻ 从断点重跑」。
 
 > 使用规则提醒：`teamflow_start` 调用后**主线程不要自行改代码或跑验证**——实现、QA、汇报由流水线各阶段子代理完成（避免与流水线抢活）。

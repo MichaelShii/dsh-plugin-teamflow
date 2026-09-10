@@ -14,179 +14,19 @@
  */
 import React from 'react'
 import { TEAMFLOW_REMOTE_CONTRIBUTION } from '../descriptors.js'
+import {
+  T, STATUS_TEXT, STATUS_COLOR, PHASE_ICON, PHASE_NAME, phaseNameOf, phaseIconOf, phaseKeyOf,
+  RUN_STATUS_TEXT, COLUMNS, KIND_TITLE, h, MONO, SANS, flexRow, chip, FoldableText,
+  fmtTime, fmtDur, fmtTokens, totalTokens, hitRate, usageDetail, stageUsageLine,
+  ROLE_NAME, roleUsage, byRoleLine, totalUsage, stText, stColor,
+} from './shared.js'
+import { GlobalPanel, TeamflowPanelIcon, RunDetailTab, runTabDefinition, RUN_TAB_ID } from './panel.js'
 
 export const inject = ['remote', 'slots', 'sessions', 'locale']
 
-/* ── 主题 token（自动适配深浅色） ─────────────────────────────────── */
-const T = {
-  bg: 'var(--dsw-alias-bg-base)',
-  layer1: 'var(--dsw-alias-bg-layer-1)',
-  layer2: 'var(--dsw-alias-bg-layer-2)',
-  border: 'var(--dsw-alias-border-l1)',
-  border2: 'var(--dsw-alias-border-l2)',
-  brand: 'var(--dsw-alias-brand-primary)',
-  text: 'var(--dsw-alias-label-primary)',
-  text2: 'var(--dsw-alias-label-secondary)',
-  error: 'var(--dsw-alias-state-error-primary)',
-  success: 'var(--dsw-alias-state-success-primary)',
-  warn: 'var(--dsw-alias-state-warn-primary)',
-}
+/* 主题 token / 状态词表 / 格式化等共享展示层见 client/shared.tsx（与全局面板共用）。 */
 
-const STATUS_TEXT = {
-  created: '立项', 'in-progress': '进行中', 'pending-acceptance': '待验收', accepted: '已验收', closed: '已关闭',
-  pending: '待办', running: '开发中', testable: '待测试', testing: '测试中', rework: '打回',
-  'needs-human': '需人工', cancelled: '已关闭', open: '待认领', claimed: '处理中', fixed: '已修复待验',
-  verified: '已关闭', reopened: '重开', done: '已完成', completed: '已完成', failed: '失败',
-  interrupted: '已中断', superseded: '已取代',}
-const STATUS_COLOR = {
-  created: T.text2, pending: T.text2, open: T.text2,
-  'in-progress': T.brand, running: T.brand, claimed: T.brand, testing: T.brand, fixed: T.brand, reopened: '#8250df',
-  'pending-acceptance': T.warn, testable: T.warn,
-  accepted: T.success, verified: T.success, completed: T.success, done: T.success,
-  rework: T.error, failed: T.error, 'needs-human': T.error, cancelled: T.text2, closed: T.text2,
-  interrupted: T.warn, superseded: T.text2,
-}
-/** 阶段英文键 → 图标/中文展示名（2026-09-06 英文化：journal.phase 为英文键，展示名统一走映射——未来 i18n 换表即换语言）。 */
-const PHASE_ICON = {
-  prd: '📋', design: '🎨', scaffold: '🏗️', tech: '📐', dev: '💻', qa: '🧪', acceptance: '✅',
-}
-const PHASE_NAME = { prd: 'PRD 产品需求', design: 'UI/UX 设计', scaffold: '架构规划', tech: '技术方案', dev: '开发', qa: 'QA 测试', acceptance: '产品验收' }
-const phaseNameOf = (p) => PHASE_NAME[p] || p || '—'
-const phaseIconOf = (p) => PHASE_ICON[p] || '⚙️'
-/** phase 归一：英文键直通；存量中文映射（防御性——新数据全英文）。 */
-const phaseKeyOf = (p) => ({ 'PRD 产品需求': 'prd', 'UI/UX 设计': 'design', '架构规划': 'scaffold', '技术方案': 'tech', '开发': 'dev', 'QA 测试': 'qa', '产品验收': 'acceptance' })[p] || String(p || '')
-const RUN_STATUS_TEXT = { pending: '等待中', running: '进行中', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', superseded: '已取代' }
-const COLUMNS = {
-  req: ['created', 'in-progress', 'pending-acceptance', 'accepted', 'closed', 'needs-human'],
-  task: ['pending', 'running', 'testable', 'testing', 'pending-acceptance', 'accepted', 'rework', 'needs-human', 'cancelled'],
-  bug: ['open', 'claimed', 'fixed', 'verified', 'reopened', 'needs-human'],
-}
-const KIND_TITLE = { req: '需求', task: '任务', bug: '缺陷' }
-
-const h = React.createElement
-const MONO = 'ui-monospace, SFMono-Regular, Consolas, "Cascadia Mono", monospace'
-const SANS = '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
-const flexRow = { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }
-
-/** 状态徽章：半透明底 + 状态色文字 + 圆角 pill。 */
-const chip = (text, color, opts: { style?: Record<string, string>; dot?: boolean } = {}) => h('span', {
-  style: {
-    display: 'inline-flex', alignItems: 'center', gap: 4,
-    padding: '1px 8px', borderRadius: 999, fontSize: 11, fontWeight: 500, lineHeight: '16px',
-    background: `color-mix(in srgb, ${color} 14%, transparent)`, color,
-    whiteSpace: 'nowrap', ...(opts.style || {}),
-  },
-}, opts.dot ? h('span', { style: { width: 5, height: 5, borderRadius: 999, background: color, display: 'inline-block' } }) : null, text)
-
-/** 可折叠长文本：默认只显示前几行预览，「展开全文」/「收起」双向切换（数据不动，纯展示层——summary/需求原文等富文本不再铺满抽屉）。 */
-function FoldableText({ text, charLimit = 280, lineLimit = 5, style }: { text: unknown; charLimit?: number; lineLimit?: number; style?: Record<string, unknown> }) {
-  const [open, setOpen] = React.useState(false)
-  if (!text) return null
-  const t = String(text)
-  const lines = t.split('\n')
-  const compact = lines.length <= lineLimit && t.length <= charLimit
-  const body = (txt) => h('div', { style: { fontSize: 11.5, color: T.text, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', ...(style || {}) } }, txt)
-  if (compact) return body(t)
-  if (open) return h('div', null,
-    body(t),
-    h('button', {
-      onClick: () => setOpen(false),
-      title: '收起全文',
-      style: { marginTop: 3, font: 'inherit', fontSize: 10.5, fontWeight: 600, color: T.text2, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' },
-    }, '收起'),
-  )
-  const pre = lines.length > lineLimit ? lines.slice(0, lineLimit).join('\n') : t.slice(0, charLimit)
-  const more = lines.length > lineLimit ? `… +${lines.length - lineLimit} 行` : '…'
-  return h('div', null,
-    body(pre),
-    h('button', {
-      onClick: () => setOpen(true),
-      title: '点击查看全文',
-      style: { marginTop: 3, font: 'inherit', fontSize: 10.5, fontWeight: 600, color: T.brand, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' },
-    }, `展开全文${more}`),
-  )
-}
-
-function fmtTime(t) {
-  if (!t) return '—'
-  const d = new Date(t)
-  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
-}
-function fmtDur(a, b) {
-  if (!a) return ''
-  const ms = (b || Date.now()) - a
-  if (ms < 0) return ''
-  const s = Math.floor(ms / 1000)
-  if (s < 60) return `${s}s`
-  return `${Math.floor(s / 60)}m${s % 60}s`
-}
-function fmtTokens(n) {
-  if (n === null || n === undefined) return ''
-  if (n >= 1e6) return `${(n / 1e6).toFixed(2)}M`
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
-  return String(n)
-}
-/** 官方口径计费合计（billed input + output）。 */
-function totalTokens(u) { return (u.input || 0) + (u.cacheRead || 0) + (u.cacheWrite || 0) + (u.output || 0) }
-/** 官方口径工具函数（与 DeepSeek usage 账单对齐，零额外概念）：
- *  - u.input       : 输入（缓存未命中）
- *  - u.cacheRead   : 输入（缓存命中）
- *  - u.cacheWrite  : 输入写入缓存
- *  - u.output      : 输出
- *  billed input = input + cacheRead + cacheWrite；命中率 = cacheRead / (input + cacheRead)。
- */
-function hitRate(u) {
-  const total = (u.input || 0) + (u.cacheRead || 0)
-  return total > 0 ? Math.round(((u.cacheRead || 0) / total) * 100) : null
-}
-function usageDetail(s) {
-  const k = (n) => (n === null || n === undefined ? '—' : fmtTokens(n))
-  if (s.usage) {
-    const u = s.usage
-    const hit = hitRate(u)
-    return `输入(未命中) ${k(u.input)} / 输入(命中) ${k(u.cacheRead)} / 写缓存 ${k(u.cacheWrite)} / 输出 ${k(u.output)} · ${u.calls} 次调用${hit !== null ? ` · 缓存命中 ${hit}%` : ''}`
-  }
-  return '无 usage 明细'
-}
-/** 节点卡主 token 行：官方口径 —— 输入(未命中)/输入(命中)/输出 + 缓存命中率。 */
-function stageUsageLine(s) {
-  const u = s && s.usage
-  if (u && (u.input || u.cacheRead || u.cacheWrite || u.output)) {
-    const hit = hitRate(u)
-    return `⇅${fmtTokens(u.input)} ⇅${fmtTokens(u.cacheRead)} ⬆${fmtTokens(u.output)}${hit !== null ? ` ·${hit}%` : ''}`
-  }
-  return null
-}
-const ROLE_NAME = { pm: '产品', design: '设计', arch: '架构', tech: '方案', dev: '开发', qa: '测试', acceptance: '验收', other: '其他' }
-const roleUsage = (u) => {
-  if (!u) return ''
-  const hit = hitRate(u)
-  return `⇅${fmtTokens(u.input || 0)}/${fmtTokens(u.cacheRead || 0)}·⬆${fmtTokens(u.output || 0)}${hit !== null ? `·${hit}%` : ''}`
-}
-/** 任务卡按角色累计的真实 token 摘要（官方口径：未命中/命中输入 + 输出 + 命中率）。 */
-function byRoleLine(task) {
-  const roles = (task && task.byRole) || {}
-  const parts = Object.keys(roles)
-    .filter((k) => roles[k] && (roles[k].input + roles[k].output + roles[k].cacheRead + roles[k].cacheWrite) > 0)
-    .map((k) => `${ROLE_NAME[k] || k} ${roleUsage(roles[k])}`)
-  return parts.join(' · ')
-}
-/** 多阶段 usage 汇总（官方口径）。 */
-function totalUsage(stages) {
-  const t = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 }
-  for (const s of (stages || [])) {
-    const u = s && s.usage
-    if (!u) continue
-    t.input += u.input || 0
-    t.cacheRead += u.cacheRead || 0
-    t.cacheWrite += u.cacheWrite || 0
-    t.output += u.output || 0
-    t.calls += u.calls || 0
-  }
-  return t
-}
-const stText = (s) => STATUS_TEXT[s] || s
-const stColor = (s) => STATUS_COLOR[s] || T.text2
+/* 状态徽章 chip / FoldableText / 格式化 / 状态词表等内容已在 client/shared.tsx（顶部 import）。 */
 
 /* ── 流水线面板：横向蛇形流程画布（从左至右 · 弧线连接 · 流动动画 · 画布拖动/缩放） ── */
 const NODE_W = 300        // 节点宽度
@@ -1058,6 +898,8 @@ interface TeamFlowViewProps {
   remote: unknown
   /** 产物一键预览：host 已算好 dsh-resource 地址，这里交给右侧栏（服务缺失时静默降级）。 */
   openArtifact?: (address: string, name: string) => void
+  /** 通用右侧栏打开（run 详情 tab 等）；返回 false 表示右侧栏不可用，调用方自行降级。 */
+  openResource?: (address: string, label: string) => boolean
   sessions?: {
     openSubagent?: (a: { parentSessionId: string; childSessionId: string; mode?: string }) => void
   } | null
@@ -1233,6 +1075,17 @@ function TeamFlowView(props: TeamFlowViewProps) {
             `#${String(r.id).slice(-6)}`)
         }) : h('span', { style: { color: T.text2, fontSize: 11.5 } }, '（暂无）'),
       ) : null,
+      /* 右栏 run 详情（v0.1.8）：与任务夹产物并排看；右侧栏不可用时点按无效（只 console 提示） */
+      tab === 'pipeline' && activeRun && activeRun.address
+        ? h('button', {
+          style: chipBtn(false),
+          title: '在右侧栏打开该 run 详情（与任务夹产物并排看）',
+          onClick: () => {
+            const opened = props.openResource && props.openResource(activeRun.address, activeRun.id)
+            if (!opened) console.warn('[teamflow] 右侧栏不可用，run 详情请在画布节点里查看')
+          },
+        }, '⇥ 右栏打开')
+        : null,
     ),
 
     tab === 'pipeline' ? h(PipelinePanel, { active, api, runId: activeRun ? activeRun.id : null, sessionId: props.sessionId, sessions: props.sessions }) : h(BoardPanel, { backlog, api, onRefresh: refresh, sessionId: props.sessionId, openArtifact: props.openArtifact, onShowRun: (rid) => { setTab('pipeline'); setRunId(rid) } }),
@@ -1249,32 +1102,73 @@ if (typeof document !== 'undefined') {
   document.head.appendChild(styleEl)
 }
 
-/** 注册 conversation.view tab「团队工作台」+ input.right 团队选择按钮。 */
+/**
+ * 注册三处：
+ * 1. `sidebar.panellist` + `main`（key = 'teamflow'）：**全局面板**——侧边栏图标 + 中央主区。
+ *    两者 id 必须一致：宿主 `layout.selectPanel(id)` 对未注册的 main key 直接抛错。
+ * 2. `conversation.view` tab（会话内工作台）+ `conversation.input.right`（团队选择按钮）。
+ * 3. 右栏 run 详情 tab 类型 + body（`sidebarRightTabs` + `sidebar.right.pane.tab`）。
+ */
 export async function apply(ctx) {
   await ctx.remote.$mount(TEAMFLOW_REMOTE_CONTRIBUTION)
   const teamflow = ctx.get('remote.teamflow')
-  // 产物预览：地址（dsh-resource://…）由 host 生成，这里只交给右侧栏。
-  // 服务名 sidebarRight（@deepseek-ai/dsh-client-ui-sidebar-right 提供）；未挂载/未认领地址时静默降级
-  // ——右侧栏只是增强路径，缺它不影响工作台本身（故不进 inject，避免激活期硬依赖）。
-  const openArtifact = (address: string, name: string) => {
+  // 右侧栏打开（产物预览 / run 详情共用）：地址（dsh-resource://…）由 host 生成，这里只交给右侧栏。
+  // 服务名 sidebarRight（@deepseek-ai/dsh-client-ui-sidebar-right 提供）；未挂载/未认领地址时返回 false
+  // ——右侧栏只是增强路径，缺它时调用方降级（故不进 inject，避免激活期硬依赖）。
+  const openResourceSafe = (address: string, label: string): boolean => {
     try {
       const sidebarRight = ctx.get('sidebarRight')
       if (!sidebarRight || typeof sidebarRight.openResource !== 'function') {
-        console.warn('[teamflow] 右侧栏服务不可用，无法预览产物', name)
-        return
+        console.warn('[teamflow] 右侧栏服务不可用', label)
+        return false
       }
       sidebarRight.openResource(address)
+      return true
     } catch (e) {
-      console.warn('[teamflow] 打开产物失败', name, e && e.message)
+      console.warn('[teamflow] 打开右侧栏失败', label, e && e.message)
+      return false
     }
   }
+  const openArtifact = (address: string, name: string) => { openResourceSafe(address, name) }
+  // 注册全局面板：侧边栏图标 + 中央主区（同 id 'teamflow'）
+  ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+    name: 'sidebar.panellist',
+    id: 'teamflow',
+    order: 60,
+    label: '团队工作台',
+  }, TeamflowPanelIcon))
+  ctx.slots.inject('main', () => ctx.slots.register({
+    name: 'main',
+    key: 'teamflow',
+    inject: () => ({
+      remote: teamflow,
+      sessions: ctx.get('sessions'),
+      layout: ctx.get('layout'),
+      openResource: openResourceSafe,
+      openArtifact,
+    }),
+  }, GlobalPanel))
+  // 注册右栏 run 详情 tab 类型（类型进 sidebarRightTabs；正文进 keyed seat sidebar.right.pane.tab）
+  try {
+    const tabs = ctx.get('sidebarRightTabs')
+    if (tabs && typeof tabs.register === 'function') {
+      ctx.effect(() => tabs.register(runTabDefinition()), 'teamflow: run tab type')
+    } else {
+      console.warn('[teamflow] sidebarRightTabs 不可用，run 详情右栏 tab 未注册（面板内联详情仍可用）')
+    }
+  } catch (e) { console.warn('[teamflow] 注册 run tab 类型失败', e && e.message) }
+  ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
+    name: 'sidebar.right.pane.tab',
+    key: RUN_TAB_ID,
+    inject: () => ({ remote: teamflow, openArtifact }),
+  }, RunDetailTab))
   // 注册团队工作台 tab
   ctx.slots.inject('conversation.view', () => ctx.slots.register({
     name: 'conversation.view',
     id: 'teamflow',
     order: 20,
     label: '🏭 团队工作台',
-    inject: (sessionId) => ({ sessionId, remote: teamflow, sessions: ctx.get('sessions'), openArtifact }),
+    inject: (sessionId) => ({ sessionId, remote: teamflow, sessions: ctx.get('sessions'), openArtifact, openResource: openResourceSafe }),
   }, TeamFlowView))
   // 注册输入框旁的团队选择按钮
   ctx.slots.inject('conversation.input.right', () => ctx.slots.register({

@@ -26,7 +26,10 @@
       "inject": [
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-modules",
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
       ],
       "immediately": false
     }
@@ -38,8 +41,8 @@
     "watch": "tsdown --watch",
     "deploy": "node deploy.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node test/smoke.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/diagnostic.test.js && node test/evidence.test.js && node test/metering.test.js && node test/prompt-contract.test.js && node test/conformance.test.js",
-    "prepublishOnly": "npx tsdown && npx tsdown -c tsdown.host.config.ts && node test/smoke.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/diagnostic.test.js && node test/evidence.test.js && node test/metering.test.js && node test/prompt-contract.test.js && node test/conformance.test.js"
+    "test": "node test/smoke.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/diagnostic.test.js && node test/evidence.test.js && node test/metering.test.js && node test/product-scope.test.js && node test/prompt-contract.test.js && node test/conformance.test.js",
+    "prepublishOnly": "npx tsdown && npx tsdown -c tsdown.host.config.ts && node test/smoke.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/diagnostic.test.js && node test/evidence.test.js && node test/metering.test.js && node test/product-scope.test.js && node test/prompt-contract.test.js && node test/conformance.test.js"
   },
   "files": [
     "lib",
@@ -73,6 +76,9 @@
     "@deepseek-ai/dsh-client-locale": "*",
     "@deepseek-ai/dsh-client-modules": "*",
     "@deepseek-ai/dsh-client-ui-conversation": "*",
+    "@deepseek-ai/dsh-client-ui-layout": "*",
+    "@deepseek-ai/dsh-client-ui-sidebar": "*",
+    "@deepseek-ai/dsh-client-ui-sidebar-right": "*",
     "@deepseek-ai/dsh-llm": "*",
     "@deepseek-ai/dsh-tools": "*",
     "@deepseek-ai/dsh-typert-protocol": "*",
@@ -89,6 +95,15 @@
       "optional": true
     },
     "@deepseek-ai/dsh-client-ui-conversation": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-layout": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-sidebar": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-sidebar-right": {
       "optional": true
     },
     "@deepseek-ai/dsh-llm": {
