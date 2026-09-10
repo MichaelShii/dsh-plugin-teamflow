@@ -28,7 +28,15 @@ async function supportedEfforts(route: { provider?: string; model?: string }): P
   try {
     const info = (await llm.resolveModelInfo(route.provider, route.model)) as { reasoning?: { efforts?: unknown } } | null | undefined
     const efforts = info && info.reasoning && info.reasoning.efforts
-    if (Array.isArray(efforts)) out = efforts.filter((e) => typeof e === 'string') as string[]
+    if (Array.isArray(efforts)) {
+      // ⚠️ 宿主 `LlmModelReasoningInfo.efforts` 是 **对象数组** `{id, name, description}`（不是字符串），
+      // 早期实现按字符串过滤 → 恒空 → 永远判「不支持」而静默不下发（2026-09-11 实锤：候选 run 无降档日志）。
+      out = efforts
+        .map((e) => (typeof e === 'string'
+          ? e
+          : (e && typeof e === 'object' && typeof (e as { id?: unknown }).id === 'string' ? (e as { id: string }).id : null)))
+        .filter((x): x is string => typeof x === 'string' && x.length > 0)
+    }
   } catch (e) { out = null }
   effortSupportCache.set(key, out)
   return out
@@ -36,17 +44,21 @@ async function supportedEfforts(route: { provider?: string; model?: string }): P
 
 /**
  * 解析本阶段要下发的推理强度：
- * - 阶段未要求降档（effortHint 空）→ undefined = 不传，宿主默认（DeepSeek high）
+ * - 阶段未要求降档（effortHint 空）→ 不传，宿主默认（DeepSeek high）
  * - 第 1 次尝试用 hint；**重试回升 'high'**（质量优先，ADR-0006）
- * - 只有探测到该路由支持该档位才返回，否则一律 undefined（防硬失败）
+ * - 只有探测到该路由支持该档位才返回，否则不传（防 `UNSUPPORTED_REASONING_EFFORT` 硬失败）
+ * - 未下发时返回原因文本 → 调用方记 warn（这类静默失败必须可见，见 2026-09-11 实锤）
  */
-async function resolveStageEffort(route: { provider?: string; model?: string }, attempt: number, effortHint?: string | null): Promise<string | undefined> {
+async function resolveStageEffort(
+  route: { provider?: string; model?: string }, attempt: number, effortHint?: string | null,
+): Promise<{ effort?: string; skip?: string }> {
   const base = effortHint && String(effortHint).trim() ? String(effortHint).trim() : null
-  if (!base) return undefined
+  if (!base) return {}
   const wanted = attempt > 1 ? 'high' : base
   const supported = await supportedEfforts(route)
-  if (!supported || supported.indexOf(wanted) === -1) return undefined
-  return wanted
+  if (!supported) return { skip: `路由 ${route.provider || '?'}/${route.model || '?'} 未声明 reasoning.efforts（或探测不可用）` }
+  if (supported.indexOf(wanted) === -1) return { skip: `路由不支持 ${wanted}（可用：${supported.join('/') || '无'}）` }
+  return { effort: wanted }
 }
 
 /** 并发池：按 max 个 worker 消费 items，返回同序结果。 */
@@ -134,7 +146,8 @@ export async function runAgent(
     // 显式传当前生效路由，避免继承过期的 parent.options 快照（主线程已切换代理的情况）
     const route = resolveChildRoute(parent)
     // 机械阶段降档（可选）：只在宿主声明支持时下发；重试自动回升 high（见 resolveStageEffort）
-    const effort = await resolveStageEffort(route, attempt, effortHint)
+    const eff = await resolveStageEffort(route, attempt, effortHint)
+    const effort = eff.effort
     const agentOptions = (route.provider || route.model || effort) ? {
       ...(route.provider ? { provider: route.provider } : {}),
       ...(route.model ? { model: route.model } : {}),
@@ -143,6 +156,9 @@ export async function runAgent(
     } : undefined
     if (effort && !journal.cancelled) {
       journal.logs.push({ t: Date.now(), level: 'info', message: `${label} 推理强度：${effort}${attempt > 1 ? '（重试回升）' : '（机械阶段降档）'}` })
+    } else if (eff.skip && !journal.cancelled) {
+      // 静默失败可见化（2026-09-11 实锤：efforts 对象数组被当字符串过滤 → 恒判不支持却无任何痕迹）
+      journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 推理强度未降档：${eff.skip}——保持宿主默认` })
     }
     run = await runtime.subagents.start(providerName(), {
       label,
