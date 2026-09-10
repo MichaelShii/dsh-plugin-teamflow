@@ -97,6 +97,12 @@ const runUsageText = (u) => {
   return `⇅${fmtTokens(u.input)} ⇅${fmtTokens(u.cacheRead)} ⬆${fmtTokens(u.output)}${hit !== null ? ` ·${hit}%` : ''} · ${u.calls} 次`
 }
 
+/* ── 密度控制（v0.1.8 ①：分栏 + 默认折叠） ──────────────────────
+ * run 列表默认只渲染最近 RUN_PREVIEW 条（进行中/未完成的**无条件置顶**，不许被折叠掉）；
+ * backlog 每组的终态卡片默认收起（计数仍显示），活动项与 needs-human 始终展开。 */
+const RUN_PREVIEW = 8
+const TERMINAL_STATUSES = ['accepted', 'closed', 'verified', 'cancelled']
+
 /* ── 产品线导航（左栏） ─────────────────────────────────────────── */
 function ProductRail({ products, current, onSelect, onRefresh, busy }) {
   return h('div', {
@@ -204,22 +210,34 @@ function BacklogCard({ kind, item, onOpen }) {
 }
 
 function BacklogGroups({ backlog, onOpen }) {
+  const [showDone, setShowDone] = React.useState({})   // kind → 是否展开终态卡片
   if (!backlog) return null
-  const groups = [['req', backlog.requirements], ['task', backlog.tasks], ['bug', backlog.bugs]]
-  const total = groups.reduce((a, [, arr]) => a + ((arr && arr.length) || 0), 0)
+  const groups = [['req', backlog.requirements || []], ['task', (backlog.tasks || []).filter((t) => t.type !== 'subtask')], ['bug', backlog.bugs || []]]
+  const total = groups.reduce((a, [, arr]) => a + arr.length, 0)
   if (!total) return muted('backlog 为空（该产品线还没有立项卡片）。', { padding: '2px 2px 8px' })
   return h('div', null,
-    groups.map(([kind, arr]) => {
-      const list = arr || []
+    groups.map(([kind, list]) => {
       if (!list.length) return null
+      // 终态且非人工介入 → 默认收起（needs-human 是终态之外的独立标记，必须一直可见）
+      const done = list.filter((it) => TERMINAL_STATUSES.indexOf(it.status) !== -1 && !it.humanIntervention)
+      const active = list.filter((it) => done.indexOf(it) === -1)
+      const open = showDone[kind] === true
       const byStatus = {}
       for (const it of list) byStatus[it.status] = (byStatus[it.status] || 0) + 1
       return h('div', { key: kind, style: { marginBottom: 12 } },
-        h('div', { style: { ...flexRow, gap: 8, marginBottom: 6 } },
-          h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text } }, `${KIND_TITLE[kind]} · ${list.length}`),
-          ...Object.keys(byStatus).map((s) => chip(`${stText(s)} ${byStatus[s]}`, stColor(s)))),
+        h('div', { style: { ...flexRow, gap: 6, marginBottom: 6, minWidth: 0 } },
+          h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text, flex: '0 0 auto' } }, `${KIND_TITLE[kind]} · ${list.length}`),
+          h('span', { style: { fontSize: 10, color: T.text2, flex: '0 0 auto' } }, `活动 ${active.length}`),
+          ...Object.keys(byStatus).map((s) => chip(`${stText(s)} ${byStatus[s]}`, stColor(s))),
+          done.length
+            ? h('button', {
+              style: { ...panelBtn, marginLeft: 'auto', flex: '0 0 auto' },
+              title: open ? '收起已完成/已关闭卡片' : '展开已完成/已关闭卡片',
+              onClick: () => setShowDone((m) => ({ ...m, [kind]: !open })),
+            }, open ? `收起已完成 ${done.length}` : `已完成 ${done.length} ▸`)
+            : null),
         h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(228px, 1fr))', gap: 6 } },
-          list.map((it) => h(BacklogCard, { key: it.id, kind, item: it, onOpen }))))
+          (open ? list : active).map((it) => h(BacklogCard, { key: it.id, kind, item: it, onOpen }))))
     }))
 }
 
@@ -457,6 +475,7 @@ export function GlobalPanel(props) {
   const [detail, setDetail] = React.useState(null)        // { kind:'item'|'run', data }
   const [inlineRun, setInlineRun] = React.useState(null)  // 内联展示的 run（面板里默认路径）
   const [hint, setHint] = React.useState(null)            // 面板内可见提示（不再只进 console）
+  const [runsExpanded, setRunsExpanded] = React.useState(false)  // run 列表：默认折叠到 RUN_PREVIEW
 
   /**
    * 右侧栏的**会话内容**宿主只在「对话被选中」时渲染（`RightbarRoot` 门控 `activePanelId === null`），
@@ -545,6 +564,11 @@ export function GlobalPanel(props) {
   const product = view && view.product
   const runs = (view && view.runs) || []
   const detailOpen = !!(detail || inlineRun)
+  // run 折叠：默认最近 RUN_PREVIEW 条，但**进行中/未完成的一律置顶显示**（别把正在跑的藏起来）
+  const headRuns = runs.slice(0, RUN_PREVIEW)
+  const headIds = new Set(headRuns.map((r) => r.id))
+  const pinnedActive = runsExpanded ? [] : runs.filter((r) => (r.status === 'running' || r.status === 'pending') && !headIds.has(r.id))
+  const visibleRuns = (runsExpanded || runs.length <= RUN_PREVIEW) ? runs : pinnedActive.concat(headRuns)
   return h('div', {
     style: { height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', background: T.bg, color: T.text, fontFamily: SANS, fontSize: 12 },
   },
@@ -565,27 +589,38 @@ export function GlobalPanel(props) {
       h('span', null, hint),
       h('button', { style: panelBtn, onClick: () => setHint(null) }, '知道了')) : null,
     h('div', { style: { flex: 1, minHeight: 0, display: 'flex' } },
-      h(ProductRail, { products: state.products, current: state.current, busy: state.busy, onRefresh: () => loadProducts(state.current), onSelect: (k) => { setDetail(null); setInlineRun(null); setState((s) => ({ ...s, current: k, view: null })) } }),
-      h('div', { style: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex' } },
-        h('div', { style: { flex: 1, minWidth: 0, minHeight: 0, overflowY: 'auto', padding: '12px 14px 20px' } },
-          !state.current
-            ? muted('选择左侧产品线查看 backlog 与 run（首次进入默认选最近更新的产品线）。')
-            : !view
-              ? muted('读取产品线数据中…')
-              : h('div', null,
-                h('div', { style: { ...flexRow, justifyContent: 'space-between', gap: 10 } },
-                  h('div', { style: { minWidth: 0 } },
-                    h('div', { style: { fontSize: 15, fontWeight: 700, color: T.text } }, product.title || product.key),
-                    h('div', { style: { fontSize: 10.5, color: T.text2, fontFamily: MONO, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, product.path || product.key)),
-                  h('div', { style: { ...flexRow, gap: 6 } },
-                    chip(`run ${product.totalRuns}`, T.text2),
-                    product.activeRuns > 0 ? chip(`活跃 ${product.activeRuns}`, T.brand, { dot: true }) : null,
-                    product.lastVerdict ? chip(`验收 ${product.lastVerdict}`, stColor('accepted')) : null)),
-                sectionTitle(`流水线 run · ${runs.length}`, muted('点一行看面板内联详情；「对话右栏」= 切回对话并开右侧栏（与产物并排）', { fontSize: 10 })),
-                h(RunList, { runs, activeRunId: inlineRun ? inlineRun.id : null, onOpenRun: openRun, onInlineRun: showInline }),
-                sectionTitle('Backlog', muted('沿用任务卡单卡轮转模型（需求 → 任务 → 缺陷）', { fontSize: 10 })),
-                h(BacklogGroups, { backlog: view.backlog, onOpen: openItem })),
-        ),
+      h(ProductRail, { products: state.products, current: state.current, busy: state.busy, onRefresh: () => loadProducts(state.current), onSelect: (k) => { setDetail(null); setInlineRun(null); setRunsExpanded(false); setState((s) => ({ ...s, current: k, view: null })) } }),
+      h('div', { style: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' } },
+        !state.current
+          ? h('div', { style: { padding: '12px 14px' } }, muted('选择左侧产品线查看 backlog 与 run（首次进入默认选最近更新的产品线）。'))
+          : !view
+            ? h('div', { style: { padding: '12px 14px' } }, muted('读取产品线数据中…'))
+            : h(React.Fragment, null,
+              /* 产品头：固定（不随两栏滚动） */
+              h('div', { style: { ...flexRow, justifyContent: 'space-between', gap: 10, padding: '12px 14px 4px' } },
+                h('div', { style: { minWidth: 0 } },
+                  h('div', { style: { fontSize: 15, fontWeight: 700, color: T.text } }, product.title || product.key),
+                  h('div', { style: { fontSize: 10.5, color: T.text2, fontFamily: MONO, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, product.path || product.key)),
+                h('div', { style: { ...flexRow, gap: 6, flex: '0 0 auto' } },
+                  chip(`run ${product.totalRuns}`, T.text2),
+                  product.activeRuns > 0 ? chip(`活跃 ${product.activeRuns}`, T.brand, { dot: true }) : null,
+                  product.lastVerdict ? chip(`验收 ${product.lastVerdict}`, stColor('accepted')) : null)),
+              /* 左右两栏：各滚各的（宽屏并排；窄屏自动上下堆叠，各占一半高度） */
+              h('div', { style: { flex: 1, minHeight: 0, display: 'flex', flexWrap: 'wrap', gap: 12, padding: '4px 14px 14px' } },
+                h('div', { style: { flex: '1 1 300px', minWidth: 236, minHeight: 0, overflowY: 'auto', paddingRight: 4 } },
+                  sectionTitle(`流水线 run · ${runs.length}`,
+                    h('div', { style: { ...flexRow, gap: 6, flex: '0 0 auto' } },
+                      !runsExpanded && pinnedActive.length > 0 ? chip(`已置顶进行中 ${pinnedActive.length}`, T.brand, { dot: true }) : null,
+                      runs.length > RUN_PREVIEW
+                        ? h('button', { style: panelBtn, onClick: () => setRunsExpanded((v) => !v) },
+                          runsExpanded ? `只看最近 ${RUN_PREVIEW} 条` : `展开全部 ${runs.length} 条`)
+                        : null)),
+                  h(RunList, { runs: visibleRuns, activeRunId: inlineRun ? inlineRun.id : null, onOpenRun: openRun, onInlineRun: showInline }),
+                  muted('点一行看面板内联详情；「对话右栏」= 切回对话并开右侧栏（与产物并排）', { fontSize: 10, marginTop: 6 })),
+                h('div', { style: { flex: '1 1 420px', minWidth: 260, minHeight: 0, overflowY: 'auto', paddingRight: 4 } },
+                  sectionTitle('Backlog', muted('终态卡片默认收起；活动项与需人工项始终展开', { fontSize: 10 })),
+                  h(BacklogGroups, { backlog: view.backlog, onOpen: openItem }))),
+            ),
         detailOpen
           ? h('div', { style: { width: 380, flex: '0 0 380px', minHeight: 0, overflowY: 'auto', borderLeft: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.layer1} 55%, transparent)` } },
             detail && detail.kind === 'item'

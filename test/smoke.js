@@ -64,6 +64,10 @@ ok(/sidebarRightTabs/.test(clientSrc) && /slots\.inject\('sidebar\.right\.pane\.
 ok(/RUN_TAB_PATTERN = 'dsh-resource:\/\/teamflow\/run\/\*\*'/.test(panelSrc), 'run tab 认领 dsh-resource://teamflow/run/** 地址')
 ok(/export function parseRunAddress/.test(panelSrc) && /productRunDetail/.test(panelSrc) && /productStageDetail/.test(panelSrc), 'panel.tsx：解析 host 地址 + 按产品线取 run/阶段详情')
 ok(/export function productApi/.test(panelSrc) && /productItemDetail/.test(panelSrc), 'panel.tsx：产品线 API 适配（backlog 条目详情走 productItemDetail）')
+// 密度控制（v0.1.8 ①）：左右分栏各滚各的 + run/终态卡片默认折叠（进行中与需人工无条件显示）
+ok(/const RUN_PREVIEW = 8/.test(panelSrc) && /runsExpanded/.test(panelSrc) && /pinnedActive/.test(panelSrc), 'panel：run 列表默认折叠到 8 条 + 进行中置顶（不被折叠）')
+ok(/const TERMINAL_STATUSES = \['accepted', 'closed', 'verified', 'cancelled'\]/.test(panelSrc) && /showDone/.test(panelSrc) && /!it\.humanIntervention/.test(panelSrc), 'panel：backlog 终态卡片默认收起、需人工项始终展开')
+ok(/flexWrap: 'wrap', gap: 12/.test(panelSrc) && /flex: '1 1 300px'/.test(panelSrc) && /flex: '1 1 420px'/.test(panelSrc), 'panel：run 与 backlog 左右分栏（窄屏自动上下堆叠）')
 ok(/currentSessionId/.test(panelSrc) && /useSessions/.test(panelSrc), '全局面板用 useSessions 取当前会话（默认选中当前产品线）')
 ok(/export const T =/.test(sharedSrc) && /export function FoldableText/.test(sharedSrc) && /export function stageUsageLine/.test(sharedSrc), 'shared.tsx：会话内/全局共用展示层（主题/词表/格式化）')
 ok(/openResourceSafe/.test(clientSrc) && /return true/.test(clientSrc) && /return false/.test(clientSrc), 'client：右侧栏打开返回布尔（供全局面板判定是否降级内联）')
