@@ -68,6 +68,8 @@ function snapshotOf(j) {
     id: j.id, name: j.name, status: j.status, startedAt: j.startedAt, endedAt: j.endedAt,
     // 右栏 run 详情 tab 的地址（host 生成；client 直接 openResource）
     address: runAddress(j.workspace || 'default', j.id),
+    // 发起会话：全局面板据此跳到"这条 run 所属的会话"再开右栏（否则会挂到用户当前所在会话上，无意义）
+    ownerSession: j.ownerSession || null,
     requirement: clip(j.requirement, 2000), options: sanitizeSnapOptions(j.options), agentsStarted: j.agentsStarted,
     humanIntervention: j.humanIntervention === true,
     stages: j.stages.map((s) => ({ seq: s.seq, label: s.label, phase: s.phase, status: s.status, outcome: s.outcome, childId: s.childId, startedAt: s.startedAt, endedAt: s.endedAt, usage: s.usage, summary: clip(s.summary || '', 3000) })),
@@ -627,22 +629,25 @@ export class TeamflowService extends TypertRemoteService {
     // 任务夹路径（ADR-0008）+ 关联 run 信息（req 需求原文在这）：匹配该需求的 journal
     let runDocs: string | null = null
     let runDocsRoot: string | null = null
-    let runInfo: { runId: string; status: string; requirement: string; startedAt: number | null; endedAt: number | null } | null = null
+    let runInfo: { runId: string; status: string; requirement: string; startedAt: number | null; endedAt: number | null; ownerSession: string | null } | null = null
     for (const j of runsFor(key)) {
       if (j.reqId !== reqId) continue
       if (j.runDocs && !runDocs) { runDocs = j.runDocs; runDocsRoot = j.workspacePath || null }
-      if (!runInfo) runInfo = { runId: j.id, status: j.status, requirement: String(j.requirement || ''), startedAt: j.startedAt || null, endedAt: j.endedAt || null }
+      if (!runInfo) runInfo = { runId: j.id, status: j.status, requirement: String(j.requirement || ''), startedAt: j.startedAt || null, endedAt: j.endedAt || null, ownerSession: j.ownerSession || null }
     }
     // 任务夹产物清单（ADR-0008）：只列**真实存在**的产物文件，地址由 host 用官方
     // fileAddressFor 生成（dsh-resource://file/session/<id>/<相对路径>）——client 直接把地址
     // 交给右侧栏 openResource 预览，无需自己拼地址、也无需在 client bundle 里引宿主包。
+    // 地址里的 sessionId 优先用 **run 的发起会话**：全局面板（无会话上下文）也能让产物挂到对的会话上；
+    // 只有拿不到 ownerSession 时才退回调用方传入的 sessionId（会话内工作台路径行为不变）。
+    const artifactSession = (runInfo && runInfo.ownerSession) || sessionId
     const runArtifacts: Array<{ name: string; address: string }> = []
-    if (runDocs && runDocsRoot && typeof sessionId === 'string' && sessionId) {
+    if (runDocs && runDocsRoot && typeof artifactSession === 'string' && artifactSession) {
       try {
         const present = new Set(readdirSync(join(runDocsRoot, runDocs)))
         for (const name of TEAMFLOW_ARTIFACT_ORDER) {
           if (!present.has(name)) continue
-          runArtifacts.push({ name, address: fileAddressFor(sessionId, undefined, `${runDocs}/${name}`) })
+          runArtifacts.push({ name, address: fileAddressFor(artifactSession, undefined, `${runDocs}/${name}`) })
         }
       } catch (e) { /* 任务夹不存在/不可读 → 空清单（前端不渲染按钮） */ }
     }

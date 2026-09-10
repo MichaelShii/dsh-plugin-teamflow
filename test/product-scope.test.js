@@ -69,6 +69,7 @@ ok(brief.id === 'r-rich' && brief.mode === 'lite', 'id/mode 透出')
 ok(brief.stageCount === 2 && brief.doneStages === 1 && brief.incompleteStages === true, '阶段进度（total/done/incomplete）')
 ok(brief.usage.input === 110 && brief.usage.cacheRead === 900 && brief.usage.cacheWrite === 5 && brief.usage.output === 57 && brief.usage.calls === 3, '官方口径 usage 汇总（逐 stage 累加）')
 ok(brief.address === 'dsh-resource://teamflow/run/ws-a/r-rich', 'run 摘要自带右栏地址')
+ok(brief.ownerSession === null && runBrief(mkRun('r-own', 'ws-a', 1, { ownerSession: 'session-abc' })).ownerSession === 'session-abc', 'run 摘要携带 ownerSession（全局面板据此跳发起会话；缺省 null 不伪造）')
 ok(runUsageSum(mkRun('r-none', 'ws-a', 1)).calls === 0, '无 usage 的 run → 全 0（不虚报）')
 ok(runVisibleIn(mkRun('x', 'ws-a', 1), 'ws-a') === true && runVisibleIn(mkRun('x', 'ws-b', 1), 'ws-a') === false, '跨产品线不可见')
 

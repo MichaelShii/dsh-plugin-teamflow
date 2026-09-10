@@ -173,9 +173,9 @@ function RunList({ runs, activeRunId, onOpenRun, onInlineRun }) {
             h('span', null, `${fmtTime(r.startedAt)}${r.endedAt ? ` → ${fmtTime(r.endedAt)}` : ''} ${fmtDur(r.startedAt, r.endedAt)}`))),
         h('button', {
           style: brandBtn,
-          title: '切回对话并在右侧栏打开该 run 详情（右侧栏的会话内容宿主只在对话视图挂载）',
+          title: '跳到该 run 的发起会话，并在那个会话的右侧栏打开详情（右侧栏是会话级的：挂到无关会话上没有意义）',
           onClick: (e) => { e.stopPropagation(); onOpenRun(r) },
-        }, '对话右栏'),
+        }, '去会话右栏'),
       )
     }))
 }
@@ -264,7 +264,10 @@ function ItemDetailPane({ det, openArtifact, onClose }) {
       ? h('div', null,
         h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 4 } }, `任务夹产物 · ${det.artifacts.length}`),
         h('div', { style: { ...flexRow, gap: 5 } }, det.artifacts.map((a) => h('button', {
-          key: a.name, style: brandBtn, title: a.address, onClick: () => openArtifact && openArtifact(a.address, a.name),
+          key: a.name,
+          style: brandBtn,
+          title: `${a.address}\n（跳到产物所属会话后在该会话右侧栏打开）`,
+          onClick: () => openArtifact && openArtifact(a.address, a.name, (det.runInfo && det.runInfo.ownerSession) || null),
         }, a.name))))
       : muted('该条目没有可预览的任务夹产物（或缺少会话上下文，无法生成文件地址）。'),
     det.subtasks && det.subtasks.length
@@ -503,6 +506,44 @@ export function GlobalPanel(props) {
     setTimeout(tick, 140)
   }
 
+  /**
+   * **跳到资源所属的会话，再在那个会话的右栏打开**（全局面板的正确语义）。
+   * 右侧栏是会话级的：从全局面板看 tetris 的 run 却把 tab 挂到"用户当前所在会话"上没有意义
+   * （用户 2026-09-11 提出）。所以先 `sessions.open(ownerSession)`，等当前会话真的切过去、
+   * 且对话 seat 挂载 bind 之后再 openResource（两者都要等，故小步重试 + 就绪判据）。
+   * @param target.ownerSession - 资源所属会话（run 的发起会话 / 产物地址里的会话）
+   * @param target.address - host 生成的 dsh-resource 地址
+   * @param target.label - 提示用的名字
+   * @param target.fallback - 没有 ownerSession 或跳转失败时的降级（通常是面板内联详情）
+   */
+  const goOwnerSessionAndOpen = (target) => {
+    const { ownerSession, address, label, fallback } = target || {}
+    const sessions = props.sessions
+    if (!ownerSession || !sessions || typeof sessions.open !== 'function') {
+      // 老数据没有 ownerSession / 会话服务不可用 → 退回"在当前会话右栏打开"
+      openInConversationRightbar(address, label, fallback)
+      return
+    }
+    try { sessions.open(ownerSession) } catch (e) {
+      setHint(`发起会话 ${String(ownerSession).slice(0, 8)}… 不在会话列表里（可能已被清理）——已在本面板展示详情`)
+      if (fallback) fallback()
+      return
+    }
+    try { if (props.layout && typeof props.layout.selectPanel === 'function') props.layout.selectPanel(null) } catch (e) { /* ignore */ }
+    let tries = 0
+    const tick = () => {
+      tries += 1
+      let nowCurrent = null
+      try { nowCurrent = sessions.list && sessions.list.getSnapshot ? sessions.list.getSnapshot().current : null } catch (e) { nowCurrent = null }
+      // 等目标会话成为当前会话（最多等 6 次），再尝试打开右栏 tab
+      const sessionReady = nowCurrent === ownerSession || tries >= 6
+      if (sessionReady && props.openResource && address && props.openResource(address, label, tries < 6)) return
+      if (tries < 14) { setTimeout(tick, 130); return }
+      setHint(`已切到发起会话，但右栏没打开（${label}）——可在该会话里用「⇥ 右栏打开」重试`)
+    }
+    setTimeout(tick, 140)
+  }
+
   const loadProducts = React.useCallback(async (preferKey?: string | null) => {
     if (!remote || typeof remote.products !== 'function') {
       setState((s) => ({ ...s, err: 'remote.products 不可用（插件未挂载或版本过旧）' }))
@@ -559,8 +600,10 @@ export function GlobalPanel(props) {
     } catch (e) { setState((s) => ({ ...s, err: String((e && e.message) || e) })) }
   }
   const closeDetail = () => setDetail(null)
-  const openRun = (r) => { openInConversationRightbar(r.address, r.id, () => { void showInline(r) }) }
-  const openArtifactInPanel = (address, name) => { openInConversationRightbar(address, name) }
+  const openRun = (r) => { goOwnerSessionAndOpen({ ownerSession: r.ownerSession, address: r.address, label: r.id, fallback: () => { void showInline(r) } }) }
+  const openArtifactInPanel = (address, name, ownerSession) => {
+    goOwnerSessionAndOpen({ ownerSession, address, label: name })
+  }
 
   const view = state.view
   const product = view && view.product
@@ -661,9 +704,13 @@ export function GlobalPanel(props) {
                   detail && detail.data && detail.data.address
                     ? h('button', {
                       style: brandBtn,
-                      title: '切回对话并在右侧栏打开该 run（可与任务夹产物并排看）',
-                      onClick: () => openInConversationRightbar(detail.data.address, detail.data.id),
-                    }, '对话右栏打开')
+                      title: '跳到该 run 的发起会话，并在那个会话的右侧栏打开（与任务夹产物并排看）',
+                      onClick: () => goOwnerSessionAndOpen({
+                        ownerSession: detail.data.ownerSession,
+                        address: detail.data.address,
+                        label: detail.data.id,
+                      }),
+                    }, '去发起会话')
                     : null,
                   h('button', { style: panelBtn, onClick: closeDetail }, '关闭'))),
               h(RunDetailPane, { snap: detail && detail.data, product: state.current, api })))

@@ -77,6 +77,8 @@ export function runBrief(j: JournalRecord) {
     requirement: clip(j.requirement, 60),
     usage: runUsageSum(j),
     address: runAddress(j.workspace || 'default', j.id),
+    // 发起会话：右栏 run tab 要挂到它所属的会话（而不是"用户当前所在的会话"）
+    ownerSession: j.ownerSession || null,
   }
 }
 
