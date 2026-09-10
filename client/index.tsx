@@ -560,7 +560,14 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
       for (const s of COLUMNS[kind]) counts[s] = 0
       for (const item of list) counts[item.status] = (counts[item.status] || 0) + 1
       return h('div', { key: kind },
-        h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: 13, marginBottom: 8 } },
+        /* 分组标题：看板区滚动时吸附在顶部（否则滚下去就不知道在看哪组） */
+        h('div', {
+          style: {
+            position: 'sticky', top: 0, zIndex: 3, background: T.bg,
+            display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: 13,
+            padding: '6px 0 8px',
+          },
+        },
           h('span', { style: { fontSize: 14 } }, kind === 'req' ? '📌' : kind === 'task' ? '🔧' : '🐞'),
           KIND_TITLE[kind],
           h('span', {
@@ -571,6 +578,7 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
           COLUMNS[kind].map((s) => {
             const isOver = over === `${kind}:${s}`
             const color = stColor(s)
+            const colBg = isOver ? `color-mix(in srgb, ${color} 8%, ${T.layer1})` : T.layer2
             return h('div', {
               key: s,
               onDragOver: (e) => { e.preventDefault(); setOver(`${kind}:${s}`) },
@@ -581,17 +589,26 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
               },
               style: {
                 minWidth: 140, maxWidth: 172, flex: '0 0 auto',
-                borderRadius: 10, padding: 7, minHeight: 84,
-                background: isOver ? `color-mix(in srgb, ${color} 8%, ${T.layer1})` : T.layer2,
+                borderRadius: 10, padding: 0, minHeight: 84,
+                // 卡片多了在列内滚（不再拉长整列），配合下方表头吸附
+                maxHeight: 340, overflowY: 'auto',
+                background: colBg,
                 border: `1px dashed ${isOver ? color : T.border}`,
                 transition: 'background .12s ease, border-color .12s ease',
               },
             },
-              h('div', { style: { ...flexRow, fontSize: 11, fontWeight: 600, color, marginBottom: 6, padding: '0 2px' } },
+              /* 列头：列内滚动时吸附在顶部（sticky 需要不透明底，用列自身底色） */
+              h('div', {
+                style: {
+                  ...flexRow, fontSize: 11, fontWeight: 600, color,
+                  position: 'sticky', top: 0, zIndex: 2, background: colBg,
+                  padding: '7px 9px 5px', borderTopLeftRadius: 10, borderTopRightRadius: 10,
+                },
+              },
                 h('span', null, stText(s)),
                 h('span', { style: { marginLeft: 'auto', fontFamily: MONO, fontSize: 10, opacity: .75 } }, counts[s] || 0),
               ),
-              h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+              h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, padding: '0 7px 7px' } },
                 list.filter((item) => item.status === s).map((item) => card(item, kind)),
               ),
             )
