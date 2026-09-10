@@ -10,6 +10,45 @@ import { RETRY_LIMIT, STAGE_TOKEN_BUDGET, STAGE_MIN_LENGTH } from '../constants.
 import type { Journal, ParentAgentLike } from '../types.ts'
 import type { JournalStage } from '../../store.ts'
 
+/**
+ * 推理强度能力探测（缓存，2026-09-11）：只有宿主明确声明该路由支持某档位才下发。
+ * 宿主对**不支持的值硬失败且不降级**（`UNSUPPORTED_REASONING_EFFORT`），所以宁可不下发。
+ * 返回 null = 探测不可用（老宿主/未声明容量）→ 调用方一律不下发，保持宿主默认。
+ */
+const effortSupportCache = new Map<string, string[] | null>()
+
+async function supportedEfforts(route: { provider?: string; model?: string }): Promise<string[] | null> {
+  // 两者都要有才探测：只知 provider 会拿到「provider 默认模型」的能力，与本次实际路由可能不符
+  if (!route.provider || !route.model) return null
+  const llm = runtime.llm as { resolveModelInfo?: (p?: string, m?: string) => Promise<unknown> } | undefined
+  if (!llm || typeof llm.resolveModelInfo !== 'function') return null
+  const key = `${route.provider}/${route.model || ''}`
+  if (effortSupportCache.has(key)) return effortSupportCache.get(key) || null
+  let out: string[] | null = null
+  try {
+    const info = (await llm.resolveModelInfo(route.provider, route.model)) as { reasoning?: { efforts?: unknown } } | null | undefined
+    const efforts = info && info.reasoning && info.reasoning.efforts
+    if (Array.isArray(efforts)) out = efforts.filter((e) => typeof e === 'string') as string[]
+  } catch (e) { out = null }
+  effortSupportCache.set(key, out)
+  return out
+}
+
+/**
+ * 解析本阶段要下发的推理强度：
+ * - 阶段未要求降档（effortHint 空）→ undefined = 不传，宿主默认（DeepSeek high）
+ * - 第 1 次尝试用 hint；**重试回升 'high'**（质量优先，ADR-0006）
+ * - 只有探测到该路由支持该档位才返回，否则一律 undefined（防硬失败）
+ */
+async function resolveStageEffort(route: { provider?: string; model?: string }, attempt: number, effortHint?: string | null): Promise<string | undefined> {
+  const base = effortHint && String(effortHint).trim() ? String(effortHint).trim() : null
+  if (!base) return undefined
+  const wanted = attempt > 1 ? 'high' : base
+  const supported = await supportedEfforts(route)
+  if (!supported || supported.indexOf(wanted) === -1) return undefined
+  return wanted
+}
+
 /** 并发池：按 max 个 worker 消费 items，返回同序结果。 */
 export async function runPool(items, max, fn) {
   const results = new Array(items.length)
@@ -77,6 +116,7 @@ export function resolveChildRoute(parent: ParentAgentLike): { provider?: string;
 /** 运行单个阶段子代理：执行 + 产出实质校验 + token 双口径计量 + stage 状态流转。 */
 export async function runAgent(
   journal: Journal, parent: ParentAgentLike, label: string, phase: string, prompt: string, signal: unknown, taskKey?: string | null,
+  attempt = 1, effortHint?: string | null,
 ): Promise<string | null> {
   const maxSeq = journal.stages.length ? Math.max(...journal.stages.map((s) => s.seq)) : 0
   let stageText = null
@@ -93,11 +133,17 @@ export async function runAgent(
   try {
     // 显式传当前生效路由，避免继承过期的 parent.options 快照（主线程已切换代理的情况）
     const route = resolveChildRoute(parent)
-    const agentOptions = (route.provider || route.model) ? {
+    // 机械阶段降档（可选）：只在宿主声明支持时下发；重试自动回升 high（见 resolveStageEffort）
+    const effort = await resolveStageEffort(route, attempt, effortHint)
+    const agentOptions = (route.provider || route.model || effort) ? {
       ...(route.provider ? { provider: route.provider } : {}),
       ...(route.model ? { model: route.model } : {}),
       ...(route.maxTokens ? { maxTokens: route.maxTokens } : {}),
+      ...(effort ? { reasoningEffort: effort } : {}),
     } : undefined
+    if (effort && !journal.cancelled) {
+      journal.logs.push({ t: Date.now(), level: 'info', message: `${label} 推理强度：${effort}${attempt > 1 ? '（重试回升）' : '（机械阶段降档）'}` })
+    }
     run = await runtime.subagents.start(providerName(), {
       label,
       prompt: [{ type: 'text', text: prompt }],
@@ -181,9 +227,10 @@ export async function runAgent(
   }
 }
 
-/** 单阶段重试 + token 熔断（官方口径：input+cacheRead+cacheWrite+output 累计）。 */
+/** 单阶段重试 + token 熔断（官方口径：input+cacheRead+cacheWrite+output 累计）。
+ * `effortHint`：机械阶段的推理强度降档提示（第 1 次尝试生效，重试自动回升 high，见 resolveStageEffort）。 */
 export async function withRetry(
-  journal: Journal, parent: unknown, label: string, phase: string, prompt: string, signal: unknown, taskKey?: string | null,
+  journal: Journal, parent: unknown, label: string, phase: string, prompt: string, signal: unknown, taskKey?: string | null, effortHint?: string | null,
 ): Promise<{ text: string | null; attempts: number; stageTokens: number; stage: JournalStage | null }> {
   let attempts = 0
   let stageTokens = 0
@@ -198,7 +245,7 @@ export async function withRetry(
     // runAgent 同步 push 本次尝试的 stage（第一个 await 前），期间其他任务的 runAgent
     // 可能已 push 新 stage；用 length-1 取 stage 会错位（证据块/重试诊断/usage 累计全串）。
     const beforeLen = journal.stages.length
-    const result = await runAgent(journal, parent, labelNow, phase, promptNow, signal, taskKey)
+    const result = await runAgent(journal, parent, labelNow, phase, promptNow, signal, taskKey, attempt, effortHint)
     lastStage = journal.stages[beforeLen] || null
     // 累计本阶段各次尝试的总消耗（官方口径：input+cacheRead+cacheWrite+output）
     if (lastStage && lastStage.phase === phase) {

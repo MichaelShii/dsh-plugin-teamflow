@@ -10,6 +10,18 @@ export const QA_REWORK_LIMIT = 2
 export const STAGE_TOKEN_BUDGET = 60000
 /** 任务夹产物展示顺序（ADR-0008）：工作台只列其中**真实存在**的文件，按此顺序出「一键右侧栏预览」按钮。 */
 export const TEAMFLOW_ARTIFACT_ORDER = ['PRD.md', 'DESIGN.md', 'TECHNICAL.md', 'QA-REPORT.md', 'ACCEPTANCE.md', 'meta.json']
+
+/**
+ * 机械型阶段的推理强度降档值（2026-09-11）：只用在**明确的机械阶段**（patch 档的单点确认、
+ * scaffold 脚手架落地），其余阶段不传 = 宿主默认 `high`。
+ *
+ * 为什么值得降：DeepSeek 路由把推理 token **计入 output**，且推理内容**每个带推理回合原样回传**
+ * ——高推理同时抬高 output 与后续每一步 input（见 `llm-deepseek/README`）。
+ * 安全前提：只有宿主 `llm.resolveModelInfo()` 声明该路由支持该档位才下发——传不支持的值会被
+ * 宿主以 `UNSUPPORTED_REASONING_EFFORT` **硬失败且不降级**（runner 会先探测再传）。
+ * 重试自动回升 `high`（质量优先，ADR-0006）。
+ */
+export const MECHANICAL_STAGE_EFFORT = 'low'
 /* ── 子代理单调用护栏（进行中退化检测；纯进度信号，无时间配额——慢吞吐的合法任务不受影响）── */
 /** 护栏轮询间隔 ms。 */
 export const GUARD_POLL_MS = 15000

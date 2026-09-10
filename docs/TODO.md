@@ -15,7 +15,7 @@
 
 ## 优化候选（2026-09-10 四路调研 + 自查，按收益/成本排序）
 
-- 🔜 **按阶段下发 `reasoningEffort`（token 大杠杆，需 A/B 定量）**：`runner.ts` 现在只传 `provider/model/maxTokens` → 全阶段吃 DeepSeek 默认 **high**；而推理 token **计入 output**，且**推理内容每个带推理回合原样回传**（同时抬高后续 input）。做法：机械阶段降 `low`/`off`、判据类阶段保持 high、重试**递进加重**。前置：`ctx.llm.resolveModelInfo()` 读 `reasoning.efforts`（不支持的值宿主会 `UNSUPPORTED_REASONING_EFFORT` **硬失败且不降级**）。基线：2026-09-10 冒烟（lite、6 阶段、99.3k 未命中 / 1.37M 命中 / 48.2k 输出 / 54 调用）。
+- **按阶段下发 `reasoningEffort`（token 大杠杆）**：✅ v0.1.7 已落地两处机械阶段降档（patch 单点确认 + scaffold → `low`；重试回升 high；先经 `resolveModelInfo` 探测能力再下发）。**剩余**：① **A/B 定量**——同需求跑两次 patch 档（基线 high vs 候选 low）对比四桶与调用数，验证收益；② 视结果决定是否把 `dev` 里的机械改动也纳入降档（当前保守不动）。前置事实：DeepSeek 默认 high，推理 token 计入 output 且**推理内容每回合回传**。
 - **产物可见性（客户端）**：✅ 已完成 ①present 交付（prd/tech/qa/acceptance）与 ②工作台 `openResource` 一键右侧栏预览（v0.1.7）。**剩余**：③ `main`+`sidebar.panellist` 注册**全局**面板（不再依附单个会话 tab）；④ run 详情进右栏 tab（`sidebarRightTabs.register` + `openTab`），替掉画布内自绘浮层。注意 `main` 是 keyed/root scope——occupant 拿不到 `useProjection`/`useSession`，全局面板里的「当前会话」指标要走 `ctx.sessions.sessionOf` 或自家 remote。
 - **工作台「列出子代理」改用 `ctx.subagents.listChildren`**（官方 API，覆盖 one-shot + continuable，带 `activity`）；注意它**无 `createdAt`/`runId`/`outcome`**——run 顺序与归属仍以 journal 为准。
 - 🔜 **continuable 试点（独立 ADR 规模）**：QA 打回复用**同一个** dev 子代理（`startContinuable` + `steerHostSubagentPrompt`/`queueHostSubagentPrompt` + `interrupt`），替掉「重开子代理 + 重灌蓝图」。代价明确：无 `run.result`（改走 `subagent/end` + `finalAssistantOutput`）、**不支持 `outputSchema`**、初始 prompt 会被追加 return guidance（动 prompt 契约，L1/L2 要同步）、web 主流程**无人 drain**（须自行 `drainContinuableChildren`）、中断语义变化。

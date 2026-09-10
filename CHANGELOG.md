@@ -7,6 +7,7 @@
 ### 新增
 - **工作台产物一键预览**：任务卡详情里的「任务夹」现在按真实存在的产物列按钮（PRD / DESIGN / TECHNICAL / QA-REPORT / ACCEPTANCE / meta），点一下即在 DSH **右侧栏**打开预览（Markdown 由官方文档预览器接管）。地址由 host 用官方 `fileAddressFor` 生成（`dsh-resource://file/session/<id>/<相对路径>`）——客户端不拼地址、也不引宿主包进 client bundle；只列真实存在的文件（不出死按钮）；右侧栏服务缺失时静默降级
 - **产物交付（`present`）**：prd/tech/qa/acceptance 四个阶段被要求把任务夹产物交给官方 `present` 工具 → 用户在该会话得到「交付文件卡」（预览 / 默认程序打开 / 文件管理器定位）。诚实标注为 `[policy]` 增强项：文件仍是唯一事实源，缺文件依旧是硬失败；卡片渲染在**该子代理会话**的轮次尾部（主会话不显示）
+- **机械阶段推理强度降档（省 token）**：DeepSeek 路由默认 `reasoningEffort: high`，而推理 token **计入 output** 且**推理内容每个带推理回合原样回传**（同时抬高后续 input）。现对两处机械阶段下发 `low`——patch 档的「单点确认」与 `scaffold`（脚手架落地）；判据类阶段（PRD/设计/技术方案/QA/验收）保持宿主默认 `high`，**重试自动回升 `high`**（质量优先）。安全前提：先经 `llm.resolveModelInfo()` 探测该路由的 `reasoning.efforts`，只有声明支持才下发——宿主对不支持的值会 `UNSUPPORTED_REASONING_EFFORT` 硬失败且不降级；探测结果按 provider/model 缓存。阶段日志记录实际下发的档位
 
 ### 修复
 - **token 计量改走官方 Session 投影（宿主弃用同步事件读取器）**：dsh 0.1.5-rc.2 起 `Session.eventAt()` / `snapshotEvents()` / `ownEvents()` 标记为 deprecated（存量可留、新调用禁止，宿主方向是不再把完整事件序列常驻内存）。计量来源改为**官方投影优先**——`ctx.sessionProjections.stateOf(session,'tokenUsage')` 取四桶（与宿主 token-meter 同一份 fold，重试替换语义更准）+ `'sessionStats'.steps` 取调用数，**零历史扫描**；投影缺失/无数据/读取异常时静默回退原事件扫描（最小 profile 与存量宿主不受影响，不虚报 0，不中断流水线）。`sessionProjections` 走可选 `ctx.inject`，不进 `static inject`——服务缺失时插件照常加载
