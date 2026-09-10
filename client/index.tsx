@@ -409,7 +409,7 @@ function PipelinePanel({ active, api, runId, sessionId, sessions }) {
     ref: wrapRef,
     onMouseDown: onDown, onMouseMove: onMove, onMouseUp: onUp, onMouseLeave: onUp,
     style: {
-      position: 'relative', height: 560, borderRadius: 12, overflow: 'hidden', touchAction: 'none',
+      position: 'relative', flex: 1, minHeight: 320, borderRadius: 12, overflow: 'hidden', touchAction: 'none',
       border: `1px solid ${T.border}`, userSelect: 'none',
       cursor: grabbing ? 'grabbing' : 'grab',
       background: `radial-gradient(circle, ${T.border2} 1px, transparent 1px) 0 0 / 24px 24px, ${T.layer1}`,
@@ -553,7 +553,8 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
     { kind: 'task', list: (backlog.tasks || []).filter((t) => t.type !== 'subtask') }, // 只展示主卡（子卡嵌套在主卡下）
     { kind: 'bug', list: backlog.bugs || [] },
   ]
-  return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 14, maxHeight: '72vh', overflowY: 'auto', paddingRight: 4 } },
+  return h('div', { style: { position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } },
+    h('div', { style: { flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 14, paddingRight: 4 } },
     groups.map(({ kind, list }) => {
       const counts = {}
       for (const s of COLUMNS[kind]) counts[s] = 0
@@ -581,7 +582,6 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
               style: {
                 minWidth: 140, maxWidth: 172, flex: '0 0 auto',
                 borderRadius: 10, padding: 7, minHeight: 84,
-                maxHeight: 340, overflowY: 'auto', // 任务增多时列内滚动，不撑高页面
                 background: isOver ? `color-mix(in srgb, ${color} 8%, ${T.layer1})` : T.layer2,
                 border: `1px dashed ${isOver ? color : T.border}`,
                 transition: 'background .12s ease, border-color .12s ease',
@@ -598,7 +598,7 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
           }),
         ),
       )
-    }),
+    })),
     det ? h(ItemDetailDrawer, { det, onClose: () => setDet(null), onShowRun, openArtifact }) : null,
   )
 }
@@ -974,7 +974,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
     fontFamily: MONO,
   })
 
-  return h('div', { style: { fontFamily: SANS, fontSize: 13, color: T.text, display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 16px' } },
+  return h('div', { style: { fontFamily: SANS, fontSize: 13, color: T.text, display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 16px 10px', height: '100%', minHeight: 0, overflow: 'hidden' } },
     /* 顶部品牌条 */
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 10 } },
       h('div', {
@@ -1088,7 +1088,10 @@ function TeamFlowView(props: TeamFlowViewProps) {
         : null,
     ),
 
-    tab === 'pipeline' ? h(PipelinePanel, { active, api, runId: activeRun ? activeRun.id : null, sessionId: props.sessionId, sessions: props.sessions }) : h(BoardPanel, { backlog, api, onRefresh: refresh, sessionId: props.sessionId, openArtifact: props.openArtifact, onShowRun: (rid) => { setTab('pipeline'); setRunId(rid) } }),
+    /* 内容区：占满剩余高度并自行滚动——宿主 `.viewArea` 是 flex:1/min-height:0 且不滚动，
+       根容器不约束高度就会顶出可视区（外层多出一条页面滚动条，2026-09-11 用户实测） */
+    h('div', { style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } },
+      tab === 'pipeline' ? h(PipelinePanel, { active, api, runId: activeRun ? activeRun.id : null, sessionId: props.sessionId, sessions: props.sessions }) : h(BoardPanel, { backlog, api, onRefresh: refresh, sessionId: props.sessionId, openArtifact: props.openArtifact, onShowRun: (rid) => { setTab('pipeline'); setRunId(rid) } })),
   )
 }
 
