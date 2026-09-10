@@ -293,7 +293,8 @@ function RunDetailPane({ snap, product, api }) {
   }, { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 })
   const openStage = async (s) => {
     if (!api) return
-    try { setSel(unwrap(await api.stageDetail(snap.id, s.seq), 'stageDetail')); setErr(null) }
+    // 注意：api 适配器（productApi）**已解包**，这里直接用值——再 unwrap 一次会把载荷当信封（历史 bug）
+    try { setSel(await api.stageDetail(snap.id, s.seq)); setErr(null) }
     catch (e) { setErr(String((e && e.message) || e)) }
   }
   const logs = (snap.logs || []).slice(-60)
@@ -525,13 +526,14 @@ export function GlobalPanel(props) {
   const api = state.current && remote ? productApi(remote, state.current) : null
   const openItem = async (kind, id) => {
     if (!api) return
-    try { setDetail({ kind: 'item', data: unwrap(await api.itemDetail(kind, id, currentSessionId || null), 'itemDetail') }) }
+    // api 适配器已解包（同上，勿二次 unwrap）
+    try { setDetail({ kind: 'item', data: await api.itemDetail(kind, id, currentSessionId || null) }) }
     catch (e) { setState((s) => ({ ...s, err: String((e && e.message) || e) })) }
   }
   const showInline = async (r) => {
     if (!api) return
     try {
-      const snap = unwrap(await api.runDetail(r.id), 'productRunDetail')
+      const snap = await api.runDetail(r.id)
       setInlineRun(r); setDetail({ kind: 'run', data: snap })
     } catch (e) { setState((s) => ({ ...s, err: String((e && e.message) || e) })) }
   }
