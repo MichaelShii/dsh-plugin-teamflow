@@ -362,21 +362,44 @@ function RunDetailPane({ snap, product, api }) {
   )
 }
 
-/** 右栏 run 详情 tab 正文（地址来自宿主导航记录；host 只认自己的地址格式）。 */
+/** 右栏 run 详情 tab 正文（地址来自宿主导航记录；host 只认自己的地址格式）。
+ *
+ * ⚠️ prop 名：宿主渲染器把 slot 的 `hooks: { tabInfo }` 绑成 **`useTabInfo`**（约定 `hooks.<name>` → `use<Name>`；
+ * 官方 `ui-sidebar-documentpreview/TextPreview.tsx` 即用 `useTabInfo`）。2026-09-11 实锤：写成 `tabInfo`
+ * 会恒 undefined → 地址取不到、错误也没设 → 永远停在「读取 run 详情中…」。
+ */
 export function RunDetailTab(props) {
+  const readTab = props && (typeof props.useTabInfo === 'function' ? props.useTabInfo
+    : typeof props.tabInfo === 'function' ? props.tabInfo : null)
   let info = null
-  try { info = props && typeof props.tabInfo === 'function' ? props.tabInfo() : null } catch (e) { info = null }
-  const address = info && info.tab && info.tab.navigation ? info.tab.navigation.address : null
+  try { info = readTab ? readTab() : null } catch (e) { info = null }
+  const tab = info && info.tab ? info.tab : null
+  // 资源型 tab：导航地址是权威（`contentId` 兜底——资源 claim 下二者同为地址）
+  const address = (tab && tab.navigation && tab.navigation.address) || (tab && tab.contentId) || null
   const parsed = parseRunAddress(address)
   const remote = props && props.remote
   const [snap, setSnap] = React.useState(null)
   const [err, setErr] = React.useState(null)
+  const [nonce, setNonce] = React.useState(0)     // 手动重试
   const product = parsed ? parsed.product : null
   const runId = parsed ? parsed.runId : null
   const api = React.useMemo(() => (remote && product ? productApi(remote, product) : null), [remote, product])
+  // 兜底自愈：地址还没就绪时（宿主提交 tab 记录前的空窗，钩子可能抛错且不订阅）主动重渲染若干次
+  const [, bump] = React.useReducer((n) => n + 1, 0)
+  React.useEffect(() => {
+    if (address) return undefined
+    let tries = 0
+    const timer = setInterval(() => { tries += 1; bump(); if (tries >= 12) clearInterval(timer) }, 150)
+    return () => clearInterval(timer)
+  }, [address])
   React.useEffect(() => {
     let alive = true
-    if (!api || !runId) { setSnap(null); setErr(address ? `无法解析地址：${address}` : null); return undefined }
+    if (!runId) {
+      setSnap(null)
+      setErr(address ? `无法解析 run 地址：${address}` : (readTab ? '读取 tab 地址中…' : '宿主 tab 信息钩子不可用（useTabInfo 缺失）'))
+      return undefined
+    }
+    if (!api) { setSnap(null); setErr('remote 不可用（插件未挂载或版本过旧）'); return undefined }
     api.runDetail(runId).then((v) => { if (alive) { setSnap(v); setErr(null) } }, (e) => { if (alive) setErr(String((e && e.message) || e)) })
     const timer = setInterval(() => {
       api.runDetail(runId).then((v) => {
@@ -387,8 +410,14 @@ export function RunDetailTab(props) {
       }, () => { /* 轮询失败静默（下一次自愈） */ })
     }, 5000)
     return () => { alive = false; clearInterval(timer) }
-  }, [api, runId, address])
-  if (err) return muted(err, { padding: 12, color: T.error })
+  }, [api, runId, address, nonce, readTab])
+  if (err && !snap) {
+    // 「地址还没就绪」不是错误态：tab 刚挂载的那一帧宿主可能尚未提交记录，等下一次渲染即可
+    const pending = !address && !!readTab
+    return h('div', { style: { padding: 12, display: 'flex', flexDirection: 'column', gap: 8 } },
+      muted(pending ? '读取 tab 地址中…' : err, { color: pending ? T.text2 : T.error }),
+      pending ? null : h('button', { style: panelBtn, onClick: () => { setErr(null); setNonce((n) => n + 1) } }, '重试'))
+  }
   if (!snap) return muted('读取 run 详情中…', { padding: 12 })
   return h(RunDetailPane, { snap, product, api })
 }
