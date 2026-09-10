@@ -8,6 +8,8 @@ export const RETRY_LIMIT = 2
 export const QA_REWORK_LIMIT = 2
 /** 单阶段 token 熔断预算（官方口径总消耗：input+cacheRead+cacheWrite+output 累计）。 */
 export const STAGE_TOKEN_BUDGET = 60000
+/** 任务夹产物展示顺序（ADR-0008）：工作台只列其中**真实存在**的文件，按此顺序出「一键右侧栏预览」按钮。 */
+export const TEAMFLOW_ARTIFACT_ORDER = ['PRD.md', 'DESIGN.md', 'TECHNICAL.md', 'QA-REPORT.md', 'ACCEPTANCE.md', 'meta.json']
 /* ── 子代理单调用护栏（进行中退化检测；纯进度信号，无时间配额——慢吞吐的合法任务不受影响）── */
 /** 护栏轮询间隔 ms。 */
 export const GUARD_POLL_MS = 15000

@@ -4,6 +4,10 @@
 
 ## [0.1.7] - 2026-09-10
 
+### 新增
+- **工作台产物一键预览**：任务卡详情里的「任务夹」现在按真实存在的产物列按钮（PRD / DESIGN / TECHNICAL / QA-REPORT / ACCEPTANCE / meta），点一下即在 DSH **右侧栏**打开预览（Markdown 由官方文档预览器接管）。地址由 host 用官方 `fileAddressFor` 生成（`dsh-resource://file/session/<id>/<相对路径>`）——客户端不拼地址、也不引宿主包进 client bundle；只列真实存在的文件（不出死按钮）；右侧栏服务缺失时静默降级
+- **产物交付（`present`）**：prd/tech/qa/acceptance 四个阶段被要求把任务夹产物交给官方 `present` 工具 → 用户在该会话得到「交付文件卡」（预览 / 默认程序打开 / 文件管理器定位）。诚实标注为 `[policy]` 增强项：文件仍是唯一事实源，缺文件依旧是硬失败；卡片渲染在**该子代理会话**的轮次尾部（主会话不显示）
+
 ### 修复
 - **token 计量改走官方 Session 投影（宿主弃用同步事件读取器）**：dsh 0.1.5-rc.2 起 `Session.eventAt()` / `snapshotEvents()` / `ownEvents()` 标记为 deprecated（存量可留、新调用禁止，宿主方向是不再把完整事件序列常驻内存）。计量来源改为**官方投影优先**——`ctx.sessionProjections.stateOf(session,'tokenUsage')` 取四桶（与宿主 token-meter 同一份 fold，重试替换语义更准）+ `'sessionStats'.steps` 取调用数，**零历史扫描**；投影缺失/无数据/读取异常时静默回退原事件扫描（最小 profile 与存量宿主不受影响，不虚报 0，不中断流水线）。`sessionProjections` 走可选 `ctx.inject`，不进 `static inject`——服务缺失时插件照常加载
 - **护栏适配官方通道（提醒 + 挂死检测）**：轻提醒从手写 `session.append('user/message')` + step/end flush 时序状态机，改为官方 `run.localAgent.inject()`（宿主在协议安全边界整批认领，旧注释声称的「会插进 tool_calls→tool_result 触发 400」不成立）；挂死检测从「多源取最长事件视图」长度启发式改为官方 **`subagentTiming` 投影**的 `active.through`（已提交事件时间，不受视图失明影响——上次 QA 误判 stalled 的根因）。长工具静默执行仍由 agent 活动守卫豁免；投影不可用时回退旧启发式。中止语义未变

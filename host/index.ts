@@ -19,10 +19,11 @@ import {
   readJson, readJsonAny, writeJson, persistJournal, loadJournals, journalFile,
 } from '../store.ts'
 import type { JournalRecord, JournalStage } from '../store.ts'
+import { fileAddressFor } from '@deepseek-ai/dsh-util-workspace-path'
 import type {
   Journal, BacklogItem, PipelineOptions, ResumeContext, SubagentRunLike, ParentAgentLike, UsageBuckets,
 } from './types.ts'
-import { RETRY_LIMIT, STAGE_TOKEN_BUDGET, STATUS, PHASE_ORDER, PHASE_KEY_OF, PHASE_KEY_BY_NAME, phaseKeyOf } from './constants.ts'
+import { RETRY_LIMIT, STAGE_TOKEN_BUDGET, STATUS, PHASE_ORDER, PHASE_KEY_OF, PHASE_KEY_BY_NAME, phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER } from './constants.ts'
 import { toText, clip, extractText, normalizeRoot, normalizeTasks, sanitizeSnapOptions, normalizeSignal, hasSubstance, isUnretryable, handoffBrief } from './util.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, devPrompt, qaPrompt, acceptancePrompt } from './prompts/index.ts'
 import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, setSessionProjections, workspaceScopeOf } from './core/context.ts'
@@ -32,7 +33,7 @@ import { runPool, runAgent, withRetry } from './core/runner.ts'
 import { deliverCompletion } from './core/report.ts'
 import { runSanityCheck, gitCmd } from './core/sanity.ts'
 import { join } from 'node:path'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readdirSync } from 'node:fs'
 import { executePipeline, summarizeTimeline, startPipeline, cancelRun, resumeRun } from './core/pipeline.ts'
 import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, normalizeMode, runTriage } from './core/triage.ts'
 
@@ -632,11 +633,25 @@ export class TeamflowService extends TypertRemoteService {
     const reqId = k === 'req' ? item.id : (item.reqId || null)
     // 任务夹路径（ADR-0008）+ 关联 run 信息（req 需求原文在这）：匹配该需求的 journal
     let runDocs: string | null = null
+    let runDocsRoot: string | null = null
     let runInfo: { runId: string; status: string; requirement: string; startedAt: number | null; endedAt: number | null } | null = null
     for (const j of runsFor(sc.projectKey)) {
       if (j.reqId !== reqId) continue
-      if (j.runDocs && !runDocs) runDocs = j.runDocs
+      if (j.runDocs && !runDocs) { runDocs = j.runDocs; runDocsRoot = j.workspacePath || null }
       if (!runInfo) runInfo = { runId: j.id, status: j.status, requirement: String(j.requirement || ''), startedAt: j.startedAt || null, endedAt: j.endedAt || null }
+    }
+    // 任务夹产物清单（ADR-0008）：只列**真实存在**的产物文件，地址由 host 用官方
+    // fileAddressFor 生成（dsh-resource://file/session/<id>/<相对路径>）——client 直接把地址
+    // 交给右侧栏 openResource 预览，无需自己拼地址、也无需在 client bundle 里引宿主包。
+    const runArtifacts: Array<{ name: string; address: string }> = []
+    if (runDocs && runDocsRoot && typeof sessionId === 'string' && sessionId) {
+      try {
+        const present = new Set(readdirSync(join(runDocsRoot, runDocs)))
+        for (const name of TEAMFLOW_ARTIFACT_ORDER) {
+          if (!present.has(name)) continue
+          runArtifacts.push({ name, address: fileAddressFor(sessionId, undefined, `${runDocs}/${name}`) })
+        }
+      } catch (e) { /* 任务夹不存在/不可读 → 空清单（前端不渲染按钮） */ }
     }
     const byRole = item.byRole || null
     let subtasks: Array<{ id: string; title: string; status: string; summary: string; devAssign: string | null; usage: unknown; failed: boolean }> = []
@@ -674,6 +689,7 @@ export class TeamflowService extends TypertRemoteService {
       byRole: k === 'task' ? byRole : null,
       reqId: reqId || null,
       runDocs,
+      artifacts: runArtifacts,
       runInfo,
       subtasks, bugs,
     }

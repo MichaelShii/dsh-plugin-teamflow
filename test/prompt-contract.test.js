@@ -261,5 +261,13 @@ assertContract({
   include: [/Visual verification · limited/, /You CANNOT interpret screenshots/, /do NOT take screenshots/, /人工补测清单/, /do NOT guess, do NOT retry/],
 })
 
+// ── policy：产物交付（官方 present 工具 → 交付文件卡）──
+assertContract({
+  id: 'ARTIFACT-PRESENT-CHANNEL', level: 'policy', targets: ['prdPrompt', 'techPrompt', 'qaPrompt', 'acceptancePrompt'],
+  intent: '产物写成后调官方 present 交付（文件卡）；诚实标注为增强项（文件仍是唯一事实源）且只列交付物',
+  include: [/Artifact delivery · policy/, /call the `present` tool/, /never scratch files, temp scripts or command logs/, /the file stays the single source of truth/],
+  exclude: [/present is mandatory/, /hard constraint/i],
+})
+
 console.log(failed === 0 ? '\n✅ prompt-contract 全部通过' : `\n❌ prompt-contract ${failed} 项契约失败`)
 process.exit(failed === 0 ? 0 : 1)

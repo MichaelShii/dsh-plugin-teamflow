@@ -75,7 +75,8 @@
     "@deepseek-ai/dsh-client-ui-conversation": "*",
     "@deepseek-ai/dsh-llm": "*",
     "@deepseek-ai/dsh-tools": "*",
-    "@deepseek-ai/dsh-typert-protocol": "*"
+    "@deepseek-ai/dsh-typert-protocol": "*",
+    "@deepseek-ai/dsh-util-workspace-path": "*"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-base": {
@@ -97,6 +98,9 @@
       "optional": true
     },
     "@deepseek-ai/dsh-typert-protocol": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-util-workspace-path": {
       "optional": true
     },
     "react": {
