@@ -104,7 +104,7 @@ const RUN_PREVIEW = 8
 const TERMINAL_STATUSES = ['accepted', 'closed', 'verified', 'cancelled']
 
 /* ── 产品线导航（左栏） ─────────────────────────────────────────── */
-function ProductRail({ products, current, onSelect, onRefresh, busy }) {
+function ProductRail({ products, current, loadingKey, onSelect, onRefresh, busy }) {
   return h('div', {
     style: {
       width: 236, flex: '0 0 236px', minHeight: 0, display: 'flex', flexDirection: 'column',
@@ -135,7 +135,9 @@ function ProductRail({ products, current, onSelect, onRefresh, busy }) {
             h('div', { style: { fontSize: 10, color: T.text2, fontFamily: MONO, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.key),
             h('div', { style: { ...flexRow, gap: 8, marginTop: 3, fontSize: 10, color: T.text2 } },
               h('span', null, `run ${p.totalRuns}`),
-              p.updatedAt ? h('span', null, `更新 ${fmtTime(p.updatedAt)}`) : null),
+              p.updatedAt ? h('span', null, `更新 ${fmtTime(p.updatedAt)}`) : null,
+              // 选中但视图还没回来时给出明确状态：避免"卡片是选中态、右侧却在读取中"的误导
+              p.key === loadingKey ? h('span', { style: { color: T.brand, fontWeight: 600 } }, '读取中…') : null),
             p.lastRequirement ? h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 3, lineHeight: 1.45, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' } }, p.lastRequirement) : null,
             p.lastVerdict ? h('div', { style: { marginTop: 4 } }, chip(`验收 ${p.lastVerdict}`, stColor(p.lastVerdict === 'accepted' ? 'accepted' : p.lastVerdict))) : null,
           )
@@ -479,6 +481,7 @@ export function GlobalPanel(props) {
   const [hint, setHint] = React.useState(null)            // 面板内可见提示（不再只进 console）
   const [runsExpanded, setRunsExpanded] = React.useState(false)  // run 列表：默认折叠到 RUN_PREVIEW
   const [panelTab, setPanelTab] = React.useState('run')          // 主区标签页：run | backlog（一次只显示一个列表）
+  const [viewTick, setViewTick] = React.useState(0)              // 产品线视图重载计数器（同值点击/清单刷新都要能重新拉）
 
   /**
    * 右侧栏的**会话内容**宿主只在「对话被选中」时渲染（`RightbarRoot` 门控 `activePanelId === null`），
@@ -554,11 +557,12 @@ export function GlobalPanel(props) {
       const v = unwrap(await remote.products(currentSessionId || null), 'products') || {}
       const list = v.products || []
       const key = preferKey || state.current || (v.current && list.some((p) => p.key === v.current) ? v.current : (list[0] && list[0].key) || null)
-      setState({ products: list, current: key, view: null, err: null, busy: false })
+      setState({ products: list, current: key, view: key === state.current ? state.view : null, err: null, busy: false })
+      setViewTick((t) => t + 1)   // 无论 key 是否变化都要重新拉取（同值点击/会话切换都不能卡在"读取中"）
     } catch (e) {
       setState((s) => ({ ...s, busy: false, err: String((e && e.message) || e) }))
     }
-  }, [remote, currentSessionId, state.current])
+  }, [remote, currentSessionId, state.current, state.view])
 
   const loadView = React.useCallback(async (key, silent?: boolean) => {
     if (!remote || !key) return
@@ -571,10 +575,18 @@ export function GlobalPanel(props) {
     }
   }, [remote])
 
+  /** 选中产品线：**同一个**产品线 = 刷新（保留现有视图，不清空 → 不会卡"读取中"且不闪）；不同产品线 = 清空 + 重新拉。 */
+  const selectProduct = (k) => {
+    closeDetail()
+    setRunsExpanded(false)
+    setState((s) => ({ ...s, current: k, view: s.current === k ? s.view : null }))
+    setViewTick((t) => t + 1)
+  }
+
   // 首次加载 + 当前会话变化时刷新产品线清单（保持用户已选产品线）
   React.useEffect(() => { loadProducts() }, [currentSessionId])
-  // 选中产品线后拉取视图
-  React.useEffect(() => { if (state.current) loadView(state.current) }, [state.current])
+  // 选中产品线 / 手动刷新 / 清单刷新后拉取视图（viewTick 保证"同值点击"也能重新拉）
+  React.useEffect(() => { if (state.current) loadView(state.current) }, [state.current, viewTick, loadView])
   // 有活跃 run 时轮询（8s；无活跃 run 不打扰）
   React.useEffect(() => {
     const runs = (state.view && state.view.runs) || []
@@ -648,7 +660,7 @@ export function GlobalPanel(props) {
       h('span', null, hint),
       h('button', { style: panelBtn, onClick: () => setHint(null) }, '知道了')) : null,
     h('div', { style: { flex: 1, minHeight: 0, display: 'flex', position: 'relative' } },
-      h(ProductRail, { products: state.products, current: state.current, busy: state.busy, onRefresh: () => loadProducts(state.current), onSelect: (k) => { closeDetail(); setRunsExpanded(false); setState((s) => ({ ...s, current: k, view: null })) } }),
+      h(ProductRail, { products: state.products, current: state.current, loadingKey: state.view ? null : state.current, busy: state.busy, onRefresh: () => loadProducts(state.current), onSelect: selectProduct }),
       h('div', { style: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' } },
         !state.current
           ? h('div', { style: { padding: '12px 14px' } }, muted('选择左侧产品线查看 backlog 与 run（首次进入默认选最近更新的产品线）。'))
