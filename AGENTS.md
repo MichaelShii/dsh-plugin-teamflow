@@ -27,7 +27,7 @@
 | 决策记录 | `docs/adr/0001~0007` | 自研 journal(不引 LangGraph) / AGENTS 最小侵入 / 部署+token 口径 / triage+共享状态 / 需求无效→验收「需求不适用」拦截 / 认知前置+架构落地重构(质量优先) / **QA 打回修复有界闭环(ADR-0007)** |
 | 开发日志 | `docs/devlog.md` | 迭代变更流水 + 功能演进史（历史；不注入会话，按需查阅） |
 | 待办 | `docs/TODO.md` | 未完成事项（需人决策；不注入会话——agent 不主动做产品改进） |
-| 测试 | `test/smoke.js` `test/stages.test.js` `test/verdict.test.js` `test/journal.test.js` `test/diagnostic.test.js` `test/evidence.test.js` `test/metering.test.js` | 结构/描述符 smoke + 档位阶段集 + 验收结论 + journal 行为 + 重试诊断 + 验证证据块 + token 计量宿主适配（多源回退/usage 双路径） |
+| 测试 | `test/smoke.js` `test/stages.test.js` `test/verdict.test.js` `test/journal.test.js` `test/diagnostic.test.js` `test/evidence.test.js` `test/metering.test.js` | 结构/描述符 smoke + 档位阶段集 + 验收结论 + journal 行为 + 重试诊断 + 验证证据块 + token 计量宿主适配（官方投影优先 + 多源回退/usage 双路径回退） |
 | 评测层（L1+L2） | `test/prompt-contract.test.js` `test/conformance.test.js` `docs/benchmarks/corpus/` | **评测 prompt/注入改动**：L1 行为级契约（工厂产出锚点，含 HOST-ENFORCED/policy 分级，改 prompt 必跑）+ L2 回放语料一致性（冻结真实产物喂宿主解析器，golden corpus 门禁，零 LLM 成本）；语料/清单只增不改 |
 
 ## 3. 工程结构（领域划分，单向依赖）
@@ -78,13 +78,13 @@ descriptors.ts  # Remote 描述符（host/client 共用，单独 entry）
 | 锚点 | 当前行为（约束性描述，勿回退） |
 |---|---|
 | 领域化 + triage | mode 5 档（full/medium/lite/tech/patch）+ 模型驱动 triage（正则只做确定性护栏）；lite 不吞显式 needDesign/needScaffold；需求无效在 PRD/确认单前置拦截（ADR-0004/0005） |
-| token 官方口径 | usage=输入未命中/命中/写缓存/输出/调用数+命中率；熔断预算用官方总消耗；展示同口径（ADR-0003） |
-| 多团队/工作台 | teams.json + workspace 级隔离 + 单任务轮转 + dev 子卡 + 会话暂停/resume + state.json 预编译索引 + 子代理路由跟随主线程 + 分支策略启动前 needs-decision（ADR-2026-08-27） |
+| token 官方口径 | usage=输入未命中/命中/写缓存/输出/调用数+命中率；熔断预算用官方总消耗；展示同口径（ADR-0003）。**来源=官方 Session 投影**（`tokenUsage` 四桶 + `sessionStats.steps` 调用数，与宿主 token-meter 同一份 fold）；事件扫描仅为无投影宿主的回退（宿主已弃用 `snapshotEvents/ownEvents` 同步读取，护栏复读检测仍读事件——见 docs/TODO.md） |
+| 多团队/工作台 | teams.json + workspace 级隔离 + 单任务轮转 + dev 子卡 + 会话暂停/resume + state.json 预编译索引 + 子代理路由跟随主线程 + 分支策略启动前 needs-decision（ADR-2026-08-27）。**隔离 key = 路径派生 `slugPath(cwd)`**（UUID 分支当前不可达：宿主 `resolveByPath` 异步、插件同步调用，见 docs/TODO.md） |
 | 认知前置 + 架构落地 | M0 sanity 状态核对 / M1 蓝图全模式启用 / M2 dev 按蓝图拆任务 / M3 QA+验收架构核验（打回=rework）/ triage 架构护栏强升 medium（ADR-0006）。质量优先于 token |
 | QA 打回闭环 | QA P0-P2 → 打回开发确认+修复（qaFixPrompt）→ 复验 ≤2 轮；缺陷按 reqId+defectId 幂等登记、复验通过关单（P3 观察项保留）；parseDefects 容忍 `**P1**` 加粗（ADR-0007） |
 | 输出单轨制 | QA/验收文件即产物、回复仅摘要；文件缺失硬失败；parseAcceptanceVerdict 只认显式结论行（结论行字面量模板：最后一行「验收结论：✅/⚠️/❌/📝」），**无结论行 → needs-human（不猜结论）**，📝 需求不适用全文命中仍优先 |
 | 任务夹文档制 | 每需求一个自包含任务夹 `docs/teamflow/<yyyyMMdd>-r<N>[-<slug>]/`（PRD/TECHNICAL/QA-REPORT/ACCEPTANCE 收口），journal.runDocs 固定身份、重试/续跑复用同夹；SUMMARY.md 废除、memory.md 收窄为约定层；AC 局部编号（ADR-0008） |
-| 重试/护栏 | withRetry 重试附诊断包（上次 outcome/summary/护栏原因/产出尾部）；退化（degenerated）与挂死/空转（stalled）不自动重试（needs-human 引导 resume）；护栏=进度信号非配额 |
+| 重试/护栏 | withRetry 重试附诊断包（上次 outcome/summary/护栏原因/产出尾部）；退化（degenerated）与挂死/空转（stalled）不自动重试（needs-human 引导 resume）；护栏=进度信号非配额。**通道/来源**：轻提醒走官方 `run.localAgent.inject()`；挂死判据用官方 `subagentTiming` 投影的 `active.through`（不可用才回退事件视图启发式；长工具静默仍由 agent 活动守卫豁免）；复读检测仍读事件（弃用读取器唯一剩余处，见 docs/TODO.md） |
 | prompt 约束分级 | prompt 内**禁止自称 hard constraint**（措辞硬与 enforcement 脱节→模型对 high-signal 词脱敏，实证 17 条 warn 零削减）；分级 `[HOST-ENFORCED]`（host 真实强制：单轨产物/验收结论行，必须描述真实后果）+ `[policy]`（自律 + guard warn/轻提醒） |
 | 验证证据块 | dev/qaFix 回复末尾强制 `[Verification evidence]` 块（命令+退出码+断言计数+失败行引用，或显式 N/A）→ host 提取存证 `stage.verifyEvidence`（stageDetail 可见，可与 logs/ 命令输出对照）；policy 级——缺失记 warn 不中断 |
 

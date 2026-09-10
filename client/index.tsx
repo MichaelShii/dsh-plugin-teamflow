@@ -614,7 +614,7 @@ function PipelinePanel({ active, api, runId, sessionId, sessions }) {
 }
 
 /* ── Backlog 拖拽看板 ────────────────────────────────────────────── */
-function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun }) {
+function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifact }) {
   const [drag, setDrag] = React.useState(null)
   const [over, setOver] = React.useState(null)
   const [det, setDet] = React.useState(null)
@@ -759,14 +759,14 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun }) {
         ),
       )
     }),
-    det ? h(ItemDetailDrawer, { det, onClose: () => setDet(null), onShowRun }) : null,
+    det ? h(ItemDetailDrawer, { det, onClose: () => setDet(null), onShowRun, openArtifact }) : null,
   )
 }
 
 /* ── TeamFlow Backlog 条目详情抽屉 ──────────────────────────────── */
 function fmtAt(ts) { return ts ? new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '—' }
 
-function ItemDetailDrawer({ det, onClose, onShowRun }) {
+function ItemDetailDrawer({ det, onClose, onShowRun, openArtifact }) {
   const d = det && det.data
   const loading = det && det.loading
   const err = det && det.err
@@ -859,10 +859,18 @@ function ItemDetailDrawer({ det, onClose, onShowRun }) {
                   ),
               )
             })() : null,
-            /* 任务夹（ADR-0008） */
+            /* 任务夹（ADR-0008）：路径 + 产物一键右侧栏预览（host 只回存在且带好地址的文件） */
             d.runDocs ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
               secTitle('任务夹'),
               h('div', { style: { fontSize: 11.5, fontFamily: MONO, color: T.brand, background: T.layer2, borderRadius: 8, padding: '7px 10px', wordBreak: 'break-all' } }, d.runDocs + '/'),
+              (Array.isArray(d.artifacts) && d.artifacts.length > 0) ? h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 1 } },
+                d.artifacts.map((a) => h('button', {
+                  key: a.name,
+                  onClick: () => { if (openArtifact) openArtifact(a.address, a.name) },
+                  title: `在右侧栏预览 ${d.runDocs}/${a.name}`,
+                  style: { fontSize: 10.5, fontWeight: 600, padding: '3px 9px', borderRadius: 6, cursor: 'pointer', lineHeight: '16px', border: `1px solid color-mix(in srgb, ${T.brand} 38%, transparent)`, background: `color-mix(in srgb, ${T.brand} 10%, transparent)`, color: T.brand, whiteSpace: 'nowrap' },
+                }, `📄 ${String(a.name).replace(/\.md$/, '')}`)),
+              ) : null,
             ) : null,
             /* TOKEN（task） */
             (kind === 'task' && d.usage) ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
@@ -1048,6 +1056,8 @@ interface TeamflowRemote {
 interface TeamFlowViewProps {
   sessionId: string
   remote: unknown
+  /** 产物一键预览：host 已算好 dsh-resource 地址，这里交给右侧栏（服务缺失时静默降级）。 */
+  openArtifact?: (address: string, name: string) => void
   sessions?: {
     openSubagent?: (a: { parentSessionId: string; childSessionId: string; mode?: string }) => void
   } | null
@@ -1225,7 +1235,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
       ) : null,
     ),
 
-    tab === 'pipeline' ? h(PipelinePanel, { active, api, runId: activeRun ? activeRun.id : null, sessionId: props.sessionId, sessions: props.sessions }) : h(BoardPanel, { backlog, api, onRefresh: refresh, sessionId: props.sessionId, onShowRun: (rid) => { setTab('pipeline'); setRunId(rid) } }),
+    tab === 'pipeline' ? h(PipelinePanel, { active, api, runId: activeRun ? activeRun.id : null, sessionId: props.sessionId, sessions: props.sessions }) : h(BoardPanel, { backlog, api, onRefresh: refresh, sessionId: props.sessionId, openArtifact: props.openArtifact, onShowRun: (rid) => { setTab('pipeline'); setRunId(rid) } }),
   )
 }
 
@@ -1243,13 +1253,28 @@ if (typeof document !== 'undefined') {
 export async function apply(ctx) {
   await ctx.remote.$mount(TEAMFLOW_REMOTE_CONTRIBUTION)
   const teamflow = ctx.get('remote.teamflow')
+  // 产物预览：地址（dsh-resource://…）由 host 生成，这里只交给右侧栏。
+  // 服务名 sidebarRight（@deepseek-ai/dsh-client-ui-sidebar-right 提供）；未挂载/未认领地址时静默降级
+  // ——右侧栏只是增强路径，缺它不影响工作台本身（故不进 inject，避免激活期硬依赖）。
+  const openArtifact = (address: string, name: string) => {
+    try {
+      const sidebarRight = ctx.get('sidebarRight')
+      if (!sidebarRight || typeof sidebarRight.openResource !== 'function') {
+        console.warn('[teamflow] 右侧栏服务不可用，无法预览产物', name)
+        return
+      }
+      sidebarRight.openResource(address)
+    } catch (e) {
+      console.warn('[teamflow] 打开产物失败', name, e && e.message)
+    }
+  }
   // 注册团队工作台 tab
   ctx.slots.inject('conversation.view', () => ctx.slots.register({
     name: 'conversation.view',
     id: 'teamflow',
     order: 20,
     label: '🏭 团队工作台',
-    inject: (sessionId) => ({ sessionId, remote: teamflow, sessions: ctx.get('sessions') }),
+    inject: (sessionId) => ({ sessionId, remote: teamflow, sessions: ctx.get('sessions'), openArtifact }),
   }, TeamFlowView))
   // 注册输入框旁的团队选择按钮
   ctx.slots.inject('conversation.input.right', () => ctx.slots.register({

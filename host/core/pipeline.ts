@@ -11,7 +11,7 @@ import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
 import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
-import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, STAGE_TOKEN_BUDGET } from '../constants.ts'
+import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, STAGE_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext } from '../types.ts'
@@ -295,7 +295,8 @@ export async function executePipeline(
         : options.mode === 'patch'
           ? { label: '工程师 · 单点确认', fn: patchConfirmPrompt }
           : { label: '产品经理 · 梳理 PRD', fn: prdPrompt }
-      const prdR = await withRetry(journal, parent, pForm.label, 'prd', pForm.fn(requirement, root, journal.id, state), signal)
+      // patch 档的「单点确认」是机械阶段（核对现状 + 给直改指令，不做架构判断）→ 降档省 token
+      const prdR = await withRetry(journal, parent, pForm.label, 'prd', pForm.fn(requirement, root, journal.id, state), signal, undefined, options.mode === 'patch' ? MECHANICAL_STAGE_EFFORT : null)
       if (!prdR.text) { throw stageFailError('prd', prdR) }
       prd = prdR.text
       timeline.prd = prd
@@ -332,7 +333,8 @@ export async function executePipeline(
         logSkip(PHASE_KEY_OF.scaffold)
       } else {
         journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：架构规划' })
-        const scR = await withRetry(journal, parent, '架构师 · 脚手架规划与落地', 'scaffold', scaffoldPrompt(requirement, design, root, journal.id, state), signal)
+        // 脚手架落地是机械阶段（按蓝图建骨架/搬文件，不做判据）→ 降档省 token
+        const scR = await withRetry(journal, parent, '架构师 · 脚手架规划与落地', 'scaffold', scaffoldPrompt(requirement, design, root, journal.id, state), signal, undefined, MECHANICAL_STAGE_EFFORT)
         if (!scR.text) { throw stageFailError('scaffold', scR) }
         scaffold = scR.text
         timeline.scaffold = scaffold

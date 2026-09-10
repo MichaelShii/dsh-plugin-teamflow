@@ -119,15 +119,20 @@ dsh-plugin-teamflow/
 - Node.js ≥ 22.18；
 - 依赖宿主提供的 `@deepseek-ai/dsh-*` 与 `react`（peerDependencies，宿主注入，无需单独安装）。
 
-opencode### 版本锚定（dsh 宿主兼容性）
+### 版本锚定（dsh 宿主兼容性）
 
-本插件开发与验证基于 **dsh git master（2026-09-04，≈ 0.1.3-alpha.1 发布线）**；npm 侧最新发布线 `0.1.2-rc.1`（next tag；`latest` 标签滞后为 0.0.1-rc.1，勿以 latest 判断）。`peerDependencies` 保持 `*`（宿主注入，宽松兼容）。
+本插件开发与验证基于 **dsh v0.1.5-rc.2（2026-09-10，tag `dsh-v0.1.5-rc.2`）**；npm 侧 `next`=0.1.5-rc.2、`latest`=0.1.5-rc.1（`latest` 常滞后于 `next`，勿以 latest 判断发布线）。`peerDependencies` 保持 `*`（宿主注入，宽松兼容），并在 `package.json` 声明兼容窗口 **`engines.dsh: ">=0.1.5-rc.2 <0.2.0"`** 与 **`dsh.manifestVersion: 1`**——当前 dsh 不读取/校验这两个字段（源码内仅有类型声明），属作者声明性元数据。
 
-2026-09-04 兼容性核对（dsh 0.1.3-alpha.1）：session 持久化 v2（write-lease/JSONL 快照/版本化导出）、attachment/file-upload 收口、Windows 子进程隐藏、workspace 全限定路径硬化——**全部兼容，插件无需调整**。
+2026-09-10 兼容性核对（dsh 0.1.5-rc.2）：插件面板 Slot（原 `conversation` 根 slot → `main` 下的 `conversation` key）、会话格式 V3 + Session 生命周期（`SessionHandle`、异步 `agentLoop.create()`、会话锁）、`ctx.agent` 移除与 Inbox 类型化、SDK/Headless/ACP 默认工具调整、subprocess handle 去除 pid——**插件全部兼容**（未使用被改动的接口；`conversation.view` / `conversation.input.right` 声明未变，slot 树无删除）。其中一项需要跟进：
+
+- **Session 同步事件读取器已弃用**（`session.eventAt()` / `snapshotEvents()` / `ownEvents()`，宿主 2026-09-09 起「存量可留、新调用禁止」，方向是不再把完整事件序列常驻内存）：**token 计量已改为官方 Session 投影优先**（`ctx.sessionProjections.stateOf(session,'tokenUsage')` 取四桶 + `'sessionStats'.steps` 取调用数），事件扫描降级为无投影宿主的回退；**护栏的提醒通道已改官方 `Agent.inject()`、挂死判据已改用官方 `subagentTiming` 投影的 `active.through`**（长工具静默仍由 agent 活动守卫豁免），只剩**复读检测**仍在读事件（需要流式文本内容，官方替代＝订阅 `'session/event'` post-commit 投递，需先定等价判据，见 `docs/TODO.md`）。
+
+2026-09-04 核对（dsh 0.1.3-alpha.1）：session 持久化 v2（write-lease/JSONL 快照/版本化导出）、attachment/file-upload 收口、Windows 子进程隐藏、workspace 全限定路径硬化——全部兼容，插件无需调整。
 
 插件侧契约约束（dsh 升级后若行为异常先核对本段；锚定版本变更会在此更新）：
-- 插件注入的 session 事件（`tool-workflow/agent-start`、`user/message` 带 `source.kind='plugin'`）均在 released 词表内；**未来新增自定义事件类型须带 `ignorable: true`**，已知类型载荷不加 released 词表外键；
-- `@deepseek-ai/dsh-client-modules` 自 0.1.2-rc.1 起替代 `@deepseek-ai/dsh-client-runtime`（后者已从 monorepo 移除）。
+- 插件注入的 session 事件（`tool-workflow/agent-start`、`user/message` 带 `source.kind='plugin'`）均在宿主 `known-event-types` 词表内；**未来新增自定义事件类型须带 `ignorable: true`**，已知类型载荷不加词表外键；
+- `@deepseek-ai/dsh-client-modules` 自 0.1.2-rc.1 起替代 `@deepseek-ai/dsh-client-runtime`（后者已从 monorepo 移除）；
+- 计量读的是**宿主投影 key**（`tokenUsage` / `sessionStats`）而非插件自有格式：宿主若改 key 或 state 版本，此段与 `host/core/metering.ts` 同步更新。
 
 ## 安装（对使用者）
 

@@ -1,6 +1,6 @@
 /**
  * dsh-plugin-teamflow core — 运行期共享状态（进程单例）。
- * - runtime（agents/subagents/tokenMeter/workspaceRegistry/agentDefaultModel）：由 index=TeamflowService 的 static inject 注入（setRuntime）。
+ * - runtime（agents/subagents/workspaceRegistry/agentDefaultModel/llm）：由 index=TeamflowService 的 static inject 注入（setRuntime）。
  * - runs/inFlight/activeProducts：流水线运行期 Map（跨 runner/pipeline/report/服务共享）。
  * 这是 ADR-0004「共享状态」在编排层的落点：共享对象集中、单向被 core 各模块 import（不反向）。
  */
@@ -10,19 +10,27 @@ import { slugPath } from '../../store.ts'
 export const runtime: {
   agents?: any
   subagents?: any
-  tokenMeter?: any
+  sessionProjections?: any
   workspaceRegistry?: any
   agentDefaultModel?: any
   llm?: any
 } = {}
 
-export function setRuntime(agents: unknown, subagents: unknown, tokenMeter: unknown, workspaceRegistry?: unknown, agentDefaultModel?: unknown, llm?: unknown): void {
+export function setRuntime(agents: unknown, subagents: unknown, workspaceRegistry?: unknown, agentDefaultModel?: unknown, llm?: unknown): void {
   runtime.agents = agents
   runtime.subagents = subagents
-  runtime.tokenMeter = tokenMeter
   runtime.workspaceRegistry = workspaceRegistry
   runtime.agentDefaultModel = agentDefaultModel
   runtime.llm = llm
+}
+
+/**
+ * 可选能力：官方 Session 投影注册表（ctx.sessionProjections，dsh-session-projection）。
+ * 单独 setter 而非并入 setRuntime——它是**可选**依赖：用 ctx.inject 在服务可用时注册，
+ * 未挂载（最小 profile）时计量自动回退事件扫描，插件照常加载。
+ */
+export function setSessionProjections(projections: unknown): void {
+  runtime.sessionProjections = projections
 }
 
 /** 运行期 run 注册表（runId → Journal）。 */
@@ -79,21 +87,25 @@ interface DshWorkspace { id: string; title: string; path: string }
 /**
  * 从发起会话推导工作区作用域。
  *
- * 优先级：
- * 1. workspaceRegistry.resolveByPath(cwd) → 用 workspace.id（UUID，稳定）作 projectKey
- * 2. 回退到 session cwd 的 basename + 短 hash（兼容无 workspaceRegistry 的场景）
+ * 优先级（**实际生效的只有第 2 条**）：
+ * 1. workspaceRegistry.resolveByPath(cwd) → 用 workspace.id（UUID）作 projectKey
+ *    —— ⚠️ **当前不可达**：宿主 `resolveByPath` 是 `async`（返回 Promise，见
+ *    `packages/workspace/workspace/src/index.ts`），本函数同步调用 → `ws.id` 恒为 undefined，
+ *    永远落到第 2 条。分支保留是为将来迁移（需 await + 存储 key 迁移，见 docs/TODO.md）。
+ * 2. session cwd 的 basename + 短 hash（`slugPath`）—— **当前实际使用的 key**
  * 3. 兜底 'default'
  *
  * projectKey 用于 $DSH_HOME/teamflow/<projectKey>/ 目录，要求：
- * - 同一 workspace 永远解析到同一个 key（UUID 天然满足）
- * - 不同 workspace 即使 basename 相同也不碰撞（UUID 天然满足）
+ * - 同一路径永远解析到同一个 key（sha1 派生，满足）
+ * - 不同 cwd 即使 basename 相同也不碰撞（hash 参与，满足）
  * - 目录名安全（只含 [a-zA-Z0-9_-]）
+ * ⚠️ 代价：key 绑定**路径字符串**，同一工作区换个写法（盘符大小写/软链/尾斜杠）会得到不同 key。
  */
 export function workspaceScopeOf(agent: unknown): { projectKey: string; workspaceId: string | null; path: string | null } {
   const session = (agent as AgentLike | null | undefined)?.session
   const cwd = session && session.header && typeof session.header.cwd === 'string' && session.header.cwd ? session.header.cwd : undefined
 
-  // 优先：通过 workspaceRegistry 拿稳定 workspace UUID
+  // 分支 1（当前不可达，见上方说明）：通过 workspaceRegistry 拿稳定 workspace UUID
   if (cwd && runtime.workspaceRegistry && typeof runtime.workspaceRegistry.resolveByPath === 'function') {
     try {
       const ws = runtime.workspaceRegistry.resolveByPath(cwd) as DshWorkspace | undefined

@@ -65,7 +65,7 @@ const hostSrc = [
 const utilSrc = readFileSync(join(here, '../host/util.ts'), 'utf8')
 const constantsSrc = readFileSync(join(here, '../host/constants.ts'), 'utf8')
 ok(/class TeamflowService extends TypertRemoteService/.test(hostSrc), 'TeamflowService extends TypertRemoteService')
-ok(/static inject = \['agents', 'subagents', 'tokenMeter', 'typert', 'tools', 'llm'\]/.test(hostSrc), 'static inject 完整')
+ok(/static inject = \['agents', 'subagents', 'typert', 'tools', 'llm'\]/.test(hostSrc), 'static inject 完整（tokenMeter 死注入已清理）')
 ok(/ctx\.typert\.register\(\{[\s\S]*invocations: TEAMFLOW_DESCRIPTORS/.test(hostSrc), 'typert.register 注册 strict descriptors')
 for (const m of ['ping', 'list', 'snapshot', 'start', 'cancel', 'backlog', 'backlogUpdate', 'assign', 'pause', 'resumeSession', 'listTeams', 'selectTeam', 'getActiveTeam', 'clearTeam', 'resume', 'stageDetail', 'itemDetail']) {
   ok(new RegExp(`\\n  ${m}\\(`).test(hostSrc), `Remote 方法 ${m}()`)
@@ -253,6 +253,39 @@ ok(/多源回退（实锤 json-parse r1/.test(guardSrc) && /snapshotEvents/.test
 ok(/isAgentBusy\(run\)/.test(guardSrc) && /busyWarned/.test(guardSrc), 'guard：挂死守卫（agent 非 idle + 已动手 → 视图失明不误杀，记诊断继续观察）')
 ok(/挂死诊断：/.test(guardSrc), 'guard：stalled 触发前记录事件源视图长度（events/snap/own——排查失明）')
 ok(/agent\.inject\(createUserMessage\(/.test(hostSrc) && /const injectPayload = createUserMessage\(/.test(hostSrc), 'host：团队上下文注入经 createUserMessage（宿主 v2 校验要求 user/message 带 id/role——裸 payload 落盘加载即 lacks an identified message）')
+
+console.log('── 3p) dsh 0.1.5-rc.2 适配：计量改走官方 Session 投影（同步事件读取器已弃用）──')
+const meteringSrc = readFileSync(join(here, '../host/core/metering.ts'), 'utf8')
+ok(/function projectedUsageOf/.test(meteringSrc) && /stateOf\(session, 'tokenUsage'\)/.test(meteringSrc) && /stateOf\(session, 'sessionStats'\)/.test(meteringSrc), 'metering：投影路径优先（tokenUsage 四桶 + sessionStats 调用数）')
+ok(/export function accumulateSessionUsage/.test(meteringSrc) && /const projected = projectedUsageOf\(run\)/.test(meteringSrc) && /function scannedUsageOf/.test(meteringSrc), 'metering：投影优先 → 事件扫描降级为回退（弃用 API 不再扩展）')
+ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
+ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
+const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
+ok(/"version": "0\.1\.7"/.test(pkgSrc), 'package.json：版本 0.1.7')
+ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.1\.5-rc\.2 <0\.2\.0"/.test(pkgSrc), 'package.json：声明 dsh.manifestVersion 与 engines.dsh 兼容窗口')
+
+console.log('── 3q) 护栏宿主适配：官方 Agent.inject 通道 + subagentTiming 挂死源（2026-09-10）──')
+ok(/localAgent\?: \{ inject\?/.test(guardSrc) && /agent\.inject\(createUserMessage\(/.test(guardSrc), 'guard：轻提醒走官方 Agent.inject（createUserMessage 载荷）')
+ok(!/queue as \{ __teamflowPending/.test(guardSrc) && !/function flushReminders/.test(guardSrc), 'guard：手写 pending 队列 + step/end flush 窗口已整体删除（协议安全边界交还宿主）')
+ok(/function timingOf/.test(guardSrc) && /stateOf\(session, 'subagentTiming'\)/.test(guardSrc) && /activeThrough/.test(guardSrc), 'guard：挂死检测首选 subagentTiming 投影（active.through）')
+ok(/来源：subagentTiming 投影/.test(guardSrc) && /投影不可用，回退事件视图/.test(guardSrc), 'guard：投影不可用才回退事件视图启发式（诊断区分两条路径）')
+ok(!/runtime\.tokenMeter/.test(contextSrc) && !/tokenMeter\?: any/.test(contextSrc), 'context：tokenMeter 死注入已清理（static inject / setRuntime / runtime 三处）')
+
+console.log('── 3r) 产物一键预览（host 出 dsh-resource 地址 → 工作台交右侧栏）──')
+ok(/TEAMFLOW_ARTIFACT_ORDER/.test(constantsSrc) && /fileAddressFor/.test(hostSrc) && /artifacts: runArtifacts/.test(hostSrc), 'host：itemDetail 返回任务夹产物清单（官方 fileAddressFor 地址 + 展示顺序）')
+ok(/readdirSync\(join\(runDocsRoot, runDocs\)\)/.test(hostSrc), 'host：只列真实存在的产物（目录不可读 → 空清单，不出死按钮）')
+ok(/const openArtifact = /.test(clientSrc) && /ctx\.get\('sidebarRight'\)/.test(clientSrc) && /openResource\(address\)/.test(clientSrc), 'client：产物按钮交给右侧栏 openResource（服务缺失静默降级）')
+ok(/dsh-util-workspace-path/.test(pkgSrc), 'package.json：声明 @deepseek-ai/dsh-util-workspace-path（host 运行时引用；client 不引，避免打包内联）')
+ok(/ARTIFACT_DELIVERY/.test(promptsSrc) && (promptsSrc.match(/\$\{ARTIFACT_DELIVERY\(RUN\(state\)\)\}/g) || []).length >= 4, 'prompts：prd/tech/qa/acceptance 接入产物交付（official present）条款')
+
+console.log('── 3s) 机械阶段推理强度降档（reasoningEffort；先探测能力再下发）──')
+ok(/MECHANICAL_STAGE_EFFORT = 'low'/.test(constantsSrc), 'constants：机械阶段降档常量（low）')
+ok(/function supportedEfforts/.test(runnerSrc) && /resolveModelInfo/.test(runnerSrc) && /effortSupportCache/.test(runnerSrc), 'runner：先探测宿主 reasoning.efforts 再下发（带缓存；探测不可用一律不传）')
+ok(/async function resolveStageEffort/.test(runnerSrc) && /attempt > 1 \? 'high' : base/.test(runnerSrc), 'runner：重试回升 high（质量优先，ADR-0006）')
+ok(/\(e as \{ id\?: unknown \}\)\.id === 'string'/.test(runnerSrc), 'runner：efforts 取对象数组的 id（宿主 LlmReasoningEffortInfo 是 {id,name}，非字符串数组——2026-09-11 实锤静默失效）')
+ok(/推理强度未降档/.test(runnerSrc), 'runner：探测失败/档位不支持时记 warn（静默失败可见化）')
+ok(/reasoningEffort: effort/.test(runnerSrc) && /effortHint/.test(runnerSrc) && /attempt, effortHint\)/.test(runnerSrc), 'runner：agentOptions 带 reasoningEffort（effortHint 参数链穿透到 runAgent）')
+ok(/options\.mode === 'patch' \? MECHANICAL_STAGE_EFFORT : null/.test(pipelineSrc) && /'scaffold', scaffoldPrompt\([\s\S]{0,140}MECHANICAL_STAGE_EFFORT\)/.test(pipelineSrc), 'pipeline：仅 patch 单点确认 + scaffold 两处降档（判据类阶段保持宿主默认 high）')
 
 console.log('── 4) 其他文件 ──')
 for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../descriptors.ts', '../client/index.tsx', '../host/index.ts', '../store.ts']) {

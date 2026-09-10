@@ -128,6 +128,17 @@ function headTailClip(text: unknown, head: number, tail: number): string {
   return s.slice(0, head) + '\n...\n[CHANGED SECTION]\n' + s.slice(-tail)
 }
 
+/**
+ * 产物交付 · policy（2026-09-11）：把任务夹产物交给官方的 `present` 工具，用户在该会话里得到
+ * 「交付文件卡」（预览 / 默认程序打开 / 文件管理器定位）。
+ * 诚实机制说明：present 是**模型工具**，host 不强制（没调用只是少一张卡，产物文件仍是唯一交付物）；
+ * 卡片渲染在**本子代理会话**的轮次尾部（宿主 ui-deliverables 挂 conversation.chat.turnTail），
+ * 主会话不显示——所以它是增强项，工作台侧的「📄 产物」按钮才是主路径。
+ */
+export const ARTIFACT_DELIVERY = (runDocs: string): string => `[Artifact delivery · policy] After the deliverable file exists (and before your final reply, before the state block), call the \`present\` tool so the user gets a delivery card (preview / open in default app / reveal in file manager):
+   present({ files: [{ path: "${runDocs}/<your deliverable>.md", description: "<one-line what it is>" }] })
+   Present ONLY user-facing deliverables (≤4 files, e.g. PRD.md / TECHNICAL.md / QA-REPORT.md / ACCEPTANCE.md) — never scratch files, temp scripts or command logs. This is additive: the file stays the single source of truth, and a missing file is still a hard failure.`
+
 export const TOKEN_HYGIENE = (runId) => `[TOKEN HYGIENE · policy] Context is expensive. Budget discipline below — host enforcement is warn + live reminder only (never interrupts), follow it as self-discipline:
 - [File scope] Whole-file read is allowed ONLY for target files explicitly listed in the task spec. To understand other files' interfaces, use grep for keywords (do not read whole files). Never whole-file read source files outside the task scope.
 - [No duplicate reads] Same file: read ≤1 times. To verify a change, grep the change point instead of re-reading the whole file.
@@ -164,6 +175,7 @@ ${requirement}
 4. Output the full PRD (Markdown): background & goals, user stories (each with testable acceptance criteria), scope & non-goals, interaction flow summary, priority (P0/P1/P2), dependencies & risks, milestone suggestions. ACs must be testable/quantifiable; prefer precision & brevity. **No revision table, no version fields like「版本：vX.Y / 状态：进行中」** (the folder IS the archive; its name carries the identity).
 5. [Memory write-back · convention changes ONLY] Update docs/teamflow/memory.md ONLY if this requirement introduces new team conventions / tech-stack decisions (replace the same-topic line, idempotent, no changelog-style appending); otherwise do not touch memory.
 6. [Engineering actions carried verbatim] Engineering instructions in the raw requirement (create/switch branch, commit, tag...) MUST be preserved verbatim into the "工程约束" section of the PRD: specify the action, timing, and baseline (e.g. "branch from latest main, then implement"). If the workspace already has uncommitted changes, note how to handle them. Never silently drop or reword engineering instructions.
+${ARTIFACT_DELIVERY(RUN(state))}
 7. [State] End with a state block (phase="prd"): summary covers the AC highlights + one-sentence product semantics; extra contains { "acIndex": {...}, "summary": "<product one-liner>", "techStack": "..." }.${STATE_BLOCK_INSTRUCTION}`
 
 export const designPrompt = (prd, root, runId, state) => `You are a senior UI/UX designer. The current workspace IS the target project.
@@ -223,6 +235,7 @@ ${JSON.stringify(tasks)}
    - modules: per touched file — responsibility + deps + assembly order + **architecture rationale (why)**.
    - tasks: parallelizable tasks split by file boundary (disjoint files → parallel); merge or sequence where dependencies/conflicts exist.
    - If you find duplication or a module that should be extracted (e.g. unified storage wrapper), add it to modules with the why.
+${ARTIFACT_DELIVERY(RUN(state))}
 6. [State] End with a state block (phase="tech"), extra = { "verifyScripts": [...], "modules": {"/file": "contract or one-liner"} }, summary = key architecture/contract decisions.${STATE_BLOCK_INSTRUCTION}`
 
 /**
@@ -309,6 +322,7 @@ ${clip(devSummary, 15000)}
    | 编号 | 严重级(P0/P1/P2/P3) | 功能模块 | 复现步骤 | 期望行为 | 实际行为 | 关联验收项 |
    If no defects: explicitly output 「未发现缺陷」.
 7. Chinese Markdown, concrete & executable; write the **complete** report to ${RUN(state)}/QA-REPORT.md (write once, tight body) — **this file IS the deliverable**: scope & environment, cases & results (pass/fail/blocked), 人工补测清单, defect table (if any), conclusion (whether acceptance-ready). [Boundary] only under ${TF_DOCS}/.
+${ARTIFACT_DELIVERY(RUN(state))}
 8. [State] End with a state block (phase="qa"), summary = test conclusion / blocked items, extra = { "verifyScripts": [...] }.${STATE_BLOCK_INSTRUCTION}`
 
 /** QA 打回后的开发修复 prompt：确认缺陷是否属实 → 修复 → 复验交接（QA→dev 打回闭环用）。 */
@@ -353,6 +367,7 @@ ${vision ? '[Visual re-check] If QA saved screenshots under the task folder, spo
 3. [Not-applicable judgment] If the PRD/tech-change/confirm doc already states「需求与现状不符」, or the dev result is explicitly「无需改动」, the verdict must be **「📝 需求不适用」** with reasons — do NOT mark ✅ 通过 just for "no defects".
 4. [Acceptance report · HOST-ENFORCED] Write the **complete** report to ${RUN(state)}/ACCEPTANCE.md (write once) — **this file IS the deliverable**: verdict line, per-criterion check table, opinions & leftovers. **The verdict line MUST be the LAST line of the file, verbatim one of: 验收结论：✅ 通过 / 验收结论：⚠️ 有条件通过 / 验收结论：❌ 不通过 / 验收结论：📝 需求不适用** — the host parses ONLY this line; missing it = contract violation → the run stops for human review; missing file = hard failure (needs-human, pipeline stops). [Memory write-back · convention changes ONLY] Update docs/teamflow/memory.md only if this requirement introduces new conventions/tech-stack decisions, or the 已知待办 list changes (same-topic line replace, idempotent, no changelog appending); otherwise don't touch memory. [Boundary] only under ${TF_DOCS}/; never modify AGENTS.md beyond the <!-- teamflow --> managed zone.
 5. Chinese Markdown.
+${ARTIFACT_DELIVERY(RUN(state))}
 6. [State] End with a state block (phase="acceptance"), summary = acceptance conclusion, verdict = "accepted/rework/reject/needs-human", extra.done = confirmation of this delivery.${STATE_BLOCK_INSTRUCTION}`
 
 /** 需求分诊模型 prompt（模型驱动 triage；供 core/triage.runTriage 使用）。 */
