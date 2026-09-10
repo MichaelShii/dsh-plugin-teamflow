@@ -472,8 +472,7 @@ export function GlobalPanel(props) {
     try { return useSessions ? useSessions((s) => s.current) : undefined } catch (e) { return undefined }
   })()
   const [state, setState] = React.useState({ products: [], current: null, view: null, err: null, busy: false })
-  const [detail, setDetail] = React.useState(null)        // { kind:'item'|'run', data }
-  const [inlineRun, setInlineRun] = React.useState(null)  // 内联展示的 run（面板里默认路径）
+  const [detail, setDetail] = React.useState(null)        // 单一事实源：{ kind:'item'|'run', data, run? } —— 同一时刻只可能有一个详情
   const [hint, setHint] = React.useState(null)            // 面板内可见提示（不再只进 console）
   const [runsExpanded, setRunsExpanded] = React.useState(false)  // run 列表：默认折叠到 RUN_PREVIEW
   const [panelTab, setPanelTab] = React.useState('run')          // 主区标签页：run | backlog（一次只显示一个列表）
@@ -555,16 +554,18 @@ export function GlobalPanel(props) {
     if (!api) return
     try {
       const snap = await api.runDetail(r.id)
-      setInlineRun(r); setDetail({ kind: 'run', data: snap })
+      // 覆盖同一个 detail（连带 run 元信息，供列表高亮/右栏入口用）——详情只有这一个状态源
+      setDetail({ kind: 'run', data: snap, run: r })
     } catch (e) { setState((s) => ({ ...s, err: String((e && e.message) || e) })) }
   }
+  const closeDetail = () => setDetail(null)
   const openRun = (r) => { openInConversationRightbar(r.address, r.id, () => { void showInline(r) }) }
   const openArtifactInPanel = (address, name) => { openInConversationRightbar(address, name) }
 
   const view = state.view
   const product = view && view.product
   const runs = (view && view.runs) || []
-  const detailOpen = !!(detail || inlineRun)
+  const detailOpen = !!detail
   // run 折叠：默认最近 RUN_PREVIEW 条，但**进行中/未完成的一律置顶显示**（别把正在跑的藏起来）
   const headRuns = runs.slice(0, RUN_PREVIEW)
   const headIds = new Set(headRuns.map((r) => r.id))
@@ -604,7 +605,7 @@ export function GlobalPanel(props) {
       h('span', null, hint),
       h('button', { style: panelBtn, onClick: () => setHint(null) }, '知道了')) : null,
     h('div', { style: { flex: 1, minHeight: 0, display: 'flex', position: 'relative' } },
-      h(ProductRail, { products: state.products, current: state.current, busy: state.busy, onRefresh: () => loadProducts(state.current), onSelect: (k) => { setDetail(null); setInlineRun(null); setRunsExpanded(false); setState((s) => ({ ...s, current: k, view: null })) } }),
+      h(ProductRail, { products: state.products, current: state.current, busy: state.busy, onRefresh: () => loadProducts(state.current), onSelect: (k) => { closeDetail(); setRunsExpanded(false); setState((s) => ({ ...s, current: k, view: null })) } }),
       h('div', { style: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' } },
         !state.current
           ? h('div', { style: { padding: '12px 14px' } }, muted('选择左侧产品线查看 backlog 与 run（首次进入默认选最近更新的产品线）。'))
@@ -634,7 +635,7 @@ export function GlobalPanel(props) {
               h('div', { style: { flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '12px 14px 18px' } },
                 panelTab === 'run'
                   ? h(React.Fragment, null,
-                    h(RunList, { runs: visibleRuns, activeRunId: inlineRun ? inlineRun.id : null, onOpenRun: openRun, onInlineRun: showInline }),
+                    h(RunList, { runs: visibleRuns, activeRunId: detail && detail.kind === 'run' && detail.run ? detail.run.id : null, onOpenRun: openRun, onInlineRun: showInline }),
                     muted('点一行看详情浮层；「对话右栏」= 切回对话并在右侧栏打开（与任务夹产物并排）', { fontSize: 10, marginTop: 8 }))
                   : h(React.Fragment, null,
                     muted('终态卡片默认收起；活动项与需人工项始终展开', { fontSize: 10, marginBottom: 8 }),
@@ -652,7 +653,7 @@ export function GlobalPanel(props) {
           },
         },
           detail && detail.kind === 'item'
-            ? h(ItemDetailPane, { det: detail.data, openArtifact: openArtifactInPanel, onClose: () => setDetail(null) })
+            ? h(ItemDetailPane, { det: detail.data, openArtifact: openArtifactInPanel, onClose: closeDetail })
             : h('div', null,
               h('div', { style: { ...flexRow, justifyContent: 'space-between', padding: '10px 12px 0' } },
                 h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text } }, 'run 详情'),
@@ -664,7 +665,7 @@ export function GlobalPanel(props) {
                       onClick: () => openInConversationRightbar(detail.data.address, detail.data.id),
                     }, '对话右栏打开')
                     : null,
-                  h('button', { style: panelBtn, onClick: () => { setDetail(null); setInlineRun(null) } }, '关闭'))),
+                  h('button', { style: panelBtn, onClick: closeDetail }, '关闭'))),
               h(RunDetailPane, { snap: detail && detail.data, product: state.current, api })))
         : null,
     ),
