@@ -58,15 +58,16 @@ export const MONO = 'ui-monospace, SFMono-Regular, Consolas, "Cascadia Mono", mo
 export const SANS = '-apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif'
 export const flexRow = { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }
 
-/** 状态徽章：半透明底 + 状态色文字 + 圆角 pill。 */
+/** 状态徽章：半透明底 + 状态色文字 + 圆角 pill（超宽可省略：窄列/窄卡里不顶破外层）。 */
 export const chip = (text, color, opts: { style?: Record<string, string>; dot?: boolean } = {}) => h('span', {
   style: {
     display: 'inline-flex', alignItems: 'center', gap: 4,
     padding: '1px 8px', borderRadius: 999, fontSize: 11, fontWeight: 500, lineHeight: '16px',
     background: `color-mix(in srgb, ${color} 14%, transparent)`, color,
-    whiteSpace: 'nowrap', ...(opts.style || {}),
+    whiteSpace: 'nowrap', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis',
+    ...(opts.style || {}),
   },
-}, opts.dot ? h('span', { style: { width: 5, height: 5, borderRadius: 999, background: color, display: 'inline-block' } }) : null, text)
+}, opts.dot ? h('span', { style: { width: 5, height: 5, borderRadius: 999, background: color, display: 'inline-block', flex: '0 0 auto' } }) : null, text)
 
 /** 可折叠长文本：默认只显示前几行预览，「展开全文」/「收起」双向切换（数据不动，纯展示层——summary/需求原文等富文本不再铺满抽屉）。 */
 export function FoldableText({ text, charLimit = 280, lineLimit = 5, style }: { text: unknown; charLimit?: number; lineLimit?: number; style?: Record<string, unknown> }) {

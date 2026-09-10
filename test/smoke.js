@@ -80,6 +80,10 @@ ok(/flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column'/.test(client
 ok(/maxHeight: 340, overflowY: 'auto'/.test(clientSrc), 'client：看板列限高 + 列内滚动（用户选定行为）')
 ok((clientSrc.match(/position: 'sticky', top: 0/g) || []).length >= 2, 'client：分组标题 + 列头吸附（sticky）')
 ok(!/72vh/.test(clientSrc), 'client：不再用 72vh 限高（与宿主剩余高度无关，会溢出）')
+// 窄列防溢出：卡片必须能收缩（min-width:0/box-sizing/max-width:100%），等宽数字行允许任意处换行
+ok(/boxSizing: 'border-box', minWidth: 0, maxWidth: '100%', overflow: 'hidden'/.test(clientSrc), 'client：看板卡片可收缩（窄列不被超宽内容顶破）')
+ok(/overflowWrap: 'anywhere'/.test(clientSrc) && /overflowWrap: 'anywhere'/.test(panelSrc), 'client/panel：按角色 token 等宽数字行允许任意处换行')
+ok(!/maxWidth: 130/.test(clientSrc), 'client：不再用固定 maxWidth:130 限制卡片内文本（改为 100%/flex 收缩）')
 ok(!/unwrap\(await api\./.test(panelSrc), 'panel：productApi 适配器已解包——禁止二次 unwrap（历史 bug：把载荷当信封 → 「未知错误」）')
 // 组件（含 hook 如 FoldableText 的 useState）必须经 h() 渲染（或作为 slot 注册的组件实参）：
 // 直接 FoldableText({...}) 会把 hook 挂到父组件，条件渲染时 hook 数变化 → React #310，整个 slot 崩

@@ -181,17 +181,18 @@ function BacklogCard({ kind, item, onOpen }) {
     onClick: () => onOpen(kind, item.id),
     style: {
       padding: '6px 9px', borderRadius: 8, border: `1px solid ${T.border}`, borderLeft: `3px solid ${color}`,
-      background: T.layer1, cursor: 'pointer', minWidth: 0,
+      background: T.layer1, cursor: 'pointer', minWidth: 0, boxSizing: 'border-box', maxWidth: '100%', overflow: 'hidden',
     },
   },
-    h('div', { style: { ...flexRow, gap: 5 } },
-      h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2 } }, item.id),
+    h('div', { style: { ...flexRow, gap: 5, minWidth: 0 } },
+      h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.id),
       chip(stText(item.status), color, { dot: true }),
       kind === 'bug' && item.severity ? chip(String(item.severity), stColor('rework')) : null),
     h('div', { style: { fontSize: 11.5, color: T.text, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.title || item.id),
     (() => {
       const roles = kind === 'task' ? byRoleLine(item) : ''
-      return roles ? h('div', { style: { fontSize: 10, color: T.text2, fontFamily: MONO, marginTop: 3 } }, roles) : null
+      // 等宽数字串（⇅19.7k/127.0k·⬆4.7k·87%）不可断行 → 允许任意处换行，避免顶破卡片
+      return roles ? h('div', { title: roles, style: { fontSize: 10, color: T.text2, fontFamily: MONO, marginTop: 3, minWidth: 0, overflowWrap: 'anywhere', wordBreak: 'break-word' } }, roles) : null
     })(),
     h('div', { style: { ...flexRow, gap: 6, marginTop: 3, fontSize: 10, color: T.text2 } },
       item.devAssign ? h('span', null, `dev ${item.devAssign}`) : null,
