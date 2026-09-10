@@ -44,10 +44,21 @@ export function runTabDefinition() {
   }
 }
 
-/** Typert remote 信封解包（与会话内工作台同一约定）。 */
+/** Typert remote 信封解包（与会话内工作台同一约定）。
+ * 空信封（`{ok:true}` 但没有 `value`）是**真实故障态**：host 方法返回了 `undefined` / 结果被丢弃——
+ * 此时不能静默返回 undefined（调用方会把它再包成「未知错误」，丢掉定位信息），故显式报出原始信封。 */
 function unwrap(res, what) {
   if (!res || !res.ok) {
-    throw new Error(`${what || 'remote'} 调用失败：${(res && res.error && (res.error.message || res.error.code)) || '未知错误'}`)
+    let detail = '未知错误'
+    try { detail = (res && res.error && (res.error.message || res.error.code)) || JSON.stringify(res) || '未知错误' } catch (e) { /* 循环引用等 */ }
+    try { console.warn('[teamflow] remote 调用失败', what, res) } catch (e) { /* ignore */ }
+    throw new Error(`${what || 'remote'} 调用失败：${detail}`)
+  }
+  if (res.value === undefined) {
+    try { console.warn('[teamflow] remote 返回空信封（ok 但无 value）', what, res) } catch (e) { /* ignore */ }
+    let raw = ''
+    try { raw = JSON.stringify(res) } catch (e) { raw = String(res) }
+    throw new Error(`${what || 'remote'} 返回空结果（ok=true 但无 value；原始信封=${raw}）`)
   }
   return res.value
 }
