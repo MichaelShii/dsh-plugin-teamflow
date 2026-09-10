@@ -239,8 +239,8 @@ function ItemDetailPane({ det, openArtifact, onClose }) {
     h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
       row('需求', det.reqId), row('负责人', det.owner), row('开发', det.devAssign), row('测试', det.qaAssign),
       row('验收', det.assignBy), row('重试', det.retries), row('任务夹', det.runDocs)),
-    det.spec ? h('div', null, h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, '规格'), FoldableText({ text: det.spec })) : null,
-    det.summary ? h('div', null, h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, '结论摘要'), FoldableText({ text: det.summary })) : null,
+    det.spec ? h('div', null, h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, '规格'), h(FoldableText, { text: det.spec })) : null,
+    det.summary ? h('div', null, h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, '结论摘要'), h(FoldableText, { text: det.summary })) : null,
     det.artifacts && det.artifacts.length
       ? h('div', null,
         h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 4 } }, `任务夹产物 · ${det.artifacts.length}`),
@@ -356,7 +356,7 @@ function RunDetailPane({ snap, product, api }) {
         : muted('（缺失——契约未兑现，host 已记警告）', { color: T.warn }),
       sel.output ? h('div', null,
         h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, '阶段产出'),
-        FoldableText({ text: sel.output, charLimit: 400, lineLimit: 8, style: { fontFamily: MONO, fontSize: 11 } })) : null,
+        h(FoldableText, { text: sel.output, charLimit: 400, lineLimit: 8, style: { fontFamily: MONO, fontSize: 11 } })) : null,
       sel.attempts && sel.attempts.length > 1
         ? h('div', null,
           h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, `同任务尝试 · ${sel.attempts.length}`),
