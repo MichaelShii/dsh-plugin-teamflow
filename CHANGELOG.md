@@ -6,7 +6,7 @@
 
 ### 新增
 - **全局团队工作台（`sidebar.panellist` + `main`）**：工作台从「某个会话里的一个 tab」升级为应用级主面板——左侧边栏多一个图标（inline SVG，跟随选中态），点开中央主区即整块换成 TeamFlow：左栏是**产品线**列表（`$DSH_HOME/teamflow/<key>` 扫描，含 run 计数/活跃数/最近需求与验收结论/磁盘路径），右栏是该产品线的 **run 列表 + backlog 分组**（需求/任务/缺陷，含按角色 token）。**不依附会话**：面板在 root scope（无 `useSession`/`useProjection`），所以数据面新增按**产品线 key** 寻址的 remote 方法（`products` / `productView` / `productRunDetail` / `productStageDetail` / `productItemDetail`），与会话内工作台同源装配（同一批 journal 与 state.json，非新数据模型）
-- **run 详情进右侧栏 tab**：注册 `teamflow-run` tab 类型（认领 `dsh-resource://teamflow/run/**`），点 run 即在该会话右侧栏打开完整详情（阶段表 + 官方口径 token + 阶段详情/尝试聚合/验证证据/产出/日志）。地址由 host 生成（client 不拼地址）——与产物预览同一条原则。右侧栏不可用（无挂载会话等）时**自动降级**为面板内联详情；会话内工作台也补了「⇥ 右栏打开」入口，可与任务夹产物并排看
+- **run 详情进右侧栏 tab**：注册 `teamflow-run` tab 类型（认领 `dsh-resource://teamflow/run/**`），在会话内点 run 即在该会话右侧栏打开完整详情（阶段表 + 官方口径 token + 阶段详情/尝试聚合/验证证据/产出/日志）。地址由 host 生成（client 不拼地址）——与产物预览同一条原则。**右侧栏的会话内容只在对话视图存在**（宿主 `RightbarRoot` 门控），所以全局面板里点 run 默认在**面板内联**显示；要并排看就点「对话右栏」——它会切回对话再打开右栏（seat 在切换后才 bind，故带小步重试）；任何一步不可用都降级面板内联并给出**可见提示**（不静默失败）
 
 ### 改进
 - **客户端展示层收拢**：主题 token / 状态词表 / 格式化（token 官方口径、时间、耗时、折叠文本）从 1286 行的 `client/index.tsx` 抽到 `client/shared.tsx`，会话内工作台与全局面板共用一份——两处展示语言不会再各自漂移

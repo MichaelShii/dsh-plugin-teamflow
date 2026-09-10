@@ -1115,17 +1115,18 @@ export async function apply(ctx) {
   // 右侧栏打开（产物预览 / run 详情共用）：地址（dsh-resource://…）由 host 生成，这里只交给右侧栏。
   // 服务名 sidebarRight（@deepseek-ai/dsh-client-ui-sidebar-right 提供）；未挂载/未认领地址时返回 false
   // ——右侧栏只是增强路径，缺它时调用方降级（故不进 inject，避免激活期硬依赖）。
-  const openResourceSafe = (address: string, label: string): boolean => {
+  // quiet=true：调用方自会做小步重试/给用户可见提示（全局面板需先切回对话才有右侧栏会话 seat），不刷 console。
+  const openResourceSafe = (address: string, label: string, quiet?: boolean): boolean => {
     try {
       const sidebarRight = ctx.get('sidebarRight')
       if (!sidebarRight || typeof sidebarRight.openResource !== 'function') {
-        console.warn('[teamflow] 右侧栏服务不可用', label)
+        if (!quiet) console.warn('[teamflow] 右侧栏服务不可用', label)
         return false
       }
       sidebarRight.openResource(address)
       return true
     } catch (e) {
-      console.warn('[teamflow] 打开右侧栏失败', label, e && e.message)
+      if (!quiet) console.warn('[teamflow] 打开右侧栏失败', label, e && e.message)
       return false
     }
   }

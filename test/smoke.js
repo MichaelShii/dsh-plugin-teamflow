@@ -67,6 +67,9 @@ ok(/export function productApi/.test(panelSrc) && /productItemDetail/.test(panel
 ok(/currentSessionId/.test(panelSrc) && /useSessions/.test(panelSrc), '全局面板用 useSessions 取当前会话（默认选中当前产品线）')
 ok(/export const T =/.test(sharedSrc) && /export function FoldableText/.test(sharedSrc) && /export function stageUsageLine/.test(sharedSrc), 'shared.tsx：会话内/全局共用展示层（主题/词表/格式化）')
 ok(/openResourceSafe/.test(clientSrc) && /return true/.test(clientSrc) && /return false/.test(clientSrc), 'client：右侧栏打开返回布尔（供全局面板判定是否降级内联）')
+ok(/openResourceSafe = \(address: string, label: string, quiet\?: boolean\)/.test(clientSrc) && /if \(!quiet\) console\.warn/.test(clientSrc), 'client：重试期间静默（quiet）——由调用方给可见提示')
+ok(/openInConversationRightbar/.test(panelSrc) && /selectPanel\(null\)/.test(panelSrc) && /tries < 12/.test(panelSrc), 'panel：全局面板开右栏先切回对话 + 小步重试（宿主 RightbarRoot 只在对话视图渲染会话 seat，实测 tf-mtvrsakj-l2vj5u）')
+ok(/对话右栏/.test(panelSrc) && /setHint/.test(panelSrc) && /知道了/.test(panelSrc), 'panel：入口文案与失败提示都可见（不静默失败）')
 ok(/activeRun\.address/.test(clientSrc), 'client：会话内工作台用 host 生成的 run 地址开右栏')
 
 console.log('── 3) host 模块结构 ──')

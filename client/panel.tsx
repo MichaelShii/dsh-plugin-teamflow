@@ -156,9 +156,9 @@ function RunList({ runs, activeRunId, onOpenRun, onInlineRun }) {
             h('span', null, `${fmtTime(r.startedAt)}${r.endedAt ? ` → ${fmtTime(r.endedAt)}` : ''} ${fmtDur(r.startedAt, r.endedAt)}`))),
         h('button', {
           style: brandBtn,
-          title: '在右侧栏打开该 run 详情（可与产物并排看）',
+          title: '切回对话并在右侧栏打开该 run 详情（右侧栏的会话内容宿主只在对话视图挂载）',
           onClick: (e) => { e.stopPropagation(); onOpenRun(r) },
-        }, '右栏打开'),
+        }, '对话右栏'),
       )
     }))
 }
@@ -269,7 +269,7 @@ function ItemDetailPane({ det, openArtifact, onClose }) {
 }
 
 /* ── run 详情（右栏 tab 正文 + 面板内联降级共用） ────────────────── */
-function RunDetailPane({ snap, product, api, openArtifact }) {
+function RunDetailPane({ snap, product, api }) {
   const [sel, setSel] = React.useState(null)     // 选中的阶段详情
   const [err, setErr] = React.useState(null)
   React.useEffect(() => { setSel(null); setErr(null) }, [snap && snap.id])
@@ -390,7 +390,7 @@ export function RunDetailTab(props) {
   }, [api, runId, address])
   if (err) return muted(err, { padding: 12, color: T.error })
   if (!snap) return muted('读取 run 详情中…', { padding: 12 })
-  return h(RunDetailPane, { snap, product, api, openArtifact: props && props.openArtifact })
+  return h(RunDetailPane, { snap, product, api })
 }
 
 /* ── 产品线 API 适配（按产品线 key 寻址的 remote 面） ─────────────── */
@@ -413,7 +413,34 @@ export function GlobalPanel(props) {
   })()
   const [state, setState] = React.useState({ products: [], current: null, view: null, err: null, busy: false })
   const [detail, setDetail] = React.useState(null)        // { kind:'item'|'run', data }
-  const [inlineRun, setInlineRun] = React.useState(null)  // 右栏不可用时的降级 run 详情
+  const [inlineRun, setInlineRun] = React.useState(null)  // 内联展示的 run（面板里默认路径）
+  const [hint, setHint] = React.useState(null)            // 面板内可见提示（不再只进 console）
+
+  /**
+   * 右侧栏的**会话内容**宿主只在「对话被选中」时渲染（`RightbarRoot` 门控 `activePanelId === null`），
+   * 而全局面板占着 `main` → seat 不存在 → `ctx.sidebarRight` 没有 binding（抛 `no session surface
+   * is mounted`，2026-09-11 用户实测 tf-mtvrsakj-l2vj5u）。所以：先切回对话，再小步重试
+   * （seat 在切换后的 effect 里才 `bindService`）；彻底失败才降级，并把原因显示在面板里。
+   */
+  const openInConversationRightbar = (address, label, fallback?) => {
+    const attempt = (quiet) => !!(props.openResource && address && props.openResource(address, label, quiet))
+    if (attempt(false)) return
+    if (!address) {
+      setHint(`${label}：host 未生成可打开的地址（可能缺少会话上下文）`)
+      if (fallback) fallback()
+      return
+    }
+    try { if (props.layout && typeof props.layout.selectPanel === 'function') props.layout.selectPanel(null) } catch (e) { /* ignore */ }
+    let tries = 0
+    const tick = () => {
+      tries += 1
+      if (attempt(true)) return
+      if (tries < 12) { setTimeout(tick, 120); return }
+      setHint(`右侧栏打开失败（宿主只在对话视图挂载它）：${label}${fallback ? '——已在本面板内联显示' : ''}`)
+      if (fallback) fallback()
+    }
+    setTimeout(tick, 140)
+  }
 
   const loadProducts = React.useCallback(async (preferKey?: string | null) => {
     if (!remote || typeof remote.products !== 'function') {
@@ -468,11 +495,8 @@ export function GlobalPanel(props) {
       setInlineRun(r); setDetail({ kind: 'run', data: snap })
     } catch (e) { setState((s) => ({ ...s, err: String((e && e.message) || e) })) }
   }
-  const openRun = async (r) => {
-    const opened = props.openResource && r.address ? props.openResource(r.address, r.id) : false
-    // 右侧栏是增强路径：不可用（无挂载会话/服务缺失/无会话面板）时降级为面板内联详情
-    if (!opened) await showInline(r)
-  }
+  const openRun = (r) => { openInConversationRightbar(r.address, r.id, () => { void showInline(r) }) }
+  const openArtifactInPanel = (address, name) => { openInConversationRightbar(address, name) }
 
   const view = state.view
   const product = view && view.product
@@ -494,6 +518,9 @@ export function GlobalPanel(props) {
           onClick: () => { try { const layout = props.layout; if (layout && layout.selectPanel) layout.selectPanel(null) } catch (e) { /* ignore */ } },
         }, '回到对话'))),
     state.err ? h('div', { style: { padding: '6px 14px', fontSize: 11, color: T.error, borderBottom: `1px solid ${T.border}` } }, state.err) : null,
+    hint ? h('div', { style: { ...flexRow, justifyContent: 'space-between', gap: 8, padding: '6px 14px', fontSize: 11, color: T.warn, borderBottom: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.warn} 8%, transparent)` } },
+      h('span', null, hint),
+      h('button', { style: panelBtn, onClick: () => setHint(null) }, '知道了')) : null,
     h('div', { style: { flex: 1, minHeight: 0, display: 'flex' } },
       h(ProductRail, { products: state.products, current: state.current, busy: state.busy, onRefresh: () => loadProducts(state.current), onSelect: (k) => { setDetail(null); setInlineRun(null); setState((s) => ({ ...s, current: k, view: null })) } }),
       h('div', { style: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex' } },
@@ -511,7 +538,7 @@ export function GlobalPanel(props) {
                     chip(`run ${product.totalRuns}`, T.text2),
                     product.activeRuns > 0 ? chip(`活跃 ${product.activeRuns}`, T.brand, { dot: true }) : null,
                     product.lastVerdict ? chip(`验收 ${product.lastVerdict}`, stColor('accepted')) : null)),
-                sectionTitle(`流水线 run · ${runs.length}`, muted('点「右栏打开」可与任务夹产物并排看', { fontSize: 10 })),
+                sectionTitle(`流水线 run · ${runs.length}`, muted('点一行看面板内联详情；「对话右栏」= 切回对话并开右侧栏（与产物并排）', { fontSize: 10 })),
                 h(RunList, { runs, activeRunId: inlineRun ? inlineRun.id : null, onOpenRun: openRun, onInlineRun: showInline }),
                 sectionTitle('Backlog', muted('沿用任务卡单卡轮转模型（需求 → 任务 → 缺陷）', { fontSize: 10 })),
                 h(BacklogGroups, { backlog: view.backlog, onOpen: openItem })),
@@ -519,12 +546,20 @@ export function GlobalPanel(props) {
         detailOpen
           ? h('div', { style: { width: 380, flex: '0 0 380px', minHeight: 0, overflowY: 'auto', borderLeft: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.layer1} 55%, transparent)` } },
             detail && detail.kind === 'item'
-              ? h(ItemDetailPane, { det: detail.data, openArtifact: props.openArtifact, onClose: () => setDetail(null) })
+              ? h(ItemDetailPane, { det: detail.data, openArtifact: openArtifactInPanel, onClose: () => setDetail(null) })
               : h('div', null,
                 h('div', { style: { ...flexRow, justifyContent: 'space-between', padding: '10px 12px 0' } },
                   h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text } }, 'run 详情（内联）'),
-                  h('button', { style: panelBtn, onClick: () => { setDetail(null); setInlineRun(null) } }, '关闭')),
-                h(RunDetailPane, { snap: detail && detail.data, product: state.current, api, openArtifact: props.openArtifact })))
+                  h('div', { style: { ...flexRow, gap: 6 } },
+                    detail && detail.data && detail.data.address
+                      ? h('button', {
+                        style: brandBtn,
+                        title: '切回对话并在右侧栏打开该 run（可与任务夹产物并排看）',
+                        onClick: () => openInConversationRightbar(detail.data.address, detail.data.id),
+                      }, '对话右栏打开')
+                      : null,
+                    h('button', { style: panelBtn, onClick: () => { setDetail(null); setInlineRun(null) } }, '关闭'))),
+                h(RunDetailPane, { snap: detail && detail.data, product: state.current, api })))
           : null,
       )),
   )
