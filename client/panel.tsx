@@ -476,6 +476,7 @@ export function GlobalPanel(props) {
   const [inlineRun, setInlineRun] = React.useState(null)  // 内联展示的 run（面板里默认路径）
   const [hint, setHint] = React.useState(null)            // 面板内可见提示（不再只进 console）
   const [runsExpanded, setRunsExpanded] = React.useState(false)  // run 列表：默认折叠到 RUN_PREVIEW
+  const [panelTab, setPanelTab] = React.useState('run')          // 主区标签页：run | backlog（一次只显示一个列表）
 
   /**
    * 右侧栏的**会话内容**宿主只在「对话被选中」时渲染（`RightbarRoot` 门控 `activePanelId === null`），
@@ -569,6 +570,20 @@ export function GlobalPanel(props) {
   const headIds = new Set(headRuns.map((r) => r.id))
   const pinnedActive = runsExpanded ? [] : runs.filter((r) => (r.status === 'running' || r.status === 'pending') && !headIds.has(r.id))
   const visibleRuns = (runsExpanded || runs.length <= RUN_PREVIEW) ? runs : pinnedActive.concat(headRuns)
+  const bl = view && view.backlog
+  const backlogCount = bl ? ((bl.requirements || []).length + (bl.tasks || []).filter((t) => t.type !== 'subtask').length + (bl.bugs || []).length) : 0
+  /** 主区标签按钮（选中态用品牌色下划线）。 */
+  const panelTabBtn = (key, label) => h('button', {
+    key,
+    onClick: () => setPanelTab(key),
+    style: {
+      font: 'inherit', fontSize: 12, fontWeight: panelTab === key ? 700 : 500,
+      padding: '6px 12px', marginBottom: -1, cursor: 'pointer', whiteSpace: 'nowrap',
+      background: 'transparent', border: 'none',
+      borderBottom: `2px solid ${panelTab === key ? T.brand : 'transparent'}`,
+      color: panelTab === key ? T.text : T.text2,
+    },
+  }, label)
   return h('div', {
     style: { height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', background: T.bg, color: T.text, fontFamily: SANS, fontSize: 12 },
   },
@@ -588,7 +603,7 @@ export function GlobalPanel(props) {
     hint ? h('div', { style: { ...flexRow, justifyContent: 'space-between', gap: 8, padding: '6px 14px', fontSize: 11, color: T.warn, borderBottom: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.warn} 8%, transparent)` } },
       h('span', null, hint),
       h('button', { style: panelBtn, onClick: () => setHint(null) }, '知道了')) : null,
-    h('div', { style: { flex: 1, minHeight: 0, display: 'flex' } },
+    h('div', { style: { flex: 1, minHeight: 0, display: 'flex', position: 'relative' } },
       h(ProductRail, { products: state.products, current: state.current, busy: state.busy, onRefresh: () => loadProducts(state.current), onSelect: (k) => { setDetail(null); setInlineRun(null); setRunsExpanded(false); setState((s) => ({ ...s, current: k, view: null })) } }),
       h('div', { style: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' } },
         !state.current
@@ -596,8 +611,8 @@ export function GlobalPanel(props) {
           : !view
             ? h('div', { style: { padding: '12px 14px' } }, muted('读取产品线数据中…'))
             : h(React.Fragment, null,
-              /* 产品头：固定（不随两栏滚动） */
-              h('div', { style: { ...flexRow, justifyContent: 'space-between', gap: 10, padding: '12px 14px 4px' } },
+              /* 产品头：固定（不参与滚动） */
+              h('div', { style: { ...flexRow, justifyContent: 'space-between', gap: 10, padding: '12px 14px 6px' } },
                 h('div', { style: { minWidth: 0 } },
                   h('div', { style: { fontSize: 15, fontWeight: 700, color: T.text } }, product.title || product.key),
                   h('div', { style: { fontSize: 10.5, color: T.text2, fontFamily: MONO, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, product.path || product.key)),
@@ -605,42 +620,53 @@ export function GlobalPanel(props) {
                   chip(`run ${product.totalRuns}`, T.text2),
                   product.activeRuns > 0 ? chip(`活跃 ${product.activeRuns}`, T.brand, { dot: true }) : null,
                   product.lastVerdict ? chip(`验收 ${product.lastVerdict}`, stColor('accepted')) : null)),
-              /* 左右两栏：grid auto-fit（够宽并排 / 窄了自动上下堆叠，各占一行），
-                 每格 minHeight:0 + overflowY:auto ⇒ 严格等于格高并各自滚动。
-                 ⚠ 不能用 flex-wrap: wrap：多行 flex 容器的行高由内容决定，列会被撑高、overflow 永不触发（实测"展开后无法滚动"）。 */
-              h('div', { style: { flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gridAutoRows: '1fr', gap: 12, padding: '4px 14px 14px' } },
-                h('div', { style: { minHeight: 0, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', paddingRight: 4 } },
-                  sectionTitle(`流水线 run · ${runs.length}`,
-                    h('div', { style: { ...flexRow, gap: 6, flex: '0 0 auto' } },
-                      !runsExpanded && pinnedActive.length > 0 ? chip(`已置顶进行中 ${pinnedActive.length}`, T.brand, { dot: true }) : null,
-                      runs.length > RUN_PREVIEW
-                        ? h('button', { style: panelBtn, onClick: () => setRunsExpanded((v) => !v) },
-                          runsExpanded ? `只看最近 ${RUN_PREVIEW} 条` : `展开全部 ${runs.length} 条`)
-                        : null)),
-                  h(RunList, { runs: visibleRuns, activeRunId: inlineRun ? inlineRun.id : null, onOpenRun: openRun, onInlineRun: showInline }),
-                  muted('点一行看面板内联详情；「对话右栏」= 切回对话并开右侧栏（与产物并排）', { fontSize: 10, marginTop: 6 })),
-                h('div', { style: { minHeight: 0, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', paddingRight: 4 } },
-                  sectionTitle('Backlog', muted('终态卡片默认收起；活动项与需人工项始终展开', { fontSize: 10 })),
-                  h(BacklogGroups, { backlog: view.backlog, onOpen: openItem }))),
+              /* 标签页：一次只显示一个列表 —— 宽度全给它，不再多栏挤压（第三版布局） */
+              h('div', { style: { display: 'flex', alignItems: 'flex-end', gap: 2, padding: '0 14px', borderBottom: `1px solid ${T.border}` } },
+                panelTabBtn('run', `🚀 流水线 run · ${runs.length}`),
+                panelTabBtn('backlog', `📋 Backlog · ${backlogCount}`),
+                h('div', { style: { marginLeft: 'auto', ...flexRow, gap: 6, paddingBottom: 7 } },
+                  panelTab === 'run' && !runsExpanded && pinnedActive.length > 0 ? chip(`已置顶进行中 ${pinnedActive.length}`, T.brand, { dot: true }) : null,
+                  panelTab === 'run' && runs.length > RUN_PREVIEW
+                    ? h('button', { style: panelBtn, onClick: () => setRunsExpanded((v) => !v) },
+                      runsExpanded ? `只看最近 ${RUN_PREVIEW} 条` : `展开全部 ${runs.length} 条`)
+                    : null)),
+              /* 单一滚动区（自己滚；页面级滚动条不会出现） */
+              h('div', { style: { flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '12px 14px 18px' } },
+                panelTab === 'run'
+                  ? h(React.Fragment, null,
+                    h(RunList, { runs: visibleRuns, activeRunId: inlineRun ? inlineRun.id : null, onOpenRun: openRun, onInlineRun: showInline }),
+                    muted('点一行看详情浮层；「对话右栏」= 切回对话并在右侧栏打开（与任务夹产物并排）', { fontSize: 10, marginTop: 8 }))
+                  : h(React.Fragment, null,
+                    muted('终态卡片默认收起；活动项与需人工项始终展开', { fontSize: 10, marginBottom: 8 }),
+                    h(BacklogGroups, { backlog: view.backlog, onOpen: openItem }))),
             ),
-        detailOpen
-          ? h('div', { style: { width: 380, flex: '0 0 380px', minHeight: 0, overflowY: 'auto', borderLeft: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.layer1} 55%, transparent)` } },
-            detail && detail.kind === 'item'
-              ? h(ItemDetailPane, { det: detail.data, openArtifact: openArtifactInPanel, onClose: () => setDetail(null) })
-              : h('div', null,
-                h('div', { style: { ...flexRow, justifyContent: 'space-between', padding: '10px 12px 0' } },
-                  h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text } }, 'run 详情（内联）'),
-                  h('div', { style: { ...flexRow, gap: 6 } },
-                    detail && detail.data && detail.data.address
-                      ? h('button', {
-                        style: brandBtn,
-                        title: '切回对话并在右侧栏打开该 run（可与任务夹产物并排看）',
-                        onClick: () => openInConversationRightbar(detail.data.address, detail.data.id),
-                      }, '对话右栏打开')
-                      : null,
-                    h('button', { style: panelBtn, onClick: () => { setDetail(null); setInlineRun(null) } }, '关闭'))),
-                h(RunDetailPane, { snap: detail && detail.data, product: state.current, api })))
-          : null,
-      )),
+      ),
+      /* 详情：**覆盖式浮层**（绝对定位、自己滚动，不挤压列表宽度）——与会话内工作台的两个抽屉同款 */
+      detailOpen
+        ? h('div', {
+          style: {
+            position: 'absolute', top: 8, right: 12, bottom: 8, width: 440, zIndex: 9,
+            overflowY: 'auto', overflowX: 'hidden', borderRadius: 12,
+            border: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.layer1} 96%, transparent)`,
+            backdropFilter: 'blur(12px)', boxShadow: '0 14px 44px rgba(0,0,0,.28)',
+          },
+        },
+          detail && detail.kind === 'item'
+            ? h(ItemDetailPane, { det: detail.data, openArtifact: openArtifactInPanel, onClose: () => setDetail(null) })
+            : h('div', null,
+              h('div', { style: { ...flexRow, justifyContent: 'space-between', padding: '10px 12px 0' } },
+                h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text } }, 'run 详情'),
+                h('div', { style: { ...flexRow, gap: 6 } },
+                  detail && detail.data && detail.data.address
+                    ? h('button', {
+                      style: brandBtn,
+                      title: '切回对话并在右侧栏打开该 run（可与任务夹产物并排看）',
+                      onClick: () => openInConversationRightbar(detail.data.address, detail.data.id),
+                    }, '对话右栏打开')
+                    : null,
+                  h('button', { style: panelBtn, onClick: () => { setDetail(null); setInlineRun(null) } }, '关闭'))),
+              h(RunDetailPane, { snap: detail && detail.data, product: state.current, api })))
+        : null,
+    ),
   )
 }
