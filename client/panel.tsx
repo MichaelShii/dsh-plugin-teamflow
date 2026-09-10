@@ -605,9 +605,11 @@ export function GlobalPanel(props) {
                   chip(`run ${product.totalRuns}`, T.text2),
                   product.activeRuns > 0 ? chip(`活跃 ${product.activeRuns}`, T.brand, { dot: true }) : null,
                   product.lastVerdict ? chip(`验收 ${product.lastVerdict}`, stColor('accepted')) : null)),
-              /* 左右两栏：各滚各的（宽屏并排；窄屏自动上下堆叠，各占一半高度） */
-              h('div', { style: { flex: 1, minHeight: 0, display: 'flex', flexWrap: 'wrap', gap: 12, padding: '4px 14px 14px' } },
-                h('div', { style: { flex: '1 1 300px', minWidth: 236, minHeight: 0, overflowY: 'auto', paddingRight: 4 } },
+              /* 左右两栏：grid auto-fit（够宽并排 / 窄了自动上下堆叠，各占一行），
+                 每格 minHeight:0 + overflowY:auto ⇒ 严格等于格高并各自滚动。
+                 ⚠ 不能用 flex-wrap: wrap：多行 flex 容器的行高由内容决定，列会被撑高、overflow 永不触发（实测"展开后无法滚动"）。 */
+              h('div', { style: { flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gridAutoRows: '1fr', gap: 12, padding: '4px 14px 14px' } },
+                h('div', { style: { minHeight: 0, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', paddingRight: 4 } },
                   sectionTitle(`流水线 run · ${runs.length}`,
                     h('div', { style: { ...flexRow, gap: 6, flex: '0 0 auto' } },
                       !runsExpanded && pinnedActive.length > 0 ? chip(`已置顶进行中 ${pinnedActive.length}`, T.brand, { dot: true }) : null,
@@ -617,7 +619,7 @@ export function GlobalPanel(props) {
                         : null)),
                   h(RunList, { runs: visibleRuns, activeRunId: inlineRun ? inlineRun.id : null, onOpenRun: openRun, onInlineRun: showInline }),
                   muted('点一行看面板内联详情；「对话右栏」= 切回对话并开右侧栏（与产物并排）', { fontSize: 10, marginTop: 6 })),
-                h('div', { style: { flex: '1 1 420px', minWidth: 260, minHeight: 0, overflowY: 'auto', paddingRight: 4 } },
+                h('div', { style: { minHeight: 0, minWidth: 0, overflowY: 'auto', overflowX: 'hidden', paddingRight: 4 } },
                   sectionTitle('Backlog', muted('终态卡片默认收起；活动项与需人工项始终展开', { fontSize: 10 })),
                   h(BacklogGroups, { backlog: view.backlog, onOpen: openItem }))),
             ),
