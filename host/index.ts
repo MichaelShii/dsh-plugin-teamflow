@@ -509,11 +509,12 @@ function tryFlushPendingInjections(sessionId: string): void {
 }
 
 export class TeamflowService extends TypertRemoteService {
-  static inject = ['agents', 'subagents', 'tokenMeter', 'typert', 'tools', 'llm']
+  static inject = ['agents', 'subagents', 'typert', 'tools', 'llm']
 
   constructor(ctx) {
     super(ctx, 'teamflow')
-    setRuntime(ctx.get('agents'), ctx.get('subagents'), ctx.get('tokenMeter'), ctx.get('workspaceRegistry'), ctx.get('agentDefaultModel'), ctx.get('llm'))
+    // 注：曾硬注入 tokenMeter 但全仓从未使用（2026-09-10 清理）——计量走 sessionProjections 投影。
+    setRuntime(ctx.get('agents'), ctx.get('subagents'), ctx.get('workspaceRegistry'), ctx.get('agentDefaultModel'), ctx.get('llm'))
     // 可选能力：官方 Session 投影注册表（计量首选来源 tokenUsage/sessionStats）。
     // 走 ctx.inject 而非 static inject——服务缺失（最小 profile）时插件仍加载，计量回退事件扫描。
     ctx.inject(['sessionProjections'], (projectionCtx) => {

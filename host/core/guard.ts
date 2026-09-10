@@ -12,8 +12,12 @@
  *     ⚠️ 状态判定（实锤 run tf-mte906e9）：大文件 read-edit 循环是正常模式——模型反复 read 同一大文件
  *     （每次 edit 后内容已变，必须重读确认）、输出高度相似的「读后分析」，逐字片段在 400 条窗口内
  *     可累积 ≥12 次——伴随 edit/write 变更调用时只记录观察，不中止（否则大文件修改任务全被误杀）。
- *  B. 挂死检测：连续 GUARD_SILENCE_MS 一个新事件都没有（provider 层挂起/连接静默死亡）
+ *  B. 挂死检测：连续 GUARD_SILENCE_MS 没有**任何已提交事件**（provider 层挂起/连接静默死亡）
  *     → outcome='stalled'（走正常预算门 → 熔断转人工，不自动重试烧钱）。
+ *     2026-09-10：时间来源改为**官方 `subagentTiming` 投影**（`active.through` = 该投影 cut 上
+ *     最新事件时间，由宿主在已提交事件上折叠）——不再依赖「三源取最长视图」的长度启发式
+ *     （r1 QA 误判的根因就是那个视图会失明）；投影不可用时回退旧启发式。长工具静默执行
+ *     （跑 12 分钟测试无输出）仍由 agent 活动守卫豁免，不做误杀。
  *  C. 空转检测：会话仍在产出事件，但连续 GUARD_NO_TOOL_MS 没有任何工具调用
  *    （纯推理打转/改写式循环；正常 agent 每分钟都在调工具）→ outcome='stalled'。
  *    兜底关系：复读判定放宽后，edit 后陷入死循环的漏网场景由 C（长时间无工具调用）兜住。
@@ -21,7 +25,9 @@
  * 中止方式：run.dispose() → run.result 结算。outcome 命名刻意避开 isUnretryable 的
  * /token|context|limit/ 正则；只有 'degenerated' 享受干净重试豁免（runner.withRetry）。
  */
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { GUARD_NO_TOOL_MS, GUARD_POLL_MS, GUARD_REPEAT_LIMIT, GUARD_SILENCE_MS, GUARD_WINDOW_SIZE } from '../constants.ts'
+import { runtime } from './context.ts'
 import type { Journal, SubagentRunLike } from '../types.ts'
 import type { JournalStage } from '../../store.ts'
 
@@ -78,33 +84,46 @@ function normalizeFragment(s: string): string {
   return String(s || '').toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '')
 }
 
-/** 观测→执行闭环：向运行中的子代理注入轻提醒（不打断，下一轮 step 可见）。
- * 通道：subagents.start 句柄无 inject——用 DSH 官方 session.append('user/message')（in-process driver 同款用法）。
- * ⚠️ 安全窗口（实锤 tf-mtcnejqj）：绝不能插在 assistant(tool_calls) → tool/result 之间——
- * provider 校验「tool 消息必须响应前序 tool_calls」，插入 user 消息会 400 invalid_request_error。
- * 因此只入队（pendingInjects），在观察到 step/end（该 step 的 tool/result 已写入）后统一 flush。 */
-function injectReminder(run: SubagentRunLike, text: string): void {
-  const queue = (run as unknown as { __teamflowPending?: string[] })
+/**
+ * 官方 `subagentTiming` 投影读数（挂死检测首选源，2026-09-10 改）。
+ * 形状 `{settledMs, active?:{since, through}}`——`through` 是该投影 cut 上**最新事件时间**，
+ * 由宿主在已提交事件上折叠，不受 session.events 快照失明影响（r1 QA 误判根因）。
+ * 返回 null = 投影不可用（未挂载 / 该子代理无 descriptor）→ 回退事件数增长启发式。
+ */
+function timingOf(run: SubagentRunLike | null | undefined): { activeThrough: number | undefined } | null {
   try {
-    if (!Array.isArray(queue.__teamflowPending)) (queue as { __teamflowPending: string[] }).__teamflowPending = []
-    ;(queue as { __teamflowPending: string[] }).__teamflowPending.push(text)
-  } catch (e) { /* 入队失败静默 */ }
+    const projections = runtime.sessionProjections as { stateOf?: (s: unknown, k: string) => unknown } | undefined
+    if (!projections || typeof projections.stateOf !== 'function') return null
+    const local = run && (run as { localAgent?: { session?: unknown } }).localAgent
+    const session = local && local.session
+    if (!session) return null
+    const timing = projections.stateOf(session, 'subagentTiming') as { active?: { through?: unknown } } | null | undefined
+    if (!timing || typeof timing !== 'object') return null
+    const through = timing.active && timing.active.through
+    return { activeThrough: typeof through === 'number' && Number.isFinite(through) ? through : undefined }
+  } catch (e) { return null }
 }
 
-function flushReminders(run: SubagentRunLike): void {
+/** 观测→执行闭环：向运行中的子代理注入轻提醒（不打断，下一 step 可见）。
+ *
+ * 通道（2026-09-10 改）：`run.localAgent.inject()` —— 宿主官方 Agent 通道。next-step 队列由
+ * agent loop 在 `preStep` 内、tool/result 之后整批认领，因此**不存在**「插进
+ * assistant(tool_calls) → tool/result 之间触发 provider 400」的窗口；旧实现「先入队
+ * `__teamflowPending`、观察到 step/end 再 session.append」的时序状态机整体删除。
+ * （旧注释「subagents.start 句柄无 inject」是错的：`run.localAgent` 是活 Agent，
+ * 有 `inject/steer/followup` —— `packages/core/agent/src/runtime-types.ts`。）
+ *
+ * 语义：`inject` 是 best-effort（可能晚一个 step），且不唤醒 idle driver——提醒只用于
+ * 「仍在跑的 agent」；退化中止仍走 fire()/dispose()，不改为 steer 纠偏（后者是独立课题）。 */
+function injectReminder(run: SubagentRunLike, text: string): void {
   try {
-    const queue = (run as unknown as { __teamflowPending?: string[] }).__teamflowPending
-    if (!queue || queue.length === 0) return
-    const local = run.localAgent as { session?: { append?: (type: string, payload: unknown, opts?: { surfaceOp?: string }) => void } } | null | undefined
-    if (!local || typeof local.session?.append !== 'function') return
-    for (const text of queue.splice(0)) {
-      local.session.append('user/message', {
-        id: crypto.randomUUID(),
-        role: 'user',
-        content: [{ type: 'text', text }],
-        source: { kind: 'plugin', plugin: 'teamflow' },
-      }, { surfaceOp: 'append' })
-    }
+    const agent = run && (run as { localAgent?: { inject?: (m: unknown) => void } }).localAgent
+    if (!agent || typeof agent.inject !== 'function') return
+    agent.inject(createUserMessage({
+      content: [{ type: 'text', text }],
+      // form:'notice' 必须带 summary（宿主 ContextFormed 判别式要求一行说明）
+      source: { kind: 'plugin', plugin: 'dsh-plugin-teamflow', form: 'notice', summary: '护栏轻提醒' },
+    }))
   } catch (e) { /* 注入失败静默 */ }
 }
 
@@ -144,7 +163,7 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
     if (set.has(key)) return
     set.add(key)
     try { journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} [token 观测] ${message}` }) } catch (e) { /* ignore */ }
-    // 观测→执行闭环：轻提醒入队（不打断；安全窗口=step/end 后 flush，避免插进 tool_calls→tool/result 序列）。
+    // 观测→执行闭环：轻提醒直接经官方 Agent 通道 inject（不打断；协议安全边界由宿主保证）。
     // 只提醒不强制——重复读常是写断言的合理需求。
     if (hint) injectReminder(run, `[TOKEN GUARD · reminder] ${hint}`)
   }
@@ -155,19 +174,26 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
     clearInterval(timer)
     stage.guardReason = reason
     stage.guardOutcome = outcome
-    // 挂死诊断（2026-09-06 实锤 r1：QA 正常干活被判「10 分钟无事件」——记录各事件源视图长度，
-    // 排查 session.events 快照失明：失明时 snapshotEvents/ownEvents 应 > events）
+    // 挂死诊断（2026-09-06 实锤 r1：QA 正常干活被判「10 分钟无事件」——记录判定依据；
+    // 2026-09-10 起首选源是 subagentTiming 投影，只有回退路径才读旧事件源视图长度）
     if (outcome === 'stalled') {
       try {
-        const local = (run as { localAgent?: { session?: { events?: unknown; snapshotEvents?: () => unknown; ownEvents?: () => unknown } } }).localAgent
-        const session = local && local.session
-        const lens: string[] = []
-        if (session) {
-          try { const r = session.events; lens.push(`events=${Array.isArray(r) ? r.length : typeof r === 'function' ? (r() as unknown[]).length : '?'}`) } catch (e) { lens.push('events=err') }
-          try { lens.push(`snap=${typeof session.snapshotEvents === 'function' ? (session.snapshotEvents() as unknown[]).length : '-'}`) } catch (e) { lens.push('snap=err') }
-          try { lens.push(`own=${typeof session.ownEvents === 'function' ? (session.ownEvents() as unknown[]).length : '-'}`) } catch (e) { lens.push('own=err') }
+        const timing = timingOf(run)
+        let detail: string
+        if (timing) {
+          detail = `subagentTiming.through=${timing.activeThrough === undefined ? '（无 open turn）' : timing.activeThrough}`
+        } else {
+          const local = (run as { localAgent?: { session?: { events?: unknown; snapshotEvents?: () => unknown; ownEvents?: () => unknown } } }).localAgent
+          const session = local && local.session
+          const lens: string[] = []
+          if (session) {
+            try { const r = session.events; lens.push(`events=${Array.isArray(r) ? r.length : typeof r === 'function' ? (r() as unknown[]).length : '?'}`) } catch (e) { lens.push('events=err') }
+            try { lens.push(`snap=${typeof session.snapshotEvents === 'function' ? (session.snapshotEvents() as unknown[]).length : '-'}`) } catch (e) { lens.push('snap=err') }
+            try { lens.push(`own=${typeof session.ownEvents === 'function' ? (session.ownEvents() as unknown[]).length : '-'}`) } catch (e) { lens.push('own=err') }
+          }
+          detail = `投影不可用，回退事件视图：${lens.join(' / ') || 'session 不可访问'}`
         }
-        journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 挂死诊断：${lens.join(' / ') || 'session 不可访问'}` })
+        journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 挂死诊断：${detail}` })
       } catch (e) { /* 诊断失败不影响中止 */ }
     }
     try {
@@ -229,9 +255,6 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
         }
         // token 观测（只记 warning）：增量处理新完成的工具调用
         observeToolCalls(newEvents)
-        // 提醒注入安全窗口（实锤 tf-mtcnejqj）：step/end 出现 = 该 step 的 tool/result 已全部写入，
-        // 此刻 flush user/message 不会插进 assistant(tool_calls)→tool/result 序列（否则 provider 400）。
-        if (newEvents.some((ev) => (ev as { type?: string })?.type === 'step/end')) flushReminders(run)
         processed = events.length
       }
 
@@ -248,13 +271,36 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
         }
       }
 
-      // B. 挂死检测：事件数完全不增长超过 GUARD_SILENCE_MS（provider 挂起/静默死亡）
-      if (events.length !== lastEventCount) {
+      // B. 挂死检测（2026-09-10 改）：首选官方 subagentTiming 投影的 active.through
+      // （已提交事件时间，权威且不受视图失明影响）；投影不可用才回退事件数增长启发式。
+      const timing = timingOf(run)
+      if (timing) {
+        if (timing.activeThrough === undefined) {
+          // 无 open turn（尚未开跑 / 该 turn 已收尾）——不判挂死，保持窗口新鲜
+          lastGrowthAt = Date.now()
+        } else if (Date.now() - timing.activeThrough > GUARD_SILENCE_MS) {
+          // 长时间无已提交事件。长工具静默执行（跑十几分钟测试无输出）仍由活动守卫豁免：
+          // agent 非 idle 且本会话动过手 → 不是挂死，记一次诊断并给新窗口。
+          if (lastMutationAt > 0 && isAgentBusy(run)) {
+            if (!busyWarned) {
+              busyWarned = true
+              try { journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 已提交事件静默（subagentTiming.through ${Math.round((Date.now() - timing.activeThrough) / 1000)}s 未推进）但 agent 仍活动——视为长工具执行而非挂死，继续观察` }) } catch (e) { /* ignore */ }
+            }
+            lastGrowthAt = Date.now()
+          } else {
+            fire(`挂死（${Math.round(GUARD_SILENCE_MS / 60000)} 分钟无任何已提交事件，来源：subagentTiming 投影）`, 'stalled')
+            return
+          }
+        } else {
+          lastGrowthAt = Date.now()
+        }
+      } else if (events.length !== lastEventCount) {
         lastEventCount = events.length
         lastGrowthAt = Date.now()
       } else if (Date.now() - lastGrowthAt > GUARD_SILENCE_MS) {
-        // 挂死守卫（实锤 r1：QA 正常干活 254 事件却被判「10 分钟无事件」——事件视图失明）。
-        // agent 仍非 idle 且本会话动过手 → 不是挂死：记一次诊断并给新窗口，不中止。
+        // 回退路径（投影不可用）：沿用旧启发式 + agent 活动守卫（实锤 r1：QA 正常干活 254 事件
+        // 却被判「10 分钟无事件」——事件视图失明）。agent 仍非 idle 且本会话动过手 → 视为视图
+        // 失明而非挂死：记一次诊断并给新窗口，不中止（纯启动静默挂死不受影响）。
         if (lastMutationAt > 0 && isAgentBusy(run)) {
           if (!busyWarned) {
             busyWarned = true

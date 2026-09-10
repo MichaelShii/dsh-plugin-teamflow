@@ -1,6 +1,6 @@
 /**
  * dsh-plugin-teamflow core — token 计量（官方口径）。
- * 依赖：types.ts、context.ts（runtime.sessionProjections / runtime.tokenMeter）。
+ * 依赖：types.ts、context.ts（runtime.sessionProjections）。
  *
  * 口径与模型 provider 账单一致（模型无关）：
  *  - input      : 输入（缓存未命中）

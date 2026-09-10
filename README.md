@@ -125,7 +125,7 @@ dsh-plugin-teamflow/
 
 2026-09-10 兼容性核对（dsh 0.1.5-rc.2）：插件面板 Slot（原 `conversation` 根 slot → `main` 下的 `conversation` key）、会话格式 V3 + Session 生命周期（`SessionHandle`、异步 `agentLoop.create()`、会话锁）、`ctx.agent` 移除与 Inbox 类型化、SDK/Headless/ACP 默认工具调整、subprocess handle 去除 pid——**插件全部兼容**（未使用被改动的接口；`conversation.view` / `conversation.input.right` 声明未变，slot 树无删除）。其中一项需要跟进：
 
-- **Session 同步事件读取器已弃用**（`session.eventAt()` / `snapshotEvents()` / `ownEvents()`，宿主 2026-09-09 起「存量可留、新调用禁止」，方向是不再把完整事件序列常驻内存）：**token 计量已改为官方 Session 投影优先**（`ctx.sessionProjections.stateOf(session,'tokenUsage')` 取四桶 + `'sessionStats'.steps` 取调用数），事件扫描降级为无投影宿主的回退；**护栏 `guard.eventsOf` 仍走存量回退**（需要近期事件内容做复读/挂死判定，替代路径待设计，见 `docs/TODO.md`）。
+- **Session 同步事件读取器已弃用**（`session.eventAt()` / `snapshotEvents()` / `ownEvents()`，宿主 2026-09-09 起「存量可留、新调用禁止」，方向是不再把完整事件序列常驻内存）：**token 计量已改为官方 Session 投影优先**（`ctx.sessionProjections.stateOf(session,'tokenUsage')` 取四桶 + `'sessionStats'.steps` 取调用数），事件扫描降级为无投影宿主的回退；**护栏的提醒通道已改官方 `Agent.inject()`、挂死判据已改用官方 `subagentTiming` 投影的 `active.through`**（长工具静默仍由 agent 活动守卫豁免），只剩**复读检测**仍在读事件（需要流式文本内容，官方替代＝订阅 `'session/event'` post-commit 投递，需先定等价判据，见 `docs/TODO.md`）。
 
 2026-09-04 核对（dsh 0.1.3-alpha.1）：session 持久化 v2（write-lease/JSONL 快照/版本化导出）、attachment/file-upload 收口、Windows 子进程隐藏、workspace 全限定路径硬化——全部兼容，插件无需调整。
 

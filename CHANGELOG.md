@@ -6,12 +6,15 @@
 
 ### 修复
 - **token 计量改走官方 Session 投影（宿主弃用同步事件读取器）**：dsh 0.1.5-rc.2 起 `Session.eventAt()` / `snapshotEvents()` / `ownEvents()` 标记为 deprecated（存量可留、新调用禁止，宿主方向是不再把完整事件序列常驻内存）。计量来源改为**官方投影优先**——`ctx.sessionProjections.stateOf(session,'tokenUsage')` 取四桶（与宿主 token-meter 同一份 fold，重试替换语义更准）+ `'sessionStats'.steps` 取调用数，**零历史扫描**；投影缺失/无数据/读取异常时静默回退原事件扫描（最小 profile 与存量宿主不受影响，不虚报 0，不中断流水线）。`sessionProjections` 走可选 `ctx.inject`，不进 `static inject`——服务缺失时插件照常加载
+- **护栏适配官方通道（提醒 + 挂死检测）**：轻提醒从手写 `session.append('user/message')` + step/end flush 时序状态机，改为官方 `run.localAgent.inject()`（宿主在协议安全边界整批认领，旧注释声称的「会插进 tool_calls→tool_result 触发 400」不成立）；挂死检测从「多源取最长事件视图」长度启发式改为官方 **`subagentTiming` 投影**的 `active.through`（已提交事件时间，不受视图失明影响——上次 QA 误判 stalled 的根因）。长工具静默执行仍由 agent 活动守卫豁免；投影不可用时回退旧启发式。中止语义未变
 
 ### 改进
 - **声明宿主兼容窗口**：`package.json` 新增 `engines.dsh: ">=0.1.5-rc.2 <0.2.0"` 与 `dsh.manifestVersion: 1`（dsh 0.1.5 起支持的公共 manifest 字段；当前宿主不校验，属作者声明）；README「版本锚定」段同步到 v0.1.5-rc.2，并记录本次兼容核对结论与两个待跟进项
+- **清理死注入**：`static inject` 长期硬注入 `tokenMeter` 却全仓从未使用 → 从 static inject / setRuntime / runtime 三处移除（假依赖会拖累插件的加载条件）
+- **工作区 key 文档纠偏**：`workspaceScopeOf` 的「优先用 DSH workspace UUID」分支**当前不可达**（宿主 `resolveByPath` 是异步、我们同步调用），实际生效的是路径派生 `slugPath(cwd)`；注释与 AGENTS.md 改为事实描述，真修（改异步 + 存储 key 迁移）列入 `docs/TODO.md` 待 v0.1.8
 
 ### 已知待办
-- **护栏 `guard.eventsOf` 仍走已弃用的同步事件读取**（需要近期事件内容做复读/挂死判定，官方投影不提供该视图）：本次不迁移，替代路径待设计，见 `docs/TODO.md`；当前行为不变（存量调用被宿主明确允许）
+- **护栏复读检测仍读已弃用的事件读取器**（提醒通道与挂死检测已改官方；复读需要流式文本内容）：官方替代是订阅 `'session/event'` post-commit 投递，需先定等价判据，见 `docs/TODO.md`（当前行为不变，存量调用被宿主明确允许）
 
 ## [0.1.6] - 2026-09-07
 
