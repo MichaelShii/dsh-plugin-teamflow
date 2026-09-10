@@ -2,6 +2,17 @@
 
 > 本插件首次公开发布版本为 **v0.1.0**；发布前的内部迭代（v0.3~v0.13）记录于 `AGENTS.md` §5，对外统一归到 v0.1.0。
 
+## [0.1.7] - 2026-09-10
+
+### 修复
+- **token 计量改走官方 Session 投影（宿主弃用同步事件读取器）**：dsh 0.1.5-rc.2 起 `Session.eventAt()` / `snapshotEvents()` / `ownEvents()` 标记为 deprecated（存量可留、新调用禁止，宿主方向是不再把完整事件序列常驻内存）。计量来源改为**官方投影优先**——`ctx.sessionProjections.stateOf(session,'tokenUsage')` 取四桶（与宿主 token-meter 同一份 fold，重试替换语义更准）+ `'sessionStats'.steps` 取调用数，**零历史扫描**；投影缺失/无数据/读取异常时静默回退原事件扫描（最小 profile 与存量宿主不受影响，不虚报 0，不中断流水线）。`sessionProjections` 走可选 `ctx.inject`，不进 `static inject`——服务缺失时插件照常加载
+
+### 改进
+- **声明宿主兼容窗口**：`package.json` 新增 `engines.dsh: ">=0.1.5-rc.2 <0.2.0"` 与 `dsh.manifestVersion: 1`（dsh 0.1.5 起支持的公共 manifest 字段；当前宿主不校验，属作者声明）；README「版本锚定」段同步到 v0.1.5-rc.2，并记录本次兼容核对结论与两个待跟进项
+
+### 已知待办
+- **护栏 `guard.eventsOf` 仍走已弃用的同步事件读取**（需要近期事件内容做复读/挂死判定，官方投影不提供该视图）：本次不迁移，替代路径待设计，见 `docs/TODO.md`；当前行为不变（存量调用被宿主明确允许）
+
 ## [0.1.6] - 2026-09-07
 
 ### 新增

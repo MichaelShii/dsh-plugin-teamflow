@@ -1,6 +1,6 @@
 /**
  * dsh-plugin-teamflow core — token 计量（官方口径）。
- * 依赖：types.ts、context.ts（runtime.tokenMeter）。
+ * 依赖：types.ts、context.ts（runtime.sessionProjections / runtime.tokenMeter）。
  *
  * 口径与模型 provider 账单一致（模型无关）：
  *  - input      : 输入（缓存未命中）
@@ -9,11 +9,61 @@
  *  - output     : 输出
  *  billed input = input + cacheRead + cacheWrite。
  * 缓存命中率 = cacheRead / (input + cacheRead)。
+ *
+ * 来源优先级（2026-09-10 适配 dsh 0.1.5-rc.2）：
+ *  1) **官方 Session 投影**（首选）：`ctx.sessionProjections.stateOf(session,'tokenUsage')` 取四桶 +
+ *     `'sessionStats'` 取调用数——零历史扫描，且与官方 token-meter 同一份 fold（不再自行复刻口径）。
+ *  2) **事件扫描回退**（存量路径）：宿主未挂载投影（最小 profile/未来移除）或投影无 provider usage 时，
+ *     沿用 events → snapshotEvents() → ownEvents() 多源回退。宿主自 2026-09-09 起把这三个同步历史读取器
+ *     标记为 deprecated（存量可留、新调用禁止），本路径仅为无投影宿主保底，不再扩展（见 docs/TODO.md）。
  */
+import { runtime } from './context.ts'
 import type { SubagentRunLike, UsageBuckets } from '../types.ts'
 
+/** 投影字段读数（宽进严出：非法/非正一律 0，不虚报）。 */
+function countOf(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0
+}
+
+/** 官方 Session 投影注册表（ctx.sessionProjections）的鸭子形状；未挂载 → 回退事件扫描。 */
+interface SessionProjectionsLike {
+  stateOf?: (session: unknown, key: string) => unknown
+}
+
 /**
- * 采集子代理会话事件（多源回退——2026-09-07 实锤 r38 usage 全空）：
+ * 投影路径（官方口径首选）：
+ *  - `tokenUsage`（dsh-token-meter 注册，stateVersion 2）→ totals 四桶：与官方同一份 fold，
+ *    `assistant/attempt` 内嵌 stream usage 同样计入、`llm/retry-started` 会先关掉被替换的重试槽位
+ *    ——比旧事件扫描（只认 assistant/message）更准，重试不重复计。
+ *  - `sessionStats`（dsh-session-stats 注册）steps → 调用数（一个 step = 一次模型请求；
+ *    旧扫描按 assistant/message 的 turn.step 去重，语义等价）。
+ * 返回 null = 投影不可用或该会话无 provider usage —— 交给事件扫描回退（不虚报 0）。
+ */
+function projectedUsageOf(run: SubagentRunLike | null | undefined): UsageBuckets | null {
+  try {
+    const projections = runtime.sessionProjections as SessionProjectionsLike | undefined
+    if (!projections || typeof projections.stateOf !== 'function') return null
+    const session = run && run.localAgent ? run.localAgent.session : null
+    if (!session) return null
+    const usage = projections.stateOf(session, 'tokenUsage') as { totals?: Record<string, unknown> } | undefined
+    const totals = usage && usage.totals
+    if (!totals) return null
+    const buckets: UsageBuckets = {
+      input: countOf(totals.uncachedInputTokens),
+      cacheRead: countOf(totals.cacheReadTokens),
+      cacheWrite: countOf(totals.cacheWriteTokens),
+      output: countOf(totals.outputTokens),
+      calls: 0,
+    }
+    if (totalTokensOf(buckets) <= 0) return null
+    const stats = projections.stateOf(session, 'sessionStats') as { steps?: unknown } | undefined
+    buckets.calls = countOf(stats && stats.steps) || 1
+    return buckets
+  } catch (e) { return null }
+}
+
+/**
+ * 采集子代理会话事件（存量回退路径——2026-09-07 实锤 r38 usage 全空）：
  * 宿主新版 Session（session v2）已无 `events` 属性/getter（仅私有 eventsSnapshot 缓存 +
  * 官方 snapshotEvents()/ownEvents() 方法），旧实现读 session.events = undefined → usage 全 null。
  * 回退链（与 guard.eventsOf 同款语义）：events（老宿主快照，兼容）→ snapshotEvents()（官方完整日志）
@@ -71,9 +121,17 @@ function usageOfEvent(e: { type?: string; data?: unknown } | null): { inputToken
 
 /**
  * 累计子代理会话中所有 LLM 调用的真实 usage（官方三桶 + 调用数）。
- * 返回 null 表示拿不到 usage（会话未暴露 events / 无数据）。
+ * 来源优先级：官方 Session 投影（首选，零历史扫描）→ 事件扫描（无投影宿主的存量回退）。
+ * 返回 null 表示两条路径都拿不到 usage（会话未暴露投影与事件 / 无数据）。
  */
 export function accumulateSessionUsage(run: SubagentRunLike | null | undefined): UsageBuckets | null {
+  const projected = projectedUsageOf(run)
+  if (projected) return projected
+  return scannedUsageOf(run)
+}
+
+/** 事件扫描回退（投影未挂载/无数据时使用；沿用 2026-09-07 的多源回退语义，不改行为）。 */
+function scannedUsageOf(run: SubagentRunLike | null | undefined): UsageBuckets | null {
   const events = sessionEventsOf(run)
   if (events.length === 0) return null
   const buckets: UsageBuckets = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 }

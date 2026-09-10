@@ -25,7 +25,7 @@ import type {
 import { RETRY_LIMIT, STAGE_TOKEN_BUDGET, STATUS, PHASE_ORDER, PHASE_KEY_OF, PHASE_KEY_BY_NAME, phaseKeyOf } from './constants.ts'
 import { toText, clip, extractText, normalizeRoot, normalizeTasks, sanitizeSnapOptions, normalizeSignal, hasSubstance, isUnretryable, handoffBrief } from './util.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, devPrompt, qaPrompt, acceptancePrompt } from './prompts/index.ts'
-import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, workspaceScopeOf } from './core/context.ts'
+import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, setSessionProjections, workspaceScopeOf } from './core/context.ts'
 import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/backlog.ts'
 import { loadTeams, findTeam, type TeamConfig } from './core/teams.ts'
 import { runPool, runAgent, withRetry } from './core/runner.ts'
@@ -514,6 +514,11 @@ export class TeamflowService extends TypertRemoteService {
   constructor(ctx) {
     super(ctx, 'teamflow')
     setRuntime(ctx.get('agents'), ctx.get('subagents'), ctx.get('tokenMeter'), ctx.get('workspaceRegistry'), ctx.get('agentDefaultModel'), ctx.get('llm'))
+    // 可选能力：官方 Session 投影注册表（计量首选来源 tokenUsage/sessionStats）。
+    // 走 ctx.inject 而非 static inject——服务缺失（最小 profile）时插件仍加载，计量回退事件扫描。
+    ctx.inject(['sessionProjections'], (projectionCtx) => {
+      setSessionProjections(projectionCtx.get('sessionProjections'))
+    })
     loadActiveTeams() // 重启后恢复会话→团队映射（UI 状态与启动通道一致）
     // 断点续跑基座：加载磁盘 journal；running/pending 残留 → 标记 interrupted
     let interruptedCount = 0

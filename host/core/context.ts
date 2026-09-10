@@ -11,6 +11,7 @@ export const runtime: {
   agents?: any
   subagents?: any
   tokenMeter?: any
+  sessionProjections?: any
   workspaceRegistry?: any
   agentDefaultModel?: any
   llm?: any
@@ -23,6 +24,15 @@ export function setRuntime(agents: unknown, subagents: unknown, tokenMeter: unkn
   runtime.workspaceRegistry = workspaceRegistry
   runtime.agentDefaultModel = agentDefaultModel
   runtime.llm = llm
+}
+
+/**
+ * 可选能力：官方 Session 投影注册表（ctx.sessionProjections，dsh-session-projection）。
+ * 单独 setter 而非并入 setRuntime——它是**可选**依赖：用 ctx.inject 在服务可用时注册，
+ * 未挂载（最小 profile）时计量自动回退事件扫描，插件照常加载。
+ */
+export function setSessionProjections(projections: unknown): void {
+  runtime.sessionProjections = projections
 }
 
 /** 运行期 run 注册表（runId → Journal）。 */
