@@ -55,7 +55,7 @@ TeamFlow 团队研发流水线 —— DeepSeek Harness 可分发插件（`dsh pl
 - **并发池**：开发任务按 `maxConcurrency`（默认 3，最大 8）并行执行。
 - **QA 缺陷登记**：QA 报告按固定表格输出 → 自动解析成 Bug 进入 backlog。
 - **token 计量（官方口径）**：每阶段记录 `usage` = **输入(缓存未命中)/输入(缓存命中)/写缓存/输出 + 调用数**（由子代理会话逐事件累计）+ **缓存命中率**（cacheRead/(input+cacheRead)）。工作台卡片/任务卡/完成汇报均按此口径展示，模型无关、与官方账单一致。
-- **lite 模式**：微功能轻量——`teamflow_start(lite:true)` 跳过独立技术方案文档阶段（PRD 即契约），直接 **PRD → 开发 → QA → 验收**；配套 `needDesign:true` 时**保留 UI/UX 设计阶段**。实测较完整 7 段省 ~64% 时间、~88% token。
+- **lite 模式**：微功能轻量——`teamflow_start(lite:true)` 跳过独立技术方案文档阶段（PRD 即契约），直接 **PRD → 开发 → QA → 验收**；配套 `needDesign:true` 时**保留 UI/UX 设计阶段**。用「按需求规模裁剪阶段集」换流程重量，避免一个微功能套完整瀑布（`patch` 档更小：单点确认 + 开发）。
 - **token 熔断**：单次调用累计**新增**消耗（`input+cacheWrite+output`，**不含缓存命中**）超 `FRESH_TOKEN_BUDGET`（默认 200k）时停止重试、需人工介入；汇报/展示仍按官方 billed 口径（`totalTokensOf`）。缓存命中是廉价重放，把它计入熔断会让「任何任务失败一次就熔断、自动重试形同虚设」——见 `docs/devlog.md` 补 15。
 - **🏭 团队工作台（双入口）**：
   - **会话内 tab**：与 chat / 轨迹并列的会话头部 tab，含：
