@@ -156,13 +156,19 @@ assertContract({
 assertContract({
   id: 'LOG-LAYOUT-REUSE', level: 'policy', targets: ['devPrompt', 'qaPrompt', 'qaFixPrompt', 'acceptancePrompt'],
   intent: '日志布局「每用途一个文件、套件输出追加不新增变体」——实锤一次 run 留下 51 份完整套件输出（占日志 78%）+ 49 个散落脚本',
-  include: [/\[Log layout · policy\]/, /Reuse one file per purpose/, /regression-<phase>\.log/, /APPENDED on re-run/, /scripts\//, /captures\.json/, /probe\//],
+  include: [/\[Log layout · policy\]/, /Reuse one file per purpose/, /regression-<phase>\.log/, /APPENDED on re-run/, /captures\.json/],
   exclude: [/qa-out\.log/],
 })
 assertContract({
+  id: 'LOG-LAYOUT-SCOPED', level: 'policy', targets: ['devPrompt', 'qaPrompt', 'qaFixPrompt', 'acceptancePrompt'],
+  intent: '布局路径必须显式限定在 logs/teamflow/<runId>/ 内并禁止项目根建 scripts//probe/——实锤 tf-mtx6fi2a：未限定时模型在项目根建了 scripts/ 与 probe/，6 个草稿被卷进交付提交',
+  include: [/INSIDE logs\/teamflow/, /never create scripts\/ or probe\/ at the project root/, /logs\/teamflow\/[^/\s]+\/scripts\//, /logs\/teamflow\/[^/\s]+\/probe\//],
+  exclude: [/→ scripts\/ \(name each/],
+})
+assertContract({
   id: 'LOG-LAYOUT-PER-PHASE', level: 'structural', targets: ['devPrompt', 'qaPrompt', 'qaFixPrompt'],
-  intent: 'dev/qa/qaFix 各自指向本阶段回归文件（regression-dev / regression-qa / regression-devfix）',
-  include: [/following the log layout above/],
+  intent: 'dev/qa/qaFix 各自指向本阶段回归文件（regression-dev / regression-qa / regression-devfix），并各自重申项目根禁令',
+  include: [/following the log layout above/, /Never create scripts\/ or probe\/ at the project root/],
 })
 assertContract({
   targets: ['prdPrompt', 'designPrompt', 'scaffoldPrompt', 'techPrompt', 'acceptancePrompt', 'techChangePrompt', 'patchConfirmPrompt'],

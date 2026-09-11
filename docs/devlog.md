@@ -22,6 +22,16 @@
 
 ## 迭代变更流水（2026-08-19 起）
 
+- 2026-09-12（补 18）：**同需求重跑验证 + 修掉（补 17）引入的路径作用域 bug**。
+  **验证**（assetd 同需求重跑，run `tf-mtx6fi2a-ibi7lu`：8 阶段 / 25 分钟 / **零失败 / 零人工介入 / 零 QA 打回**，对比上一轮 T5 误判 → 停线 16 分钟 + 人工 resume + QA 打回）：
+  - **交付判定**：全程无「命中拒绝词」误杀，`insubstantial` 失败 0 次 —— 上一轮那种"如实汇报环境限制被判未交付"没有复现。
+  - **熔断口径**：0 次触发；各阶段新增 token 60–149k（tech 129k / T1 106k / QA 149k）——这个量级在**旧 60k 口径**下任何一次失败都会立刻熔断取消重试。
+  - **收口提交面**：提交 32 文件、**`logs/` 命中 0 个**（上一轮 227 文件里 208 个=92% 是日志）；journal 留痕「工作区 .gitignore 已补忽略 logs/teamflow/」→ 幂等补写真的在生产里执行了。
+  - **日志布局**：run 目录 **207 → 30 文件 / 618.6 → 328.3 KB**；**51 份重复套件输出（占 .log 78%）消失**，收敛为 `regression-dev.log`(58 KB) / `regression-qa.log`(66 KB) / `regression-accept.log`(31 KB)；其余 `.log` 各有独立用途（负控制/蓝图一致性/探针/spawn 探测），**无一以全量套件输出结尾**（旧病消失）。
+  **但暴露（补 17）的作用域 bug**：prompt 里我把布局写成 `scripts/`、`probe/` 这种**未限定的相对昵称**，模型解析成**项目根约定** → 在项目根建了 `scripts/`(5 文件) 与 `probe/`(1 文件)，且这 **6 个一次性草稿被收口提交进去**（`A scripts/check-t3-ac.mjs` / `check-t4-cli-groups.mjs` / `run-tests-subset.mjs` / `spawn-inprocess.cjs` / `check-cli-group-e2e.ps1` / `probe/spawn-stdio-probe.mjs`）——正是本改动要消灭的那类污染，只是换了个位置（占该提交 32 文件中的 6 个）。
+  **修复**：布局四条路径全部改写为**完整限定路径** `logs/teamflow/<runId>/...`，并在段首加粗「Every path below is INSIDE logs/teamflow/<runId>/ — **never create scripts/ or probe/ at the project root**」；dev/qa/qaFix 三处 `[Log discipline]` 各自重申该禁令；资源表同步；L1 契约新增 `LOG-LAYOUT-SCOPED`（断言完整路径 + 项目根禁令，`exclude` 未限定的旧写法防回退），`LOG-LAYOUT-PER-PHASE` 加禁令锚点。附带修一处契约锚点 bug：`<runId>` 是工厂插值，断言须匹配渲染后的实际值（`logs/teamflow/[^/\s]+/scripts/`）。
+  **教训**：**给模型指路径必须给"完整限定路径"，不能给"通用昵称"**——`scripts/`、`probe/` 这类项目常用目录名会被按最宽松、最像"项目约定"的方式解析。这与「措辞不能当交付判据」同源：**歧义表述总是被往宽松处解释**。
+
 - 2026-09-11（补 17）：**日志布局收口——每用途一个文件，套件输出追加不新增变体（用户提问驱动：「src 才 50k，日志为啥一次任务 1M？」）**。
   **实测**（assetd `tf-mtwvwpxa-p3vw08`）：`logs/` **623.8 KB / 208 文件** vs `src/` 57.1 KB / 10 文件 = **11×**；其中**插件自己只写了 5.2 KB**（host run 日志），**618.6 KB 全是子代理产出**——所以这不是"日志级别开太细"，是 agent 的工作现场。三类构成：`.log` 99 个 342 KB（命令输出落盘 = prompt 强制用来省 token 的手段）、`.mjs`/`.cjs` **49 个 198 KB**（子代理**现写现用**的一次性校验脚本，最大那个 23.6 KB 是 QA 自写的独立黑盒验收脚本）、`.json` 52 个 69 KB（每次 CLI 调用一个载荷快照）。
   **真浪费点**：99 个 `.log` 里 **51 个是完整回归套件的输出**（`69/82 passed`、`82/82 passed`、`57/64 passed`…），合计 **267.5 KB = 全部 .log 的 78%**；单看一个任务（T5）就有 15 个文件（`t5-run` / `t5-run-nopipe` / `t5-tests` / `t5-tests2` / `t5-verify` / `t5-verify-nopipe` / `t5-verify-nopipe2` / `t5-spec` / `t5-spec2` …）。附带发现：**同一个沙箱绕行被各 agent 重新发明 6+ 次**（`spawn-fd-shim.cjs` / `qa-spawn-shim.cjs` / `qa-stdio-shim.cjs` / `nopipe-loader.mjs` / `nopipe-register.mjs` / `nopipe-spawn-shim.mjs`）——`logs/` 是 per-run 且不跨 run 复用，脚本本身无法传承。
