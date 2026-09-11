@@ -95,7 +95,7 @@ client/
 | 收口提交面 | 一个 run 一个 commit，面 = **代码 + 任务夹（`docs/teamflow/`）+ memory.md**；**`logs/teamflow/` 永不入提交**（插件自有运行日志与子代理临时脚本，prompts 已定性为非交付物）。两道防线：`sanity.tfAddArgs()` 的 git pathspec 强制排除（不依赖目标仓库配置）+ 提交前 `mergeGitignore` 幂等补写工作区 `.gitignore`。**禁止回退为裸 `git add -A`**——实锤 assetd `tf-mtwvwpxa-p3vw08`：一次提交 227 文件里 208 个（92%）是日志噪音。已污染的目标仓库用 `git rm -r --cached logs/teamflow` 移出 |
 | 重试/护栏 | withRetry 重试附诊断包（上次 outcome/summary/护栏原因/产出尾部）；退化（degenerated）与挂死/空转（stalled）不自动重试（needs-human 引导 resume）；护栏=进度信号非配额。**门序**：不可重试/外部中止/护栏中止 → 熔断预算门 → 自动重试——预算按新增口径且量级合理（≈两轮尝试）时「重试优先于熔断」，不得再让单次失败必然熔断。**通道/来源**：轻提醒走官方 `run.localAgent.inject()`；挂死判据用官方 `subagentTiming` 投影的 `active.through`（不可用才回退事件视图启发式；长工具静默仍由 agent 活动守卫豁免）；复读检测仍读事件（弃用读取器唯一剩余处，见 docs/TODO.md） |
 | prompt 约束分级 | prompt 内**禁止自称 hard constraint**（措辞硬与 enforcement 脱节→模型对 high-signal 词脱敏，实证 17 条 warn 零削减）；分级 `[HOST-ENFORCED]`（host 真实强制：单轨产物/验收结论行，必须描述真实后果）+ `[policy]`（自律 + guard warn/轻提醒） |
-| 验证证据块 | dev/qaFix 回复末尾强制 `[Verification evidence]` 块（命令+退出码+断言计数+失败行引用，或显式 N/A）→ host 提取存证 `stage.verifyEvidence`（stageDetail 可见，可与 logs/ 命令输出对照）；policy 级——缺失记 warn 不中断 |
+| 验证证据块 | dev/qaFix 回复末尾强制 `[Verification evidence]` 块（命令+退出码+断言计数+失败行引用，或显式 N/A）→ host 提取存证 `stage.verifyEvidence`（stageDetail 可见，可与 logs/ 命令输出对照）；policy 级——缺失记 warn 不中断。**日志布局（同 policy）**：`logs/teamflow/<runId>/` 下每用途一个文件——`regression-<phase>.log`（套件输出，重跑**追加**带时间戳段，禁 `-run2`/`-nopipe`/`-shim` 变体）/ `scripts/`（一次性校验脚本）/ `captures.json`（命令载荷汇总）/ `probe/`（探针）；实锤一次 run 51 份重复套件输出占日志 78% |
 
 ## 6. 变更记录（指针）
 

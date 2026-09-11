@@ -22,6 +22,15 @@
 
 ## 迭代变更流水（2026-08-19 起）
 
+- 2026-09-11（补 17）：**日志布局收口——每用途一个文件，套件输出追加不新增变体（用户提问驱动：「src 才 50k，日志为啥一次任务 1M？」）**。
+  **实测**（assetd `tf-mtwvwpxa-p3vw08`）：`logs/` **623.8 KB / 208 文件** vs `src/` 57.1 KB / 10 文件 = **11×**；其中**插件自己只写了 5.2 KB**（host run 日志），**618.6 KB 全是子代理产出**——所以这不是"日志级别开太细"，是 agent 的工作现场。三类构成：`.log` 99 个 342 KB（命令输出落盘 = prompt 强制用来省 token 的手段）、`.mjs`/`.cjs` **49 个 198 KB**（子代理**现写现用**的一次性校验脚本，最大那个 23.6 KB 是 QA 自写的独立黑盒验收脚本）、`.json` 52 个 69 KB（每次 CLI 调用一个载荷快照）。
+  **真浪费点**：99 个 `.log` 里 **51 个是完整回归套件的输出**（`69/82 passed`、`82/82 passed`、`57/64 passed`…），合计 **267.5 KB = 全部 .log 的 78%**；单看一个任务（T5）就有 15 个文件（`t5-run` / `t5-run-nopipe` / `t5-tests` / `t5-tests2` / `t5-verify` / `t5-verify-nopipe` / `t5-verify-nopipe2` / `t5-spec` / `t5-spec2` …）。附带发现：**同一个沙箱绕行被各 agent 重新发明 6+ 次**（`spawn-fd-shim.cjs` / `qa-spawn-shim.cjs` / `qa-stdio-shim.cjs` / `nopipe-loader.mjs` / `nopipe-register.mjs` / `nopipe-spawn-shim.mjs`）——`logs/` 是 per-run 且不跨 run 复用，脚本本身无法传承。
+  **为什么不做"清理"**：① 磁盘 0.6 MB/run 不是问题，真正贵的是**重跑套件的 token**（单任务新增 45–80k）；② 不该一验收就删——`[Verification evidence]` 块写「cmd → exit 0, 34/34」，其审计价值**恰恰依赖这些日志能对上**，删了等于拿可复核性换 0.6 MB；③ 不合并「每个 dev 任务各跑一遍回归」——那是质量要求（AGENTS 已判「测试任务合并」为假优化）。
+  **落地（prompt 层 · policy）**：① `TOKEN_HYGIENE` 新增 `[Log layout · policy]` 段（含实测代价，让模型知道违规的真实后果）：**每用途一个文件**——套件输出 → `regression-<phase>.log` 且**重跑时追加**带 `--- <timestamp> <task> ---` 表头的段（禁止 `-run2`/`-nopipe`/`-shim` 同名变体）、一次性校验脚本 → `scripts/`、命令载荷 → 合并进 `captures.json`、探针/草稿 → `probe/`；② AGENTS.md 资源表补布局约定；③ dev/qa/qaFix 三处 `[Log discipline]` **指向该布局**并各自点名文件（`regression-dev` / `regression-qa` / `regression-devfix`）。
+  **测试**：L1 prompt-contract 新增 2 条契约——`LOG-LAYOUT-REUSE`（四阶段共享锚点，含 `exclude: /qa-out\.log/` 防回退）+ `LOG-LAYOUT-PER-PHASE`（三处指向）；typecheck + 全套 11 文件测试通过。
+  **刻意未纳入**：README 不改（避免与工作区里未提交的补 14 文档改动纠缠）；host 侧不加"日志体量观测/告警"（属新功能，非本轮问题）。**代价诚实说明**：本改动是 policy 级——模型不遵守时无硬拦截，收益取决于遵守率；host 侧目前只有既有的 token 观测 warn。
+  **教训**：**「落盘省 token」和「落盘堆垃圾」是同一机制的两面**——落盘是给上下文减负的，但规则若只写"写到某目录"、不写"复用与归处"，模型每次都会开新文件；**可复核性要的是"少而稳"的文件集，不是"多而全"的倾倒场**。
+
 - 2026-09-11（补 16）：**收口提交面收窄——插件自有日志不再进提交（用户发现：「logs 没忽略的话，默认会把工程噪音全部提交上去」）**。
   **实证**（assetd 仓提交 `030f65c`）：一次收口提交 **227 个文件，其中 208 个（92%）是 `logs/teamflow/` 噪音**（100 `.log` + 52 `.json` + **44 个临时 `.mjs`** + 5 `.cjs` + 4 `.txt` + 2 `.out` + 1 `.patch`，合计 623.8 KB），真交付只有 19 个（9 `src/*.mjs` + 3 `tests/*.mjs` + README + 任务夹 6 件）。
   **根因（契约在 host 这侧破的）**：① prompts 用 `[Log discipline]`/`TOKEN_HYGIENE` **强制**子代理把命令输出与临时验证脚本写进 `logs/teamflow/<runId>/`，而 prompts 自己的资源表把它定性为「运行日志…**日常不读**」= 非交付物 → 这批文件是插件**必然生产且自称不该交付**的；② `pipeline.ts` 收口提交用**裸 `git add -A`**（注释原文「统一 add -A 必然全带」——本意治 r16 漏提交 QA-REPORT/ACCEPTANCE，代价是把工作区一切脏物卷进来）；③ 唯一屏障是目标仓库自己的 `.gitignore`，而 README 只宣传「日志收口到 logs/teamflow/」，**从没说要忽略它，host 也从没检查/写入**。反讽：T11 的交付报告写着「docs/ and logs/ remain untracked as required」——交付前完全属实，是 host 在最后一刻扫进去的，**子代理的 git 纪律没有任何问题**。

@@ -59,7 +59,7 @@ export const AGENTS_TEMPLATE = `# AGENTS.md — 团队协作守则与文档索�
 | 任务产物 | ${TF_DOCS}/<yyyyMMdd-rN-slug>/ | 每个需求一个自包含任务夹：PRD/设计/技术方案/QA 报告/验收报告（按日期倒序即迭代史） |
 | 架构总览 | ${TF_DOCS}/architecture/ARCHITECTURE.md | 工程方案与脚手架说明（产品级长期文档） |
 | 产品记忆 | ${TF_DOCS}/memory.md | 团队约定/技术栈/已知待办（低频更新） |
-| 运行日志 | logs/teamflow/<runId>/ | TeamFlow 流水线各阶段命令日志（日常不读） |
+| 运行日志 | logs/teamflow/<runId>/ | TeamFlow 流水线各阶段命令日志（日常不读）；**布局约定**：regression-<phase>.log（套件输出，重跑追加）/ scripts/（一次性校验脚本）/ captures.json（命令载荷汇总）/ probe/（探针）——每用途一个文件，不新增同名变体 |
 
 ## 3. 团队角色与标准流程
 
@@ -146,6 +146,12 @@ export const TOKEN_HYGIENE = (runId) => `[TOKEN HYGIENE · policy] Context is ex
 - [Batch fixes] When verification fails: read ALL failing cases at once → fix them ALL in one edit → run verification once more. Never "fix one → run → fix one → run". At most 3 fix-verify rounds; beyond that, output a diagnostic summary and stop.
 - Never whole-file read a file over 200 lines (use grep + limit segments for the rest); whole-file read targets ≤2 files; everything else: grep + limited segments.
 - Redirect command output to a file (under logs/teamflow/${runId || '<runId>'}/) and read the tail summary; never echo hundreds of lines inline.
+- [Log layout · policy] Reuse one file per purpose — never multiply variants of the same run. Observed cost of ignoring this: one run left 51 full-suite dumps (78% of all log bytes) and 49 one-off scripts loose in the run root, while the real deliverable was 19 files.
+  - Full suite output → regression-<phase>.log, APPENDED on re-run with a "--- <timestamp> <task> ---" header (no -run2 / -nopipe / -shim variants of the same run).
+  - Your own one-off checkers → scripts/ (name each for what it checks).
+  - Captured command payloads → merge into captures.json, not one file per invocation.
+  - Probes / scratch → probe/.
+  - Anything else scattered in the run root is noise that the next agent — and the human auditing your [Verification evidence] — has to wade through.
 - Keep reports/summaries tight (QA ≤150 lines, acceptance ≤80 lines, dev ≤40 lines); put details in files.
 - AGENTS.md and the memory index are already injected above — no call needed to read them in full; grep keywords if you need a particular rule.
 - The contract/AC for this iteration is in the context/handoff below or in this task folder's PRD: do NOT whole-file re-read PRD.md / DESIGN.md / TECHNICAL.md from the task folder; grep/read only the code you need.
@@ -277,7 +283,7 @@ ${clip(tech, 12000)}`
 4. Actually write/modify code (grep + segmented reads to locate; no repeated whole-file reads), then run relevant build/verification to ensure green.
 5. [Engineering action execution] If task spec or PRD 工程约束 includes git actions (e.g. new branch): **execute the action BEFORE writing code** (e.g. git checkout -b <branch>); if the workspace carries unrelated uncommitted changes, do NOT commit/clean them — state the situation in the summary.
 5b. [Git discipline · policy (ADR-2026-08-27, 统一收口提交)] Work ONLY on the current branch: **never** git checkout main / merge / rebase / delete-branch / commit — main-branch actions and the final commit are performed by the host after acceptance (one commit per run: code + task-folder docs together). Just write/modify files; leave everything uncommitted. If a task asks for "merge back to main" or "commit", treat it as "prepare the delivery" (files ready + summary of what was done), do NOT commit or merge.
-6. [Log discipline] Redirect command output to logs/teamflow/${runId || '<runId>'}/.
+6. [Log discipline] Redirect command output to logs/teamflow/${runId || '<runId>'}/ following the log layout above (suite output → regression-dev.log, appended on re-run; your checkers → scripts/ ; payloads → captures.json) — one file per purpose, no -run2/-nopipe/-shim variants.
 7. Output an implementation summary (≤40 lines): changed files, key implementation points, leftovers. No big code pastes.
 7b. [Verification evidence · policy] **Mandatory block at the end of the reply (before the state block)** — host stores it verbatim for audit, cross-checkable against your command output in logs/teamflow/${runId || '<runId>'}/; missing block = contract not honored (warn only, never interrupts):
 [Verification evidence]
@@ -316,7 +322,7 @@ ${clip(devSummary, 15000)}
    - Always-available sandbox-legal paths: build/assembly checks, unit tests, DOM-level E2E (jsdom or equivalent), static audit, adversarial spot-checks.
 2. [人工补测清单] Items that cannot be auto-verified (audio output / real-device: 100dvh dynamic toolbar, safe-area, multi-touch / FPS performance / screen-reader): do NOT fail them — instead list each in the report's「人工补测清单」section (acceptance criteria + method + tool), note「环境限制，非交付缺陷」, for human review.
 3. Read AGENTS.md §4 engineering conventions (verify commands) and the code changes first, then actually run those sandbox-legal verifications.
-4. [Log discipline] Redirect command output to logs/teamflow/${runId || '<runId>'}/ (e.g. qa-out.log); no scatter at project root.
+4. [Log discipline] Redirect command output to logs/teamflow/${runId || '<runId>'}/ following the log layout above (suite output → regression-qa.log, appended on re-run; independent checkers → scripts/ ; payloads → captures.json); no scatter at project root.
 5. [Reply = brief summary only · HOST-ENFORCED] Output a short reply (≤12 lines, Chinese): verdict one-liner (whether acceptance-ready) + the QA report path docs/teamflow/.../QA-REPORT.md. **Do NOT repeat the report body in the reply** — the host imports QA-REPORT.md as the single source of truth; missing file = hard failure (needs-human, pipeline stops).
 6. [Defect format · HOST-ENFORCED] Report found defects as the structured table below (for direct import by the defect tracker) — the table must be in QA-REPORT.md:
    | 编号 | 严重级(P0/P1/P2/P3) | 功能模块 | 复现步骤 | 期望行为 | 实际行为 | 关联验收项 |
@@ -339,7 +345,7 @@ ${(tech && String(tech).trim()) ? clip(tech, 12000) : ''}
 1. [Confirm first, then fix] For each defect, verify one by one whether it truly holds (read code / reproduce / compare actual vs expected):
    — confirmed → fix it directly; QA false positive / contradicts reality → state evidence explicit in the summary (no fabricated changes, and no ignoring real defects either).
 2. Touch ONLY defect-related files (grep to locate; no whole-file reads of irrelevant big files); respect existing architecture & code style.
-3. After fixing, run relevant verification to ensure green (regression floor: existing verify suites pass untouched); redirect output to logs/teamflow/${runId || '<runId>'}/.
+3. After fixing, run relevant verification to ensure green (regression floor: existing verify suites pass untouched); redirect output to logs/teamflow/${runId || '<runId>'}/ following the log layout above (suite output → regression-devfix.log, appended on re-run — no -run2 variants).
 4. Output a fix summary (≤40 lines, Chinese): per defect —「truth judgment + fix」or「false-positive evidence」, changed files, leftovers. No big code pastes.
 4b. [Verification evidence · policy] **Mandatory block at the end of the reply (before the state block)** — host stores it verbatim for audit, cross-checkable against your command output in logs/teamflow/${runId || '<runId>'}/; missing block = contract not honored (warn only, never interrupts):
 [Verification evidence]
