@@ -23,8 +23,8 @@ import { fileAddressFor } from '@deepseek-ai/dsh-util-workspace-path'
 import type {
   Journal, BacklogItem, PipelineOptions, ResumeContext, SubagentRunLike, ParentAgentLike, UsageBuckets,
 } from './types.ts'
-import { RETRY_LIMIT, STAGE_TOKEN_BUDGET, STATUS, PHASE_ORDER, PHASE_KEY_OF, PHASE_KEY_BY_NAME, phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER } from './constants.ts'
-import { toText, clip, extractText, normalizeRoot, normalizeTasks, sanitizeSnapOptions, normalizeSignal, hasSubstance, isUnretryable, handoffBrief } from './util.ts'
+import { RETRY_LIMIT, STATUS, PHASE_ORDER, PHASE_KEY_OF, PHASE_KEY_BY_NAME, phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER } from './constants.ts'
+import { toText, clip, extractText, normalizeRoot, normalizeTasks, sanitizeSnapOptions, normalizeSignal, isUnretryable, handoffBrief } from './util.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, devPrompt, qaPrompt, acceptancePrompt } from './prompts/index.ts'
 import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, setSessionProjections, workspaceScopeOf } from './core/context.ts'
 import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/backlog.ts'

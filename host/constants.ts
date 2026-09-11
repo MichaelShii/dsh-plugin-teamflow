@@ -6,8 +6,20 @@
 export const RETRY_LIMIT = 2
 /** QA→开发→复验 打回闭环的最大轮数（QA 发现缺陷 → 打回开发修复 → 复验；超过则需人工介入，防无限循环）。 */
 export const QA_REWORK_LIMIT = 2
-/** 单阶段 token 熔断预算（官方口径总消耗：input+cacheRead+cacheWrite+output 累计）。 */
-export const STAGE_TOKEN_BUDGET = 60000
+/**
+ * 单次 withRetry 调用的**新增** token 熔断预算（2026-09-11 口径修正）。
+ *
+ * 口径 = `freshTokensOf`（input + cacheWrite + output），**排除 cacheRead**：
+ * 缓存命中是上下文复用的廉价重放，把它计入「烧钱」会得出荒谬结论——实锤 assetd
+ * tf-mtwvwpxa-p3vw08 的 T5：熔断日志报「累计 token 1886k 超出阶段预算 60k」，
+ * 而其中 1830k 是 cacheRead，真实新增只有 55k。旧口径的后果不是数字难看，而是
+ * **任何 dev 任务只要失败一次就必然熔断**（正常 dev 单次新增实测 45–80k，而缓存命中
+ * 恒在 1M 量级）→ RETRY_LIMIT=2 形同虚设，一次失败直接转人工停线。
+ *
+ * 量级依据（实测单次尝试新增 token）：T5 55.4k / T8 49.3k / T9 79.6k / T11 45.9k
+ * → 200k ≈ 允许 RETRY_LIMIT 的两轮尝试各留余量，只在该量级的 3 倍以上（真跑飞）才熔断。
+ */
+export const FRESH_TOKEN_BUDGET = 200000
 /** 任务夹产物展示顺序（ADR-0008）：工作台只列其中**真实存在**的文件，按此顺序出「一键右侧栏预览」按钮。 */
 export const TEAMFLOW_ARTIFACT_ORDER = ['PRD.md', 'DESIGN.md', 'TECHNICAL.md', 'QA-REPORT.md', 'ACCEPTANCE.md', 'meta.json']
 
@@ -33,8 +45,23 @@ export const GUARD_WINDOW_SIZE = 400
 export const GUARD_SILENCE_MS = 10 * 60_000
 /** 空转判定：会话仍在产出事件但连续这么久没有任何工具调用（纯推理打转/改写式循环）→ stalled。要求已见过至少一次工具调用。 */
 export const GUARD_NO_TOOL_MS = 15 * 60_000
-/** 假阳性完成检测：明确拒绝/放弃模式的输出视为未产出。 */
+/**
+ * 拒绝/放弃措辞词表（诊断信号 + 兜底判据，**不再是唯一的交付门禁**）。
+ *
+ * 2026-09-11 信号换轨：旧实现把它当交付门禁全文扫描，实锤 assetd tf-mtwvwpxa-p3vw08 的 T5
+ * ——子代理 `stopReason=completed`、41 次工具调用、证据块与 state 块齐全、代码已落盘，
+ * 只因**如实汇报环境限制**（「7 条 runCli 用例与 spec/verify.mjs 全部 26 例无法执行」）
+ * 命中「无法执行」→ 判 insubstantial「视为未交付」→ 提测门禁停线 + 人工 resume。
+ * 模型汇报环境限制是本分，不是拒绝——措辞不能当交付判据。
+ * 现用法见 `judgeDeliverable`：仅在**无验证证据块**时才作为否决依据；命中即回传供留痕。
+ */
 export const REFUSAL_PATTERN = /(无法完成|不能完成|无法继续|抱歉|对不起|我(无法|不能)|无法执行|cannot complete|unable to)/i
+/**
+ * 真交付信号（结构件，非措辞）：prompt 强制的 `[Verification evidence]` 块——「命令 + 退出码 +
+ * 断言计数」的具体自述。拒绝/放弃类产出给不出具体命令细节，故它出现即判交付，与措辞无关。
+ * 这是「防假完成（光说不做）」的客观判据，取代此前对散文措辞的依赖。
+ */
+export const DELIVERY_EVIDENCE_PATTERN = /\[Verification evidence\]/i
 /** 各阶段最小产出长度（防"假完成"：空话/一句话冒充交付）。 */
 export const STAGE_MIN_LENGTH = { prd: 400, design: 250, scaffold: 250, arch: 250, tech: 350, dev: 60, qa: 250, acceptance: 150 }
 /** backlog 状态机（需求/任务/缺陷）。 */

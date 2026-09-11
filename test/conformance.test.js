@@ -13,7 +13,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { parseAcceptanceVerdict, extractVerificationEvidence, extractBlueprint } from '../host/util.ts'
+import { parseAcceptanceVerdict, extractVerificationEvidence, extractBlueprint, judgeDeliverable } from '../host/util.ts'
 import { parseDefects } from '../host/core/backlog.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -29,13 +29,14 @@ const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
 let failed = 0
 const fail = (msg) => { console.error(`    ✗ ${msg}`); failed++ }
 
-/** 解析器分发（manifest.parsers 声明的真实宿主解析器）。 */
-function runParser(parser, text) {
+/** 解析器分发（manifest.parsers 声明的真实宿主解析器；`meta` = manifest 条目，供阶段相关解析器取 phase）。 */
+function runParser(parser, text, meta) {
   switch (parser) {
     case 'parseDefects': return parseDefects(text)
     case 'parseAcceptanceVerdict': return parseAcceptanceVerdict(text)
     case 'extractVerificationEvidence': return extractVerificationEvidence(text)
     case 'extractBlueprint': return extractBlueprint(text)
+    case 'judgeDeliverable': return judgeDeliverable((meta && meta.phase) || 'dev', text)
     default: throw new Error(`未知 parser: ${parser}`)
   }
 }
@@ -79,6 +80,16 @@ function matches(parser, actual, expect, caseId) {
     problems.forEach((p) => fail(`${caseId} ${p}`))
     return problems.length === 0
   }
+  if (parser === 'judgeDeliverable') {
+    const problems = []
+    if (typeof expect.ok === 'boolean' && actual.ok !== expect.ok) problems.push(`期望 ok=${expect.ok}，实得 ${actual.ok}`)
+    if (typeof expect.reason === 'string' && actual.reason !== expect.reason) problems.push(`期望 reason=${expect.reason}，实得 ${actual.reason}`)
+    if (typeof expect.refusalPhrase === 'string' && (!actual.refusal || actual.refusal.phrase !== expect.refusalPhrase)) {
+      problems.push(`期望命中措辞「${expect.refusalPhrase}」，实得 ${actual.refusal ? actual.refusal.phrase : 'null'}`)
+    }
+    problems.forEach((p) => fail(`${caseId} ${p}`))
+    return problems.length === 0
+  }
   fail(`${caseId} 未知 parser 语义: ${parser}`)
   return false
 }
@@ -92,7 +103,7 @@ for (const c of manifest.cases) {
   const text = readFileSync(file, 'utf8')
   let actual
   try {
-    actual = runParser(c.parser, text)
+    actual = runParser(c.parser, text, c)
   } catch (e) {
     fail(`${c.id} 解析器执行异常: ${e && e.message}`)
     continue
