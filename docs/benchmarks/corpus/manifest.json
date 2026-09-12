@@ -5,7 +5,8 @@
     "parseDefects": "host/core/backlog.ts（QA 缺陷表 → 结构化缺陷；容忍 **P1** 加粗、跳过表头/OBS）",
     "parseAcceptanceVerdict": "host/util.ts（验收报告 → accepted/rework/reject/needs-human）",
     "extractVerificationEvidence": "host/util.ts（dev/qaFix 回复 → 证据块原文或 null）",
-    "extractBlueprint": "host/util.ts（tech/architect 产出 → 架构蓝图对象或 null；含畸形 JSON 抢救）"
+    "extractBlueprint": "host/util.ts（tech/architect 产出 → 架构蓝图对象或 null；含畸形 JSON 抢救）",
+    "judgeDeliverable": "host/util.ts（阶段产出 → 交付判定 {ok,reason,refusal}；信号分级=客观形态→证据块→措辞兜底）"
   },
   "cases": [
     {
@@ -80,6 +81,20 @@
       "parser": "extractBlueprint",
       "note": "畸形蓝图 JSON（duplications 后提前闭合，tf-mt85o5jj）→ 抢救解析出 2 任务",
       "expect": { "nonNull": true, "taskCount": 2, "summaryContains": "persist.js" }
+    },
+    {
+      "id": "dev-delivery-env-limitation",
+      "file": "dev-reply-env-limitation.md",
+      "parser": "judgeDeliverable",
+      "note": "假阳性回归（assetd tf-mtwvwpxa-p3vw08 的 T5）：如实汇报「无法执行」的环境限制 + 证据块齐全 → 仍判交付；命中措辞回传留痕",
+      "expect": { "ok": true, "reason": "ok", "refusalPhrase": "无法执行" }
+    },
+    {
+      "id": "dev-delivery-bare-refusal",
+      "file": "dev-reply-refusal-bare.md",
+      "parser": "judgeDeliverable",
+      "note": "兜底未被削弱：无证据块 + 拒绝措辞（且只有 state 块）→ 判未交付 reason=refusal",
+      "expect": { "ok": false, "reason": "refusal" }
     }
   ]
 }

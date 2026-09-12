@@ -18,7 +18,7 @@ const ok = (cond, msg) => {
 const assert = (cond, msg) => { if (!cond) { throw new Error(`assert failed: ${msg}`) } }
 
 console.log('── 1) descriptors 校验（typert validateInvocation 规则）──')
-assert(Array.isArray(TEAMFLOW_DESCRIPTORS) && TEAMFLOW_DESCRIPTORS.length === 17, '应有 17 个 Remote 描述符')
+assert(Array.isArray(TEAMFLOW_DESCRIPTORS) && TEAMFLOW_DESCRIPTORS.length === 22, '应有 22 个 Remote 描述符')
 const endpoints = new Set()
 const ids = new Set()
 for (const d of TEAMFLOW_DESCRIPTORS) {
@@ -47,6 +47,8 @@ ok(true, `${TEAMFLOW_DESCRIPTORS.length} 个描述符全部通过规则校验`)
 console.log('── 2) client 模块结构 ──')
 const here = dirname(fileURLToPath(import.meta.url))
 const clientSrc = readFileSync(join(here, '../client/index.tsx'), 'utf8')
+const panelSrc = readFileSync(join(here, '../client/panel.tsx'), 'utf8')
+const sharedSrc = readFileSync(join(here, '../client/shared.tsx'), 'utf8')
 ok(/export const inject = \['remote', 'slots', 'sessions', 'locale'\]/.test(clientSrc), '导出 inject（remote/slots/sessions/locale）')
 ok(/export async function apply/.test(clientSrc), '导出 async apply')
 ok(/ctx\.remote\.\$mount\(TEAMFLOW_REMOTE_CONTRIBUTION\)/.test(clientSrc), 'apply 中 $mount Remote 贡献')
@@ -54,20 +56,73 @@ ok(/conversation\.view/.test(clientSrc), '注册 conversation.view tab')
 ok(/conversation\.view'[\s\S]*id: 'teamflow'/.test(clientSrc), 'tab id=teamflow')
 ok(/onDrop/.test(clientSrc) && /draggable/.test(clientSrc), '看板包含拖拽（onDrop/draggable）')
 
+console.log('── 2b) 全局面板 + 右栏 run tab（v0.1.8 ①）──')
+ok(/slots\.inject\('sidebar\.panellist'/.test(clientSrc) && /slots\.inject\('main'/.test(clientSrc), '注册 sidebar.panellist + main（全局面板两处）')
+ok(/name: 'sidebar\.panellist',\s*\n\s*id: 'teamflow'[\s\S]*key: 'teamflow'/.test(clientSrc), 'panellist id 与 main key 同值 teamflow（宿主 selectPanel 对未注册 key 抛错）')
+ok(/export function GlobalPanel/.test(panelSrc) && /export function TeamflowPanelIcon/.test(panelSrc), 'panel.tsx：面板组件 + 侧边栏图标（owner props {size,active}）')
+ok(/sidebarRightTabs/.test(clientSrc) && /slots\.inject\('sidebar\.right\.pane\.tab'/.test(clientSrc), '右栏 run tab：类型进 sidebarRightTabs + 正文进 keyed seat')
+ok(/RUN_TAB_PATTERN = 'dsh-resource:\/\/teamflow\/run\/\*\*'/.test(panelSrc), 'run tab 认领 dsh-resource://teamflow/run/** 地址')
+ok(/export function parseRunAddress/.test(panelSrc) && /productRunDetail/.test(panelSrc) && /productStageDetail/.test(panelSrc), 'panel.tsx：解析 host 地址 + 按产品线取 run/阶段详情')
+ok(/export function productApi/.test(panelSrc) && /productItemDetail/.test(panelSrc), 'panel.tsx：产品线 API 适配（backlog 条目详情走 productItemDetail）')
+// 密度控制（v0.1.8 ①）：左右分栏各滚各的 + run/终态卡片默认折叠（进行中与需人工无条件显示）
+ok(/const RUN_PREVIEW = 8/.test(panelSrc) && /runsExpanded/.test(panelSrc) && /pinnedActive/.test(panelSrc), 'panel：run 列表默认折叠到 8 条 + 进行中置顶（不被折叠）')
+ok(/const TERMINAL_STATUSES = \['accepted', 'closed', 'verified', 'cancelled'\]/.test(panelSrc) && /showDone/.test(panelSrc) && /!it\.humanIntervention/.test(panelSrc), 'panel：backlog 终态卡片默认收起、需人工项始终展开')
+ok(/panelTab === 'run'/.test(panelSrc) && /setPanelTab/.test(panelSrc) && /panelTabBtn/.test(panelSrc), 'panel：主区标签页（run | backlog 一次只显示一个列表，第三版布局）')
+ok(!/auto-fit, minmax\(300px/.test(panelSrc) && !/flexWrap: 'wrap', gap: 12/.test(panelSrc), 'panel：不再用多栏 grid auto-fit/flex-wrap 自适应（超载布局，已由标签页取代；backlog 卡片的 auto-fill 网格保留）')
+ok(/position: 'absolute', top: 8, right: 12, bottom: 8, width: 440, zIndex: 9/.test(panelSrc), 'panel：详情为覆盖式浮层（绝对定位，不挤压列表）')
+// 详情单一事实源：曾经 detail + inlineRun 两个 state 共用一个浮层 → 关一次只清一个，浮层立刻变回另一个（「两个面板、关两次」）
+ok(!/inlineRun/.test(panelSrc) && /const closeDetail = \(\) => setDetail\(null\)/.test(panelSrc) && /const detailOpen = !!detail\b/.test(panelSrc), 'panel：详情只有一个状态源（detail），关闭即全部关闭')
+// 全局面板的右栏入口必须"跳到资源所属会话"而不是"用户当前所在会话"（右侧栏是会话级的）
+ok(/goOwnerSessionAndOpen/.test(panelSrc) && /sessions\.open\(ownerSession\)/.test(panelSrc) && /nowCurrent === ownerSession/.test(panelSrc), 'panel：全局面板开右栏先 sessions.open(ownerSession)，等会话真的切过去再打开')
+// 同值点击产品线：曾经把 view 清空但 current 未变 → 依赖数组不变 → 永远卡在「读取产品线数据中…」（用户实测）
+ok(/viewTick/.test(panelSrc) && /const selectProduct = \(k\) =>/.test(panelSrc) && /s\.current === k \? s\.view : null/.test(panelSrc), 'panel：同值点击产品线 = 刷新（viewTick 重载 + 保留视图，不卡「读取中」）')
+ok(/loadingKey/.test(panelSrc), 'panel：选中但视图未就绪时卡片显示「读取中…」（消除"选中态 vs 加载中"的误导）')
+// 状态徽章可点筛选（多选）：backlog 每组独立 + run 标签同款；筛选优先于终态折叠；切产品线/清空都重置
+ok(/const filterChip = /.test(panelSrc) && /const toggleRunStatus = /.test(panelSrc) && /const \[runFilter, setRunFilter\]/.test(panelSrc), 'panel：状态徽章可点筛选（多选 toggle）')
+ok(/const \[filters, setFilters\] = React\.useState\(\{\}\)/.test(panelSrc) && /筛选优先于折叠/.test(panelSrc) && /setShowDone\(\{\}\); setFilters\(\{\}\) \}, \[productKey\]/.test(panelSrc), 'panel：backlog 每组独立筛选 + 筛选优先于折叠 + 切产品线重置')
+ok(/筛选中 \$\{sel\.length\} 项/.test(panelSrc) && /筛选中 \$\{runSel\.length\} 项/.test(panelSrc) && /× 清除/.test(panelSrc), 'panel：筛选状态可见 + ×清除（两个标签页一致）')
+ok(/currentSessionId/.test(panelSrc) && /useSessions/.test(panelSrc), '全局面板用 useSessions 取当前会话（默认选中当前产品线）')
+ok(/export const T =/.test(sharedSrc) && /export function FoldableText/.test(sharedSrc) && /export function stageUsageLine/.test(sharedSrc), 'shared.tsx：会话内/全局共用展示层（主题/词表/格式化）')
+ok(/openResourceSafe/.test(clientSrc) && /return true/.test(clientSrc) && /return false/.test(clientSrc), 'client：右侧栏打开返回布尔（供全局面板判定是否降级内联）')
+ok(/openResourceSafe = \(address: string, label: string, quiet\?: boolean\)/.test(clientSrc) && /if \(!quiet\) console\.warn/.test(clientSrc), 'client：重试期间静默（quiet）——由调用方给可见提示')
+ok(/openInConversationRightbar/.test(panelSrc) && /selectPanel\(null\)/.test(panelSrc) && /tries < 12/.test(panelSrc), 'panel：全局面板开右栏先切回对话 + 小步重试（宿主 RightbarRoot 只在对话视图渲染会话 seat，实测 tf-mtvrsakj-l2vj5u）')
+ok(/去发起会话/.test(panelSrc) && /setHint/.test(panelSrc) && /知道了/.test(panelSrc), 'panel：入口文案与失败提示都可见（不静默失败）')
+ok(/props\.useTabInfo/.test(panelSrc) && /tab\.navigation && tab\.navigation\.address/.test(panelSrc), 'panel：右栏 tab 读地址用宿主绑定的 useTabInfo（hooks.tabInfo → useTabInfo；写成 tabInfo 会恒 undefined、卡在「读取中」）')
+ok(/activeRun\.address/.test(clientSrc), 'client：会话内工作台用 host 生成的 run 地址开右栏')
+// 高度契约：宿主 conversation.view 容器（.viewArea）是 flex:1/min-height:0 且**不滚动**，
+// 插件根容器必须 height:100%+overflow:hidden、内容区 flex:1 内部滚动，否则内容顶出可视区 → 外层页面多一条滚动条
+ok(/height: '100%', minHeight: 0, overflow: 'hidden'/.test(clientSrc), 'client：工作台根容器填满可用高度')
+ok(/flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column'/.test(clientSrc), 'client：内容区 flex:1 内部滚动')
+// 看板列：限高 + 列内滚动（卡片多了不拉长整列），且列头与分组标题吸附（滚动时仍知道自己在哪列/哪组）
+ok(/maxHeight: 340, overflowY: 'auto'/.test(clientSrc), 'client：看板列限高 + 列内滚动（用户选定行为）')
+ok((clientSrc.match(/position: 'sticky', top: 0/g) || []).length >= 2, 'client：分组标题 + 列头吸附（sticky）')
+ok(!/72vh/.test(clientSrc), 'client：不再用 72vh 限高（与宿主剩余高度无关，会溢出）')
+// 窄列防溢出：卡片必须能收缩（min-width:0/box-sizing/max-width:100%），等宽数字行允许任意处换行
+ok(/boxSizing: 'border-box', minWidth: 0, maxWidth: '100%', overflow: 'hidden'/.test(clientSrc), 'client：看板卡片可收缩（窄列不被超宽内容顶破）')
+ok(/overflowWrap: 'anywhere'/.test(clientSrc) && /overflowWrap: 'anywhere'/.test(panelSrc), 'client/panel：按角色 token 等宽数字行允许任意处换行')
+ok(!/maxWidth: 130/.test(clientSrc), 'client：不再用固定 maxWidth:130 限制卡片内文本（改为 100%/flex 收缩）')
+ok(!/unwrap\(await api\./.test(panelSrc), 'panel：productApi 适配器已解包——禁止二次 unwrap（历史 bug：把载荷当信封 → 「未知错误」）')
+// 组件（含 hook 如 FoldableText 的 useState）必须经 h() 渲染（或作为 slot 注册的组件实参）：
+// 直接 FoldableText({...}) 会把 hook 挂到父组件，条件渲染时 hook 数变化 → React #310，整个 slot 崩
+for (const comp of ['FoldableText', 'ProductRail', 'RunList', 'BacklogGroups', 'BacklogCard', 'ItemDetailPane', 'RunDetailPane', 'RunDetailTab', 'GlobalPanel']) {
+  ok(new RegExp(`h\\(${comp}[,)]|,\\s*${comp}\\)`).test(panelSrc + clientSrc), `${comp} 经 h()/slot 注册渲染（非直接函数调用）`)
+}
+
 console.log('── 3) host 模块结构 ──')
 const hostSrc = [
   readFileSync(join(here, '../host/index.ts'), 'utf8'),
   readFileSync(join(here, '../host/util.ts'), 'utf8'),
   readFileSync(join(here, '../host/constants.ts'), 'utf8'),
   readFileSync(join(here, '../host/prompts/index.ts'), 'utf8'),
-  ...['context', 'backlog', 'metering', 'runner', 'guard', 'report', 'pipeline', 'teams', 'state'].map((f) => readFileSync(join(here, `../host/core/${f}.ts`), 'utf8')),
+  ...['context', 'backlog', 'metering', 'runner', 'guard', 'report', 'pipeline', 'teams', 'state', 'products'].map((f) => readFileSync(join(here, `../host/core/${f}.ts`), 'utf8')),
 ].join('\n//#region host-pool\n')
 const utilSrc = readFileSync(join(here, '../host/util.ts'), 'utf8')
 const constantsSrc = readFileSync(join(here, '../host/constants.ts'), 'utf8')
+ok(/ownerSession: j\.ownerSession \|\| null/.test(hostSrc), 'host：run 快照/摘要携带 ownerSession（全局面板据此跳到发起会话）')
 ok(/class TeamflowService extends TypertRemoteService/.test(hostSrc), 'TeamflowService extends TypertRemoteService')
 ok(/static inject = \['agents', 'subagents', 'typert', 'tools', 'llm'\]/.test(hostSrc), 'static inject 完整（tokenMeter 死注入已清理）')
 ok(/ctx\.typert\.register\(\{[\s\S]*invocations: TEAMFLOW_DESCRIPTORS/.test(hostSrc), 'typert.register 注册 strict descriptors')
-for (const m of ['ping', 'list', 'snapshot', 'start', 'cancel', 'backlog', 'backlogUpdate', 'assign', 'pause', 'resumeSession', 'listTeams', 'selectTeam', 'getActiveTeam', 'clearTeam', 'resume', 'stageDetail', 'itemDetail']) {
+for (const m of ['ping', 'list', 'snapshot', 'start', 'cancel', 'backlog', 'backlogUpdate', 'assign', 'pause', 'resumeSession', 'listTeams', 'selectTeam', 'getActiveTeam', 'clearTeam', 'resume', 'stageDetail', 'itemDetail', 'products', 'productView', 'productRunDetail', 'productStageDetail', 'productItemDetail']) {
   ok(new RegExp(`\\n  ${m}\\(`).test(hostSrc), `Remote 方法 ${m}()`)
 }
 ok(/export default TeamflowService/.test(hostSrc), '默认导出 TeamflowService')
@@ -96,8 +151,9 @@ ok(/teamflow_resume/.test(hostSrc), '汇报文本引导断点重跑')
 
 console.log('── 3d) 防恶心人加固（v0.6.0）──')
 ok(/parameterSchemaSpecToJsonSchema/.test(hostSrc), '工具 parameters 经 schema 编译（wire 带 type: object）')
-ok(/function hasSubstance/.test(utilSrc) && /REFUSAL_PATTERN/.test(constantsSrc), '假阳性检测（拒绝词 + 长度下限）')
-ok(/STAGE_TOKEN_BUDGET = 60000/.test(constantsSrc), '阶段 token 熔断预算 60k')
+ok(/function judgeDeliverable/.test(utilSrc) && /REFUSAL_PATTERN/.test(constantsSrc) && /DELIVERY_EVIDENCE_PATTERN/.test(constantsSrc), '交付判定信号分级（客观形态 → 证据块 → 措辞兜底）')
+ok(/reason: 'refusal'/.test(utilSrc) && /if \(DELIVERY_EVIDENCE_PATTERN\.test\(s\)\) return \{ ok: true/.test(utilSrc), '措辞退为兜底：命中拒绝词但带证据块仍判交付（assetd T5 假阳性 root cause）')
+ok(/FRESH_TOKEN_BUDGET = 200000/.test(constantsSrc), '熔断预算=新增 token 200k（口径排除 cacheRead 重放）')
 ok(/function isUnretryable/.test(utilSrc), 'context-limit 类失败不重试')
 ok(/activeProducts/.test(hostSrc) && /已有流水线/.test(hostSrc), '产品级并发限制（防 req 状态互踩）')
 ok(/summarizeTimeline\(/.test(hostSrc) && !/delete s\.output/.test(hostSrc), '终态 checkpoint 不再删 stage.output —— 保留全文供 detail 抽屉/断点续跑读取')
@@ -196,7 +252,7 @@ ok(!/SUMMARY\.md/.test(promptsSrc), 'prompts：SUMMARY.md 已废除（索引由 
 console.log('── 3j) 重试诊断包（盲试 → 带因重试）+ stalled 不再自动重试 ──')
 ok(/export function buildRetryDiagnostic/.test(utilSrc) && /export function refusalHit/.test(utilSrc), 'util：重试诊断纯函数 + 拒绝词命中点（短语+原文上下文）')
 ok(/promptNow = attempt > 1 && \w+Stage \? prompt \+ buildRetryDiagnostic/.test(hostSrc), 'runner：重试 prompt 附诊断块（上次 outcome/summary/护栏原因/产出尾部）')
-ok(/命中拒绝词「/.test(hostSrc) && /内容过短（\$\{text\.trim\(\).length\} 字符/.test(hostSrc), 'runner：insubstantial 细分（拒绝词命中点 vs 长度不足），失败产出截断落盘 stage.output')
+ok(/无验证证据块且命中拒绝词「/.test(hostSrc) && /内容过短（\$\{verdict\.length\} 字符/.test(hostSrc), 'runner：insubstantial 细分（无证据块+拒绝词 vs 长度不足），失败产出截断落盘 stage.output')
 ok(/outcome === 'stalled'\) \{[\s\S]*不再自动重试/.test(hostSrc), 'runner：挂死/空转（stalled）不再自动重试（对齐 guard 注释语义，needs-human 引导 resume）')
 
 console.log('── 3k) 输出单轨制（文件即产物：QA/验收 host 只读文件，回复仅摘要）──')
@@ -228,7 +284,8 @@ console.log('── 3n) dev/qaFix 验证证据块（单方宣称 → 可审计�
 ok(/Verification evidence · policy/.test(promptsSrc) && /\[Verification evidence\]/.test(promptsSrc), 'prompts：dev/qaFix 强制验证证据块（policy 级：命令+退出码+断言计数+失败行引用，或显式 N/A）')
 ok(/cross-checkable against your command output in logs\/teamflow/.test(promptsSrc), 'prompts：证据块与命令输出日志对照（审计轨迹，伪造可发现）')
 ok(/export function extractVerificationEvidence/.test(utilSrc), 'util：证据块提取纯函数（到 state 块前截断）')
-ok(/noteVerifyEvidence\(devR\.stage, devR\.text\)/.test(pipelineSrc) && /noteVerifyEvidence\(fixR\.stage, fixR\.text\)/.test(pipelineSrc), 'pipeline：dev 主路径/补跑/qaFix 三处提取存证（按 withRetry 返回的 stage 引用直写，并发不错位）')
+ok(/noteVerifyEvidence\(devR\.stage, devText\)/.test(pipelineSrc) && /noteVerifyEvidence\(devR\.stage, rerunText\)/.test(pipelineSrc) && /noteVerifyEvidence\(fixR\.stage, stageTextOf\(fixR\)\)/.test(pipelineSrc), 'pipeline：dev 主路径/补跑/qaFix 三处提取存证（按 withRetry 返回的 stage 引用直写，并发不错位）')
+ok(/const stageTextOf = \(r\) => r\.text \|\| \(\(r\.stage && r\.stage\.output\) \|\| null\)/.test(pipelineSrc), 'pipeline：失败尝试真实产出兜底（证据存证/state 回写/子卡不再被 text=null 截断）')
 ok(/noteSubtaskUsage\(journal, sub\.id, devR\.stage\)/.test(pipelineSrc), 'pipeline：子卡 usage 按 withRetry stage 引用累计（并发下 filter().pop() 会取错 stage 且超计）')
 ok(/缺少 \[Verification evidence\] 块（契约未兑现，已记录不中断）/.test(pipelineSrc), 'pipeline：证据块缺失 → 记 warn 不中断（policy 级，防误杀）')
 ok(/verifyEvidence: s\.verifyEvidence \|\| null/.test(hostSrc), 'host：stageDetail 返回 verifyEvidence（审计可见）')
@@ -258,10 +315,12 @@ console.log('── 3p) dsh 0.1.5-rc.2 适配：计量改走官方 Session 投�
 const meteringSrc = readFileSync(join(here, '../host/core/metering.ts'), 'utf8')
 ok(/function projectedUsageOf/.test(meteringSrc) && /stateOf\(session, 'tokenUsage'\)/.test(meteringSrc) && /stateOf\(session, 'sessionStats'\)/.test(meteringSrc), 'metering：投影路径优先（tokenUsage 四桶 + sessionStats 调用数）')
 ok(/export function accumulateSessionUsage/.test(meteringSrc) && /const projected = projectedUsageOf\(run\)/.test(meteringSrc) && /function scannedUsageOf/.test(meteringSrc), 'metering：投影优先 → 事件扫描降级为回退（弃用 API 不再扩展）')
+ok(/function freshTokensOf/.test(meteringSrc) && /return \(usage\.input \|\| 0\) \+ \(usage\.cacheWrite \|\| 0\) \+ \(usage\.output \|\| 0\)/.test(meteringSrc), 'metering：熔断口径 freshTokensOf（排除 cacheRead；汇报口径 totalTokensOf 不变）')
+ok(/freshTokens \+= freshTokensOf\(lastStage\.usage\)/.test(runnerSrc) && /if \(freshTokens >= FRESH_TOKEN_BUDGET\)/.test(runnerSrc), 'runner：熔断按新增口径累计（旧口径含 cacheRead → 一次失败必熔断，RETRY_LIMIT 失效）')
 ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
-ok(/"version": "0\.1\.7"/.test(pkgSrc), 'package.json：版本 0.1.7')
+ok(/"version": "0\.1\.8"/.test(pkgSrc), 'package.json：版本 0.1.8（release-v0.1.8 开发线）')
 ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.1\.5-rc\.2 <0\.2\.0"/.test(pkgSrc), 'package.json：声明 dsh.manifestVersion 与 engines.dsh 兼容窗口')
 
 console.log('── 3q) 护栏宿主适配：官方 Agent.inject 通道 + subagentTiming 挂死源（2026-09-10）──')
@@ -286,6 +345,17 @@ ok(/\(e as \{ id\?: unknown \}\)\.id === 'string'/.test(runnerSrc), 'runner：ef
 ok(/推理强度未降档/.test(runnerSrc), 'runner：探测失败/档位不支持时记 warn（静默失败可见化）')
 ok(/reasoningEffort: effort/.test(runnerSrc) && /effortHint/.test(runnerSrc) && /attempt, effortHint\)/.test(runnerSrc), 'runner：agentOptions 带 reasoningEffort（effortHint 参数链穿透到 runAgent）')
 ok(/options\.mode === 'patch' \? MECHANICAL_STAGE_EFFORT : null/.test(pipelineSrc) && /'scaffold', scaffoldPrompt\([\s\S]{0,140}MECHANICAL_STAGE_EFFORT\)/.test(pipelineSrc), 'pipeline：仅 patch 单点确认 + scaffold 两处降档（判据类阶段保持宿主默认 high）')
+
+console.log('── 3t) 收口提交面：插件自有日志不进提交（2026-09-11 实锤 assetd 92% 噪音）──')
+const sanitySrc = readFileSync(join(here, '../host/core/sanity.ts'), 'utf8')
+ok(/TF_LOG_DIR = 'logs\/teamflow'/.test(sanitySrc), 'sanity：自有日志命名空间常量（与 prompts 的 Log discipline 同址）')
+ok(/:\(exclude\)\$\{TF_LOG_DIR\}/.test(sanitySrc) && /function tfAddArgs/.test(sanitySrc), 'sanity：tfAddArgs 用 git magic pathspec 强制排除（不依赖目标仓库 .gitignore）')
+ok(!/\['add', '-A'\]/.test(pipelineSrc), 'pipeline：已无裸 add -A（旧写法把 208 个日志文件卷进提交）')
+ok(/const add = gitCmd\(journal\.workspacePath, tfAddArgs\(\)\)/.test(pipelineSrc), 'pipeline：提交走 tfAddArgs（收口提交 + preAction 提交两处）')
+ok((pipelineSrc.match(/ensureLogGitignore\(journal\.workspacePath, journal\)/g) || []).length === 2, 'pipeline：两处提交点都先幂等补写工作区 .gitignore')
+ok(/function ensureLogGitignore/.test(pipelineSrc) && /mergeGitignore\(before, \[`\$\{TF_LOG_DIR\}\/`\]\)/.test(pipelineSrc), 'pipeline：.gitignore 合并走纯函数（覆盖判定 + changed=false 不落盘）')
+ok(/if \(!merged\.changed\) return false/.test(pipelineSrc), 'pipeline：已忽略时不改写文件（幂等，不留无谓 diff）')
+ok(/export function mergeGitignore/.test(utilSrc), 'util：mergeGitignore 纯函数（可回归测试）')
 
 console.log('── 4) 其他文件 ──')
 for (const f of ['../cordis.patch.yml', '../package.json', '../README.md', '../descriptors.ts', '../client/index.tsx', '../host/index.ts', '../store.ts']) {

@@ -189,6 +189,52 @@ export const TEAMFLOW_DESCRIPTORS: readonly InvocationDescriptor[] = Object.free
     parameters: [p('kind'), p('id'), p('sessionId')],
     result: strict,
   },
+  /* ── 全局面板：按产品线 key 寻址（root scope 无会话上下文的入口） ── */
+  {
+    id: 'dsh-plugin-teamflow#teamflow/products',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'products',
+    invocation: { kind: 'direct' },
+    parameters: [p('sessionId')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/productView',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'productView',
+    invocation: { kind: 'direct' },
+    parameters: [p('product')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/productRunDetail',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'productRunDetail',
+    invocation: { kind: 'direct' },
+    parameters: [p('product'), p('runId')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/productStageDetail',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'productStageDetail',
+    invocation: { kind: 'direct' },
+    parameters: [p('product'), p('runId'), p('seq')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/productItemDetail',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'productItemDetail',
+    invocation: { kind: 'direct' },
+    parameters: [p('product'), p('kind'), p('id'), p('sessionId')],
+    result: strict,
+  },
 ])
 
 /** client 端 $mount 使用的贡献对象。 */

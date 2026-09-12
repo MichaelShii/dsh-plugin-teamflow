@@ -154,8 +154,22 @@ function scannedUsageOf(run: SubagentRunLike | null | undefined): UsageBuckets |
   return buckets
 }
 
-/** 官方口径总消耗（billed input + output，含 cacheRead/cacheWrite）。 */
+/** 官方口径总消耗（billed input + output，含 cacheRead/cacheWrite）——**汇报/展示**口径。 */
 export function totalTokensOf(usage: UsageBuckets | null | undefined): number {
   if (!usage) return 0
   return (usage.input || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0) + (usage.output || 0)
+}
+
+/**
+ * 熔断口径「新增消耗」= input + cacheWrite + output（**排除 cacheRead**）。
+ *
+ * 为什么与汇报口径分家（2026-09-11）：cacheRead 是上下文复用的缓存重放，单价低且是
+ * **复用证据**而非烧钱信号；把它计入熔断，会让预算被「每步 1M 量级的命中」瞬间打爆——
+ * 实锤 assetd tf-mtwvwpxa-p3vw08 的 T5：报「累计 token 1886k 超出阶段预算 60k」，
+ * 其中 1830k 是 cacheRead，真实新增仅 55k；后果是任何 dev 任务一失败就熔断，
+ * RETRY_LIMIT 永不生效。汇报仍用 `totalTokensOf`（官方口径，AGENTS §4 不变）。
+ */
+export function freshTokensOf(usage: UsageBuckets | null | undefined): number {
+  if (!usage) return 0
+  return (usage.input || 0) + (usage.cacheWrite || 0) + (usage.output || 0)
 }

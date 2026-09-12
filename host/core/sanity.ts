@@ -21,6 +21,28 @@ export function gitCmd(cwd: string, args: string[], timeoutMs = 8000): string | 
   }
 }
 
+/**
+ * TeamFlow 自有日志命名空间（工作区相对路径）。
+ *
+ * 为什么单独拎出来：prompts 强制子代理把命令输出与临时验证脚本写进这里（Log discipline / TOKEN_HYGIENE），
+ * 而 prompts 的资源表同时把它定性为**非交付物**（「运行日志 … 日常不读」）。也就是说这批文件是插件
+ * 自己必然生产、且自己声明不该交付的东西——绝不能靠目标仓库的 .gitignore 兜底。
+ * 实锤 assetd `tf-mtwvwpxa-p3vw08`：收口提交 227 个文件里 **208 个（92%）** 是这里的内容
+ * （100 log / 52 json / 44 临时 .mjs / 5 .cjs，623.8 KB），真交付只有 19 个文件。
+ */
+export const TF_LOG_DIR = 'logs/teamflow'
+
+/**
+ * 插件发起的提交统一走这里（**禁止裸 `git add -A`**）。
+ *
+ * 用 git magic pathspec 强制排除自有日志：不依赖目标仓库有没有配 .gitignore、也不怕用户改回去。
+ * `-- .` 把提交面收敛到工作区（workspace = 项目根）——与旧 `add -A` 在根目录等价，
+ * 但不再把工作区之外/无关路径一并卷入。
+ */
+export function tfAddArgs(): string[] {
+  return ['add', '-A', '--', '.', `:(exclude)${TF_LOG_DIR}`]
+}
+
 /** 状态核对结果。 */
 export interface SanityCheck {
   ok: boolean

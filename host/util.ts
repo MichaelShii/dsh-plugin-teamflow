@@ -1,7 +1,7 @@
 /**
  * dsh-plugin-teamflow — 通用纯工具（底座；依赖 constants.ts，无其他依赖）。
  */
-import { REFUSAL_PATTERN, STAGE_MIN_LENGTH } from './constants.ts'
+import { REFUSAL_PATTERN, STAGE_MIN_LENGTH, DELIVERY_EVIDENCE_PATTERN } from './constants.ts'
 
 export function toText(v) {
   if (v === null || v === undefined) return ''
@@ -100,6 +100,39 @@ export function normalizeSignal(s) {
   return (s && typeof s === 'object' && typeof s.addEventListener === 'function' && typeof s.aborted === 'boolean' && typeof s.throwIfAborted === 'function') ? s : SAFE_SIGNAL
 }
 
+/**
+ * 幂等合并 .gitignore 条目（纯函数，便于回归测试）。
+ *
+ * 场景（实锤 assetd `tf-mtwvwpxa-p3vw08`）：插件强制把命令日志/临时脚本写进 `logs/teamflow/`，
+ * 目标仓库没忽略它时，收口提交的 227 个文件里 208 个是这批噪音（92%）——本函数负责「补规则」这一半，
+ * 另一半（提交面强制排除）在 `sanity.tfAddArgs()`。
+ *
+ * 覆盖判定不只看字面相等：已有 `logs/`、`logs/**` 这类**更宽的目录规则**同样算已忽略
+ * （否则会往一个已经生效的仓库里塞冗余规则）。返回 `changed=false` 时调用方**不要写文件**。
+ */
+export function mergeGitignore(
+  existing: string | null | undefined,
+  entries: string[],
+): { text: string; changed: boolean; added: string[] } {
+  const src = existing === null || existing === undefined ? '' : String(existing)
+  const lines = src.split(/\r?\n/).map((l) => l.trim())
+  /** 归一：去首尾斜杠与尾部 glob（`logs/`、`logs/**` → `logs`）。 */
+  const norm = (s: string) => s.replace(/^\/+/, '').replace(/\/+$/, '').replace(/\/\*\*?$/, '')
+  const coveredBy = (entry: string) => {
+    const e = norm(entry)
+    return lines.some((l) => {
+      if (!l || l.startsWith('#')) return false
+      const n = norm(l)
+      return !!n && (n === e || e.startsWith(`${n}/`))
+    })
+  }
+  const added = entries.filter((e) => e && !coveredBy(e))
+  if (added.length === 0) return { text: src, changed: false, added: [] }
+  const head = src ? `${src}${src.endsWith('\n') ? '' : '\n'}` : ''
+  const block = `${src ? '\n' : ''}# TeamFlow 运行日志（插件自有产物，非交付物；host 提交时另有 pathspec 强制排除）\n${added.join('\n')}\n`
+  return { text: head + block, changed: true, added }
+}
+
 /** 分支 slug 派生（ADR-2026-08-27）：branchName > triageSlug > 需求中的英文标识词 > reqId 数字 > 'feature'。
  * 实锤 feat/feature：lite 显式时 triage 不跑（无 slug）+ 分支检查早于 reqId 生成 → fallback 'feature'。 */
 export function deriveBranchSlug(requirement: string | null | undefined, reqId: string | null | undefined, triageSlug?: string | null, branchName?: string | null): string {
@@ -117,12 +150,47 @@ export function deriveBranchSlug(requirement: string | null | undefined, reqId: 
   return 'feature'
 }
 
-/** 产出物实质校验：非空 + 无拒绝词 + 达到阶段长度下限。 */
-export function hasSubstance(phase: string, text: string | null | undefined): boolean {
-  if (!text || !text.trim()) return false
-  if (REFUSAL_PATTERN.test(text)) return false
+/** 交付判定结论（judgeDeliverable）：`reason` 供失败分类/日志文案，`refusal` 供留痕与诊断包。 */
+export interface DeliverableVerdict {
+  ok: boolean
+  reason: 'ok' | 'empty' | 'too-short' | 'refusal'
+  /** 命中的拒绝措辞（含原文上下文）；`ok=true` 时也可能非空——措辞只作诊断，不再单独否决。 */
+  refusal: { phrase: string; context: string } | null
+  /** 本阶段长度下限与实际长度（诊断用）。 */
+  min: number
+  length: number
+}
+
+/**
+ * 交付判定（信号分级；2026-09-11 信号换轨，原 `hasSubstance`）。
+ *
+ * 旧判据 = 非空 + **全文拒绝词** + 长度下限——把「措辞」当交付门禁。实锤 assetd
+ * tf-mtwvwpxa-p3vw08 的 T5：子代理 `stopReason=completed`、41 次工具调用、证据块与
+ * state 块齐全、`src/query.mjs` 已落盘，只因如实汇报「7 条 runCli 用例与 spec/verify.mjs
+ * 全部 26 例无法执行（沙箱禁止子进程管道）」命中「无法执行」→ 判 insubstantial
+ * 「视为未交付」→ 提测门禁停整条线 + 人工 resume（16 分钟 + 一轮重跑）。
+ * 教训不是「词表少了一个词」，而是**措辞不能用来判定是否交付**：模型如实汇报环境限制
+ * 是本分，换一种说法（跑不通/环境不允许/需在无限制 shell 复跑）旧判据照样误杀。
+ *
+ * 现判据按「客观优先、措辞退为兜底」分级：
+ *  1. 客观形态：非空 + 达阶段长度下限（不读语义）；
+ *  2. 真交付信号：含 `[Verification evidence]` 块 → 判交付（拒绝/放弃类产出给不出具体
+ *     命令+退出码细节）；命中拒绝词只记诊断、不否决；
+ *  3. 兜底：无证据块且命中拒绝词 → 判未交付（这才是「光说不做 / 自称做不到」的形态）。
+ *
+ * 因此「如实汇报环境限制」这类假阳性在**结构上**消失，而「没干活就说完成」仍被抓：
+ * 无证据块的假交付照旧落到第 3 级或长度级。
+ */
+export function judgeDeliverable(phase: string, text: string | null | undefined): DeliverableVerdict {
+  const s = toText(text)
   const min = STAGE_MIN_LENGTH[phase] ?? 100
-  return text.trim().length >= min
+  const length = s.trim().length
+  if (length === 0) return { ok: false, reason: 'empty', refusal: null, min, length }
+  if (length < min) return { ok: false, reason: 'too-short', refusal: null, min, length }
+  const refusal = refusalHit(s)
+  if (!refusal) return { ok: true, reason: 'ok', refusal: null, min, length }
+  if (DELIVERY_EVIDENCE_PATTERN.test(s)) return { ok: true, reason: 'ok', refusal, min, length }
+  return { ok: false, reason: 'refusal', refusal, min, length }
 }
 
 /** 不可重试的失败原因（上下文耗尽/超长/provider 客户端拒绝等——重试同一 prompt 大概率复现）。
