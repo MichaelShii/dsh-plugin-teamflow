@@ -79,7 +79,7 @@ web profile host composition
 ├── teamflow-host   (dsh-plugin-teamflow/host)      Cordis service `teamflow`
 │     └── TeamflowService extends TypertRemoteService
 │           ├── ctx.typert.register(strict descriptors)   ← 17 Remote methods
-│           ├── ctx.tools.register(teamflow_*)            ← 11 model tools
+│           ├── ctx.tools.register(teamflow_*)            ← 12 model tools
 │           └── node:fs → $DSH_HOME/teamflow/...
 └── teamflow-client (dsh-plugin-teamflow/client, auto-scanned)  ← package.json declares dsh.client,
       └── ctx.remote.$mount(TEAMFLOW_REMOTE_CONTRIBUTION)      no patch line needed, clientModules auto-registers
@@ -125,7 +125,7 @@ dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 ```
 
 After install, **restart** `dsh --profile web` for the host `teamflow-host` to take effect:
-- The model side gains 11 `teamflow_*` tools: `start / triage / status / backlog / claim / update / assign / cancel / resume / pause / resume_session`;
+- The model side gains 12 `teamflow_*` tools: `start / triage / status / backlog / claim / update / assign / cancel / resume / pause / resume_session / merge`;
 - The browser session header shows the "🏭 Team Workspace" tab;
 - Backlog is written to `$DSH_HOME/teamflow/<product>/backlog/*.json`.
 

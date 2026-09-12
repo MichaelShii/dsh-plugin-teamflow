@@ -7,13 +7,32 @@
 ### 新增
 - **全局团队工作台（`sidebar.panellist` + `main`）**：工作台从「某个会话里的一个 tab」升级为应用级主面板——左侧边栏多一个图标（inline SVG，跟随选中态），点开中央主区即整块换成 TeamFlow：左栏是**产品线**列表（`$DSH_HOME/teamflow/<key>` 扫描，含 run 计数/活跃数/最近需求与验收结论/磁盘路径），右栏是该产品线的 **run 列表 + backlog 分组**（需求/任务/缺陷，含按角色 token）。**不依附会话**：面板在 root scope（无 `useSession`/`useProjection`），所以数据面新增按**产品线 key** 寻址的 remote 方法（`products` / `productView` / `productRunDetail` / `productStageDetail` / `productItemDetail`），与会话内工作台同源装配（同一批 journal 与 state.json，非新数据模型）
 - **run 详情进右侧栏 tab**：注册 `teamflow-run` tab 类型（认领 `dsh-resource://teamflow/run/**`），在会话内点 run 即在该会话右侧栏打开完整详情（阶段表 + 官方口径 token + 阶段详情/尝试聚合/验证证据/产出/日志）。地址由 host 生成（client 不拼地址）——与产物预览同一条原则。**右侧栏的会话内容只在对话视图存在**（宿主 `RightbarRoot` 门控），所以全局面板里点 run 默认在**面板内联**显示；要并排看就点「对话右栏」——它会切回对话再打开右栏（seat 在切换后才 bind，故带小步重试）；任何一步不可用都降级面板内联并给出**可见提示**（不静默失败）
+- **状态徽章可点筛选（多选）**：分组行上的每个状态计数徽章升级为可点 `filterChip`（选中态实心 + 状态色边框），**多选 toggle**——真实问法是「还没结束的有哪些」（进行中 / 待验收 / 需人工的并集），单选会逼人来回点。**筛选优先于折叠**：选中含终态时自动展开（否则点了「已验收 19」却看不到卡片），清掉筛选回到默认折叠；行尾显示「筛选中 N 项 · 显示 x/y × 清除」，无筛选时不出现（不加噪音）。作用域：backlog **每组独立**，run 标签加同款一行（7 个状态），run 的折叠（最近 8 条 + 进行中置顶）**只作用于筛选结果**；切产品线清空筛选与展开态（面板不重挂载，显式 reset）。**纯客户端过滤**，host 数据面与 slice 上限一律不动（数据不丢，清除即见全部）
+- **右栏入口改为「去发起会话」**：右侧栏是**会话级**的（`RightbarRoot` 只渲染当前会话），旧「切回对话」跳回的仍是用户来时的会话、与 run 无关。改为 `goOwnerSessionAndOpen(target)`：host 侧 `runBrief`/`snapshotOf`/`itemDetail.runInfo` **新增 `ownerSession` 透出**（journal 早有该字段）+ 产物地址的会话段改用 run 的发起会话，client 先 `sessions.open(ownerSession)`、等 `sessions.list.getSnapshot().current` 真的切过去**且**对话 seat 挂载 bind 后再 `openResource`（带就绪判据的小步重试）；会话已清理时只提示不跳转，老数据无该字段退回旧行为
+
+### 修复
+- **交付判定信号分级（`judgeDeliverable`）**：dev/qa 产出判定由「全文拒绝词命中即否决」改为三级——① 客观形态（非空 + 阶段长度下限）→ ② **真交付信号**（`DELIVERY_EVIDENCE_PATTERN`：prompt 强制的 `[Verification evidence]` 块 = 命令 + 退出码 + 断言计数）→ ③ 措辞兜底（`REFUSAL_PATTERN` 仅在**无证据块**时才否决）。**修「如实汇报环境限制被判未交付」**：子代理自述「7 个用例与 26 项校验无法执行，属环境性失败」因命中「无法执行」被判 `insubstantial` → 提测门禁停线 → 人工 resume + 重复补跑（已完成任务被重做）。修后命中拒绝词**但有证据块** → 判交付 + 记 warn 留痕（措辞只作诊断，不再是门禁）。删 `hasSubstance`
+- **熔断改用「新增」口径（`freshTokensOf`）**：熔断预算 = `input + cacheWrite + output`（**排除 `cacheRead`**），阈值 `FRESH_TOKEN_BUDGET`（默认 200k）。旧口径把缓存重放计入——实测某 dev 任务 `totalTokens` 1,885,583 ≥ 60k 触发熔断，**真实新增仅 55,439** ⇒ **任何任务失败一次都立刻熔断、`RETRY_LIMIT` 连一次重试都走不到**。修后重试优先于熔断恢复。**汇报/展示口径 `totalTokensOf`（官方 billed）不变**，两套口径不得合并（已在 AGENTS §4/§5 锚定）
+- **收口提交面排除自有日志**：`sanity.tfAddArgs()` = `git add -A -- . ':(exclude)logs/teamflow'`（magic pathspec 强制排除，**不依赖目标仓库有没有配 `.gitignore`**；`-- .` 同时把提交面收敛到工作区），两处提交点（收口提交 + `preAction=commit`）统一走它，**禁止再出现裸 `add -A`**；新增 `util.mergeGitignore()` + `pipeline.ensureLogGitignore()` **提交前幂等补写**工作区 `.gitignore`（覆盖判定含更宽规则 `logs/`、`logs/**`；`changed=false` 时不落盘，不留无谓 diff；写失败只 warn——pathspec 仍兜底）。**修一次收口提交 227 文件里 208 个（92%）是自有日志**（真交付仅 19）——子代理 git 纪律无问题（交付报告写「logs/ remain untracked」当时属实），是 host 在最后一刻扫进去的
+- **prompt 日志布局收口**：`TOKEN_HYGIENE` 新增 `[Log layout · policy]`——**每用途一个文件**：套件输出 → `regression-<phase>.log` 且**重跑时追加**带 `--- <timestamp> <task> ---` 表头（禁止 `-run2`/`-nopipe`/`-shim` 同名变体）、一次性校验脚本 → `scripts/`、命令载荷 → 合并进 `captures.json`、探针/草稿 → `probe/`；dev/qa/qaFix 三处 `[Log discipline]` 指向该布局。**实测消灭 51 份重复套件输出（占 `.log` 78%，267.5 KB）**，同一沙箱绕行被各 agent 重新发明 6+ 次的问题一并收敛
+- **日志布局路径作用域**：上条的四条路径写成**未限定相对昵称**（`scripts/`、`probe/`）→ 模型按「最像项目约定」解析成**项目根** → 在仓库根建了 `scripts/`(5) 与 `probe/`(1) 且被收口提交扫进去（32 文件里占 6 个）。修复：四条路径全部改写为**完整限定** `logs/teamflow/<runId>/...`，段首加粗「never create scripts/ or probe/ at the project root」，三处 `[Log discipline]` 各自重申；L1 契约新增 `LOG-LAYOUT-SCOPED`（断言完整路径 + 项目根禁令，`exclude` 未限定旧写法防回退）。**教训：给模型指路径必须给完整限定路径，不能给通用昵称**
+- **右栏 run tab 卡在「读取中」**：正文读地址必须用宿主绑定的 **`useTabInfo`**（slot 声明 `hooks: { tabInfo }` 会被渲染器改名为 `use<Name>`），prop 名写成 `tabInfo` 取不到 `tab.navigation.address || tab.contentId`
+- **二次 unwrap / 空信封静默失败**：去掉阶段详情 / 条目详情 / 面板内联 run 详情的**二次 unwrap**（首层已解包，二次解包取到 `undefined` → 表现为「读取中」或空白）；`unwrap` 对 `ok=true` 但无 `value` 的**空信封显式报错**，不再静默返回 `undefined`
+- **React #310（hook 归属错位）**：`FoldableText` 被当普通函数调用（`FoldableText(...)`）而非作为组件渲染 → hook 挂到父组件，叠加条件渲染导致**每次渲染 hook 数变化**。改为组件用法
+- **工作台顶出外层页面滚动条**：面板改用宿主 `.viewArea` **高度契约**布局（不再用 `100vh` 一类硬高度），消除「页面级滚动条 + 面板内滚动条」双层滚动；并恢复看板**列内滚动**（限高 340）+ 列头/分组标题 sticky
+- **同值点击产品线卡在「读取产品线数据中…」**：重复点击同一产品线不再无响应——`viewTick` 重载 + 选中态提示
+- **窄列卡片内容溢出**：等宽数字行（token/耗时）在窄列顶破面板 → 收敛为可换行/截断
+- **详情浮层单一事实源**：修「run 详情与 backlog 详情同时存在、要关两次」——详情状态收敛为单一来源
+- **分栏改用 `grid auto-fit`**：修 `flex-wrap` 多行 flex 行高随内容 → 列被撑高、`overflow` 永不触发导致「展开后无法滚动」
 
 ### 改进
 - **客户端展示层收拢**：主题 token / 状态词表 / 格式化（token 官方口径、时间、耗时、折叠文本）从 1286 行的 `client/index.tsx` 抽到 `client/shared.tsx`，会话内工作台与全局面板共用一份——两处展示语言不会再各自漂移
 - **宿主 slot 契约对齐**：`dsh.client.inject` 补 3 个 slot owner 包（`ui-layout` / `ui-sidebar` / `ui-sidebar-right`，注册进谁的 slot 就列谁）+ 对应 optional peer 声明，避免加载顺序不确定导致的「slot 不存在」
+- **全局面板第三版布局 —— 主区标签页 + 详情覆盖式浮层**：第二版把 **rail + run 栏 + backlog 栏 + 详情栏**四栏并排并叠了 `grid auto-fit` 自适应，在 1100–1400px 窗口**必然超载**（卡片被压到 ~200px、run 行折成多行、详情栏还和列表抢宽度），并触发连环故障（`flex-wrap` 行高随内容 → 列被撑高、`overflow` 永不触发 → 展开后无法滚动）。第三版**做减法**：① 主区改为**标签页**（🚀 流水线 run N ｜ 📋 Backlog M），一次只显示一个列表——宽度全给它、只剩一个滚动区；② 详情改为**覆盖式浮层**（绝对定位 + 独立滚动，与会话内两个抽屉同款），不再参与横向宽度分配；③ 删掉 panel 级 grid/flex 两栏自适应（backlog 卡片自身的 `auto-fill` 网格保留）。折叠 / 进行中置顶 / 终态收起 / 需人工不折等已确认行为全部保留。**教训：并排面板数量必须由可用宽度决定，不是由信息架构决定**
 
 ### 已知待办
-- 全局面板目前**只读**（未提供 backlog 流转写路径）；两处渲染组件仍分叉（`shared.tsx` 只统一了词表/格式化）；run tab 未注册 `sidebar.right.pane.tab.title` seat（chip 标题取自类型定义）。见 `docs/TODO.md`
+- 全局面板目前**只读**（未提供 backlog 流转写路径）；run tab 未注册 `sidebar.right.pane.tab.title` seat（chip 标题取自类型定义）；两处渲染组件仍分叉（`shared.tsx` 只统一了词表/格式化）。见 `docs/TODO.md`
+- 熔断阈值（`FRESH_TOKEN_BUDGET`，默认 200k）仍是常量，未做成 service Config；护栏**复读检测**仍读已弃用的事件读取器（提醒通道与挂死判据已迁官方投影）。见 `docs/TODO.md`
 
 ## [0.1.7] - 2026-09-11
 

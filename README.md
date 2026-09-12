@@ -82,7 +82,7 @@ web profile 宿主组合
 ├── teamflow-host   (dsh-plugin-teamflow/host)      Cordis service `teamflow`
 │     └── TeamflowService extends TypertRemoteService
 │           ├── ctx.typert.register(strict descriptors)   ← 22 个 Remote 方法
-│           ├── ctx.tools.register(teamflow_*)            ← 11 个模型工具
+│           ├── ctx.tools.register(teamflow_*)            ← 12 个模型工具
 │           └── node:fs → $DSH_HOME/teamflow/...
 └── teamflow-client (dsh-plugin-teamflow/client，自动扫描)  ← package.json 声明 dsh.client，
       └── ctx.remote.$mount(TEAMFLOW_REMOTE_CONTRIBUTION)     无需 patch 行，clientModules 自动注册
@@ -154,7 +154,7 @@ dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 ```
 
 安装后**重启** `dsh --profile web`，宿主行 `teamflow-host` 生效：
-- 模型侧出现 11 个 `teamflow_*` 工具：`start / triage / status / backlog / claim / update / assign / cancel / resume / pause / resume_session`；
+- 模型侧出现 12 个 `teamflow_*` 工具：`start / triage / status / backlog / claim / update / assign / cancel / resume / pause / resume_session / merge`；
 - 浏览器侧：会话头部「🏭 团队工作台」tab（会话内）+ **左侧边栏「团队工作台」图标**（全局面板，产品线视角）；
 - backlog 写入 `$DSH_HOME/teamflow/<product>/backlog/*.json`。
 
