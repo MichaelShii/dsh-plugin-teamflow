@@ -77,12 +77,16 @@ ok(/goOwnerSessionAndOpen/.test(panelSrc) && /sessions\.open\(ownerSession\)/.te
 // 同值点击产品线：曾经把 view 清空但 current 未变 → 依赖数组不变 → 永远卡在「读取产品线数据中…」（用户实测）
 ok(/viewTick/.test(panelSrc) && /const selectProduct = \(k\) =>/.test(panelSrc) && /s\.current === k \? s\.view : null/.test(panelSrc), 'panel：同值点击产品线 = 刷新（viewTick 重载 + 保留视图，不卡「读取中」）')
 ok(/loadingKey/.test(panelSrc), 'panel：选中但视图未就绪时卡片显示「读取中…」（消除"选中态 vs 加载中"的误导）')
+// 状态徽章可点筛选（多选）：backlog 每组独立 + run 标签同款；筛选优先于终态折叠；切产品线/清空都重置
+ok(/const filterChip = /.test(panelSrc) && /const toggleRunStatus = /.test(panelSrc) && /const \[runFilter, setRunFilter\]/.test(panelSrc), 'panel：状态徽章可点筛选（多选 toggle）')
+ok(/const \[filters, setFilters\] = React\.useState\(\{\}\)/.test(panelSrc) && /筛选优先于折叠/.test(panelSrc) && /setShowDone\(\{\}\); setFilters\(\{\}\) \}, \[productKey\]/.test(panelSrc), 'panel：backlog 每组独立筛选 + 筛选优先于折叠 + 切产品线重置')
+ok(/筛选中 \$\{sel\.length\} 项/.test(panelSrc) && /筛选中 \$\{runSel\.length\} 项/.test(panelSrc) && /× 清除/.test(panelSrc), 'panel：筛选状态可见 + ×清除（两个标签页一致）')
 ok(/currentSessionId/.test(panelSrc) && /useSessions/.test(panelSrc), '全局面板用 useSessions 取当前会话（默认选中当前产品线）')
 ok(/export const T =/.test(sharedSrc) && /export function FoldableText/.test(sharedSrc) && /export function stageUsageLine/.test(sharedSrc), 'shared.tsx：会话内/全局共用展示层（主题/词表/格式化）')
 ok(/openResourceSafe/.test(clientSrc) && /return true/.test(clientSrc) && /return false/.test(clientSrc), 'client：右侧栏打开返回布尔（供全局面板判定是否降级内联）')
 ok(/openResourceSafe = \(address: string, label: string, quiet\?: boolean\)/.test(clientSrc) && /if \(!quiet\) console\.warn/.test(clientSrc), 'client：重试期间静默（quiet）——由调用方给可见提示')
 ok(/openInConversationRightbar/.test(panelSrc) && /selectPanel\(null\)/.test(panelSrc) && /tries < 12/.test(panelSrc), 'panel：全局面板开右栏先切回对话 + 小步重试（宿主 RightbarRoot 只在对话视图渲染会话 seat，实测 tf-mtvrsakj-l2vj5u）')
-ok(/对话右栏/.test(panelSrc) && /setHint/.test(panelSrc) && /知道了/.test(panelSrc), 'panel：入口文案与失败提示都可见（不静默失败）')
+ok(/去发起会话/.test(panelSrc) && /setHint/.test(panelSrc) && /知道了/.test(panelSrc), 'panel：入口文案与失败提示都可见（不静默失败）')
 ok(/props\.useTabInfo/.test(panelSrc) && /tab\.navigation && tab\.navigation\.address/.test(panelSrc), 'panel：右栏 tab 读地址用宿主绑定的 useTabInfo（hooks.tabInfo → useTabInfo；写成 tabInfo 会恒 undefined、卡在「读取中」）')
 ok(/activeRun\.address/.test(clientSrc), 'client：会话内工作台用 host 生成的 run 地址开右栏')
 // 高度契约：宿主 conversation.view 容器（.viewArea）是 flex:1/min-height:0 且**不滚动**，

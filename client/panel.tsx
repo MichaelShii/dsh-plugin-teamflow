@@ -211,8 +211,27 @@ function BacklogCard({ kind, item, onOpen }) {
   )
 }
 
-function BacklogGroups({ backlog, onOpen }) {
+/** 可点筛选徽章（多选）：单击切换该状态，选中态用状态色实心；再点取消。 */
+const filterChip = (text, color, on, onToggle) => h('button', {
+  onClick: onToggle,
+  title: on ? '点击取消该状态筛选' : '点击只看该状态（可多选）',
+  style: {
+    font: 'inherit', fontSize: 11, fontWeight: 600, padding: '1px 8px', borderRadius: 999, cursor: 'pointer',
+    lineHeight: '16px', whiteSpace: 'nowrap',
+    border: `1px solid ${on ? `color-mix(in srgb, ${color} 55%, transparent)` : T.border}`,
+    background: on ? `color-mix(in srgb, ${color} 26%, transparent)` : 'transparent',
+    color: on ? color : T.text2,
+  },
+}, text)
+
+/** run 状态展示顺序（可行动的在前）。 */
+const RUN_STATUS_ORDER = ['running', 'pending', 'interrupted', 'failed', 'cancelled', 'completed', 'superseded']
+
+function BacklogGroups({ backlog, onOpen, productKey }) {
   const [showDone, setShowDone] = React.useState({})   // kind → 是否展开终态卡片
+  const [filters, setFilters] = React.useState({})     // kind → 选中的状态数组（多选；空 = 不筛）
+  // 切换产品线时清空筛选与展开态（面板不重挂载，必须显式重置）
+  React.useEffect(() => { setShowDone({}); setFilters({}) }, [productKey])
   if (!backlog) return null
   const groups = [['req', backlog.requirements || []], ['task', (backlog.tasks || []).filter((t) => t.type !== 'subtask')], ['bug', backlog.bugs || []]]
   const total = groups.reduce((a, [, arr]) => a + arr.length, 0)
@@ -224,22 +243,41 @@ function BacklogGroups({ backlog, onOpen }) {
       const done = list.filter((it) => TERMINAL_STATUSES.indexOf(it.status) !== -1 && !it.humanIntervention)
       const active = list.filter((it) => done.indexOf(it) === -1)
       const open = showDone[kind] === true
+      const sel = filters[kind] || []
+      const selSet = new Set(sel)
+      const filtering = sel.length > 0
+      const matched = filtering ? list.filter((it) => selSet.has(it.status)) : list
       const byStatus = {}
       for (const it of list) byStatus[it.status] = (byStatus[it.status] || 0) + 1
+      const toggle = (st) => setFilters((m) => {
+        const cur = new Set(m[kind] || [])
+        if (cur.has(st)) cur.delete(st); else cur.add(st)
+        return { ...m, [kind]: [...cur] }
+      })
+      // 筛选优先于折叠：点了「已验收」就要能看到卡片，不再被折叠藏住
+      const visible = filtering ? matched : (open ? list : active)
       return h('div', { key: kind, style: { marginBottom: 12 } },
         h('div', { style: { ...flexRow, gap: 6, marginBottom: 6, minWidth: 0 } },
           h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text, flex: '0 0 auto' } }, `${KIND_TITLE[kind]} · ${list.length}`),
           h('span', { style: { fontSize: 10, color: T.text2, flex: '0 0 auto' } }, `活动 ${active.length}`),
-          ...Object.keys(byStatus).map((s) => chip(`${stText(s)} ${byStatus[s]}`, stColor(s))),
-          done.length
+          ...Object.keys(byStatus).map((s) => filterChip(`${stText(s)} ${byStatus[s]}`, stColor(s), selSet.has(s), () => toggle(s))),
+          filtering
             ? h('button', {
               style: { ...panelBtn, marginLeft: 'auto', flex: '0 0 auto' },
-              title: open ? '收起已完成/已关闭卡片' : '展开已完成/已关闭卡片',
-              onClick: () => setShowDone((m) => ({ ...m, [kind]: !open })),
-            }, open ? `收起已完成 ${done.length}` : `已完成 ${done.length} ▸`)
-            : null),
-        h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(228px, 1fr))', gap: 6 } },
-          (open ? list : active).map((it) => h(BacklogCard, { key: it.id, kind, item: it, onOpen }))))
+              title: '清除本组筛选',
+              onClick: () => setFilters((m) => ({ ...m, [kind]: [] })),
+            }, `筛选中 ${sel.length} 项 · 显示 ${matched.length}/${list.length} × 清除`)
+            : done.length
+              ? h('button', {
+                style: { ...panelBtn, marginLeft: 'auto', flex: '0 0 auto' },
+                title: open ? '收起已完成/已关闭卡片' : '展开已完成/已关闭卡片',
+                onClick: () => setShowDone((m) => ({ ...m, [kind]: !open })),
+              }, open ? `收起已完成 ${done.length}` : `已完成 ${done.length} ▸`)
+              : null),
+        visible.length
+          ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(228px, 1fr))', gap: 6 } },
+            visible.map((it) => h(BacklogCard, { key: it.id, kind, item: it, onOpen })))
+          : muted('该筛选下没有卡片。', { fontSize: 10.5 }))
     }))
 }
 
@@ -482,6 +520,7 @@ export function GlobalPanel(props) {
   const [runsExpanded, setRunsExpanded] = React.useState(false)  // run 列表：默认折叠到 RUN_PREVIEW
   const [panelTab, setPanelTab] = React.useState('run')          // 主区标签页：run | backlog（一次只显示一个列表）
   const [viewTick, setViewTick] = React.useState(0)              // 产品线视图重载计数器（同值点击/清单刷新都要能重新拉）
+  const [runFilter, setRunFilter] = React.useState([])           // run 标签的状态筛选（多选；空 = 不筛）
 
   /**
    * 右侧栏的**会话内容**宿主只在「对话被选中」时渲染（`RightbarRoot` 门控 `activePanelId === null`），
@@ -579,9 +618,12 @@ export function GlobalPanel(props) {
   const selectProduct = (k) => {
     closeDetail()
     setRunsExpanded(false)
+    setRunFilter([])   // 换产品线时清筛选（面板不重挂载）
     setState((s) => ({ ...s, current: k, view: s.current === k ? s.view : null }))
     setViewTick((t) => t + 1)
   }
+  /** run 状态筛选开关（多选）。 */
+  const toggleRunStatus = (st) => setRunFilter((cur) => (cur.indexOf(st) === -1 ? cur.concat([st]) : cur.filter((x) => x !== st)))
 
   // 首次加载 + 当前会话变化时刷新产品线清单（保持用户已选产品线）
   React.useEffect(() => { loadProducts() }, [currentSessionId])
@@ -621,11 +663,18 @@ export function GlobalPanel(props) {
   const product = view && view.product
   const runs = (view && view.runs) || []
   const detailOpen = !!detail
+  // run 状态筛选（多选；空 = 不筛）——折叠只作用在筛选结果上
+  const runSel = runFilter || []
+  const runSelSet = new Set(runSel)
+  const runFiltering = runSel.length > 0
+  const runsMatched = runFiltering ? runs.filter((r) => runSelSet.has(r.status)) : runs
+  const runStatusCounts = {}
+  for (const r of runs) runStatusCounts[r.status] = (runStatusCounts[r.status] || 0) + 1
   // run 折叠：默认最近 RUN_PREVIEW 条，但**进行中/未完成的一律置顶显示**（别把正在跑的藏起来）
-  const headRuns = runs.slice(0, RUN_PREVIEW)
+  const headRuns = runsMatched.slice(0, RUN_PREVIEW)
   const headIds = new Set(headRuns.map((r) => r.id))
-  const pinnedActive = runsExpanded ? [] : runs.filter((r) => (r.status === 'running' || r.status === 'pending') && !headIds.has(r.id))
-  const visibleRuns = (runsExpanded || runs.length <= RUN_PREVIEW) ? runs : pinnedActive.concat(headRuns)
+  const pinnedActive = runsExpanded ? [] : runsMatched.filter((r) => (r.status === 'running' || r.status === 'pending') && !headIds.has(r.id))
+  const visibleRuns = (runsExpanded || runsMatched.length <= RUN_PREVIEW) ? runsMatched : pinnedActive.concat(headRuns)
   const bl = view && view.backlog
   const backlogCount = bl ? ((bl.requirements || []).length + (bl.tasks || []).filter((t) => t.type !== 'subtask').length + (bl.bugs || []).length) : 0
   /** 主区标签按钮（选中态用品牌色下划线）。 */
@@ -682,19 +731,32 @@ export function GlobalPanel(props) {
                 panelTabBtn('backlog', `📋 Backlog · ${backlogCount}`),
                 h('div', { style: { marginLeft: 'auto', ...flexRow, gap: 6, paddingBottom: 7 } },
                   panelTab === 'run' && !runsExpanded && pinnedActive.length > 0 ? chip(`已置顶进行中 ${pinnedActive.length}`, T.brand, { dot: true }) : null,
-                  panelTab === 'run' && runs.length > RUN_PREVIEW
+                  panelTab === 'run' && runsMatched.length > RUN_PREVIEW
                     ? h('button', { style: panelBtn, onClick: () => setRunsExpanded((v) => !v) },
-                      runsExpanded ? `只看最近 ${RUN_PREVIEW} 条` : `展开全部 ${runs.length} 条`)
+                      runsExpanded ? `只看最近 ${RUN_PREVIEW} 条` : `展开全部 ${runsMatched.length} 条`)
                     : null)),
               /* 单一滚动区（自己滚；页面级滚动条不会出现） */
               h('div', { style: { flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '12px 14px 18px' } },
                 panelTab === 'run'
                   ? h(React.Fragment, null,
-                    h(RunList, { runs: visibleRuns, activeRunId: detail && detail.kind === 'run' && detail.run ? detail.run.id : null, onOpenRun: openRun, onInlineRun: showInline }),
-                    muted('点一行看详情浮层；「对话右栏」= 切回对话并在右侧栏打开（与任务夹产物并排）', { fontSize: 10, marginTop: 8 }))
+                    /* run 状态筛选（多选；与 backlog 侧同款交互） */
+                    h('div', { style: { ...flexRow, gap: 6, marginBottom: 8 } },
+                      ...RUN_STATUS_ORDER.filter((st) => runStatusCounts[st]).map((st) => filterChip(
+                        `${RUN_STATUS_TEXT[st] || st} ${runStatusCounts[st]}`, stColor(st), runSelSet.has(st), () => toggleRunStatus(st))),
+                      runFiltering
+                        ? h('button', {
+                          style: panelBtn,
+                          title: '清除 run 状态筛选',
+                          onClick: () => setRunFilter([]),
+                        }, `筛选中 ${runSel.length} 项 · 显示 ${runsMatched.length}/${runs.length} × 清除`)
+                        : null),
+                    visibleRuns.length
+                      ? h(RunList, { runs: visibleRuns, activeRunId: detail && detail.kind === 'run' && detail.run ? detail.run.id : null, onOpenRun: openRun, onInlineRun: showInline })
+                      : muted('该筛选下没有 run。', { fontSize: 10.5 }),
+                    muted('点一行看详情浮层；「去会话右栏」= 跳到该 run 的发起会话并在其右侧栏打开（与任务夹产物并排）', { fontSize: 10, marginTop: 8 }))
                   : h(React.Fragment, null,
-                    muted('终态卡片默认收起；活动项与需人工项始终展开', { fontSize: 10, marginBottom: 8 }),
-                    h(BacklogGroups, { backlog: view.backlog, onOpen: openItem }))),
+                    muted('点状态徽章可筛选（多选）；终态卡片默认收起，筛选时自动显示', { fontSize: 10, marginBottom: 8 }),
+                    h(BacklogGroups, { backlog: view.backlog, onOpen: openItem, productKey: state.current }))),
             ),
       ),
       /* 详情：**覆盖式浮层**（绝对定位、自己滚动，不挤压列表宽度）——与会话内工作台的两个抽屉同款 */
