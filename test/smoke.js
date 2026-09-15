@@ -118,6 +118,9 @@ for (const comp of ['FoldableText', 'CancelButton', 'ProductRail', 'RunList', 'B
 ok(/export const stageStatusText = /.test(sharedSrc) && /t\('stageStatus\.cancelled'\)/.test(sharedSrc), 'shared：阶段状态专用词表 stageStatusText（cancelled 单独取词，其余仍共用 status.*）')
 ok((clientSrc.match(/stageStatusText\(/g) || []).length >= 2 && (panelSrc.match(/stageStatusText\(/g) || []).length >= 3, '阶段渲染（流水线节点/阶段抽屉/阶段行/选中阶段/尝试历史）全走 stageStatusText，无一处回退 stText')
 ok(/'stageStatus\.cancelled': '已中止'/.test(localesSrc) && /'stageStatus\.cancelled': 'Stopped'/.test(localesSrc), 'stageStatus.cancelled 词条 zh/en 同形且不撞词（已中止 / Stopped；不撞 runStatus 的 已中断/已取消）')
+// 相位组头取色：`cancelled` 不得算「失败」（否则用户主动中断的组头被涂成错误色红，而阶段卡竖条/chip 是灰的
+// → 红头灰身）。回退写法 = anyFail 里出现 `'cancelled'`。
+ok(/const anyFail = g\.stages\.some\(\(s\) => s\.status === 'failed' \|\| s\.status === 'needs-human'\)/.test(clientSrc) && !/anyFail[\s\S]{0,120}'cancelled'/.test(clientSrc), 'client：相位组头取色不把 cancelled 当失败（anyFail 只认 failed/needs-human）')
 
 console.log('── 3) host 模块结构 ──')
 const hostSrc = [

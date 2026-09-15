@@ -51,7 +51,12 @@ function layoutFlow(groups, viewW) {
   let maxH = 0
   groups.forEach((g, i) => {
     const anyRun = g.stages.some((s) => s.status === 'running')
-    const anyFail = g.stages.some((s) => s.status === 'failed' || s.status === 'needs-human' || s.status === 'cancelled')
+    // `cancelled` **不算失败**（2026-09-16 实测截图修正）：中断是用户主动动作，不是 run 的失败态。
+    // 旧写法把它与 failed/needs-human 并列 → 被中断的相位组头取错误色（红），而同一节点里阶段卡的
+    // 竖条与「已中止」chip 是灰的（STATUS_COLOR.cancelled = text2）→ 红头灰身自相矛盾。
+    // 删掉后该组落到兜底 T.text2（灰，与 chip 同色）；真失败（failed/needs-human）仍为红。
+    // 注意不会误变绿：allDone 要求每个阶段都 done，被中断的阶段不满足。
+    const anyFail = g.stages.some((s) => s.status === 'failed' || s.status === 'needs-human')
     const allDone = g.stages.length > 0 && g.stages.every((s) => s.status === 'done')
     const headColor = anyRun ? T.brand : anyFail ? T.error : allDone ? T.success : T.text2
     const h = HEAD_H + 10 + g.stages.reduce((a, s) => a + cardH(s), 0) + Math.max(0, g.stages.length - 1) * 7
