@@ -65,19 +65,19 @@ AGENTS.md is unconditionally injected into every session by the harness; it is *
 
 ```
 web profile host composition
-├── teamflow-host   (dsh-plugin-teamflow/host)      Cordis service `teamflow`
-│     └── TeamflowService extends TypertRemoteService
-│           ├── ctx.typert.register(strict descriptors)   ← 17 Remote methods
-│           ├── ctx.tools.register(teamflow_*)            ← 12 model tools
-│           └── node:fs → $DSH_HOME/teamflow/...
-└── teamflow-client (dsh-plugin-teamflow/client, auto-scanned)  ← package.json declares dsh.client,
-      └── ctx.remote.$mount(TEAMFLOW_REMOTE_CONTRIBUTION)      no patch line needed, clientModules auto-registers
-            └── conversation.view tab "🏭 Team Workspace"
+├── teamflow-host   (host/)     Cordis service `teamflow`
+│     ├── ctx.typert.register(strict descriptors)   ← Remote methods (`descriptors.ts` pure data, shared by host / client)
+│     ├── ctx.tools.register(teamflow_*)            ← model tools
+│     └── node:fs → $DSH_HOME/teamflow/…            ← backlog / journal / archived logs
+└── teamflow-client (client/)   ← `package.json` declares `dsh.client`; the host composition scans and registers it
+      ├── conversation.view "🏭 Team Workspace" (in-session tab)
+      ├── sidebar.panellist + main/teamflow (global product-line panel)
+      └── sidebarRightTabs "teamflow-run" (right-sidebar run detail)
 ```
 
-**Why not the @Remote decorator**: host plugins are distributed as plain JS to avoid decorator syntax / TS compilation requirements; `ctx.typert.register` registers strict descriptors (`descriptors.js` pure data, shared by host/client, keeping endpoint and wire parameters consistent).
+Two hard constraints shaped this (details in `AGENTS.md` §3): **no `@Remote` decorator** (plugins ship as plain JS, so Remote uses `ctx.typert.register`'s strict descriptors); **it must be a host-level plugin** (a dynamic plugin's `fs` is sandboxed to the runtime root and cannot write `$DSH_HOME`).
 
-**Why a host-level plugin (not a dynamic plugin)**: dynamic (in-session) plugins run in a restricted sandbox whose `fs` is hard-limited to the runtime root and cannot write to `$DSH_HOME` or the session workspace (observed `file access denied under workspace-write mode`). Only a formal plugin inside the host composition has real Node `fs`, able to land backlog in `$DSH_HOME`, and the client can register an independent tab.
+
 
 ## Directory structure
 

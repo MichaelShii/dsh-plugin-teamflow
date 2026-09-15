@@ -65,26 +65,19 @@ AGENTS.md 会被 harness 无条件注入每个会话，是**团队资产**。Tea
 
 ```
 web profile 宿主组合
-├── teamflow-host   (dsh-plugin-teamflow/host)      Cordis service `teamflow`
-│     └── TeamflowService extends TypertRemoteService
-│           ├── ctx.typert.register(strict descriptors)   ← 22 个 Remote 方法
-│           ├── ctx.tools.register(teamflow_*)            ← 12 个模型工具
-│           └── node:fs → $DSH_HOME/teamflow/...
-└── teamflow-client (dsh-plugin-teamflow/client，自动扫描)  ← package.json 声明 dsh.client，
-      └── ctx.remote.$mount(TEAMFLOW_REMOTE_CONTRIBUTION)     无需 patch 行，clientModules 自动注册
-            ├── conversation.view tab「🏭 团队工作台」（会话内）
-            ├── sidebar.panellist + main/teamflow（全局产品线面板）
-            └── sidebarRightTabs「teamflow-run」（右栏 run 详情 tab）
+├── teamflow-host   (host/)     Cordis service `teamflow`
+│     ├── ctx.typert.register(strict descriptors)   ← Remote 方法（descriptors.ts 纯数据，host / client 共用）
+│     ├── ctx.tools.register(teamflow_*)            ← 模型工具
+│     └── node:fs → $DSH_HOME/teamflow/…            ← backlog / journal / 归档日志
+└── teamflow-client (client/)   ← package.json 声明 dsh.client，宿主组合自动扫描注册
+      ├── conversation.view「🏭 团队工作台」（会话内 tab）
+      ├── sidebar.panellist + main/teamflow（全局产品线面板）
+      └── sidebarRightTabs「teamflow-run」（右栏 run 详情）
 ```
 
-**为什么不用 @Remote 装饰器**：宿主插件以纯 JS 分发，避免装饰器语法/TS 编译要求；
-用 `ctx.typert.register` 注册 strict 描述符（`descriptors.js` 纯数据，host/client 共用一份，
-保证 endpoint 与 wire 参数一致）。
+两条硬约束决定了这个形态（详见 `AGENTS.md` §3）：**不用 `@Remote` 装饰器**（插件以纯 JS 分发，Remote 走 `ctx.typert.register` 的严格描述符）；**必须是宿主级插件**（动态插件的 `fs` 被沙箱限制在运行时根，写不了 `$DSH_HOME`）。
 
-**为什么是宿主级插件（而不是动态插件）**：动态（会话内）插件宿主运行在受限沙箱，
-其 `fs` 被硬限制在运行时根，无法写入 `$DSH_HOME` 或会话工作区（实测
-`file access denied under workspace-write mode`）。只有宿主组合里的正式插件拥有真实
-Node `fs`，能把 backlog 落到 `$DSH_HOME`，且 client 能注册独立 tab。
+
 
 ## 目录结构
 

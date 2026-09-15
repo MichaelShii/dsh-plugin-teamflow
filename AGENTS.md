@@ -68,6 +68,7 @@ client/
 ```
 
 **规则**：依赖只允许 `types/constants/util` → `prompts`/`core/*` → `index`（门面）；严禁反向/循环。所有 Prompt 文本必须进 `prompts/index.ts`。
+**宿主级插件的两条硬约束（README「架构」节的那两条取舍，勿回退）**：① **不用 `@Remote` 装饰器**——插件以纯 JS 分发（宿主从 profile 的 `node_modules` 加载 `lib/`），Remote 面走 `ctx.typert.register` 的**严格描述符**（`descriptors.ts` 纯数据、host/client 共用一份，保证 endpoint 与 wire 参数一致）；② **必须是宿主组合里的正式插件**（不做动态 / 会话内插件）——动态插件的 `fs` 被硬限制在运行时根，写不了 `$DSH_HOME`（实测 `file access denied under workspace-write mode`），而 backlog / journal / 日志归档全落在 `$DSH_HOME/teamflow/`；也只有正式插件能注册独立 tab（`conversation.view` / `main` / `sidebarRightTabs`）。
 **客户端文案规则**：一切用户可见文案进 `client/locales.ts`，组件里写 `t('key')`（禁止裸中文字面量；`test/smoke.js` 有闸）。
 **host 文案规则**：一切用户/模型可见文案进 `host/locales{,.d}/`，调用 `t(locale, key, params)`；语言一律取 run 快照（`runLocaleOf(journal)`）或环境语言（`ambientLocale()`），**不得在消费点各自读 settings/自建语言缓存**；判据/解析词表只增不改（见 §5 语言层锚点）。
 
