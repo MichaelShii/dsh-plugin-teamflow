@@ -122,6 +122,8 @@ export interface TriageVerdict {
   blockers: TriageBlocker[]
   /** 被合格线丢弃的条数（诊断：>0 说明 triage 提了不合格问题 → 记 warn）。 */
   blockersDropped: number
+  /** host 侧填：档位被**架构护栏**从哪个档位升上来（ADR-0006）；仅审计/日志用，不参与路由。 */
+  upgradedFrom?: PipelineMode | null
 }
 
 /** 需求意图。 */
@@ -140,6 +142,34 @@ export interface TriageBlocker {
 }
 
 export const TRIAGE_INTENTS: TriageIntent[] = ['requirement', 'exploration', 'feedback']
+
+/**
+ * 档位「轻重」序（**只用于架构护栏强升**）。tech 与 lite 同级——两者都跑轻量蓝图，差异在语义不在轻重；
+ * patch 最轻（单 agent 直改）。
+ */
+export const MODE_RANK: Record<PipelineMode, number> = { patch: 0, lite: 1, tech: 1, medium: 2, full: 3 }
+
+/**
+ * **架构护栏强升**（ADR-0006 的护栏不得因「调用方显式指定档位」而失效）。
+ *
+ * 背景（2026-09-16 实测）：`lite` 参数描述里写了 "(recommended) for small changes"，模型逐字引用它自行传
+ * `lite: true`——33 次启动里 14 次显式传档位（其中 0 次先跑 `teamflow_triage` 预览），于是 triage 的
+ * 「架构信号 → 至少 medium」护栏与澄清闸门在 **42% 的启动**上被静默绕过。
+ *
+ * 规则：调用方**没给**档位 → 用分诊的；给了更轻的档位而分诊判 ≥medium → 升到分诊档位（架构型需求不得
+ * 走轻档位）；调用方给的是 medium/full（或已 ≥ 分诊档位）→ **保持调用方选择**（避免无谓 token 放大）。
+ * 返回 null 表示不改动。
+ */
+export function guardrailUpgrade(explicit: PipelineMode | undefined, lite: boolean, triaged: PipelineMode): PipelineMode | null {
+  const want = MODE_RANK[triaged] || 0
+  // 调用方没给档位 → 直接用分诊的
+  if (!explicit && !lite) return triaged
+  const have = explicit ? (MODE_RANK[explicit] || 0) : MODE_RANK.lite
+  // 只在「调用方选了轻档位（patch/lite/tech）」且「分诊判 ≥medium」时强升；
+  // 调用方已选 medium/full 时**保持其选择**（那已满足护栏，再升只是无谓 token 放大）。
+  if (have <= MODE_RANK.lite && want >= MODE_RANK.medium) return triaged
+  return null
+}
 
 /** 意图归一：非法/缺失一律 `requirement`（**绝不因为模型没给字段就拦启动**）。 */
 export const normalizeIntent = (raw: unknown): TriageIntent =>

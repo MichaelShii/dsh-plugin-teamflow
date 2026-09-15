@@ -14,7 +14,7 @@ import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, FIX_GATE_PATTERN } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
-import type { Journal, PipelineOptions, ResumeContext } from '../types.ts'
+import type { Journal, PipelineOptions, ResumeContext, PipelineMode } from '../types.ts'
 import { normalizeMode, runTriage, normalizeIntent, qualifyBlockers, type TriageVerdict } from './triage.ts'
 import { loadTeams, findTeam, getActiveStages, teamNameOf } from './teams.ts'
 import { loadState, extractStateBlock, mergeStateBlock, noteRun } from './state.ts'
@@ -137,6 +137,8 @@ function normalizeTriagePassthrough(raw: unknown): TriageVerdict | null {
     intent: normalizeIntent(o.intent),
     blockers: qb.blockers,
     blockersDropped: qb.dropped,
+    // host 侧填：档位被架构护栏从 X 升上来（ADR-0006）——仅用于日志与审计，不参与路由
+    upgradedFrom: (normalizeMode(o.__upgradedFrom) || null) as PipelineMode | null,
   }
 }
 
@@ -145,6 +147,7 @@ function triageRecordOf(v: TriageVerdict) {
   return {
     mode: v.mode, kind: v.kind, complexity: v.complexity, confidence: v.confidence, source: v.source,
     intent: v.intent, blockers: v.blockers, blockersDropped: v.blockersDropped,
+    upgradedFrom: (v as { upgradedFrom?: string | null }).upgradedFrom || null,
   }
 }
 
@@ -267,6 +270,9 @@ export async function executePipeline(
     triageSlug = preTriage.slug || ''
     journal.triage = triageRecordOf(preTriage)
     journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.triage', { kind: preTriage.kind, mode: preTriage.mode, source: preTriage.source }) })
+    // 架构护栏强升可见化（ADR-0006）：调用方自选轻档位、分诊判 ≥medium → 已升档（模型自选档位不得绕过护栏）
+    const upFrom = (preTriage as { upgradedFrom?: string | null }).upgradedFrom
+    if (upFrom) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.modeUpgraded', { from: upFrom, to: preTriage.mode }) })
     if (preTriage.blockersDropped > 0) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageBlockersDropped', { n: preTriage.blockersDropped }) })
   } else if (options.mode === undefined && !options.lite) {
     try {

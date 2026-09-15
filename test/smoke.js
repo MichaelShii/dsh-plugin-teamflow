@@ -155,7 +155,7 @@ ok(/stages: j\.stages\.map\(\(s\) => \(\{ seq: s\.seq, label: s\.label, phase: s
 // 需求澄清闸门（2026-09-16 Phase 1）：① 启动前「探索态不建 run」② 假设可见化。
 // 相位性约束（勿回退）：闸门只在分诊给出非 requirement 意图或合格 blocker 时拦；分发不可用时放行。
 ok(/async function clarificationPreflight/.test(hostSrc), 'host：启动前澄清预检存在（clarificationPreflight）')
-ok(/if \(options\.mode !== undefined \|\| options\.lite\) return \{ verdict: null \}/.test(hostSrc), 'host：显式 mode/lite 与现状一致不跑分诊（不走闸门，零回归）')
+ok(/if \(options\.mode === 'patch'\) return \{ verdict: null \}/.test(hostSrc), 'host：预检只豁免 patch（lite/显式 mode 一律跑分诊——2026-09-16 放宽，旧「显式档位全豁免」会让闸门与架构护栏在 42% 启动上失效）')
 ok(/verdict\.intent !== 'requirement' \|\| verdict\.blockers\.length > 0/.test(hostSrc), 'host：闸门判据 = 意图非明确需求 或 存在合格 blocker')
 ok(/status: 'needs-clarification'/.test(hostSrc) && /needs-clarification[\s\S]{0,400}requirementSupplement/.test(hostSrc), 'host：needs-clarification 返回 + 指引带 requirementSupplement 重调')
 ok(/\(options as unknown as Record<string, unknown>\)\.__triage = pre\.verdict/.test(hostSrc), 'host：分诊裁决透传 pipeline（避免重复一次模型调用）')
@@ -554,12 +554,39 @@ ok(/executePipeline\(journal, agent, journal\.requirement, execOptions, signal\)
 // B2 回归锁：假设段提取必须走 util.extractAssumptionsSection（行式，容错编号标题 / 空正文两个实测坑）
 ok(/extractAssumptionsSection\(doc\)/.test(pipelineSrc) && /export function extractAssumptionsSection/.test(utilSrc), 'pipeline/util：PRD 假设段走 extractAssumptionsSection（编号标题 + 空正文两坑已修）')
 ok(!/\^#\{1,6\}\[ \\t\]\*\(假设\|待澄清/.test(pipelineSrc), 'pipeline：不再内联那条匹配不到编号标题的正则')
+// 档位自选治理（2026-09-16 实测：模型逐字引用参数描述里的 "(recommended)" 自选 lite；33 次启动 14 次显式传档位、0 次先预览）
+ok(!/Lightweight mode for small changes \(recommended\)/.test(hostSrc), 'host：lite 参数描述不再写 "(recommended)"（那正是模型自选 lite 的依据）')
+ok(/Do NOT pick the tier yourself by default/.test(hostSrc) && /let auto-triage decide/.test(hostSrc), 'host：lite/mode 描述明确「默认不要自选档位，交给自动分诊」')
+ok(/omit `mode`\/`lite` and let auto-triage decide the tier/.test(hostSrc), 'host：工具描述同步该口径（Routing 段）')
+ok(/if \(options\.mode === 'patch'\) return \{ verdict: null \}/.test(hostSrc), 'host：预检只豁免 patch（lite/显式 mode 一律跑分诊，否则 42% 启动绕过闸门与架构护栏）')
+ok(/guardrailUpgrade\(explicit, !!options\.lite, pre\.verdict\.mode\)/.test(hostSrc) && /guardrailUpgrade\(explicit, !!\(opts as Record<string, unknown>\)\.lite/.test(hostSrc), 'host：工具路径与 Remote 路径都过架构护栏强升')
+ok(/log\.modeUpgraded/.test(pipelineSrc) && /__upgradedFrom/.test(hostSrc) && /__upgradedFrom/.test(pipelineSrc), 'pipeline：升档落日志（调用方自选轻档位被护栏纠正时可见）')
 // 注入文案闭环（2026-09-16 实测补充）：实测会话 session-518e9188 里团队注入已下发、用户说「我想开发一个
 // dsh 插件」，但**模型根本没调用 teamflow_start**（0 次调用、该产品线 runs=0）——不复现「抢跑」，可闸门也
 // 就没机会生效。旧注入只写「不明确就别调用」，没写「澄清完要回来开工」→ 这条链没有闭环保证。故补三段。
 ok(/【需求不明确就先澄清，不要抢跑】/.test(hostSrc) && /【澄清完必须回到流水线】/.test(hostSrc), '注入（zh）：澄清前置 + 澄清后必须回带 requirementSupplement 开工')
 ok(/\[Clarify first, do not jump the gun\]/.test(hostSrc) && /\[After clarifying, come back to the pipeline\]/.test(hostSrc), '注入（en）：同上（语言跟随会话，双语同形门禁另有 locale 测试）')
 ok(/若 teamflow_start 返回 needs-clarification，按它列出的 blockers 继续问用户/.test(hostSrc) && /If teamflow_start returns needs-clarification, keep asking the user about the blockers/.test(hostSrc), '注入：needs-clarification 的处理指引（按 blockers 问 → 带 supplement 重调，禁止替用户假设）')
+
+// ── 文档完整性门禁（2026-09-16 实证）──
+// 补丁脚本用 String.replace(from, to) 时，替换文本里的 `` $` `` / `$&` / `$'` 会被当成**特殊模式**，
+// 把匹配点前后的文件内容插进来 → AGENTS.md / CHANGELOG.md / devlog.md 被整份复制成两份（白占注入预算）。
+// 这里按「关键标记只能出现一次 + 体量上限」兜住这类结构性损坏（写文档的脚本必须用函数式替换）。
+const docFiles = [
+  ['AGENTS.md', '# AGENTS.md —', 1, 60 * 1024],
+  ['AGENTS.md', '## 5. 当前行为锚点', 1, 60 * 1024],
+  ['AGENTS.md', '## 6. 变更记录', 1, 60 * 1024],
+  ['CHANGELOG.md', '## [0.2.0]', 1, 200 * 1024],
+  ['docs/devlog.md', '## 迭代变更流水', 1, 300 * 1024],
+  ['docs/TODO.md', '## 真待办', 1, 120 * 1024],
+  ['README.md', '## 界面预览', 1, 60 * 1024],
+  ['README.en.md', '## Screenshots', 1, 60 * 1024],
+]
+for (const [f, marker, want, cap] of docFiles) {
+  const body = readFileSync(join(here, `../${f}`), 'utf8')
+  const n = body.split(marker).length - 1
+  ok(n === want && body.length <= cap, `文档完整性：${f} 「${marker}」出现 ${n} 次（期望 ${want}）、${(body.length / 1024).toFixed(0)}KB ≤ ${(cap / 1024).toFixed(0)}KB`)
+}
 
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

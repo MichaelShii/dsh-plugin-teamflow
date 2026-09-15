@@ -37,7 +37,7 @@ import { join } from 'node:path'
 import { mkdirSync, readdirSync } from 'node:fs'
 import { executePipeline, summarizeTimeline, startPipeline, resumeRun } from './core/pipeline.ts'
 import { cancelRun } from './core/context.ts'
-import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, normalizeMode, runTriage, type TriageVerdict } from './core/triage.ts'
+import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, normalizeMode, runTriage, guardrailUpgrade, type TriageVerdict } from './core/triage.ts'
 import { t, modeDesc } from './locales.ts'
 import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.ts'
 
@@ -52,8 +52,12 @@ import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.
  * `needs-clarification`，**不建 run**——实锤：社区讨论 #6405 用户说「我想开发一个 dsh 插件」→ 直接跑完整条
  * 流水线（他本人：「我都不知道自己想要啥」）。
  *
- * 边界（Phase 1）：显式 `mode` / `lite` 与现状一致**不跑分诊**（因此不走本闸门）；分诊不可用/超时 → verdict=null
- * → **放行**（退回现状行为，零回归）。裁决透传给 pipeline（`options.__triage`），避免重复一次模型调用。
+ * 边界（2026-09-16 放宽，勿回退）：**只有 `patch` 档豁免**——其余一律跑（含显式 `lite`/`mode`）。原因：实测
+ * 模型**系统性**自行传档位（33 次启动里 14 次显式传入、只有 0 次先跑 `teamflow_triage` 预览），若继续豁免，
+ * 澄清闸门与 ADR-0006 的架构护栏会在 **42% 的启动**上静默失效。分诊不可用/超时 → verdict=null → **放行**
+ * （退回现状行为，零回归）。裁决透传 pipeline（`options.__triage`）：**不重复跑分诊**，并让 `journal.triage`
+ * 拿到 shadow 样本。档位处理：调用方没给 → 用分诊档位；给了更轻的而分诊判 ≥medium → **护栏强升**
+ * （`guardrailUpgrade`，ADR-0006）；调用方给的是 medium/full（或已 ≥ 分诊档位）→ 保持其选择。
  */
 async function clarificationPreflight(
   requirement: string,
@@ -61,7 +65,7 @@ async function clarificationPreflight(
   parent: unknown,
   locale: ReturnType<typeof ambientLocale>,
 ): Promise<{ needsClarification: { intent: string; blockers: TriageVerdict['blockers'] } } | { verdict: TriageVerdict | null }> {
-  if (options.mode !== undefined || options.lite) return { verdict: null }
+  if (options.mode === 'patch') return { verdict: null }
   let verdict: TriageVerdict | null = null
   try {
     verdict = await runTriage(requirement, { needDesign: options.needDesign === true }, parent, undefined, locale)
@@ -136,14 +140,14 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_start',
-    description: 'Start the team R&D pipeline (background async): runs the stages per team config (PRD→design→tech→dev→QA→acceptance). Specify teamId (matches teams.json) or pick a team via the UI "+" button first so messages auto-match. Stage failures auto-retry; beyond threshold → rework/human intervention; per-stage token usage recorded. NOTE: after calling, the implementation work is done by pipeline subagents — the main thread MUST NOT write code or run verifications for it. requirement must be a faithful transcription of the user\'s words; do not invent file paths / tech claims without code verification (downstream stages build the PRD from it). Clarification gate: if the return status is "needs-clarification", this is NOT a settled requirement yet (or it has must-know gaps) — do NOT retry blindly: discuss it with the user in your own words (the returned blockers list what is missing and why), then RE-CALL this tool with the original requirement plus requirementSupplement = the user\'s answers. Branch decision: when the return status is "needs-decision", ASK THE USER to pick one of the options (or take their custom input, e.g. a branch name), then RE-CALL this tool passing the CHOSEN OPTION VALUE as branchPolicy ("new" = confirmed create branch, "keep" = stay), optionally combined with preAction / branchName / commitMessage. Pass branchPolicy="keep" when the user chooses to stay on the current branch.',
+    description: 'Start the team R&D pipeline (background async): runs the stages per team config (PRD→design→tech→dev→QA→acceptance). Specify teamId (matches teams.json) or pick a team via the UI "+" button first so messages auto-match. Stage failures auto-retry; beyond threshold → rework/human intervention; per-stage token usage recorded. NOTE: after calling, the implementation work is done by pipeline subagents — the main thread MUST NOT write code or run verifications for it. Routing: omit `mode`/`lite` and let auto-triage decide the tier (it applies the architecture guardrails); pass them only when the user explicitly asked for that tier. requirement must be a faithful transcription of the user\'s words; do not invent file paths / tech claims without code verification (downstream stages build the PRD from it). Clarification gate: if the return status is "needs-clarification", this is NOT a settled requirement yet (or it has must-know gaps) — do NOT retry blindly: discuss it with the user in your own words (the returned blockers list what is missing and why), then RE-CALL this tool with the original requirement plus requirementSupplement = the user\'s answers. Branch decision: when the return status is "needs-decision", ASK THE USER to pick one of the options (or take their custom input, e.g. a branch name), then RE-CALL this tool passing the CHOSEN OPTION VALUE as branchPolicy ("new" = confirmed create branch, "keep" = stay), optionally combined with preAction / branchName / commitMessage. Pass branchPolicy="keep" when the user chooses to stay on the current branch.',
     parameters: {
       requirement: { type: 'string', required: true, description: 'The user requirement — faithful transcription of the user\'s words; no fabricated file paths, tech designs, or unverified claims' },
       teamId: { type: 'string', description: 'Team id (matches teams.json; defaults to the currently selected team of this session)' },
       needDesign: { type: 'boolean', description: 'Set true when the change involves UI' },
       needScaffold: { type: 'boolean', description: 'Set true when the project does not exist yet' },
-      lite: { type: 'boolean', description: 'Lightweight mode for small changes (recommended): still runs the lightweight architecture stage (blueprint for dev, no full TECHNICAL.md), then dev → QA → acceptance; if needDesign=true the UI/UX design stage stays (saves tokens/time, traceability preserved)' },
-      mode: { type: 'string', description: 'Route mode: full / medium / lite / tech / patch (auto-triage by default; use teamflow_triage to preview)' },
+      lite: { type: 'boolean', description: 'Lightweight mode for genuinely small single-module changes. **Do NOT pick the tier yourself by default**: omit both `mode` and `lite` and let auto-triage decide — it applies the architecture guardrails (persistence/abstraction/cross-module → at least medium) that a hand-picked tier bypasses. Set `lite=true` only when the USER explicitly asked for a lightweight/fast run, or the change is a proven single-module micro change.' },
+      mode: { type: 'string', description: 'Route mode: full / medium / lite / tech / patch. **Do NOT pick the tier yourself by default** — omit it and let auto-triage decide (recommended), or preview with teamflow_triage and pass what it returns. A hand-picked lighter tier is subject to the architecture guardrail: if triage judges the requirement architectural it is upgraded (logged), so the guardrail can never be bypassed.' },
       productRoot: { type: 'string', description: 'Product line directory (e.g. products/tetris)' },
       maxConcurrency: { type: 'integer', description: 'Dev task concurrency (default 3, max 8)' },
       branchPolicy: { type: 'string', description: 'Branch policy: "auto" (default, triggers needs-decision when not yet confirmed) — create a feature branch feat/<branchName|slug> from the current HEAD; "keep" — stay on current branch; "new" — the confirmed value returned by needs-decision options (user already picked "create branch"), pass it back as-is to proceed. When auto and a decision is needed (dirty workspace / on main etc.), the tool returns needs-decision for you to ask the user first.' },
@@ -234,8 +238,16 @@ function registerTools(ctx) {
           return { status: 'needs-clarification', intent: pre.needsClarification.intent, blockers: pre.needsClarification.blockers }
         }
         if (pre.verdict) {
-          // 复用同一份裁决：写回 mode/needDesign/slug 并透传给 pipeline（pipeline 不再重复跑分诊）
-          options.mode = pre.verdict.mode as typeof options.mode
+          // 复用同一份裁决：写回档位并透传给 pipeline（pipeline 不再重复跑分诊）
+          // 档位：调用方没给 → 用分诊的；给了更轻的而分诊判 ≥medium → **架构护栏强升**（ADR-0006）；
+          // 给了 medium/full → 保持调用方选择（避免无谓 token 放大）。
+          const explicit = options.mode as typeof options.mode
+          const up = guardrailUpgrade(explicit, !!options.lite, pre.verdict.mode)
+          if (up) {
+            if (up !== explicit) (pre.verdict as unknown as Record<string, unknown>).__upgradedFrom = explicit || (options.lite ? 'lite' : 'full')
+            options.mode = up
+            options.lite = up === 'lite' || up === 'tech' || up === 'patch' ? !!options.lite : false
+          }
           if (pre.verdict.needDesign) options.needDesign = true
           ;(options as unknown as Record<string, unknown>).__triage = pre.verdict
         }
@@ -845,7 +857,13 @@ export class TeamflowService extends TypertRemoteService {
         return { ok: false, status: 'needs-clarification', intent: pre.needsClarification.intent, blockers: pre.needsClarification.blockers }
       }
       if (pre.verdict) {
-        opts.mode = pre.verdict.mode
+        const explicit = opts.mode as typeof opts.mode
+        const up = guardrailUpgrade(explicit, !!(opts as Record<string, unknown>).lite, pre.verdict.mode)
+        if (up) {
+          if (up !== explicit) (pre.verdict as unknown as Record<string, unknown>).__upgradedFrom = explicit || ((opts as Record<string, unknown>).lite ? 'lite' : 'full')
+          opts.mode = up
+          if (up !== 'lite' && up !== 'tech' && up !== 'patch') (opts as Record<string, unknown>).lite = false
+        }
         if (pre.verdict.needDesign) opts.needDesign = true
         ;(opts as Record<string, unknown>).__triage = pre.verdict
       }

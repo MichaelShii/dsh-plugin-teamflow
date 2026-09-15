@@ -8,9 +8,11 @@
  *     即零回归（闸门只在模型明确说「这还不是明确需求」时才拦）。
  *  3) **假设段提取（extractAssumptionsSection）**：产物标题带编号/附录前缀、中英混排都要能摘到；
  *     正文为空视为未记录 —— 实测 tf-mu34afd2-wcjaw1 踩过「带编号标题匹配不到 + 懒匹配摘出空串」两个坑。
+ *  4) **架构护栏强升（guardrailUpgrade）**：调用方自选轻档位不得绕过 ADR-0006 的护栏；
+ *     实测模型系统性自选 `lite:true`（33 次启动 14 次显式传档位、0 次先预览），故放宽为「只有 patch 豁免」。
  * 另外锁住意图归一（非法值一律 requirement，绝不因字段缺失拦启动）。
  */
-import { qualifyBlockers, normalizeIntent, runTriage, TRIAGE_INTENTS } from '../host/core/triage.ts'
+import { qualifyBlockers, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK } from '../host/core/triage.ts'
 import { extractAssumptionsSection } from '../host/util.ts'
 
 let failed = 0
@@ -83,6 +85,20 @@ ok(extractAssumptionsSection('## 待澄清\n\n   \n## 下一节\nx') === null, '
 ok(extractAssumptionsSection('## 9. 假设与待澄清\n最后一段没有后续标题') === '最后一段没有后续标题', '该段位于文末也能摘到')
 ok(extractAssumptionsSection('## 1. 背景\n没有假设段') === null, '没有该标题 → null')
 ok(extractAssumptionsSection('') === null && extractAssumptionsSection(null) === null && extractAssumptionsSection(undefined) === null, '空/未定义输入 → null（不抛）')
+
+console.log('\n[5] 架构护栏强升（ADR-0006：调用方自选档位不得绕过）')
+ok(MODE_RANK.patch === 0 && MODE_RANK.lite === 1 && MODE_RANK.tech === 1 && MODE_RANK.medium === 2 && MODE_RANK.full === 3, '轻重序：patch < lite/tech < medium < full')
+ok(guardrailUpgrade(undefined, false, 'medium') === 'medium', '调用方没给档位 → 用分诊档位')
+ok(guardrailUpgrade(undefined, false, 'patch') === 'patch', '同上（patch 也照用）')
+ok(guardrailUpgrade(undefined, true, 'lite') === null, 'lite=true 且分诊也判 lite → 不改动（尊重调用方）')
+ok(guardrailUpgrade(undefined, true, 'medium') === 'medium', 'lite=true 但分诊判 medium → **升档**（护栏）')
+ok(guardrailUpgrade(undefined, true, 'full') === 'full', 'lite=true 但分诊判 full → 升档')
+ok(guardrailUpgrade('lite', false, 'medium') === 'medium', '显式 mode=lite 但分诊判 medium → 升档（实测模型自选 lite 的常见路径）')
+ok(guardrailUpgrade('patch', false, 'lite') === null, '显式 patch + 分诊 lite → 不改动（patch 本就走豁免）')
+ok(guardrailUpgrade('medium', false, 'medium') === null, '显式 medium + 分诊 medium → 不改动')
+ok(guardrailUpgrade('medium', false, 'full') === null, '显式 medium + 分诊 full → 保持调用方选择（不无谓放大 token）')
+ok(guardrailUpgrade('full', false, 'lite') === null, '显式 full + 分诊 lite → 不降档（尊重调用方）')
+ok(guardrailUpgrade('tech', false, 'medium') === 'medium', '显式 tech + 分诊 medium → 升档（tech 与 lite 同级，架构型需求仍要蓝图）')
 
 console.log(failed ? `\n✗ triage-gate：${failed} 条失败\n` : '\n✓ triage-gate：全部通过\n')
 process.exit(failed ? 1 : 0)
