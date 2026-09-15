@@ -118,6 +118,29 @@ function assertContract({ id, level, intent, targets, include = [], exclude = []
 
 console.log('── L1 prompt 行为级契约（工厂真实产出断言）──')
 
+// ── 需求澄清闸门（2026-09-16 Phase 1）：分诊的 intent/blockers 契约 + PRD 的假设段契约 ──
+// 这两条是闸门的数据源：分诊不输出 intent/blockers → 探索态需求直接开跑；PRD 不写假设段 → 假设继续不可见。
+assertContract({
+  id: 'TRIAGE-INTENT-BLOCKERS', level: 'policy', targets: 'triagePrompt',
+  intent: '分诊输出 intent（需求/探索/反馈）+ 合格 blocker 四字段（question/readings≥2/changes/rework）',
+  include: [/"intent": "requirement\|exploration\|feedback"/, /"blockers": \[\{ "question"/, /\[INTENT — decide before mode\]/, /\[BLOCKERS — must-know gaps only\]/, /readings/, /rework/],
+})
+assertContract({
+  id: 'PRD-ASSUMPTIONS-SECTION', level: 'policy', targets: 'prdPrompt',
+  intent: 'PRD 必填「假设/待澄清」段 + 镜像进 state 块 openQuestions（假设可见化的落点）',
+  include: [/\[Assumptions · mandatory\]/, /openQuestions/, /假设与待澄清/],
+})
+assertContract({
+  id: 'PRD-ASSUMPTIONS-SECTION-EN', level: 'policy', targets: 'prdPrompt', en: true,
+  intent: 'en run 的 PRD 同样要求假设段（语言跟随 run 快照，不写死中文标题）',
+  include: [/\[Assumptions · mandatory\]/, /openQuestions/, /Assumptions & open questions/],
+})
+assertContract({
+  id: 'TECH-PATCH-ASSUMPTIONS', level: 'policy', targets: ['techChangePrompt', 'patchConfirmPrompt'],
+  intent: '非 PRD 档位（tech 变更单 / patch 确认单）也要一句话假设，避免覆盖缺口',
+  include: [/假设与待澄清/],
+})
+
 // ── HOST-ENFORCED：验收结论契约（parseAcceptanceVerdict 只认显式结论行）──
 assertContract({
   id: 'ACC-VERDICT-LITERAL', level: 'HOST-ENFORCED', targets: 'acceptancePrompt',

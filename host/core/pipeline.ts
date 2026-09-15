@@ -15,7 +15,7 @@ import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext } from '../types.ts'
-import { normalizeMode, runTriage } from './triage.ts'
+import { normalizeMode, runTriage, normalizeIntent, qualifyBlockers, type TriageVerdict } from './triage.ts'
 import { loadTeams, findTeam, getActiveStages, teamNameOf } from './teams.ts'
 import { loadState, extractStateBlock, mergeStateBlock, noteRun } from './state.ts'
 import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddArgs, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR } from './sanity.ts'
@@ -116,6 +116,59 @@ function artifactText(journal: { workspacePath?: string | null; runDocs?: string
 }
 
 /**
+ * tool 侧预检透传的分诊裁决（2026-09-16 需求澄清闸门）：只接受形状正确的对象；
+ * 形状不对 → 返回 null，走回「内部再跑一次分诊」的原路径（绝不因为透传字段坏掉就跳过路由）。
+ */
+function normalizeTriagePassthrough(raw: unknown): TriageVerdict | null {
+  const o = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : null
+  if (!o) return null
+  const mode = normalizeMode(o.mode)
+  if (!mode) return null
+  const qb = qualifyBlockers(o.blockers)
+  return {
+    mode,
+    kind: typeof o.kind === 'string' ? o.kind : '',
+    needDesign: o.needDesign === true,
+    complexity: (['small', 'medium', 'large'].indexOf(String(o.complexity)) !== -1 ? String(o.complexity) : 'medium') as TriageVerdict['complexity'],
+    rationale: Array.isArray(o.rationale) ? (o.rationale as unknown[]).map((x) => String(x)).slice(0, 6) : [],
+    confidence: (['high', 'medium', 'low'].indexOf(String(o.confidence)) !== -1 ? String(o.confidence) : 'medium') as TriageVerdict['confidence'],
+    slug: /^[a-z0-9][a-z0-9-]{2,23}$/.test(String(o.slug || '')) ? String(o.slug) : '',
+    source: o.source === 'fallback' ? 'fallback' : 'model',
+    intent: normalizeIntent(o.intent),
+    blockers: qb.blockers,
+    blockersDropped: qb.dropped,
+  }
+}
+
+/** journal 里的分诊记录（shadow 埋点：Phase 2 据此决定闸门强度，而不是凭感觉）。 */
+function triageRecordOf(v: TriageVerdict) {
+  return {
+    mode: v.mode, kind: v.kind, complexity: v.complexity, confidence: v.confidence, source: v.source,
+    intent: v.intent, blockers: v.blockers, blockersDropped: v.blockersDropped,
+  }
+}
+
+/**
+ * PRD 收口：把「假设 / 待澄清」段摘出来落 `journal.assumptions`（2026-09-16，需求澄清闸门 Phase 1）。
+ *
+ * 为什么必须先做这个（哪怕闸门还没上）：实测 **12/12（另一次 39/39）份 PRD 都没记录过假设**——
+ * agent 的替代决定完全不可见，验收人无从判断"这份 PRD 是不是我想要的"。
+ * 缺失只记 warn（policy 级：闸门落地前先看数据，不硬失败）。
+ */
+function notePrdAssumptions(journal: Journal, locale: HostLocale): void {
+  const doc = artifactText(journal, 'PRD.md') || artifactText(journal, 'TECH-CHANGE.md')
+  if (!doc) return
+  const m = /^#{1,6}[ \t]*(假设|待澄清|开放问题|Assumptions|Open questions?)[^\n]*\n([\s\S]*?)(?=\n#{1,6}[ \t]|\s*$)/im.exec(doc)
+  const body = m ? String(m[2] || '').trim() : ''
+  if (body) {
+    journal.assumptions = clip(body, 2000)
+    journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.prdAssumptions', { n: body.split(/\n+/).filter((l) => l.trim()).length }) })
+  } else {
+    journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.prdAssumptionsMissing') })
+  }
+}
+
+/**
  * 断点续跑起点：第一个「没有任意 done 尝试」的阶段。
  * ⚠️ 按阶段而非尝试判断（实锤 tf-mtcomxpq）：PRD 第 1 次尝试 failed（护栏退化）但第 2 次重试 done——
  * 旧实现取第一个非 done stage → 断点错误回到 PRD，PRD/技术方案被无谓重跑。
@@ -186,6 +239,8 @@ export async function executePipeline(
   if (!resume) journal.startedAt = Date.now()
   const root = options.productRoot || null
   journal.product = root
+  // 澄清答复随 run 落盘（可审计：这份需求在对齐阶段补过什么）；PRD 阶段会作为权威输入下发。
+  journal.requirementSupplement = options.requirementSupplement ? String(options.requirementSupplement) : null
   // 工作区（项目）作用域：workspace slug 同时是并发锁与 backlog 的隔离键
   const scopeKey = journal.workspace || root || 'default'
   // 产品级并发限制（防御：正常入口 startPipeline/resumeRun 已预检；按工作区隔离，互不阻塞）
@@ -202,15 +257,25 @@ export async function executePipeline(
   try { sweepWorkspaceLogs(journal, locale) } catch (e) { /* 清扫失败不影响起跑 */ }
   // 自动分诊（对调用方透明）：未显式 mode 且非 lite 且非续跑 → 内部先用模型思考一轮再路由。
   // 使用者无需了解/选择 mode；mode 是内部路由 + 可选显式覆盖（审计可见）。
+  // 2026-09-16：tool 侧预检已为「探索态不建 run」闸门跑过一次分诊——透传时**复用同一裁决**，
+  // 不重复模型调用；无论哪条路径都把裁决落进 `journal.triage`（shadow 埋点，供 Phase 2 定闸门强度）。
   let triageSlug = ''
-  if (options.mode === undefined && !options.lite) {
+  const preTriage = normalizeTriagePassthrough((options as { __triage?: unknown }).__triage)
+  if (preTriage) {
+    triageSlug = preTriage.slug || ''
+    journal.triage = triageRecordOf(preTriage)
+    journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.triage', { kind: preTriage.kind, mode: preTriage.mode, source: preTriage.source }) })
+    if (preTriage.blockersDropped > 0) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageBlockersDropped', { n: preTriage.blockersDropped }) })
+  } else if (options.mode === undefined && !options.lite) {
     try {
       const verdict = await runTriage(requirement, { needDesign: options.needDesign }, parent, signal, locale)
       options.mode = verdict.mode
       if (verdict.needDesign && !options.needDesign) options.needDesign = true
       triageSlug = verdict.slug || ''
       journal.options = Object.assign({}, options) as Record<string, unknown>
+      journal.triage = triageRecordOf(verdict)
       journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.triage', { kind: verdict.kind, mode: verdict.mode, source: verdict.source }) })
+      if (verdict.blockersDropped > 0) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageBlockersDropped', { n: verdict.blockersDropped }) })
     } catch (e) {
       journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageFail', { msg: String((e && e.message) || e) }) })
     }
@@ -388,8 +453,14 @@ export async function executePipeline(
         : options.mode === 'patch'
           ? { label: t(locale, 'dev.prdPatch'), fn: patchConfirmPrompt }
           : { label: t(locale, 'dev.prdFull'), fn: prdPrompt }
+      // 澄清答复（2026-09-16 需求澄清闸门）：用户在澄清轮补充的说明是**权威输入**——拼在需求之后并显式声明
+      // 「不得再自行假设」，否则 PM 会把自己的旧猜测再填一遍。原始 requirement 保持逐字不变（可审计）。
+      const supplement = journal.requirementSupplement
+      const prdInput = supplement
+        ? `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-assume]\n${supplement}`
+        : requirement
       // patch 档的「单点确认」是机械阶段（核对现状 + 给直改指令，不做架构判断）→ 降档省 token
-      const prdR = await withRetry(journal, parent, pForm.label, 'prd', pForm.fn(requirement, root, journal.id, state), signal, undefined, options.mode === 'patch' ? MECHANICAL_STAGE_EFFORT : null)
+      const prdR = await withRetry(journal, parent, pForm.label, 'prd', pForm.fn(prdInput, root, journal.id, state), signal, undefined, options.mode === 'patch' ? MECHANICAL_STAGE_EFFORT : null)
       if (!prdR.text) { throw stageFailError('prd', prdR) }
       prd = prdR.text
       timeline.prd = prd
@@ -397,6 +468,10 @@ export async function executePipeline(
       noteTaskStageUsage(journal) // PRD 角色的真实 token 累计到任务卡
       if (journal.cancelled) return
     }
+    // PRD 收口（2026-09-16 需求澄清闸门 Phase 1）：把「假设 / 待澄清」段读出来落 journal，
+    // 让完成汇报能显式提示「本次基于以下假设启动」——今天的缺口是**假设完全不可见**
+    // （实测 12/12、39/39 份 PRD 都没这一段），验收人无从知道 agent 替他决定了什么。
+    notePrdAssumptions(journal, locale)
 
     /* ── UI/UX 设计阶段（档位阶段集启用；lite+needDesign 也保留，显式要求的 UI 需求不被吞） ── */
     let design = null

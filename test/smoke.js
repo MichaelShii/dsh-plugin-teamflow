@@ -143,7 +143,7 @@ ok(/class TeamflowService extends TypertRemoteService/.test(hostSrc), 'TeamflowS
 ok(/static inject = \['agents', 'subagents', 'typert', 'tools', 'llm'\]/.test(hostSrc), 'static inject 完整（tokenMeter 死注入已清理）')
 ok(/ctx\.typert\.register\(\{[\s\S]*invocations: TEAMFLOW_DESCRIPTORS/.test(hostSrc), 'typert.register 注册 strict descriptors')
 for (const m of ['ping', 'setLocale', 'list', 'snapshot', 'start', 'cancel', 'backlog', 'backlogUpdate', 'assign', 'pause', 'resumeSession', 'listTeams', 'selectTeam', 'getActiveTeam', 'clearTeam', 'resume', 'stageDetail', 'itemDetail', 'products', 'productView', 'productRunDetail', 'productStageDetail', 'productItemDetail']) {
-  ok(new RegExp(`\\n  ${m}\\(`).test(hostSrc), `Remote 方法 ${m}()`)
+  ok(new RegExp(`\\n  (?:async )?${m}\\(`).test(hostSrc), `Remote 方法 ${m}()`)
 }
 ok(/export default TeamflowService/.test(hostSrc), '默认导出 TeamflowService')
 ok(/from '\.\.\/descriptors\.ts'/.test(hostSrc), 'import descriptors.ts')
@@ -151,6 +151,17 @@ ok(/from '\.\.\/store\.ts'/.test(hostSrc), 'import store.ts（持久化层独立
 // dev 卡片标题（2026-09-16 回归锁）：快照投影**必须带 taskKey**——client 的 stageLabelOf 靠它保留 dev 任务名，
 // 漏掉它会让所有 dev 卡片退化成只剩「开发」（实锤 tf-mtr9mi37-m9zx1u：journal 里标题完好，UI 只剩「开发」）。
 ok(/stages: j\.stages\.map\(\(s\) => \(\{ seq: s\.seq, label: s\.label, phase: s\.phase, taskKey: s\.taskKey/.test(hostSrc), 'host：snapshot 的 stage 投影带 taskKey（client 靠它保留 dev 任务名，勿删）')
+
+// 需求澄清闸门（2026-09-16 Phase 1）：① 启动前「探索态不建 run」② 假设可见化。
+// 相位性约束（勿回退）：闸门只在分诊给出非 requirement 意图或合格 blocker 时拦；分发不可用时放行。
+ok(/async function clarificationPreflight/.test(hostSrc), 'host：启动前澄清预检存在（clarificationPreflight）')
+ok(/if \(options\.mode !== undefined \|\| options\.lite\) return \{ verdict: null \}/.test(hostSrc), 'host：显式 mode/lite 与现状一致不跑分诊（不走闸门，零回归）')
+ok(/verdict\.intent !== 'requirement' \|\| verdict\.blockers\.length > 0/.test(hostSrc), 'host：闸门判据 = 意图非明确需求 或 存在合格 blocker')
+ok(/status: 'needs-clarification'/.test(hostSrc) && /needs-clarification[\s\S]{0,400}requirementSupplement/.test(hostSrc), 'host：needs-clarification 返回 + 指引带 requirementSupplement 重调')
+ok(/\(options as unknown as Record<string, unknown>\)\.__triage = pre\.verdict/.test(hostSrc), 'host：分诊裁决透传 pipeline（避免重复一次模型调用）')
+ok(/requirementSupplement: \{ type: 'string'/.test(hostSrc), 'host：teamflow_start 暴露 requirementSupplement 参数')
+ok(/await clarificationPreflight\(req, opts as Record<string, unknown>, agent, ambientLocale\(\)\)/.test(hostSrc), 'host：Remote/程序化 start 同样过闸门（不只模型工具路径）')
+// 注：闸门在 pipeline/store/report 侧的断言放在末尾（那三个源常量在文件后段才初始化）。
 
 console.log('── 3b) 断点续跑（v0.4.0）──')
 ok(/loadJournals\(\)/.test(hostSrc), '构造时加载磁盘 journal')
@@ -524,6 +535,18 @@ ok(/s\.startsWith\('\/'\)/.test(utilSrc) && /\^\[a-zA-Z\]:/.test(utilSrc), 'norm
 ok(/copyFileSync\(file, file \+ '\.bak'\)/.test(storeSrc), '写前保留 .bak 备份')
 ok(/renameSync\(tmp, file\)/.test(storeSrc), '原子写（.tmp → rename）')
 ok(/从 \.bak 恢复/.test(storeSrc), '主文件损坏自动从 .bak 恢复')
+
+// ── 需求澄清闸门（2026-09-16 Phase 1）· pipeline/store/report 侧回归锁 ──
+// 放在文件末尾：pipelineSrc / storeSrc / reportSrc 在中段才初始化（早期断言用它们会 TDZ 崩）。
+ok(/normalizeTriagePassthrough/.test(pipelineSrc) && /if \(preTriage\) \{/.test(pipelineSrc), 'pipeline：复用透传裁决（不再重复跑分诊）')
+ok(/journal\.triage = triageRecordOf\(/.test(pipelineSrc), 'pipeline：分诊裁决落盘 journal.triage（shadow 埋点，Phase 2 定闸门强度的数据源）')
+ok(/function triageRecordOf/.test(pipelineSrc) && /function notePrdAssumptions/.test(pipelineSrc), 'pipeline：triageRecordOf / notePrdAssumptions 存在')
+ok(/notePrdAssumptions\(journal, locale\)/.test(pipelineSrc), 'pipeline：PRD 收口读假设段（假设可见化的落点）')
+ok(/journal\.assumptions = clip\(body, 2000\)/.test(pipelineSrc), 'pipeline：假设段落 journal.assumptions（截断 2000）')
+ok(/log\.prdAssumptionsMissing/.test(pipelineSrc), 'pipeline：PRD 未给假设段 → 记 warn（policy 级，不硬失败）')
+ok(/triage: journal\.triage \|\| null/.test(storeSrc) && /assumptions: journal\.assumptions \|\| null/.test(storeSrc) && /requirementSupplement: journal\.requirementSupplement \|\| null/.test(storeSrc), 'store：serializeJournal 序列化 triage/assumptions/requirementSupplement')
+ok(/report\.assumptions/.test(reportSrc) && /const assumptionsLine/.test(reportSrc), 'report：完成汇报显式回带「本次基于以下假设启动」')
+ok(/\[CLARIFIED — the user answered the open questions below/.test(pipelineSrc), 'pipeline：澄清答复作为权威输入进 PRD（[CLARIFIED] 块，声明不得再自行假设）')
 
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

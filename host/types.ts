@@ -47,6 +47,11 @@ export interface PipelineOptions {
   preAction?: 'stash' | 'commit' | null
   /** preAction=commit 时的提交信息。 */
   commitMessage?: string | null
+  /** 需求澄清答复（2026-09-16 需求澄清闸门）：用户在澄清轮补充的说明——与原始 requirement 分开存，
+   *  PRD prompt 会作为 `[CLARIFIED]` 权威输入下发（不污染「用户原话」的忠实转写）。 */
+  requirementSupplement?: string | null
+  /** 内部：tool 侧预检透传的分诊裁决（避免 pipeline 重复跑一次模型分诊；快照已由 sanitizeSnapOptions 过滤）。 */
+  __triage?: unknown
 }
 /** 断点续跑上下文。 */
 export interface ResumeContext {

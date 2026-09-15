@@ -113,10 +113,17 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
     const cancelSourceLine = (journal.status === 'cancelled' || journal.cancelled === true)
       ? t(locale, 'report.cancelSource', { source: t(locale, cancelSrcKey) })
       : ''
+    // 假设可见化（2026-09-16 需求澄清闸门 Phase 1）：把 PRD 的「假设 / 待澄清」段显式回给主线程——
+    // 原缺口是 agent 的替代决定完全不可见（实测 39/39 份 PRD 从未记录过假设），验收人无从判断
+    // 「这份 PRD 是不是我想要的」。
+    const assumptionsLine = (journal.assumptions && String(journal.assumptions).trim())
+      ? t(locale, 'report.assumptions', { list: clip(String(journal.assumptions), 900) })
+      : ''
     const text = [
       t(locale, 'report.header', { id: journal.id }),
       t(locale, 'report.statusLine', { status: statusLine, error: journal.error ? t(locale, 'report.error', { error: clip(journal.error, 300) }) : '' }),
       cancelSourceLine,
+      assumptionsLine,
       t(locale, 'report.stagesLine', { stages: stagesLine }),
       t(locale, 'report.agents', { n: journal.agentsStarted || 0 }),
       tokenLine,

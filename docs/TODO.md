@@ -36,7 +36,9 @@
   - **模态豁免**：`patch` 直通；`lite` 仅在有待澄清项时停；`medium/full` 默认停；headless（无客户端）**不停**，走「假设 + 汇报高亮」。
   - **审批面两条路**：优先 **host 直调 user-questions seam**（`intent: {kind:'plan-review'}` + `detail` = 计划 markdown → 宿主原生审阅卡 `Approve` / `Keep planning` / `Chat about it`）——**待验证**：web profile 里插件能否 `inject(['userQuestions'])`、seam 是否接受「插件代 runtime root 提问」（README 称校验的是**传入的 agent** 是否为存活实例，看起来可行）；兜底沿用既有的「返回 status → 主线程 `ask_user_question`」通道（分支决策已在生产验证）。
   **已完成、不必再做**：社区同一条诉求里的「干活途中随时能打断」= v0.2.0 开发线的「⏹ 中断」（三处入口 + 两段式确认 + 并发一次全停 + 取消后不再补位 + 终态归一 + 中断来源可辨），已实测通过（`tf-mu2ye559-obtauw`）。
-  **建议落地顺序**：先 ①「假设可见化」（PRD 必填段 + triage 判定落盘 + 完成汇报高亮假设——覆盖 100% 的 run、不动启动语义）+ ②「探索态不建 run」（社区那一类全身浪费）→ 再上 ③ PRD 确认单（覆盖 ~10% 偏差，成本是每次打断 + 一次 PRD 重跑）。上闸门前先 shadow 埋点（`journal.triage` 落盘 + 只读统计：`blockers` 合格率、答复率、答复是否真的改了范围），照 D 方案「先测量再立法」。**待维护者拍板**（产品改进，agent 不主动做）；回溯脚本为临时文件，未进项目。
+  **✅ Phase 1 已落地（2026-09-16，本批 commit）**：① 启动前闸门（`intent` + `blockers` 合格线 + `needs-clarification` 不建 run + `requirementSupplement` 回带）；② 假设可见化（PRD 必填「假设与待澄清」段 + state 块 `openQuestions` + 汇报 `report.assumptions` 高亮）；③ shadow 埋点（`journal.triage`/`assumptions`/`requirementSupplement` 落盘）。显式 `mode`/`lite` 不走闸门、分诊失效放行（零回归）。门禁：`test/triage-gate.test.js` 31 断言 + smoke 16 条 + L1 四条契约。
+  **Phase 2 待办（未做）**：① **PRD 确认单**（PRD 后暂停 → `resume` 批准 / `resume(redoFrom:'prd', supplement)` 打回改计划 / 无合格待澄清项直通）——需先定「暂停」在状态机里的落点（复用 interrupted/resume 基座 or 新状态）；② **审批面选型**：宿主直调 user-questions seam（`intent:{kind:'plan-review'}` + `detail` → 原生审阅卡）需先验证 web profile 里插件能否 `inject(['userQuestions'])`、seam 是否接受「插件代 runtime root 提问」；兜底走已验证的「返回 status → 主线程问」；③ **闸门强度按数据定**：读 `journal.triage` 攒若干 run 后看 `blockers` 合格率 / 用户答复率 / 答复是否真的改了范围，再决定硬拦（medium/full）还是只做 advisory；④ 覆盖缺口：显式 `mode` 调用方目前不走闸门（`lite` 豁免是否收紧待数据）。
+  **回溯基线（2026-09-16，供前后对比）**：近 12 天 23 run——PRD 记假设 0/12；humanIntervention 8/23；明确需求偏差 2–3 条；社区实证 1 例（全身浪费）。
 
 ## 优化候选（2026-09-10 四路调研 + 自查，按收益/成本排序）
 

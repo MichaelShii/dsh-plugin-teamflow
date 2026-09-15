@@ -116,6 +116,64 @@ export interface TriageVerdict {
   /** ADR-0008 任务夹主题词（短横线小写英文，3-24 字符；模型未给/非法为空）。 */
   slug: string
   source: 'model' | 'fallback'
+  /** 需求意图（2026-09-16 需求澄清闸门 Phase 1）：明确需求 / 仍在探索 / 对现状的反馈。 */
+  intent: TriageIntent
+  /** 动工前 must-know 缺口（**已过 host 合格线**；空数组=没有合格缺口）。 */
+  blockers: TriageBlocker[]
+  /** 被合格线丢弃的条数（诊断：>0 说明 triage 提了不合格问题 → 记 warn）。 */
+  blockersDropped: number
+}
+
+/** 需求意图。 */
+export type TriageIntent = 'requirement' | 'exploration' | 'feedback'
+
+/** 动工前 must-know 缺口（三条证据齐全才成立，见 qualifyBlockers）。 */
+export interface TriageBlocker {
+  /** 要问用户的那一句。 */
+  question: string
+  /** ≥2 个具体且互斥的读法（缺它就不值得打断用户）。 */
+  readings: string[]
+  /** 用户怎么答会改变哪个产物 / AC / 范围。 */
+  changes: string
+  /** 猜错会返工什么（哪个阶段 / 哪份产物重来）。 */
+  rework: string
+}
+
+export const TRIAGE_INTENTS: TriageIntent[] = ['requirement', 'exploration', 'feedback']
+
+/** 意图归一：非法/缺失一律 `requirement`（**绝不因为模型没给字段就拦启动**）。 */
+export const normalizeIntent = (raw: unknown): TriageIntent =>
+  (TRIAGE_INTENTS.indexOf(raw as TriageIntent) !== -1 ? (raw as TriageIntent) : 'requirement')
+
+/**
+ * **host 侧合格线**（防仪式化：prompt 只是请求，这里才是判定）。
+ * 三条证据必须齐全：① ≥2 个互斥读法 ② 改变哪个产物/AC/范围 ③ 猜错返工什么。
+ * 缺一即丢弃并计数——模型几乎总能为任何需求凑出"问题"，不合格线就会退化成每次都打断。
+ * 上限 3 条（超过的部分按丢弃计）。
+ */
+export function qualifyBlockers(raw: unknown): { blockers: TriageBlocker[]; dropped: number } {
+  const arr = Array.isArray(raw) ? raw : []
+  const good: TriageBlocker[] = []
+  let dropped = 0
+  for (const b of arr) {
+    const o = (b && typeof b === 'object') ? b as Record<string, unknown> : null
+    const question = String((o && o.question) || '').trim()
+    const readings = Array.isArray(o && o.readings)
+      ? (o.readings as unknown[]).map((x) => String(x === null || x === undefined ? '' : x).trim()).filter(Boolean)
+      : []
+    const changes = String((o && o.changes) || '').trim()
+    const rework = String((o && o.rework) || '').trim()
+    if (question && readings.length >= 2 && changes && rework) {
+      good.push({
+        question: question.slice(0, 300),
+        readings: readings.slice(0, 4).map((r) => r.slice(0, 200)),
+        changes: changes.slice(0, 300),
+        rework: rework.slice(0, 300),
+      })
+    } else dropped++
+  }
+  const kept = good.slice(0, 3)
+  return { blockers: kept, dropped: dropped + Math.max(0, good.length - kept.length) }
 }
 
 /** 解析模型 JSON 输出（容错：定位首个 {...} 块；字段缺失/非法回退 null）。 */
@@ -126,6 +184,7 @@ function parseVerdictText(text: string): TriageVerdict | null {
     const raw = JSON.parse(m[0])
     const mode = normalizeMode(raw.mode)
     if (!mode) return null
+    const qb = qualifyBlockers(raw.blockers)
     return {
       mode,
       kind: typeof raw.kind === 'string' ? raw.kind : '',
@@ -135,6 +194,9 @@ function parseVerdictText(text: string): TriageVerdict | null {
       confidence: ['high', 'medium', 'low'].indexOf(raw.confidence) !== -1 ? raw.confidence : 'medium',
       slug: /^[a-z0-9][a-z0-9-]{2,23}$/.test(String(raw.slug || '')) ? String(raw.slug) : '',
       source: 'model',
+      intent: normalizeIntent(raw.intent),
+      blockers: qb.blockers,
+      blockersDropped: qb.dropped,
     }
   } catch (e) { return null }
 }
@@ -145,6 +207,8 @@ function fallbackVerdict(requirement: string, opts?: { needDesign?: boolean }, l
   return {
     mode: pre.mode, kind: pre.kind, needDesign: !!(opts && opts.needDesign), complexity: 'medium',
     rationale: [...pre.rationale, t(locale, 'triage.fallback')], confidence: pre.confidence, slug: '', source: 'fallback',
+    // 兜底路径**永不拦启动**（intent 默认 requirement、无 blocker）——分诊不可用时退回现状行为，零回归。
+    intent: 'requirement', blockers: [], blockersDropped: 0,
   }
 }
 

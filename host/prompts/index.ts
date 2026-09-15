@@ -362,7 +362,8 @@ ${requirement}
 5. [Memory write-back · convention changes ONLY] Update docs/teamflow/memory.md ONLY if this requirement introduces new team conventions / tech-stack decisions (replace the same-topic line, idempotent, no changelog-style appending); otherwise do not touch memory.
 6. [Engineering actions carried verbatim] Engineering instructions in the raw requirement (create/switch branch, commit, tag...) MUST be preserved verbatim into the "${L(state, 'doc.engConstraints')}" section of the PRD: specify the action, timing, and baseline (e.g. "branch from latest main, then implement"). If the workspace already has uncommitted changes, note how to handle them. Never silently drop or reword engineering instructions.
 ${ARTIFACT_DELIVERY(RUN(state))}
-7. [State] End with a state block (phase="prd"): summary covers the AC highlights + one-sentence product semantics; extra contains { "acIndex": {...}, "summary": "<product one-liner>", "techStack": "..." }.${STATE_BLOCK_INSTRUCTION}`
+7. [State] End with a state block (phase="prd"): summary covers the AC highlights + one-sentence product semantics; extra contains { "acIndex": {...}, "summary": "<product one-liner>", "techStack": "...", "openQuestions": [{ "q": "...", "why": "...", "changes": "...", "default": "..." }] }.${STATE_BLOCK_INSTRUCTION}
+8. [Assumptions · mandatory] If ANY part of the requirement is under-specified, do NOT silently decide on the user's behalf: write a dedicated section titled exactly "${L(state, 'doc.assumptionsQ')}" and list every assumption / open question as one bullet — what you assumed, why, and what would change if the user decides otherwise. If nothing is under-specified, still write the section with a single line stating there are no open questions. This section is what lets a human tell whether the PRD is what they actually wanted; the host surfaces it to the user verbatim.`
 }
 
 export const designPrompt = (prd, root, runId, state) => `You are a senior UI/UX designer. The current workspace IS the target project.
@@ -629,9 +630,11 @@ ${langNote}
 3. hotfix/single-point/pure numeric/pure docs → patch; clear "add feature X" → pick lite/medium/full by size.
 4. Focused change (even with tests/regression) → lite/tech by nature; not necessarily full.
 5. [M1 ARCHITECTURE CRITERION (important)] **Architecture-level changes** — persistence/localStorage/database/standalone module/abstraction/cross-many-files without an existing reusable wrapper (like a localStorage wrapper, storage layer, state management) — even if they look like "small features", go **at least medium** (must pass the architecture stage and produce a blueprint, avoiding scattered local implementations by dev); such changes collapse under a light "micro feature" tier. Tech-driven rework (refactor/optimize/arch upgrade) is itself tech (tech also runs the lightweight blueprint now).${enExamples}
+6. [INTENT — decide before mode] \`intent\` = \`"requirement"\` **only** when this is a settled development ask. Use \`"exploration"\` for still-thinking-out-loud phrasing ("I've been wondering about adding X", "test this out", "I want to build some kind of plugin") and \`"feedback"\` for opinions/questions about existing behavior — **neither may start a pipeline**; the caller will ask the user first. When unsure between requirement and exploration, prefer \`"exploration"\` (a wasted prompt is cheaper than a wasted pipeline).
+7. [BLOCKERS — must-know gaps only] \`blockers\` = what you **cannot** settle yourself from the repo/state index **and** whose wrong guess causes rework. Each entry needs all four fields: \`question\` (one sentence to ask the user), \`readings\` (≥2 concrete **competing** interpretations), \`changes\` (which artifact / AC / scope it changes), \`rework\` (what gets redone if guessed wrong). Anything you can self-check, or whose wrong guess costs nothing, or that has only one sensible reading → **do not list**. No such gap → \`[]\`. Never invent questions to look thorough: unqualified entries are dropped by the caller and counted against you.
 
 [OUTPUT] JSON object ONLY — no commentary, no preface, no closing text. The FIRST character of your reply must be '{'. Do NOT say anything like "here is the JSON" or "Let me output the JSON" — output the object itself:
-{ "mode": "patch|lite|tech|medium|full", "slug": "<topic words> (3-24 lowercase letters/digits/hyphens, e.g. wallkick-toggle, 7bag-random; used to name the task folder)", "kind": "one-word nature", "needDesign": true|false, "complexity": "small|medium|large", "rationale": ["key argument 1","key argument 2"], "confidence": "high|medium|low" }`
+{ "mode": "patch|lite|tech|medium|full", "slug": "<topic words> (3-24 lowercase letters/digits/hyphens, e.g. wallkick-toggle, 7bag-random; used to name the task folder)", "kind": "one-word nature", "needDesign": true|false, "complexity": "small|medium|large", "rationale": ["key argument 1","key argument 2"], "confidence": "high|medium|low", "intent": "requirement|exploration|feedback", "blockers": [{ "question": "...", "readings": ["competing reading A","competing reading B"], "changes": "which artifact/AC/scope it changes", "rework": "what gets redone if guessed wrong" }] }`
 }
 
 /** tech 档 PRD：技术变更单（无功能 AC，重范围/目标/改动面/回归）。 */
@@ -643,7 +646,7 @@ ${requirement}
 1. Produce the ${L(state, 'doc.techChangeQ')} (Markdown), write to ${RUN(state)}/TECH-CHANGE.md — **do NOT rewrite any functional ACs in prior task-folder PRDs** (tech-driven rework adds no user-visible acceptance items in principle; if there IS a sliver of user-visible behavior change, state it explicitly in that section).
 2. Change sheet content: background & goal (one sentence), impact scope (files/modules), tech approach (key points), behavior-compatibility impact (any user-visible change), regression & verification plan (which verify commands, regression floor), risks & rollback.
 3. Sync the change's key points into docs/teamflow/memory.md (only when new conventions/todos change; same-topic line replace, idempotent); don't touch AGENTS.md beyond the teamflow managed zone.
-4. Tight (this is a contract for dev/QA, ≤120 lines), ${langDirective(LOCALE(state))}. [Boundary] only under ${TF_DOCS}/.
+4. Tight (this is a contract for dev/QA, ≤120 lines), ${langDirective(LOCALE(state))}. [Boundary] only under ${TF_DOCS}/. Also add a short "${L(state, 'doc.assumptionsQ')}" section: every place the requirement was under-specified and you decided for the user, with what would change if they decide otherwise (single line if none).
 5. [State] End with a state block (phase="tech"), extra = { "verifyScripts": [...], "scopedFiles": [...] }.${STATE_BLOCK_INSTRUCTION}`
 
 /** patch 档 PRD：单点修复快速确认（不产 PRD 文档）。 */
@@ -654,6 +657,6 @@ ${requirement}
 [REQUIREMENTS]
 1. Judge whether it truly is a single-point/hotfix: yes → output the ${L(state, 'doc.confirmSheetQ')} (confirmation sheet); no → explicitly say "suggest upgrading pipeline mode (e.g. tech/lite/full)", don't force it.
 2. [Requirement vs reality] **First verify the requirement description matches the workspace reality**: matches → produce the sheet per the outline below; mismatches → explicitly note ${L(state, 'doc.mismatchNoteQ')} in the sheet, **no fabricated changes**.
-3. Sheet content: fix point (file/location), change outline, regression impact (tiny / which verify commands to run), whether to bump version along the way.
+3. Sheet content: fix point (file/location), change outline, regression impact (tiny / which verify commands to run), whether to bump version along the way, plus a one-line "${L(state, 'doc.assumptionsQ')}" note (what you had to assume; "none" if nothing).
 4. Output the confirmation sheet text ONLY (${langDirective(LOCALE(state))}) — **do not touch any product docs** (no PRD this time; memory write-back belongs to acceptance stage).
 5. [State] End with a state block (phase="patch"), summary = confirmation conclusion.${STATE_BLOCK_INSTRUCTION}`

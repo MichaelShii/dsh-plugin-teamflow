@@ -231,6 +231,11 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     /** 取消来源（ui=界面按钮/人工，tool=模型工具，unknown=历史 run）：主线程据此判断「谁停的」。 */
     cancelSource: journal.cancelSource || null,
     cancelRequestedAt: journal.cancelRequestedAt || null,
+    /** 需求澄清闸门（2026-09-16 Phase 1）：分诊裁决（intent/blockers）+ PRD 假设段 + 澄清答复。
+     *  裁决是 shadow 埋点（Phase 2 定闸门强度的数据源）；假设段是「agent 替你决定了什么」的可见化。 */
+    triage: journal.triage || null,
+    assumptions: journal.assumptions || null,
+    requirementSupplement: journal.requirementSupplement || null,
     interrupted: journal.interrupted === true,
     interruptedAt: journal.interruptedAt || null,
     supersededBy: journal.supersededBy || null,

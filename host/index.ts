@@ -37,11 +37,41 @@ import { join } from 'node:path'
 import { mkdirSync, readdirSync } from 'node:fs'
 import { executePipeline, summarizeTimeline, startPipeline, resumeRun } from './core/pipeline.ts'
 import { cancelRun } from './core/context.ts'
-import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, normalizeMode, runTriage } from './core/triage.ts'
+import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, normalizeMode, runTriage, type TriageVerdict } from './core/triage.ts'
 import { t, modeDesc } from './locales.ts'
 import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.ts'
 
 /* BacklogStore / storeFor 见 core/backlog.ts（数据层与状态机）。 */
+
+/**
+ * 需求澄清闸门 · 启动前预检（2026-09-16 Phase 1）。
+ *
+ * 分诊本来就是一次模型调用——这里把它**前移到建 run 之前**，用同一份裁决判两件事：
+ * ① `intent` 是否「明确需求」（`exploration` = 还在探讨、`feedback` = 对现状的反馈）；② 有没有 **must-know**
+ * 缺口（`blockers`，已过 host 合格线：≥2 互斥读法 + 改变哪个产物/AC + 猜错返工什么）。命中任一 → 返回
+ * `needs-clarification`，**不建 run**——实锤：社区讨论 #6405 用户说「我想开发一个 dsh 插件」→ 直接跑完整条
+ * 流水线（他本人：「我都不知道自己想要啥」）。
+ *
+ * 边界（Phase 1）：显式 `mode` / `lite` 与现状一致**不跑分诊**（因此不走本闸门）；分诊不可用/超时 → verdict=null
+ * → **放行**（退回现状行为，零回归）。裁决透传给 pipeline（`options.__triage`），避免重复一次模型调用。
+ */
+async function clarificationPreflight(
+  requirement: string,
+  options: Record<string, unknown>,
+  parent: unknown,
+  locale: ReturnType<typeof ambientLocale>,
+): Promise<{ needsClarification: { intent: string; blockers: TriageVerdict['blockers'] } } | { verdict: TriageVerdict | null }> {
+  if (options.mode !== undefined || options.lite) return { verdict: null }
+  let verdict: TriageVerdict | null = null
+  try {
+    verdict = await runTriage(requirement, { needDesign: options.needDesign === true }, parent, undefined, locale)
+  } catch (e) { verdict = null }
+  if (!verdict) return { verdict: null }
+  if (verdict.intent !== 'requirement' || verdict.blockers.length > 0) {
+    return { needsClarification: { intent: verdict.intent, blockers: verdict.blockers } }
+  }
+  return { verdict }
+}
 
 /* 阶段/模板提示词见 prompts/（AGENTS_TEMPLATE / MEMORY_TEMPLATE / productCtx / TOKEN_HYGIENE / *Prompt）。 */
 
@@ -106,7 +136,7 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_start',
-    description: 'Start the team R&D pipeline (background async): runs the stages per team config (PRD→design→tech→dev→QA→acceptance). Specify teamId (matches teams.json) or pick a team via the UI "+" button first so messages auto-match. Stage failures auto-retry; beyond threshold → rework/human intervention; per-stage token usage recorded. NOTE: after calling, the implementation work is done by pipeline subagents — the main thread MUST NOT write code or run verifications for it. requirement must be a faithful transcription of the user\'s words; do not invent file paths / tech claims without code verification (downstream stages build the PRD from it). Branch decision: when the return status is "needs-decision", ASK THE USER to pick one of the options (or take their custom input, e.g. a branch name), then RE-CALL this tool passing the CHOSEN OPTION VALUE as branchPolicy ("new" = confirmed create branch, "keep" = stay), optionally combined with preAction / branchName / commitMessage. Pass branchPolicy="keep" when the user chooses to stay on the current branch.',
+    description: 'Start the team R&D pipeline (background async): runs the stages per team config (PRD→design→tech→dev→QA→acceptance). Specify teamId (matches teams.json) or pick a team via the UI "+" button first so messages auto-match. Stage failures auto-retry; beyond threshold → rework/human intervention; per-stage token usage recorded. NOTE: after calling, the implementation work is done by pipeline subagents — the main thread MUST NOT write code or run verifications for it. requirement must be a faithful transcription of the user\'s words; do not invent file paths / tech claims without code verification (downstream stages build the PRD from it). Clarification gate: if the return status is "needs-clarification", this is NOT a settled requirement yet (or it has must-know gaps) — do NOT retry blindly: discuss it with the user in your own words (the returned blockers list what is missing and why), then RE-CALL this tool with the original requirement plus requirementSupplement = the user\'s answers. Branch decision: when the return status is "needs-decision", ASK THE USER to pick one of the options (or take their custom input, e.g. a branch name), then RE-CALL this tool passing the CHOSEN OPTION VALUE as branchPolicy ("new" = confirmed create branch, "keep" = stay), optionally combined with preAction / branchName / commitMessage. Pass branchPolicy="keep" when the user chooses to stay on the current branch.',
     parameters: {
       requirement: { type: 'string', required: true, description: 'The user requirement — faithful transcription of the user\'s words; no fabricated file paths, tech designs, or unverified claims' },
       teamId: { type: 'string', description: 'Team id (matches teams.json; defaults to the currently selected team of this session)' },
@@ -120,6 +150,7 @@ function registerTools(ctx) {
       branchName: { type: 'string', description: 'Custom branch name (used when branchPolicy=auto; defaults to the triage slug; [a-z0-9-_])' },
       preAction: { type: 'string', description: 'Pre-start handling of dirty workspace: "stash" (stash changes, restore later via git stash pop), "commit" (commit existing changes, custom commitMessage), omit = leave as-is (changes mix into this run)' },
       commitMessage: { type: 'string', description: 'Custom commit message when preAction=commit' },
+      requirementSupplement: { type: 'string', description: 'Extra context the user gave during a clarification round (after a "needs-clarification" return). Kept separate from the original requirement (which stays a faithful transcription of the user\'s words) and handed to the PRD stage as authoritative input.' },
       tasks: {
         type: 'array',
         description: 'Optional splittable dev task list',
@@ -133,7 +164,7 @@ function registerTools(ctx) {
       },
     },
     output: {
-      schema: { type: 'object', additionalProperties: false, required: ['status'], properties: { runId: { type: 'string' }, status: { type: 'string' }, question: { type: 'string' }, options: { type: 'array' }, note: { type: 'string' } } },
+      schema: { type: 'object', additionalProperties: false, required: ['status'], properties: { runId: { type: 'string' }, status: { type: 'string' }, question: { type: 'string' }, options: { type: 'array' }, note: { type: 'string' }, intent: { type: 'string' }, blockers: { type: 'array' } } },
       render: (args, value) => {
         if (value && value.status === 'needs-decision') {
           const opts = Array.isArray(value.options) ? value.options.map((o, i) => `${i + 1}. ${o.label}`).join('\n') : ''
@@ -141,6 +172,13 @@ function registerTools(ctx) {
         }
         if (value && value.status === 'needs-confirmation') {
           return [{ type: 'text', text: t(ambientLocale(), 'tool.start.needsConfirm', { question: value.question, note: value.note || '' }) }]
+        }
+        if (value && value.status === 'needs-clarification') {
+          // 闸门文本由 host 组好交给主线程：它必须**先问用户**，拿到答复后带 requirementSupplement 重调。
+          const list = Array.isArray(value.blockers)
+            ? value.blockers.map((b, i) => `${i + 1}. ${b.question}\n   · ${t(ambientLocale(), 'tool.start.blockerReadings')}: ${(b.readings || []).join(' / ')}\n   · ${t(ambientLocale(), 'tool.start.blockerChanges')}: ${b.changes}\n   · ${t(ambientLocale(), 'tool.start.blockerRework')}: ${b.rework}`).join('\n')
+            : ''
+          return [{ type: 'text', text: t(ambientLocale(), 'tool.start.needsClarification', { intent: String(value.intent || 'requirement'), blockers: list }) }]
         }
         return [{ type: 'text', text: t(ambientLocale(), 'tool.start.started', { runId: value.runId, status: value.status }) }]
       },
@@ -187,6 +225,19 @@ function registerTools(ctx) {
           branchName: typeof args.branchName === 'string' && args.branchName.trim() ? args.branchName.trim() : null,
           preAction: (args.preAction === 'stash' || args.preAction === 'commit') ? args.preAction : null,
           commitMessage: typeof args.commitMessage === 'string' && args.commitMessage.trim() ? args.commitMessage.trim() : null,
+          requirementSupplement: typeof args.requirementSupplement === 'string' && args.requirementSupplement.trim() ? args.requirementSupplement.trim() : null,
+        }
+        // 需求澄清闸门（2026-09-16 Phase 1）：非「明确需求」或存在 must-know 缺口 → 不建 run，先让主线程问用户。
+        // 放在分支决策之前：澄清是"要不要做/做成什么"的前置问题，分支是"怎么开工"，顺序反了会先问分支再问需求。
+        const pre = await clarificationPreflight(requirement, options as unknown as Record<string, unknown>, parent, ambientLocale())
+        if ('needsClarification' in pre) {
+          return { status: 'needs-clarification', intent: pre.needsClarification.intent, blockers: pre.needsClarification.blockers }
+        }
+        if (pre.verdict) {
+          // 复用同一份裁决：写回 mode/needDesign/slug 并透传给 pipeline（pipeline 不再重复跑分诊）
+          options.mode = pre.verdict.mode as typeof options.mode
+          if (pre.verdict.needDesign) options.needDesign = true
+          ;(options as unknown as Record<string, unknown>).__triage = pre.verdict
         }
         // 分支策略决策（ADR-2026-08-27 基调：启动前由用户决定，选项+自定义兜底）。
         // 四种情况（main+干净 / main+脏 / feature+干净 / feature+脏）在 auto 策略下全部返回 needs-decision，
@@ -776,7 +827,9 @@ export class TeamflowService extends TypertRemoteService {
     return this.itemDetail(kind, id, sessionId, key)
   }
 
-  start(sessionId, requirement, options) {
+  // 注：本方法 async 只因为澄清预检需要 await 一次分诊模型调用（宿主 Remote 支持 async 方法，
+  // 见官方 SubagentRuntime.prompt）；返回形状不变（成功 {ok,runId,...}，被拦下 {ok:false,status:...}）。
+  async start(sessionId, requirement, options) {
     const sid = typeof sessionId === 'string' ? sessionId : null
     const req = typeof requirement === 'string' && requirement.trim() ? requirement.trim() : null
     if (!sid || !req) return { ok: false, error: t(ambientLocale(), 'err.tool.missingSessionReq') }
@@ -786,6 +839,16 @@ export class TeamflowService extends TypertRemoteService {
     tryFlushPendingInjections(sid)
     try {
       const opts = (options && typeof options === 'object') ? options : {}
+      // 需求澄清闸门（与 tool 路径同一条：Remote/程序化调用也不能拿模糊需求直接开跑）
+      const pre = await clarificationPreflight(req, opts as Record<string, unknown>, agent, ambientLocale())
+      if ('needsClarification' in pre) {
+        return { ok: false, status: 'needs-clarification', intent: pre.needsClarification.intent, blockers: pre.needsClarification.blockers }
+      }
+      if (pre.verdict) {
+        opts.mode = pre.verdict.mode
+        if (pre.verdict.needDesign) opts.needDesign = true
+        ;(opts as Record<string, unknown>).__triage = pre.verdict
+      }
       const runId = startPipeline(agent, req, opts, undefined)
       const sc = workspaceScopeOf(agent)
       return { ok: true, runId, workspace: sc, product: opts.productRoot ? normalizeRoot(opts.productRoot) : null }

@@ -20,6 +20,10 @@ export const TOOLS_DICT: Record<'zh' | 'en', Record<string, string>> = {
     /* ── 分支决策（teamflow_start 的 needs-decision） ──────────── */
     'tool.start.decision': '【分支决策】{question}\n{options}\n（也可自定义输入）——请询问用户选择，确认后把所选选项的 value 作为 branchPolicy 重新调用 teamflow_start（如 \'new\'/\'keep\'；脏工作区选项可拆为 branchPolicy + preAction 组合），自定义分支名则传 branchName。',
     'tool.start.needsConfirm': '【需求确认】{question}\n{note}——请按此询问用户后再决定。',
+    'tool.start.needsClarification': '【需求澄清】这条消息还不足以开工（意图：{intent}）——**没有启动流水线**，也没有创建任何 run。请在你自己的对话里用自然语言跟用户把需求聊清楚{blockers}，然后**保留原始 requirement 不变**、把用户的答复放进 requirementSupplement 重新调用 teamflow_start。不要自行替用户假设后直接重调（这正是要拦的行为）。',
+    'tool.start.blockerReadings': '两种读法',
+    'tool.start.blockerChanges': '影响面',
+    'tool.start.blockerRework': '猜错的代价',
     'tool.start.started': '团队研发流水线已启动（runId={runId}，{status}），正在后台执行。【重要】你现在停手：不要自行读取/修改代码实现该需求，不要重复跑测试验证——实现、QA、汇报由流水线各阶段完成。你只需告知用户流水线已启动，等待流水线完成后的官方完成汇报，再向用户转述结果。可用 teamflow_status 查询进度/阶段 token；backlog 已持久化到 $DSH_HOME/teamflow。\n【回复语言】用中文回复用户。',
     'tool.start.paused': '当前会话已暂停 teamflow。如需恢复，调用 teamflow_resume_session；或直接写代码。',
     'tool.start.noTeam': '请先通过输入框旁的 🏭 按钮选择团队，再发送需求消息。未选团队时不走 teamflow。',
@@ -112,6 +116,10 @@ export const TOOLS_DICT: Record<'zh' | 'en', Record<string, string>> = {
     /* ── 分支决策 ─────────────────────────────────────────── */
     'tool.start.decision': '[Branch decision] {question}\n{options}\n(custom input is allowed too) — ask the user to choose, then call teamflow_start again passing the chosen option value as branchPolicy (e.g. \'new\'/\'keep\'; dirty-workspace options can be split into branchPolicy + preAction), or pass branchName for a custom branch name.',
     'tool.start.needsConfirm': '[Requirement confirmation] {question}\n{note} — ask the user accordingly before deciding.',
+    'tool.start.needsClarification': '[Requirement clarification] This message is not settled enough to start (intent: {intent}) — **no pipeline was started and no run was created**. Talk it through with the user in your own words{blockers}, then RE-CALL teamflow_start keeping the original requirement unchanged and putting the user\'s answers into requirementSupplement. Do not just assume on the user\'s behalf and re-call — that is exactly what this gate blocks.',
+    'tool.start.blockerReadings': 'Competing readings',
+    'tool.start.blockerChanges': 'What it changes',
+    'tool.start.blockerRework': 'Cost if guessed wrong',
     'tool.start.started': 'The team R&D pipeline has started (runId={runId}, {status}) and runs in the background. [IMPORTANT] Stop now: do not read or modify code to implement this requirement yourself, and do not rerun tests for verification — implementation, QA and reporting are handled by the pipeline stages. Just tell the user the pipeline has started, wait for the official completion report, and relay its result. Use teamflow_status to check progress/stage tokens; the backlog is persisted under $DSH_HOME/teamflow.\n[Reply language] Reply to the user in English.',
     'tool.start.paused': 'teamflow is paused for the current session. Call teamflow_resume_session to resume, or just write the code directly.',
     'tool.start.noTeam': 'Pick a team via the 🏭 button next to the input box before sending the requirement. Without a team, teamflow is not used.',
