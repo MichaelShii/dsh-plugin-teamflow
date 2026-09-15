@@ -77,6 +77,11 @@ export const zh = {
   'runStatus.interrupted': '已中断',
   'runStatus.superseded': '已取代',
 
+  /* 阶段级状态：`cancelled` 在阶段面必须与 backlog 词表分开——`status.cancelled` 是缺陷/任务词（已关闭），
+     直接复用会让被中断的阶段显示成「已关闭」（2026-09-16 中断功能实测截图暴露；en 更明显：Closed）。
+     也不用「已中断」（= runStatus.interrupted）与「已取消」（= runStatus.cancelled，run 级）。 */
+  'stageStatus.cancelled': '已中止',
+
   'phase.prd': 'PRD 产品需求',
   'phase.design': 'UI/UX 设计',
   'phase.scaffold': '架构规划',
@@ -167,6 +172,15 @@ export const zh = {
   'workbench.history': '历史',
   'workbench.openRightBarTip': '在右侧栏打开该 run 详情（与任务夹产物并排看）',
   'workbench.openRightBarBtn': '⇥ 右栏打开',
+
+  /* ── 中断运行（两段式内联确认；面板行/详情与工作台共用） ──── */
+  'cancel.btn': '⏹ 中断',
+  'cancel.btnWithId': '⏹ 中断 #{id}',
+  'cancel.arm': '确认中断?',
+  'cancel.busy': '中断中…',
+  'cancel.sent': '已请求中断，等待当前阶段收尾…',
+  'cancel.tip': '中断 {id}\n立即中止当前阶段子代理；已完成阶段保留，之后可用「从断点重跑」继续；取消的 run 不产生提交',
+  'cancel.failed': '中断未生效：该流水线已不在运行中（可能刚结束）',
 
   'board.empty': 'backlog 为空（还没有流水线运行过）',
   'board.dragReason': '看板拖拽流转',
@@ -370,6 +384,8 @@ export const en: Record<keyof typeof zh, string> = {
   'runStatus.interrupted': 'Interrupted',
   'runStatus.superseded': 'Superseded',
 
+  'stageStatus.cancelled': 'Stopped',
+
   'phase.prd': 'PRD',
   'phase.design': 'UI/UX design',
   'phase.scaffold': 'Architecture',
@@ -456,6 +472,14 @@ export const en: Record<keyof typeof zh, string> = {
   'workbench.history': 'History',
   'workbench.openRightBarTip': 'Open this run\'s detail in the right sidebar (side by side with task-folder artifacts)',
   'workbench.openRightBarBtn': '⇥ Open in right bar',
+
+  'cancel.btn': '⏹ Stop',
+  'cancel.btnWithId': '⏹ Stop #{id}',
+  'cancel.arm': 'Confirm stop?',
+  'cancel.busy': 'Stopping…',
+  'cancel.sent': 'Stop requested — waiting for the current stage to wind down…',
+  'cancel.tip': 'Stop {id}\nAborts the subagent of the current stage immediately; finished stages are kept and can be resumed from the checkpoint later; a cancelled run never commits',
+  'cancel.failed': 'Stop had no effect: the pipeline is no longer running (it may have just finished)',
 
   'board.empty': 'Backlog is empty (no pipeline has run yet)',
   'board.dragReason': 'kanban drag transition',

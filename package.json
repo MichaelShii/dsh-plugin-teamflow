@@ -41,8 +41,8 @@
     "watch": "tsdown --watch",
     "deploy": "node deploy.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node test/smoke.js && node test/locale.test.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/runlogs.test.js && node test/diagnostic.test.js && node test/evidence.test.js && node test/metering.test.js && node test/gitignore.test.js && node test/commit-path.test.js && node test/product-scope.test.js && node test/prompt-contract.test.js && node test/conformance.test.js",
-    "prepublishOnly": "npx tsdown && npx tsdown -c tsdown.host.config.ts && node test/smoke.js && node test/locale.test.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/runlogs.test.js && node test/diagnostic.test.js && node test/evidence.test.js && node test/metering.test.js && node test/gitignore.test.js && node test/commit-path.test.js && node test/product-scope.test.js && node test/prompt-contract.test.js && node test/conformance.test.js"
+    "test": "node test/smoke.js && node test/locale.test.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/runlogs.test.js && node test/cancel.test.js && node test/diagnostic.test.js && node test/evidence.test.js && node test/metering.test.js && node test/gitignore.test.js && node test/commit-path.test.js && node test/product-scope.test.js && node test/prompt-contract.test.js && node test/conformance.test.js",
+    "prepublishOnly": "npx tsdown && npx tsdown -c tsdown.host.config.ts && node test/smoke.js && node test/locale.test.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/runlogs.test.js && node test/cancel.test.js && node test/diagnostic.test.js && node test/evidence.test.js && node test/metering.test.js && node test/gitignore.test.js && node test/commit-path.test.js && node test/product-scope.test.js && node test/prompt-contract.test.js && node test/conformance.test.js"
   },
   "files": [
     "lib",

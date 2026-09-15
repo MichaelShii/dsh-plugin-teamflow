@@ -16,9 +16,9 @@ import React from 'react'
 import { TEAMFLOW_REMOTE_CONTRIBUTION } from '../descriptors.js'
 import {
   T, STATUS_COLOR, PHASE_ICON, phaseNameOf, phaseIconOf, phaseKeyOf,
-  COLUMNS, h, MONO, SANS, flexRow, chip, FoldableText,
+  COLUMNS, h, MONO, SANS, flexRow, chip, FoldableText, CancelButton,
   fmtTime, fmtDur, fmtTokens, totalTokens, hitRate, usageDetail, stageUsageLine,
-  roleUsage, byRoleLine, totalUsage, stText, stColor, runStatusText, kindTitle, roleChip, stageLabelOf,
+  roleUsage, byRoleLine, totalUsage, stText, stColor, runStatusText, kindTitle, roleChip, stageLabelOf, stageStatusText,
   t, setTranslator, localeTag,
 } from './shared.js'
 import { NS, zh, en } from './locales.js'
@@ -103,7 +103,7 @@ function FlowStageCard(s, key, onOpen) {
         : h('span', { style: { width: 6, height: 6, borderRadius: 2, background: color } }),
       h('span', { title: s.label, style: { flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, stageLabelOf(s)),
       (s.attempts && s.attempts.length > 1) ? h('span', { title: t('stage.retryTip', { n: s.attempts.length - 1, m: s.attempts.length }), style: { fontFamily: MONO, fontSize: 10, fontWeight: 800, color: T.warn, background: `color-mix(in srgb, ${T.warn} 14%, transparent)`, borderRadius: 999, padding: '0 6px', lineHeight: '15px', flex: '0 0 auto' } }, `↻${s.attempts.length - 1}`) : null,
-      chip(stText(s.status), color, { dot: true }),
+      chip(stageStatusText(s.status), color, { dot: true }),
       h('span', { style: { color: T.text2, fontSize: 11, opacity: 0.5 } }, '↗'),
     ),
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 13, fontSize: 10.5, color: T.text2, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' } },
@@ -212,7 +212,7 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
         h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 1, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' } },
           `${st ? `#${st.seq} · ${st.phase}` : ''}${(st && (st.startedAt || st.endedAt)) ? ` · ${fmtDur(st.startedAt, st.endedAt)}` : ''}`),
       ),
-      st ? chip(stText(st.status), color, { dot: true }) : null,
+      st ? chip(stageStatusText(st.status), color, { dot: true }) : null,
       h('button', { onClick: onClose, style: closeBtn, title: t('common.close') }, '✕'),
     ),
     /* 内容 */
@@ -239,7 +239,7 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
               },
             },
               h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2, flex: '0 0 52px' } }, `#${a.seq}`),
-              h('span', { style: { fontSize: 11, color: aColor, flex: '0 0 64px', fontWeight: 700 } }, a.status === 'done' ? t('stage.attemptDone') : a.status === 'failed' ? t('stage.attemptFailed', { outcome: a.outcome || t('common.failed') }) : t('stage.attemptRunning')),
+              h('span', { style: { fontSize: 11, color: aColor, flex: '0 0 64px', fontWeight: 700 } }, a.status === 'done' ? t('stage.attemptDone') : a.status === 'failed' ? t('stage.attemptFailed', { outcome: a.outcome || t('common.failed') }) : a.status === 'cancelled' ? t('stageStatus.cancelled') : t('stage.attemptRunning')),
               h('span', { style: { flex: 1, minWidth: 0, fontSize: 10.5, color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, (a.summary || a.outcome || t('common.noSummary')).slice(0, 80)),
               h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2, flex: '0 0 auto' } }, a.startedAt ? fmtDur(a.startedAt, a.endedAt) : '—'),
               h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2, flex: '0 0 auto' } }, a.usage ? fmtTokens(totalTokens(a.usage)) : ''),
@@ -928,6 +928,8 @@ interface TeamflowRemote {
   backlog(sessionId?: string | null): Promise<RpcEnvelope>
   backlogUpdate(kind: string, id: string, to: string, sessionId?: string | null, reason?: string, meta?: Record<string, unknown>): Promise<RpcEnvelope>
   resume(runId: string, sessionId: string): Promise<RpcEnvelope>
+  /** 中断运行（只对正在跑的 run 有效；host 返回 `{ ok }`，false = 已不在运行中）。 */
+  cancel(runId: string): Promise<RpcEnvelope>
   stageDetail(runId: string, seq: number, sessionId?: string | null): Promise<RpcEnvelope>
   itemDetail(kind: string, id: string, sessionId?: string | null): Promise<RpcEnvelope>
 }
@@ -992,6 +994,22 @@ function TeamFlowView(props: TeamFlowViewProps) {
     setBusy(false)
   }
   const anyRunning = runs.some((r) => r.status === 'running' || r.status === 'pending')
+  // 只有 running 是 host 侧的真实活动态（其余历史态 cancel 会被 host 拒绝，故不显示按钮）
+  const runningRun = !!(activeRun && activeRun.status === 'running')
+  /** 中断请求已发出：按钮先隐藏，等 2s 轮询把状态刷成 cancelled（避免重复点出「未生效」提示）。 */
+  const [cancelSentFor, setCancelSentFor] = React.useState<string | null>(null)
+  React.useEffect(() => { setCancelSentFor(null) }, [activeRun && activeRun.id, activeRun && activeRun.status])
+  const onCancel = async (id) => {
+    if (!api) return
+    try {
+      const r = unwrap(await api.cancel(id), 'cancel') as { ok?: boolean } | null
+      if (!r || r.ok !== true) throw new Error(t('cancel.failed'))
+      setCancelSentFor(id)
+      refresh()
+    } catch (e) {
+      setState((s) => ({ ...s, err: String((e && e.message) || e) }))
+    }
+  }
 
   const btn = {
     font: 'inherit', fontSize: 12, padding: '4px 12px', borderRadius: 8, cursor: 'pointer',
@@ -1037,6 +1055,12 @@ function TeamFlowView(props: TeamFlowViewProps) {
         ),
       ),
       h('button', { onClick: refresh, style: { ...btn, marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5 } }, t('workbench.refresh')),
+      runningRun && cancelSentFor !== activeRun.id ? h(CancelButton, {
+        runId: activeRun.id,
+        label: t('cancel.btnWithId', { id: String(activeRun.id).slice(-6) }),
+        title: t('cancel.tip', { id: activeRun.id }),
+        onConfirm: onCancel,
+      }) : null,
       canResume ? h('button', {
         onClick: onResume, disabled: busy,
         title: t('workbench.resumeTip', { id: activeRun.id, status: runStatusText(activeRun.status) }),

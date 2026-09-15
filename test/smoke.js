@@ -109,9 +109,15 @@ ok(!/maxWidth: 130/.test(clientSrc), 'client：不再用固定 maxWidth:130 限�
 ok(!/unwrap\(await api\./.test(panelSrc), 'panel：productApi 适配器已解包——禁止二次 unwrap（历史 bug：把载荷当信封 → 「未知错误」）')
 // 组件（含 hook 如 FoldableText 的 useState）必须经 h() 渲染（或作为 slot 注册的组件实参）：
 // 直接 FoldableText({...}) 会把 hook 挂到父组件，条件渲染时 hook 数变化 → React #310，整个 slot 崩
-for (const comp of ['FoldableText', 'ProductRail', 'RunList', 'BacklogGroups', 'BacklogCard', 'ItemDetailPane', 'RunDetailPane', 'RunDetailTab', 'GlobalPanel']) {
+for (const comp of ['FoldableText', 'CancelButton', 'ProductRail', 'RunList', 'BacklogGroups', 'BacklogCard', 'ItemDetailPane', 'RunDetailPane', 'RunDetailTab', 'GlobalPanel']) {
   ok(new RegExp(`h\\(${comp}[,)]|,\\s*${comp}\\)`).test(panelSrc + clientSrc), `${comp} 经 h()/slot 注册渲染（非直接函数调用）`)
 }
+// 阶段状态词表与 backlog 词表分道：`status.cancelled` 是缺陷/任务词（已关闭 / Closed），阶段直接复用会把
+// 「被中断的阶段」显示成「已关闭」（2026-09-16 中断实测截图：同屏 run 行写「已取消」、阶段节点写「已关闭」）。
+// 这里锁住「阶段渲染必须走 stageStatusText」+「该词条 zh/en 同形且各自取值正确」。
+ok(/export const stageStatusText = /.test(sharedSrc) && /t\('stageStatus\.cancelled'\)/.test(sharedSrc), 'shared：阶段状态专用词表 stageStatusText（cancelled 单独取词，其余仍共用 status.*）')
+ok((clientSrc.match(/stageStatusText\(/g) || []).length >= 2 && (panelSrc.match(/stageStatusText\(/g) || []).length >= 3, '阶段渲染（流水线节点/阶段抽屉/阶段行/选中阶段/尝试历史）全走 stageStatusText，无一处回退 stText')
+ok(/'stageStatus\.cancelled': '已中止'/.test(localesSrc) && /'stageStatus\.cancelled': 'Stopped'/.test(localesSrc), 'stageStatus.cancelled 词条 zh/en 同形且不撞词（已中止 / Stopped；不撞 runStatus 的 已中断/已取消）')
 
 console.log('── 3) host 模块结构 ──')
 const hostSrc = [

@@ -170,7 +170,7 @@ npm run bundle          # 构建 client（tsdown → lib/client.js，__ModuleLoa
 | `teamflow_backlog` / `teamflow.backlog(product)` | 查看 backlog（+ persistence 落盘路径） |
 | `teamflow_claim` | 认领任务或缺陷 |
 | `teamflow_update` / `teamflow.backlogUpdate(kind, id, to, product, reason)` | 人工流转状态（处理 needs-human） |
-| `teamflow_cancel` / `teamflow.cancel(runId)` | 取消运行 |
+| `teamflow_cancel` / `teamflow.cancel(runId)` | 取消运行（工作台 / 全局面板 run 行 / run 详情三处按钮，两段式确认；仅对正在跑的 run 生效） |
 | `teamflow_resume` / `teamflow.resume(runId, sessionId)` | 断点续跑（从第一个未完成阶段重跑） |
 | `teamflow_triage` | 需求分诊预览（默认 start 自动分诊，仅在想预评估/强制 mode 时使用） |
 | `teamflow_assign` | 指定任务/缺陷的负责人（与 claim 分离：claim 只改状态） |

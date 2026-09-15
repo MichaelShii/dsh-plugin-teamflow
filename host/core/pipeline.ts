@@ -977,16 +977,7 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
   return journal.id
 }
 
-/** 取消运行（置 cancelled + dispose 进行中的子代理）。 */
-export function cancelRun(runId: string | null | undefined): boolean {
-  const j = runs.get(runId)
-  if (!j) return false
-  j.cancelled = true
-  const entry = inFlight.get(runId)
-  if (entry && entry.run) { try { entry.run.dispose() } catch (e) { /* ignore */ } }
-  persistJournal(j)
-  return true
-}
+/* 取消运行 `cancelRun` 在 core/context.ts（只操作 runs/inFlight，且无宿主私有依赖 → 可被 tests 直接加载）。 */
 
 /** 从断点续跑：跳过已完成阶段，从第一个未完成阶段重跑（service 与工具共用）。 */
 export function resumeRun(runId: string | null | undefined, sessionId: string | null | undefined): { ok: boolean; runId?: string; resumedFrom?: string; error?: string } {

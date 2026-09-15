@@ -4,7 +4,7 @@
  * - runs/inFlight/activeProducts：流水线运行期 Map（跨 runner/pipeline/report/服务共享）。
  * 这是 ADR-0004「共享状态」在编排层的落点：共享对象集中、单向被 core 各模块 import（不反向）。
  */
-import { slugPath } from '../../store.ts'
+import { slugPath, persistJournal } from '../../store.ts'
 
 /** 子代理/计量等宿主能力（由 TeamflowService 装配时 setRuntime 注入）。字段为鸭子类型：消费方自行窄化。 */
 export const runtime: {
@@ -41,6 +41,33 @@ export const inFlight = new Map()
 export const stores = new Map()
 /** 产品级并发锁：product → 活跃 runId（同一产品同时只允许一条流水线）。 */
 export const activeProducts = new Map()
+
+/**
+ * 取消运行（只对**本进程正在跑**的 run 有效：置 cancelled + dispose 进行中的子代理）。
+ *
+ * 为什么在本文件（而不是 pipeline.ts）：它只操作本文件声明的 `runs`/`inFlight`，且不引宿主私有依赖
+ * ——放这里可被 `test/cancel.test.js` 直接加载做行为级断言（pipeline.ts 链到 report→`@deepseek-ai/dsh-llm`，
+ * 仓库内无法 import，故取消门禁若留在那里就只能靠源码正则守）。
+ *
+ * `status !== 'running'` 门禁是必须的（2026-09-16）：旧实现只要 runId 在内存里就置 cancelled 并返回
+ * true——对已 completed 的 run 会给 journal 打上 cancelled 标记（状态却仍是 completed），对重启后由
+ * `loadJournals()` 回填的 interrupted run 则是「提示取消成功、状态永远不变」。running 是唯一的真实活动态
+ * （`executePipeline` 首句同步写入，早于任何 await，故无窗口），取消失败必须对调用方可见（界面按钮与
+ * `teamflow_cancel` 都据此提示），不得静默成功。
+ *
+ * 只置位、不改状态机：run 终态由 executePipeline 收尾落定（cancelled + 不提交 + 保留 resume 入口）。
+ * `inFlight` 只记**最后启动**的那个子代理（runner 每阶段覆盖、阶段末删除），故并发子任务的兄弟不会被
+ * 立即 dispose（跑到自然结束，下一个 `journal.cancelled` 检查点不再启动新阶段）——这是当前已知边界。
+ */
+export function cancelRun(runId: string | null | undefined): boolean {
+  const j = runs.get(runId)
+  if (!j || j.status !== 'running') return false
+  j.cancelled = true
+  const entry = inFlight.get(runId)
+  if (entry && entry.run) { try { entry.run.dispose() } catch (e) { /* ignore */ } }
+  persistJournal(j)
+  return true
+}
 
 /** 可用的子代理 provider 名（优先 spawn）。 */
 export function providerName(): string | null {

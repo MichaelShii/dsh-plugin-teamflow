@@ -170,7 +170,7 @@ Note: `lib/` is excluded by `.gitignore` but must ship with the package (`files`
 | `teamflow_backlog` / `teamflow.backlog(product)` | View backlog (+ persistence path) |
 | `teamflow_claim` | Claim a task or defect |
 | `teamflow_update` / `teamflow.backlogUpdate(kind, id, to, product, reason)` | Manually transition state (handle needs-human) |
-| `teamflow_cancel` / `teamflow.cancel(runId)` | Cancel a run |
+| `teamflow_cancel` / `teamflow.cancel(runId)` | Cancel a run (buttons in the workbench, the global panel's run row and run detail; two-step confirm; only effective while the run is live) |
 | `teamflow_resume` / `teamflow.resume(runId, sessionId)` | Resume from checkpoint (rerun from first unfinished stage) |
 | `teamflow_triage` | Requirement triage preview (start auto-triages by default; use only to pre-assess / force a mode) |
 | `teamflow_assign` | Assign owner of a task / defect (separate from claim: claim only changes state) |

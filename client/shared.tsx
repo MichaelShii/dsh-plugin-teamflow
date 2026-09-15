@@ -46,6 +46,14 @@ function vocab(prefix, raw) {
 }
 export const stText = (s) => vocab('status', s)
 export const runStatusText = (s) => vocab('runStatus', s)
+/**
+ * **阶段**状态文案：只有 `cancelled` 与 backlog 词表分道。
+ *
+ * `stText` 是 backlog 卡片词表（`status.cancelled`/`closed`/`verified` 都译「已关闭」），阶段渲染若直接复用它，
+ * 被中断的阶段会显示成「已关闭」（en：Closed）——2026-09-16 中断功能实测截图里，同一屏 run 行写「已取消」、
+ * 阶段节点写「已关闭」。阶段是被**中止**而不是被关闭，故单独取词；其余阶段状态仍走同一张表（不开两套词表）。
+ */
+export const stageStatusText = (s) => (s === 'cancelled' ? t('stageStatus.cancelled') : stText(s))
 export const kindTitle = (k) => vocab('kind', k)
 export const roleName = (r) => vocab('role', r)
 /** 角色 chip（带图标；未知角色回退「⚙️ <raw>」）。 */
@@ -149,6 +157,57 @@ export function FoldableText({ text, charLimit = 280, lineLimit = 5, style }: { 
       style: { marginTop: 3, font: 'inherit', fontSize: 10.5, fontWeight: 600, color: T.brand, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' },
     }, `${t('common.expandFull')}${more}`),
   )
+}
+
+/**
+ * 中断运行按钮（**两段式内联确认**）：首次点击进入待确认态，3 秒内再点一次才真正执行。
+ *
+ * 为什么不自造对话框：客户端全目录 grep `confirm|dialog` 0 命中——目前没有宿主确认能力依赖，
+ * 内联两段式不引新依赖、也不改宿主能力面，且天然贴合「误点一个跑了几十分钟的 run」的防护诉求。
+ *
+ * 数据面由调用方给（`onConfirm(runId)`）：会话内工作台与全局面板/右栏共用同一个 `teamflow/cancel`
+ * 方法，本件只负责待确认窗口、忙碌态与**点击不冒泡**（面板 run 行整行可点开详情）。
+ * `onConfirm` **必须自行消化错误**（它由调用方 try/catch 并落到可见的 err 提示）；本件兜底只记 console，
+ * 不让点击处理里出现未处理的 rejection。
+ */
+export function CancelButton({ runId, label, title, onConfirm, style }: {
+  runId: unknown
+  label?: string
+  title?: string
+  onConfirm: (runId: unknown) => unknown
+  style?: Record<string, unknown>
+}) {
+  const [arm, setArm] = React.useState(false)
+  const [busy, setBusy] = React.useState(false)
+  React.useEffect(() => {
+    if (!arm) return undefined
+    const timer = setTimeout(() => setArm(false), 3000)
+    return () => clearTimeout(timer)
+  }, [arm])
+  const onClick = async (e) => {
+    if (e && typeof e.stopPropagation === 'function') e.stopPropagation()
+    if (busy) return
+    if (!arm) { setArm(true); return }  // 第一击：进入待确认（不执行任何操作）
+    setArm(false)
+    setBusy(true)
+    try { await onConfirm(runId) }
+    catch (err) { console.warn('[teamflow] cancel failed', err) }
+    finally { setBusy(false) }
+  }
+  const tone = busy
+    ? { opacity: 0.6, cursor: 'default' }
+    : arm ? { background: T.error, color: '#fff', borderColor: T.error } : null
+  return h('button', {
+    onClick,
+    disabled: busy,
+    title: title || undefined,
+    style: {
+      font: 'inherit', fontSize: 12, padding: '4px 12px', borderRadius: 8, cursor: 'pointer',
+      border: `1px solid ${T.error}`, background: 'transparent', color: T.error, fontWeight: 600,
+      transition: 'background .12s ease, color .12s ease',
+      ...(style || {}), ...(tone || {}),
+    },
+  }, busy ? t('cancel.busy') : arm ? t('cancel.arm') : (label || t('cancel.btn')))
 }
 
 export function fmtTime(tm) {

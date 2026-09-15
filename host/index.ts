@@ -35,7 +35,8 @@ import { deliverCompletion } from './core/report.ts'
 import { runSanityCheck, gitCmd } from './core/sanity.ts'
 import { join } from 'node:path'
 import { mkdirSync, readdirSync } from 'node:fs'
-import { executePipeline, summarizeTimeline, startPipeline, cancelRun, resumeRun } from './core/pipeline.ts'
+import { executePipeline, summarizeTimeline, startPipeline, resumeRun } from './core/pipeline.ts'
+import { cancelRun } from './core/context.ts'
 import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, normalizeMode, runTriage } from './core/triage.ts'
 import { t, modeDesc } from './locales.ts'
 import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.ts'
@@ -54,7 +55,7 @@ import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.
 
 /* 流水线编排/入口/取消/续跑与 resume 辅助见 core/pipeline.ts（buildResumeProducts/interruptedPhaseOf/executePipeline/summarizeTimeline）。 */
 
-/* 流水线入口/取消/断点续跑见 core/pipeline.ts（startPipeline/cancelRun/resumeRun）。 */
+/* 流水线入口/断点续跑见 core/pipeline.ts（startPipeline/resumeRun）；取消见 core/context.ts（cancelRun）。 */
 
 /** 按工作区作用域过滤运行见 core/products.ts（runsFor；全局面板与远程面共用）。 */
 
