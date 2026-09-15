@@ -2,7 +2,7 @@
  * dsh-plugin-teamflow core — 子代理执行器（并发池 / 单阶段运行 / 重试与熔断）。
  * 依赖：util/constants/types + core(context/metering)。
  */
-import { runtime, inFlight, providerName } from './context.ts'
+import { runtime, providerName, trackInFlight, untrackInFlight } from './context.ts'
 import { accumulateSessionUsage, freshTokensOf } from './metering.ts'
 import { startStageGuard } from './guard.ts'
 import { clip, extractText, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic } from '../util.ts'
@@ -61,20 +61,6 @@ async function resolveStageEffort(
   if (!supported) return { skip: t(locale, 'diag.noEfforts', { provider: route.provider || '?', model: route.model || '?' }) }
   if (supported.indexOf(wanted) === -1) return { skip: t(locale, 'diag.unsupportedEffort', { wanted, list: supported.join('/') || t(locale, 'diag.listNone') }) }
   return { effort: wanted }
-}
-
-/** 并发池：按 max 个 worker 消费 items，返回同序结果。 */
-export async function runPool(items, max, fn) {
-  const results = new Array(items.length)
-  let cursor = 0
-  const workers = Array.from({ length: Math.min(Math.max(1, max), items.length) }, async () => {
-    while (cursor < items.length) {
-      const i = cursor++
-      results[i] = await fn(items[i], i)
-    }
-  })
-  await Promise.all(workers)
-  return results
 }
 
 /**
@@ -172,7 +158,7 @@ export async function runAgent(
       signal: normalizeSignal(signal),
     })
     stage.childId = run.id
-    inFlight.set(journal.id, { run, stage })
+    trackInFlight(journal.id, stage, run)
     try {
       if (parent && parent.session && typeof parent.session.append === 'function') {
         parent.session.append('tool-workflow/agent-start', {
@@ -248,8 +234,7 @@ export async function runAgent(
     stage.usage = accumulateSessionUsage(run)
     stage.handoff = stageText ? handoffBrief(stageText) : null
     stage.endedAt = Date.now()
-    if (inFlight.get(journal.id) && inFlight.get(journal.id).stage === stage) inFlight.delete(journal.id)
-    if (run) { try { await run.dispose() } catch (e2) { /* ignore */ } }
+    untrackInFlight(journal.id, stage) // 只注销自己这一路（并发 dev 同 run 多路在飞，见 context.inFlight）    if (run) { try { await run.dispose() } catch (e2) { /* ignore */ } }
   }
 }
 

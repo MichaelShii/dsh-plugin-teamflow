@@ -24,13 +24,13 @@ import type {
   Journal, BacklogItem, PipelineOptions, ResumeContext, SubagentRunLike, ParentAgentLike, UsageBuckets,
 } from './types.ts'
 import { RETRY_LIMIT, STATUS, PHASE_ORDER, PHASE_KEY_OF, PHASE_KEY_BY_NAME, phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER } from './constants.ts'
-import { toText, clip, extractText, normalizeRoot, normalizeTasks, sanitizeSnapOptions, normalizeSignal, isUnretryable, handoffBrief } from './util.ts'
+import { toText, clip, extractText, normalizeRoot, normalizeTasks, sanitizeSnapOptions, normalizeSignal, isUnretryable, handoffBrief, runPool } from './util.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, devPrompt, qaPrompt, acceptancePrompt } from './prompts/index.ts'
 import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, setSessionProjections, workspaceScopeOf } from './core/context.ts'
 import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/backlog.ts'
 import { runsFor, runAddress, productKeyOf, runVisibleIn, runBrief, productMetaOf, listProducts } from './core/products.ts'
 import { loadTeams, findTeam, teamNameOf, teamDescOf, type TeamConfig } from './core/teams.ts'
-import { runPool, runAgent, withRetry } from './core/runner.ts'
+import { runAgent, withRetry } from './core/runner.ts'
 import { deliverCompletion } from './core/report.ts'
 import { runSanityCheck, gitCmd } from './core/sanity.ts'
 import { join } from 'node:path'
@@ -47,7 +47,7 @@ import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.
 
 /* 阶段提示词 prd/design/scaffold/tech/dev/qa/acceptancePrompt 见 prompts/。 */
 
-/* 并发池/单阶段执行/重试熔断见 core/runner.ts（runPool/runAgent/withRetry）。 */
+/* 并发池见 util.ts（runPool）；单阶段执行/重试熔断见 core/runner.ts（runAgent/withRetry）。 */
 
 /* 缺陷解析 / 立项建卡 / 任务流转见 core/backlog.ts（parseDefects / initPipelineBacklog / advanceTask）。 */
 

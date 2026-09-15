@@ -35,8 +35,24 @@ export function setSessionProjections(projections: unknown): void {
 
 /** 运行期 run 注册表（runId → Journal）。 */
 export const runs = new Map()
-/** 进行中的 stage 注册表（runId → { run, stage }），供取消/完成清理。 */
+/** 进行中的 stage 注册表（runId → `Map<stage, run>`）。**同一 run 可有多路并发子代理**（dev 并发池），
+ *  故每 run 存的是 stage→handle 的表而不是单个 handle：旧形状（每 run 一个 `{run, stage}`，后启动的覆盖前一个）
+ *  让取消只能停掉最后一路，兄弟继续跑到自然结束（2026-09-16 用户实测：「开发的多 agent 中断不了」）。 */
 export const inFlight = new Map()
+/** 登记一路在飞子代理（runAgent 拿到 handle 后调用）。 */
+export function trackInFlight(runId: unknown, stage: unknown, run: unknown): void {
+  if (!runId || !stage) return
+  let m = inFlight.get(runId)
+  if (!m) { m = new Map(); inFlight.set(runId, m) }
+  m.set(stage, run)
+}
+/** 注销一路在飞子代理（该阶段结束时调用）；空桶顺手清掉，避免 map 常驻膨胀。 */
+export function untrackInFlight(runId: unknown, stage: unknown): void {
+  const m = inFlight.get(runId)
+  if (!m) return
+  m.delete(stage)
+  if (m.size === 0) inFlight.delete(runId)
+}
 /** 产品级 backlog 缓存（product → BacklogStore）。 */
 export const stores = new Map()
 /** 产品级并发锁：product → 活跃 runId（同一产品同时只允许一条流水线）。 */
@@ -56,15 +72,22 @@ export const activeProducts = new Map()
  * `teamflow_cancel` 都据此提示），不得静默成功。
  *
  * 只置位、不改状态机：run 终态由 executePipeline 收尾落定（cancelled + 不提交 + 保留 resume 入口）。
- * `inFlight` 只记**最后启动**的那个子代理（runner 每阶段覆盖、阶段末删除），故并发子任务的兄弟不会被
- * 立即 dispose（跑到自然结束，下一个 `journal.cancelled` 检查点不再启动新阶段）——这是当前已知边界。
+ * 在飞子代理**全部** dispose（并发 dev 的多路都要停——只停最后一路是 2026-09-16 实测的缺陷）；
+ * `dispose()` 是异步的，其 Promise 一律挂 `.catch`，避免拒绝变成未处理拒绝。
  */
 export function cancelRun(runId: string | null | undefined): boolean {
   const j = runs.get(runId)
   if (!j || j.status !== 'running') return false
   j.cancelled = true
-  const entry = inFlight.get(runId)
-  if (entry && entry.run) { try { entry.run.dispose() } catch (e) { /* ignore */ } }
+  const live = inFlight.get(runId)
+  if (live) {
+    for (const run of live.values()) {
+      try {
+        const p = run && typeof run.dispose === 'function' ? run.dispose() : null
+        if (p && typeof p.catch === 'function') p.catch(() => { /* 关闭失败不影响取消语义 */ })
+      } catch (e) { /* ignore */ }
+    }
+  }
   persistJournal(j)
   return true
 }

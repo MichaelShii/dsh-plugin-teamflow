@@ -6,10 +6,10 @@
  */
 import { runtime, runs, inFlight, activeProducts, providerName, workspaceScopeOf } from './context.ts'
 import { initPipelineBacklog, advanceTask, storeFor, parseDefectRows, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, createSubtask, completeSubtask, noteSubtaskUsage, getSubtasks, hasOpenBlockingBugs } from './backlog.ts'
-import { withRetry, runPool, resolveChildRoute } from './runner.ts'
+import { withRetry, resolveChildRoute } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
-import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry } from '../util.ts'
+import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, FIX_GATE_PATTERN } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
@@ -501,8 +501,7 @@ export async function executePipeline(
       } else {
         const reused = devResults.filter((r) => r && !todo.some((d) => d.title === r.title))
         journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.resumeDev', { reused: reused.length, todo: todo.length }) })
-        const rerun = await runPool(todo, maxConcurrency, async (task) => {
-          // resume 补跑诊断（缺口修复 2026-09-04）：resume 是全新子代理会话，不拼诊断=盲试
+        const rerun = await runPool(todo, maxConcurrency, async (task) => {          // resume 补跑诊断（缺口修复 2026-09-04）：resume 是全新子代理会话，不拼诊断=盲试
           // （与 withRetry 自动重试同构的问题——模型不知道上次为何失败，会重复踩同一坑）。
           // 找该任务上次失败 stage（同 title 的最近失败），附 buildRetryDiagnostic（outcome/summary/产出尾部）。
           const prevStage = [...journal.stages].reverse().find((s) => phaseKeyOf(s.phase) === 'dev' && s.status !== 'done' && ((s.taskKey && s.taskKey === String(task.title || '')) || (!s.taskKey && (s.label || '').includes(String(task.title || '')))))
@@ -512,8 +511,9 @@ export async function executePipeline(
           noteVerifyEvidence(devR.stage, rerunText)
           const ok = !!devR.text
           return { title: task.title, failed: !ok, output: rerunText || t(locale, 'dev.failedPlaceholder') }
-        })
+        }, () => journal.cancelled)
         for (const t of rerun) {
+          if (!t) continue // 取消后并发池不再取新任务 → 未启动的条目是 undefined（时间线里留空位）
           // 子卡同步：createSubtask 同名复用（业务任务实体一张卡）+ completeSubtask 更新状态
           const sub = createSubtask(journal, t.title, t.spec || '')
           if (sub) completeSubtask(journal, sub.id, t.failed, t.output ? snippet(t.output, 1000) : null, null)
@@ -565,7 +565,7 @@ export async function executePipeline(
           if (devR.stage) noteSubtaskUsage(journal, sub.id, devR.stage)
         }
         return { title: task.title, failed: !ok, output: devText || t(locale, 'dev.failedPlaceholder') }
-      })
+      }, () => journal.cancelled)
       timeline.dev = devResults
       // dev 阶段 state 沉淀：汇总各 dev 产出中提取的 state 块
       for (const r of devResults) {

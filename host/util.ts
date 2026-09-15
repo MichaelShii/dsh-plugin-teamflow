@@ -472,3 +472,27 @@ export function extractBlueprint(text: string | null | undefined, locale?: HostL
     : '【架构蓝图（tech 阶段产出，dev 须在既有架构上实现，勿重建）】'
   return { summary, modules, duplications, tasks, render: `${head}\n${parts.join('\n')}` }
 }
+
+/**
+ * 并发池：按 max 个 worker 消费 items，返回**同序**结果。
+ *
+ * `shouldStop`（可选）：取下一个任务**之前**判定，返回 true 即停止取新任务（已在飞的照常等它收尾），
+ * 未取到的条目结果保持 `undefined`——**调用方必须容忍空位**（现有调用点一律 `r && …` 过滤）。
+ *
+ * 为什么要有它（2026-09-16 用户实测）：取消后被 dispose 的任务返回 null，worker 拿到结果会立刻
+ * `cursor++` 取下一个任务并启动新子代理——用户按了「中断」，界面上却又冒出一个「开发中」
+ * （取消变成了队列补位）。放在 util（无宿主私有依赖）而非 runner，是为了让行为级测试能直接喂 items 断言。
+ */
+export async function runPool(items, max, fn, shouldStop?: (() => boolean) | null) {
+  const results = new Array(items.length)
+  let cursor = 0
+  const workers = Array.from({ length: Math.min(Math.max(1, max), items.length) }, async () => {
+    while (cursor < items.length) {
+      if (shouldStop && shouldStop()) return
+      const i = cursor++
+      results[i] = await fn(items[i], i)
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
