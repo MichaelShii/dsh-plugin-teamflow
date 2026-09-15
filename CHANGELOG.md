@@ -9,6 +9,8 @@
 ### 改进
 - **仓库发布流程正规化（对贡献者可见）**：`main` 只承载「已发布到 npm 的内容」，日常开发与文档改动落在当前 release 分支（`release-vX.Y.Z`），**贡献者向最新 release 分支提 PR**；发布时 release 分支 → PR → squash 合入 main → 打 tag → 发 GitHub Release → 另起下一条分支。同时落定两条 SOP 判据：**发布是否成功以写路径为准**（registry 读路径 `npm view` / packument / 版本端点可滞后数分钟；重发得到的 403 `cannot publish over the previously published versions` 才是权威回执，且幂等安全无副作用）；**`git push` 连不上先查本机 VPN/TUN 状态**，不要凭「换成 HTTP/1.1 后成功」归因（实测同一 h1 命令在链路恢复前也会失败，属伪相关）。细则见 `AGENTS.md` §4 与 `CONTRIBUTING.md`
 
+- **README 核心特性精简（17 → 8 条）**：原小节把「使用者要什么」和「实现怎么做的」混在一起（沙箱约束原委、`$DSH_HOME` 路径、LangGraph checkpointer 语义、`FRESH_TOKEN_BUDGET` 阈值、93% 实测占比、`git rm --cached` 操作指引……），中文 3 924 字符 / 英文 8 287 字符（英文最长单条 1 193 字符），且存在重复（「单任务模型」与「状态机 + 事件日志」同讲一件事，4 条都在讲「文件放哪」）。现收敛为 **8 条面向使用者的能力描述**（中文 **968** 字符 / 英文 **2 602** 字符，−75% / −69%），机制细节保留在 `AGENTS.md` §4–§5 与 `CHANGELOG` 各版本段；唯一保留的操作指引是「历史提交混进 `logs/teamflow/` 时用 `git rm -r --cached` 移出」
+
 ## [0.1.9] - 2026-09-16
 
 ### 新增
