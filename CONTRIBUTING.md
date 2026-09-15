@@ -63,7 +63,7 @@ is cut right after each release).
 
 1. Open an issue first if the change is non-trivial (pipeline stage semantics, state machine,
    persistence format, prompt contracts).
-2. **Branch from the latest release branch** (e.g. `release-v0.1.10`) — **not from `main`** — and open
+2. **Branch from the latest release branch** (e.g. `release-v0.2.0`) — **not from `main`** — and open
    your PR **against that release branch**. Keep PRs focused; squash commits on merge.
 3. CI runs `pnpm test` + `pnpm bundle` on pushes to `main` and `release-*` and on every PR; make sure
    both are green locally too.
