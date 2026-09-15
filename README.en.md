@@ -20,29 +20,29 @@ requirement → PRD (based on existing patterns / product memory, archived to pr
 
 ## Screenshots
 
-1. Pipeline view — stage serpentine lanes + node cards (status / duration / tokens / subagent session)
+1. Global panel — the 🏭 Team Workspace icon in the left sidebar (cross-session, product-line view: product list + run list + Backlog tab + overlay detail pane)
+
+   ![Global panel](docs/screenshots/en/global-panel.png)
+
+2. Pipeline view — stage serpentine lanes + node cards (status / duration / tokens / subagent session)
 
    ![Pipeline view](docs/screenshots/en/pipeline-view.png)
-
-2. Backlog board — draggable lanes for requirements / tasks / defects
-
-   ![Backlog board](docs/screenshots/en/board.png)
 
 3. Stage detail drawer — full stage artifacts + token breakdown + "🎬 jump to subagent session"
 
    ![Stage detail](docs/screenshots/en/stage-detail.png)
 
-4. Board task detail — task-card drawer (requirement text / assignments / event timeline / subtasks / defects / tokens)
+4. Backlog board — draggable lanes for requirements / tasks / defects
+
+   ![Backlog board](docs/screenshots/en/board.png)
+
+5. Board task detail — task-card drawer (requirement text / assignments / event timeline / subtasks / defects / tokens)
 
    ![Board task detail](docs/screenshots/en/board-task-detail.png)
 
-5. Team selector — 🏭 button + team dropdown
+6. Team selector — 🏭 button + team dropdown
 
    ![Team selector](docs/screenshots/en/team-selector.png)
-
-6. Global panel — the 🏭 Team Workspace icon in the left sidebar (cross-session, product-line view: product list + run list + Backlog tab + overlay detail pane)
-
-   ![Global panel](docs/screenshots/en/global-panel.png)
 
 ## Core Features
 

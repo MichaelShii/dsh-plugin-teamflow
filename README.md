@@ -20,29 +20,29 @@ TeamFlow 团队研发流水线 —— DeepSeek Harness 可分发插件（`dsh pl
 
 ## 界面预览
 
-1. 流水线视图——阶段蛇形泳道 + 节点卡片（状态/耗时/token/子代理会话）
+1. 全局面板——左侧边栏「🏭 团队工作台」图标（跨会话 / 产品线视角：产品线列表 + run 列表 + Backlog 标签页 + 覆盖式详情浮层）
+
+   ![全局面板](docs/screenshots/global-panel.png)
+
+2. 流水线视图——阶段蛇形泳道 + 节点卡片（状态/耗时/token/子代理会话）
 
    ![流水线视图](docs/screenshots/pipeline-view.png)
-
-2. Backlog 看板——需求/任务/缺陷拖拽泳道
-
-   ![Backlog 看板](docs/screenshots/board.png)
 
 3. 阶段详情抽屉——阶段性产物全文 + token 明细 +「🎬 跳转子代理会话」
 
    ![阶段详情](docs/screenshots/stage-detail.png)
 
-4. 看板任务详情——任务卡抽屉（需求原文/分配/事件时间线/子卡/缺陷/token）
+4. Backlog 看板——需求/任务/缺陷拖拽泳道
+
+   ![Backlog 看板](docs/screenshots/board.png)
+
+5. 看板任务详情——任务卡抽屉（需求原文/分配/事件时间线/子卡/缺陷/token）
 
    ![看板任务详情](docs/screenshots/board-task-detail.png)
 
-5. 团队选择——🏭 按钮 + 团队下拉
+6. 团队选择——🏭 按钮 + 团队下拉
 
    ![团队选择](docs/screenshots/team-selector.png)
-
-6. 全局面板——左侧边栏「🏭 团队工作台」图标（跨会话 / 产品线视角：产品线列表 + run 列表 + Backlog 标签页 + 覆盖式详情浮层）
-
-   ![全局面板](docs/screenshots/global-panel.png)
 
 ## 核心特性
 
