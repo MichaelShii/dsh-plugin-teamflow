@@ -15,7 +15,7 @@ import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext, PipelineMode } from '../types.ts'
-import { normalizeMode, runTriage, normalizeIntent, qualifyBlockers, type TriageVerdict } from './triage.ts'
+import { normalizeMode, runTriage, normalizeIntent, qualifyBlockers, guardrailUpgrade, type TriageVerdict } from './triage.ts'
 import { loadTeams, findTeam, getActiveStages, teamNameOf } from './teams.ts'
 import { loadState, extractStateBlock, mergeStateBlock, noteRun } from './state.ts'
 import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddArgs, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR } from './sanity.ts'
@@ -174,6 +174,26 @@ function notePrdAssumptions(journal: Journal, locale: HostLocale): void {
 }
 
 /**
+ * 需求澄清闸门 · pipeline 侧兜底（2026-09-16 实测补充）：分诊判「还不是明确需求」或存在合格 must-know
+ * 缺口 → **不开工**，把 run 落成**可续跑的中断态**（不建任何阶段），由完成汇报把问题交给主线程去问用户，
+ * 用户答完带 `requirementSupplement` 重调（或 `teamflow_resume` 续跑）。
+ *
+ * 为什么兜底放在 pipeline 而不是只靠 tool 侧预检：预检在**工具调用内**跑，模型分诊可能失败并静默退回
+ * 正则兜底（实测 `tf-mu35oza7-wmuckz` 漏传 signal → 0.4s fallback）→ 只靠预检会让闸门在那种情况下静默失效。
+ * 代价：这一条罕见路径会留下一个零阶段 run（status=interrupted + humanIntervention），比"静默开跑"划算。
+ */
+function abortForClarification(journal: Journal, locale: HostLocale, verdict: TriageVerdict): void {
+  journal.interrupted = true
+  journal.interruptedAt = Date.now()
+  journal.humanIntervention = true
+  journal.error = t(locale, 'run.needsClarification', { intent: verdict.intent, n: verdict.blockers.length })
+  journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyAbort', { intent: verdict.intent, n: verdict.blockers.length }) })
+  for (const b of verdict.blockers) {
+    journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyBlocker', { q: clip(b.question, 200), changes: clip(b.changes, 160), rework: clip(b.rework, 160) }) })
+  }
+}
+
+/**
  * 断点续跑起点：第一个「没有任意 done 尝试」的阶段。
  * ⚠️ 按阶段而非尝试判断（实锤 tf-mtcomxpq）：PRD 第 1 次尝试 failed（护栏退化）但第 2 次重试 done——
  * 旧实现取第一个非 done stage → 断点错误回到 PRD，PRD/技术方案被无谓重跑。
@@ -260,12 +280,15 @@ export async function executePipeline(
   // 日志生命周期（B 方案 2026-09-15）：先把上次崩溃/中断残留在工作区的暂存日志归档走（自愈），
   // 再淘汰超额归档。清扫尽力而为，绝不阻断起跑。
   try { sweepWorkspaceLogs(journal, locale) } catch (e) { /* 清扫失败不影响起跑 */ }
-  // 自动分诊（对调用方透明）：未显式 mode 且非 lite 且非续跑 → 内部先用模型思考一轮再路由。
+  // 自动分诊（对调用方透明）：除 `patch` 外**一律跑一次**——含显式 `lite`/`mode`。判据来自实测：
+  // ① 模型系统性自选档位（33 次启动 14 次显式传入、0 次先预览 `teamflow_triage`），若跳过 triage，
+  //    澄清闸门与 ADR-0006 架构护栏会在 42% 的启动上静默失效；
+  // ② tool 侧预检只是**快路径**，它在工具调用内跑、会失败（实测 `tf-mu35oza7-wmuckz`：漏传 signal →
+  //    0.4s 退 fallback）→ **权威判定放这里**，预检透传只用于省一次模型调用。
   // 使用者无需了解/选择 mode；mode 是内部路由 + 可选显式覆盖（审计可见）。
-  // 2026-09-16：tool 侧预检已为「探索态不建 run」闸门跑过一次分诊——透传时**复用同一裁决**，
-  // 不重复模型调用；无论哪条路径都把裁决落进 `journal.triage`（shadow 埋点，供 Phase 2 定闸门强度）。
   let triageSlug = ''
   const preTriage = normalizeTriagePassthrough((options as { __triage?: unknown }).__triage)
+  const preTriageError = String((options as { __triageError?: unknown }).__triageError || '')
   if (preTriage) {
     triageSlug = preTriage.slug || ''
     journal.triage = triageRecordOf(preTriage)
@@ -274,16 +297,31 @@ export async function executePipeline(
     const upFrom = (preTriage as { upgradedFrom?: string | null }).upgradedFrom
     if (upFrom) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.modeUpgraded', { from: upFrom, to: preTriage.mode }) })
     if (preTriage.blockersDropped > 0) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageBlockersDropped', { n: preTriage.blockersDropped }) })
-  } else if (options.mode === undefined && !options.lite) {
+  } else if (options.mode !== 'patch') {
+    // 预检失败不静默（实测过：漏传 signal → 工具内分诊 0.4s 退 fallback，没人知道）
+    if (preTriageError) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triagePreflightFail', { msg: clip(preTriageError, 200) }) })
     try {
+      const callerMode = options.mode
       const verdict = await runTriage(requirement, { needDesign: options.needDesign }, parent, signal, locale)
-      options.mode = verdict.mode
+      // 档位：调用方给了更轻的而分诊判 ≥medium → 护栏强升；否则保持调用方选择（或走分诊结果）
+      const up = guardrailUpgrade(callerMode, !!options.lite, verdict.mode)
+      if (up) {
+        if (callerMode !== undefined || options.lite) (verdict as unknown as Record<string, unknown>).__upgradedFrom = callerMode || 'lite'
+        options.mode = up
+        options.lite = up === 'lite' || up === 'tech' || up === 'patch' ? !!options.lite : false
+      }
       if (verdict.needDesign && !options.needDesign) options.needDesign = true
       triageSlug = verdict.slug || ''
       journal.options = Object.assign({}, options) as Record<string, unknown>
       journal.triage = triageRecordOf(verdict)
       journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.triage', { kind: verdict.kind, mode: verdict.mode, source: verdict.source }) })
+      const upFrom2 = (verdict as { upgradedFrom?: string | null }).upgradedFrom
+      if (upFrom2) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.modeUpgraded', { from: upFrom2, to: verdict.mode }) })
       if (verdict.blockersDropped > 0) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageBlockersDropped', { n: verdict.blockersDropped }) })
+      // 闸门兜底（pipeline 侧权威）：分诊判「还不是明确需求」或存在合格 must-know 缺口 → **不开工**，
+      // run 落可续跑的中断态（不建阶段），由完成汇报把问题交给主线程去问用户。只有 tool 侧快路径
+      // 没拦住时才会走到这里（显式档位 / 预检失败 / 程序化调用）。
+      if (verdict.intent !== 'requirement' || verdict.blockers.length > 0) return abortForClarification(journal, locale, verdict)
     } catch (e) {
       journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageFail', { msg: String((e && e.message) || e) }) })
     }

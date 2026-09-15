@@ -160,7 +160,7 @@ ok(/verdict\.intent !== 'requirement' \|\| verdict\.blockers\.length > 0/.test(h
 ok(/status: 'needs-clarification'/.test(hostSrc) && /needs-clarification[\s\S]{0,400}requirementSupplement/.test(hostSrc), 'host：needs-clarification 返回 + 指引带 requirementSupplement 重调')
 ok(/\(options as unknown as Record<string, unknown>\)\.__triage = pre\.verdict/.test(hostSrc), 'host：分诊裁决透传 pipeline（避免重复一次模型调用）')
 ok(/requirementSupplement: \{ type: 'string'/.test(hostSrc), 'host：teamflow_start 暴露 requirementSupplement 参数')
-ok(/await clarificationPreflight\(req, opts as Record<string, unknown>, agent, ambientLocale\(\)\)/.test(hostSrc), 'host：Remote/程序化 start 同样过闸门（不只模型工具路径）')
+ok(/await clarificationPreflight\(req, opts as Record<string, unknown>, agent, undefined, ambientLocale\(\)\)/.test(hostSrc), 'host：Remote/程序化 start 同样过闸门（不只模型工具路径）')
 // 注：闸门在 pipeline/store/report 侧的断言放在末尾（那三个源常量在文件后段才初始化）。
 
 console.log('── 3b) 断点续跑（v0.4.0）──')
@@ -564,7 +564,12 @@ ok(/log\.modeUpgraded/.test(pipelineSrc) && /__upgradedFrom/.test(hostSrc) && /_
 // 注入文案闭环（2026-09-16 实测补充）：实测会话 session-518e9188 里团队注入已下发、用户说「我想开发一个
 // dsh 插件」，但**模型根本没调用 teamflow_start**（0 次调用、该产品线 runs=0）——不复现「抢跑」，可闸门也
 // 就没机会生效。旧注入只写「不明确就别调用」，没写「澄清完要回来开工」→ 这条链没有闭环保证。故补三段。
-ok(/【需求不明确就先澄清，不要抢跑】/.test(hostSrc) && /【澄清完必须回到流水线】/.test(hostSrc), '注入（zh）：澄清前置 + 澄清后必须回带 requirementSupplement 开工')
+// 权威判定在 pipeline（2026-09-16 实测 tf-mu35oza7-wmuckz：预检漏传 signal → 工具内分诊 0.4s 退 fallback，闸门静默失效）
+ok(/clarificationPreflight\(requirement, options as unknown as Record<string, unknown>, parent, exec && exec\.signal, ambientLocale\(\)\)/.test(hostSrc), 'host：预检把工具 signal 传给分诊（漏传会让分诊秒退 fallback）')
+ok(/verdict: TriageVerdict \| null; error\?: string/.test(hostSrc) && /__triageError/.test(hostSrc), 'host：预检失败返回原因（__triageError），不静默')
+ok(/\} else if \(options\.mode !== 'patch'\) \{/.test(pipelineSrc), 'pipeline：除 patch 外一律跑分诊（含显式 lite/mode —— 权威判定在 pipeline）')
+ok(/function abortForClarification/.test(pipelineSrc) && /return abortForClarification\(journal, locale, verdict\)/.test(pipelineSrc), 'pipeline：闸门兜底 abortForClarification（非明确需求/must-know → 不开工，落可续跑中断态）')
+ok(/log\.triagePreflightFail/.test(pipelineSrc) && /log\.clarifyAbort/.test(pipelineSrc) && /run\.needsClarification/.test(hostSrc), 'pipeline：预检失败与闸门兜底都有可见日志（locale 键齐备）')
 ok(/\[Clarify first, do not jump the gun\]/.test(hostSrc) && /\[After clarifying, come back to the pipeline\]/.test(hostSrc), '注入（en）：同上（语言跟随会话，双语同形门禁另有 locale 测试）')
 ok(/若 teamflow_start 返回 needs-clarification，按它列出的 blockers 继续问用户/.test(hostSrc) && /If teamflow_start returns needs-clarification, keep asking the user about the blockers/.test(hostSrc), '注入：needs-clarification 的处理指引（按 blockers 问 → 带 supplement 重调，禁止替用户假设）')
 

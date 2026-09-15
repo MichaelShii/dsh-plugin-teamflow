@@ -44,7 +44,7 @@ import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.
 /* BacklogStore / storeFor 见 core/backlog.ts（数据层与状态机）。 */
 
 /**
- * 需求澄清闸门 · 启动前预检（2026-09-16 Phase 1）。
+ * 需求澄清闸门 · 启动前预检（2026-09-16 Phase 1，**快路径**）。
  *
  * 分诊本来就是一次模型调用——这里把它**前移到建 run 之前**，用同一份裁决判两件事：
  * ① `intent` 是否「明确需求」（`exploration` = 还在探讨、`feedback` = 对现状的反馈）；② 有没有 **must-know**
@@ -52,25 +52,32 @@ import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.
  * `needs-clarification`，**不建 run**——实锤：社区讨论 #6405 用户说「我想开发一个 dsh 插件」→ 直接跑完整条
  * 流水线（他本人：「我都不知道自己想要啥」）。
  *
- * 边界（2026-09-16 放宽，勿回退）：**只有 `patch` 档豁免**——其余一律跑（含显式 `lite`/`mode`）。原因：实测
- * 模型**系统性**自行传档位（33 次启动里 14 次显式传入、只有 0 次先跑 `teamflow_triage` 预览），若继续豁免，
- * 澄清闸门与 ADR-0006 的架构护栏会在 **42% 的启动**上静默失效。分诊不可用/超时 → verdict=null → **放行**
- * （退回现状行为，零回归）。裁决透传 pipeline（`options.__triage`）：**不重复跑分诊**，并让 `journal.triage`
- * 拿到 shadow 样本。档位处理：调用方没给 → 用分诊档位；给了更轻的而分诊判 ≥medium → **护栏强升**
- * （`guardrailUpgrade`，ADR-0006）；调用方给的是 medium/full（或已 ≥ 分诊档位）→ 保持其选择。
+ * ⚠️ **正确性不依赖本函数**（2026-09-16 实测教训，`tf-mu35oza7-wmuckz`）：它在**工具调用内**跑，模型分诊
+ * 一旦在此失败（那次 0.4s 返回 `source=fallback`，因为漏传 `signal`）就会静默降级成正则兜底 —— 所以
+ * **权威判定在 pipeline 内**：pipeline 对「没有透传裁决」的启动一律自己再跑一次分诊，并据此做闸门与
+ * 架构护栏。这里失败只把原因放进 `__triageError`，由 pipeline 记 warn（不静默）。
+ *
+ * 边界：**只有 `patch` 档豁免**——其余一律（含显式 `lite`/`mode`）都要过闸门与架构护栏；原因：实测模型
+ * **系统性**自选档位（33 次启动 14 次显式传入、0 次先 `teamflow_triage` 预览；根因是旧 `lite` 描述里的
+ * "(recommended)" 被逐字引用）→ 若继续豁免，闸门与 ADR-0006 护栏会在 42% 的启动上静默失效。
  */
 async function clarificationPreflight(
   requirement: string,
   options: Record<string, unknown>,
   parent: unknown,
+  signal: unknown,
   locale: ReturnType<typeof ambientLocale>,
-): Promise<{ needsClarification: { intent: string; blockers: TriageVerdict['blockers'] } } | { verdict: TriageVerdict | null }> {
+): Promise<{ needsClarification: { intent: string; blockers: TriageVerdict['blockers'] } } | { verdict: TriageVerdict | null; error?: string }> {
   if (options.mode === 'patch') return { verdict: null }
   let verdict: TriageVerdict | null = null
+  let error = ''
   try {
-    verdict = await runTriage(requirement, { needDesign: options.needDesign === true }, parent, undefined, locale)
-  } catch (e) { verdict = null }
-  if (!verdict) return { verdict: null }
+    verdict = await runTriage(requirement, { needDesign: options.needDesign === true }, parent, signal, locale)
+  } catch (e) {
+    error = String((e && (e as { message?: string }).message) || e)
+    verdict = null
+  }
+  if (!verdict) return { verdict: null, error }
   if (verdict.intent !== 'requirement' || verdict.blockers.length > 0) {
     return { needsClarification: { intent: verdict.intent, blockers: verdict.blockers } }
   }
@@ -231,25 +238,25 @@ function registerTools(ctx) {
           commitMessage: typeof args.commitMessage === 'string' && args.commitMessage.trim() ? args.commitMessage.trim() : null,
           requirementSupplement: typeof args.requirementSupplement === 'string' && args.requirementSupplement.trim() ? args.requirementSupplement.trim() : null,
         }
-        // 需求澄清闸门（2026-09-16 Phase 1）：非「明确需求」或存在 must-know 缺口 → 不建 run，先让主线程问用户。
-        // 放在分支决策之前：澄清是"要不要做/做成什么"的前置问题，分支是"怎么开工"，顺序反了会先问分支再问需求。
-        const pre = await clarificationPreflight(requirement, options as unknown as Record<string, unknown>, parent, ambientLocale())
+        // 需求澄清闸门（快路径）：分支决策之前先过闸门/护栏。**权威判定在 pipeline 内**——这里失败不致命，
+        // 原因记进 `__triageError` 由 pipeline 记 warn（实测：漏传 signal 会让工具内分诊秒退 fallback）。
+        const pre = await clarificationPreflight(requirement, options as unknown as Record<string, unknown>, parent, exec && exec.signal, ambientLocale())
         if ('needsClarification' in pre) {
           return { status: 'needs-clarification', intent: pre.needsClarification.intent, blockers: pre.needsClarification.blockers }
         }
         if (pre.verdict) {
-          // 复用同一份裁决：写回档位并透传给 pipeline（pipeline 不再重复跑分诊）
-          // 档位：调用方没给 → 用分诊的；给了更轻的而分诊判 ≥medium → **架构护栏强升**（ADR-0006）；
-          // 给了 medium/full → 保持调用方选择（避免无谓 token 放大）。
           const explicit = options.mode as typeof options.mode
           const up = guardrailUpgrade(explicit, !!options.lite, pre.verdict.mode)
           if (up) {
-            if (up !== explicit) (pre.verdict as unknown as Record<string, unknown>).__upgradedFrom = explicit || (options.lite ? 'lite' : 'full')
+            // 只在调用方**真的选过档位**时才算「护栏强升」（自动路径没有"被升"一说，别记成 from=full）
+            if (explicit !== undefined || options.lite) (pre.verdict as unknown as Record<string, unknown>).__upgradedFrom = explicit || 'lite'
             options.mode = up
             options.lite = up === 'lite' || up === 'tech' || up === 'patch' ? !!options.lite : false
           }
           if (pre.verdict.needDesign) options.needDesign = true
           ;(options as unknown as Record<string, unknown>).__triage = pre.verdict
+        } else if (pre.error) {
+          ;(options as unknown as Record<string, unknown>).__triageError = pre.error
         }
         // 分支策略决策（ADR-2026-08-27 基调：启动前由用户决定，选项+自定义兜底）。
         // 四种情况（main+干净 / main+脏 / feature+干净 / feature+脏）在 auto 策略下全部返回 needs-decision，
@@ -851,8 +858,8 @@ export class TeamflowService extends TypertRemoteService {
     tryFlushPendingInjections(sid)
     try {
       const opts = (options && typeof options === 'object') ? options : {}
-      // 需求澄清闸门（与 tool 路径同一条：Remote/程序化调用也不能拿模糊需求直接开跑）
-      const pre = await clarificationPreflight(req, opts as Record<string, unknown>, agent, ambientLocale())
+      // 需求澄清闸门（与 tool 路径同一条；权威判定在 pipeline 内）
+      const pre = await clarificationPreflight(req, opts as Record<string, unknown>, agent, undefined, ambientLocale())
       if ('needsClarification' in pre) {
         return { ok: false, status: 'needs-clarification', intent: pre.needsClarification.intent, blockers: pre.needsClarification.blockers }
       }
@@ -860,12 +867,14 @@ export class TeamflowService extends TypertRemoteService {
         const explicit = opts.mode as typeof opts.mode
         const up = guardrailUpgrade(explicit, !!(opts as Record<string, unknown>).lite, pre.verdict.mode)
         if (up) {
-          if (up !== explicit) (pre.verdict as unknown as Record<string, unknown>).__upgradedFrom = explicit || ((opts as Record<string, unknown>).lite ? 'lite' : 'full')
+          if (explicit !== undefined || (opts as Record<string, unknown>).lite) (pre.verdict as unknown as Record<string, unknown>).__upgradedFrom = explicit || 'lite'
           opts.mode = up
           if (up !== 'lite' && up !== 'tech' && up !== 'patch') (opts as Record<string, unknown>).lite = false
         }
         if (pre.verdict.needDesign) opts.needDesign = true
         ;(opts as Record<string, unknown>).__triage = pre.verdict
+      } else if (pre.error) {
+        ;(opts as Record<string, unknown>).__triageError = pre.error
       }
       const runId = startPipeline(agent, req, opts, undefined)
       const sc = workspaceScopeOf(agent)
