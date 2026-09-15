@@ -575,7 +575,15 @@ export async function executePipeline(
       noteTaskStageUsage(journal)
       const devStages = journal.stages.filter((s) => phaseKeyOf(s.phase) === 'dev')
       noteTaskAssign(journal, 'dev', devStages.map((s) => (s.childId || '').slice(0, 8)).filter(Boolean).join(',') || t(locale, 'role.devTeam'))
-      const failedCount = devResults.filter((r) => r && r.failed).length
+    }
+    /* ── 开发收口：取消检查 + 提测门禁（**两个分支共用**，不可只写在其中之一） ──
+     * 2026-09-16 实测（resume 后中断，dev 全部「已中止」却直接起了 QA 子代理）：这两个判断原先只写在
+     * 「新开发」分支里，resume 补跑分支没有 → 取消/resume 失败都会径直进入 QA（QA 检查轮必然重复报告
+     * 已知缺口，实锤 r26：T2 failed → QA 450k 白烧）。顺序也重要：**先取消检查后门禁**——取消时 dev 任务
+     * 的 failed 只是「没跑完」，不该被记成提测失败转人工。 */
+    if (journal.cancelled) return
+    {
+      const failedCount = (devResults || []).filter((r) => r && r.failed).length
       if (failedCount > 0) {
         advanceTask(journal, 'needs-human', null, t(locale, 'event.devFail'), { by: 'dev' })
         const req = storeFor(scopeKey).find('req', journal.reqId)
@@ -583,13 +591,12 @@ export async function executePipeline(
         // 提测门禁（方案 A，实锤 r26）：任务 failed = 已知缺口——QA 检查轮必然重复报告同一缺项
         // （r26：T2 failed → QA 450k 白烧，D1-D4 全是 T2 缺项；修复子代理补做任务过重复读 27 次挂掉）。
         // 一律停止流水线不进 QA；人工处理后 teamflow_resume 从开发补跑 failed 任务（done 任务复用）。
-        journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.devFailGate', { failed: failedCount, total: devResults.length }) })
-        throw new Error(t(locale, 'err.devFail', { failed: failedCount, total: devResults.length }))
+        journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.devFailGate', { failed: failedCount, total: (devResults || []).length }) })
+        throw new Error(t(locale, 'err.devFail', { failed: failedCount, total: (devResults || []).length }))
       } else {
         advanceTask(journal, 'testable', null, t(locale, 'event.devTestable'), { by: 'dev' })
         journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devDone') })
       }
-      if (journal.cancelled) return
     }
     persistJournal(journal)
 

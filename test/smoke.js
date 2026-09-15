@@ -323,6 +323,12 @@ ok(/function devTaskStatuses/.test(pipelineSrc) && /有 done stage = 任务已�
 ok(/const todo = buildDevTaskDefs\(journal, tasks, locale\)\.filter/.test(pipelineSrc) && /!st \|\| !st\.done/.test(pipelineSrc), 'pipeline：resume 开发分支统一补跑「未成功任务」+ 复用已完成产物（json-parse r1 实锤根治——不再读 backlog 子卡）')
 ok(/if \(phase === 'dev'\)/.test(pipelineSrc) && /\[\.\.\.statuses\.values\(\)\]\.some\(\(st\) => !st\.done\)/.test(pipelineSrc), 'pipeline：interruptedPhaseOf 任务级聚合——任务全 done = 阶段完成（部分成功阶段 resume 起点回开发补跑）')
 ok(/同名复用（2026-09-06/.test(backlogSrc) && /store\.tasks\.find\(\(t\) => t\.reqId === journal\.reqId/.test(backlogSrc), 'backlog：createSubtask 同名复用（业务任务实体一张卡 + retries 计数；执行历史在 journal）')
+// 开发收口（2026-09-16 实测：resume 后中断，dev 全「已中止」却径直起了 QA 子代理）：取消检查与提测门禁
+// 原先只写在「新开发」分支里，resume 补跑分支没有 → 必须落在两个分支的**汇合点**，且顺序是**先取消后门禁**
+// （取消时 dev 任务的 failed 只是「没跑完」，不该被记成提测失败转人工）。
+const devSeg = (/\/\* ── 开发阶段[\s\S]*?\/\* ── QA 测试阶段/.exec(pipelineSrc) || [''])[0]
+ok(/if \(journal\.cancelled\) return[\s\S]{0,140}const failedCount = \(devResults \|\| \[\]\)/.test(devSeg), 'pipeline：dev 收口的「取消检查 → 提测门禁」在 if(resume)/else 汇合点（两分支共用+先取消后门禁）')
+ok((devSeg.match(/const failedCount = \(devResults \|\| \[\]\)/g) || []).length === 1, 'pipeline：提测门禁只有一处（不重复、不漏分支）')
 console.log('── 3o) 英文化改造（2026-09-06：代码判断/业务键全英文，中文只留 label 展示）──')
 ok(/PHASE_ORDER = \['prd', 'design'/.test(constantsSrc), 'constants：PHASE_ORDER 英文键（代码判断不再用中文阶段名）')
 ok(/export function phaseKeyOf/.test(constantsSrc), 'constants：phaseKeyOf 归一（中文存量兼容防御）')
