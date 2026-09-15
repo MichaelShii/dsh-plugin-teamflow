@@ -547,6 +547,13 @@ ok(/log\.prdAssumptionsMissing/.test(pipelineSrc), 'pipeline：PRD 未给假设�
 ok(/triage: journal\.triage \|\| null/.test(storeSrc) && /assumptions: journal\.assumptions \|\| null/.test(storeSrc) && /requirementSupplement: journal\.requirementSupplement \|\| null/.test(storeSrc), 'store：serializeJournal 序列化 triage/assumptions/requirementSupplement')
 ok(/report\.assumptions/.test(reportSrc) && /const assumptionsLine/.test(reportSrc), 'report：完成汇报显式回带「本次基于以下假设启动」')
 ok(/\[CLARIFIED — the user answered the open questions below/.test(pipelineSrc), 'pipeline：澄清答复作为权威输入进 PRD（[CLARIFIED] 块，声明不得再自行假设）')
+// B1 回归锁（2026-09-16 实测 tf-mu34afd2-wcjaw1）：`journal.options` 是白名单字面量，直接传给 executePipeline
+// 会把 requirementSupplement / __triage 静默丢掉（澄清结论进不了 PRD、journal.triage 永远为空、shadow 埋点空转）。
+ok(/const execOptions = Object\.assign\(\{\}, journal\.options, \{[\s\S]{0,220}requirementSupplement: options\.requirementSupplement \|\| null,[\s\S]{0,140}__triage:/.test(pipelineSrc), 'pipeline：executePipeline 收到「白名单 + 内部字段」（澄清答复/分诊裁决不得再被丢）')
+ok(/executePipeline\(journal, agent, journal\.requirement, execOptions, signal\)/.test(pipelineSrc), 'pipeline：startPipeline 用 execOptions 起跑（不得回退为直接传 journal.options）')
+// B2 回归锁：假设段提取必须走 util.extractAssumptionsSection（行式，容错编号标题 / 空正文两个实测坑）
+ok(/extractAssumptionsSection\(doc\)/.test(pipelineSrc) && /export function extractAssumptionsSection/.test(utilSrc), 'pipeline/util：PRD 假设段走 extractAssumptionsSection（编号标题 + 空正文两坑已修）')
+ok(!/\^#\{1,6\}\[ \\t\]\*\(假设\|待澄清/.test(pipelineSrc), 'pipeline：不再内联那条匹配不到编号标题的正则')
 // 注入文案闭环（2026-09-16 实测补充）：实测会话 session-518e9188 里团队注入已下发、用户说「我想开发一个
 // dsh 插件」，但**模型根本没调用 teamflow_start**（0 次调用、该产品线 runs=0）——不复现「抢跑」，可闸门也
 // 就没机会生效。旧注入只写「不明确就别调用」，没写「澄清完要回来开工」→ 这条链没有闭环保证。故补三段。

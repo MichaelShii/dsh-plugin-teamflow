@@ -496,3 +496,31 @@ export async function runPool(items, max, fn, shouldStop?: (() => boolean) | nul
   await Promise.all(workers)
   return results
 }
+
+/**
+ * 从产物文本里摘出「假设 / 待澄清」小节（2026-09-16 需求澄清闸门 Phase 1）。
+ *
+ * **行式解析而不是单条正则**——实测踩过两个坑（本批真 bug，实锤 run tf-mu34afd2-wcjaw1）：
+ *  ① 产物标题常带编号/附录前缀（`## 9. 假设与待澄清`；本仓 PRD 惯例就是编号标题），
+ *     `^#{1,6}\s*(假设|…)` 这类写法直接匹配不到 → 明明写了段落却误报「契约未兑现」；
+ *  ② 正文用 `([\s\S]*?)(?=\n#{1,6}|\s*$)` 懒匹配时，`\s*$` 分支会在标题后立刻命中 → 摘出空串。
+ * 规则：命中标题后一直取到下一个标题；`trim()` 后为空视为未记录（返回 null）。
+ */
+export function extractAssumptionsSection(doc: string | null | undefined): string | null {
+  const text = String(doc || '')
+  if (!text.trim()) return null
+  const lines = text.split(/\r?\n/)
+  const head = /^#{1,6}\s*(?:[0-9]+[.、)]\s*)?(?:附录\s*[0-9A-Za-z]*[.、)]?\s*)?(假设|待澄清|开放问题|assumptions|open questions?)/i
+  const isHead = (l: string) => /^#{1,6}\s/.test(l)
+  for (let i = 0; i < lines.length; i++) {
+    if (!head.test(lines[i])) continue
+    const out: string[] = []
+    for (let k = i + 1; k < lines.length; k++) {
+      if (isHead(lines[k])) break
+      out.push(lines[k])
+    }
+    const body = out.join('\n').trim()
+    return body || null
+  }
+  return null
+}

@@ -1,14 +1,17 @@
 /**
  * dsh-plugin-teamflow — 需求澄清闸门（Phase 1）纯函数与兜底行为测试。
  *
- * 覆盖两件容易悄悄回退的东西：
+ * 覆盖三件容易悄悄回退的东西：
  *  1) **合格线（qualifyBlockers）**：三条证据（≥2 互斥读法 / 影响面 / 返工代价）齐备才留，
  *     缺一即丢并计数 —— 这是「防仪式化」的判定点（模型几乎总能为任何需求凑出问题）。
  *  2) **兜底绝不拦启动**：分诊不可用（无 subagents）走 fallbackVerdict → intent=requirement、blockers=[]，
  *     即零回归（闸门只在模型明确说「这还不是明确需求」时才拦）。
+ *  3) **假设段提取（extractAssumptionsSection）**：产物标题带编号/附录前缀、中英混排都要能摘到；
+ *     正文为空视为未记录 —— 实测 tf-mu34afd2-wcjaw1 踩过「带编号标题匹配不到 + 懒匹配摘出空串」两个坑。
  * 另外锁住意图归一（非法值一律 requirement，绝不因字段缺失拦启动）。
  */
 import { qualifyBlockers, normalizeIntent, runTriage, TRIAGE_INTENTS } from '../host/core/triage.ts'
+import { extractAssumptionsSection } from '../host/util.ts'
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -57,6 +60,29 @@ ok(fx.intent === 'requirement', '兜底 intent=requirement（绝不拦）')
 ok(Array.isArray(fx.blockers) && fx.blockers.length === 0, '兜底 blockers 为空（绝不拦）')
 ok(fx.blockersDropped === 0, '兜底 blockersDropped=0')
 ok(typeof fx.mode === 'string' && fx.mode.length > 0, '兜底仍给出档位（路由不因闸门失效）')
+
+console.log('\n[4] 假设段提取：编号/附录前缀/中英混排都要能摘到（实测坑）')
+const prdZh = [
+  '# PRD：x',
+  '## 1. 背景与目标',
+  '内容',
+  '## 9. 假设与待澄清',
+  '> 本节最需要人确认',
+  '- A1：默认取最小骨架；若你要别的，US-1 需替换',
+  '## 附录 A：已核实事实',
+  '附录内容',
+].join('\n')
+const zh = extractAssumptionsSection(prdZh)
+ok(!!zh && zh.includes('A1：默认取最小骨架'), '带编号标题（## 9. 假设与待澄清）→ 摘到正文')
+ok(!!zh && !zh.includes('附录内容'), '到下一个标题（## 附录 A）为止，不越界')
+ok(!!zh && !zh.includes('# PRD'), '不把标题行卷进正文')
+ok(extractAssumptionsSection('## 假设与待澄清\n内容甲\n## 其他\n后的') === '内容甲', '无编号标题同样可用')
+ok(extractAssumptionsSection('### Assumptions & open questions\n- A1: minimal skeleton')?.includes('minimal skeleton') === true, 'en 标题（Assumptions & open questions）可用')
+ok(extractAssumptionsSection('## 开放问题\n待定项') === '待定项', '「开放问题」同义标题可用')
+ok(extractAssumptionsSection('## 待澄清\n\n   \n## 下一节\nx') === null, '标题下正文为空 → null（视为未记录，不得摘出空串）')
+ok(extractAssumptionsSection('## 9. 假设与待澄清\n最后一段没有后续标题') === '最后一段没有后续标题', '该段位于文末也能摘到')
+ok(extractAssumptionsSection('## 1. 背景\n没有假设段') === null, '没有该标题 → null')
+ok(extractAssumptionsSection('') === null && extractAssumptionsSection(null) === null && extractAssumptionsSection(undefined) === null, '空/未定义输入 → null（不抛）')
 
 console.log(failed ? `\n✗ triage-gate：${failed} 条失败\n` : '\n✓ triage-gate：全部通过\n')
 process.exit(failed ? 1 : 0)

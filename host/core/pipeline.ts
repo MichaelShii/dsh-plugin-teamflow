@@ -9,7 +9,7 @@ import { initPipelineBacklog, advanceTask, storeFor, parseDefectRows, syncQaDefe
 import { withRetry, resolveChildRoute } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
-import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool } from '../util.ts'
+import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool, extractAssumptionsSection } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, FIX_GATE_PATTERN } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
@@ -158,8 +158,10 @@ function triageRecordOf(v: TriageVerdict) {
 function notePrdAssumptions(journal: Journal, locale: HostLocale): void {
   const doc = artifactText(journal, 'PRD.md') || artifactText(journal, 'TECH-CHANGE.md')
   if (!doc) return
-  const m = /^#{1,6}[ \t]*(假设|待澄清|开放问题|Assumptions|Open questions?)[^\n]*\n([\s\S]*?)(?=\n#{1,6}[ \t]|\s*$)/im.exec(doc)
-  const body = m ? String(m[2] || '').trim() : ''
+  // 提取走 util.extractAssumptionsSection（行式；容错编号标题/附录前缀/空正文）——
+  // 早先内联的 `^#{1,6}\s*(假设|…)` 正则在真实产物（`## 9. 假设与待澄清`）上匹配不到，
+  // 会误报「契约未兑现」（实测 tf-mu34afd2-wcjaw1）。
+  const body = extractAssumptionsSection(doc)
   if (body) {
     journal.assumptions = clip(body, 2000)
     journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.prdAssumptions', { n: body.split(/\n+/).filter((l) => l.trim()).length }) })
@@ -1066,7 +1068,15 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
     if (firstKey !== undefined) runs.delete(firstKey)
   }
   persistJournal(journal) // 首次 checkpoint（断点续跑基座）
-  executePipeline(journal, agent, journal.requirement, journal.options, signal)
+  // ⚠️ 必须把**调用方的 options 里那两个内部字段**显式带到 executePipeline：`journal.options` 是**白名单字面量**
+  // （审计面只留档位/团队/并发等），当初直接传它导致 `requirementSupplement` 与 `__triage` 被静默丢弃——
+  // 澄清结论进不了 PRD（`[CLARIFIED]` 空转）、`journal.triage` 永远为空（shadow 埋点失效）。
+  // 实锤：2026-09-16 run tf-mu34afd2-wcjaw1（模型传了 1144 字符澄清结论，落盘 options 里却完全没有该键）。
+  const execOptions = Object.assign({}, journal.options, {
+    requirementSupplement: options.requirementSupplement || null,
+    __triage: (options as { __triage?: unknown }).__triage,
+  })
+  executePipeline(journal, agent, journal.requirement, execOptions, signal)
   return journal.id
 }
 
