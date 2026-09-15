@@ -83,19 +83,19 @@ web profile host composition
 
 ```
 dsh-plugin-teamflow/
-  package.json        # dsh.bundle.patch + dsh.client declarations; exports point to lib/ build output
-  cordis.patch.yml    # insert block; entry name uses package root (so clientModules can scan dsh.client)
-  tsdown.config.ts    # client build (ModuleLoader bundle → lib/client.js)
-  tsdown.host.config.ts # host/store/descriptors build (ESM → lib/*.mjs)
-  descriptors.ts      # Remote descriptors (pure data, shared by host/client)
-  store.ts            # persistence layer: atomic write / backup / corruption self-heal + journal serialize / load (independently testable)
-  host/index.ts       # TeamflowService (TS; built to lib/host.mjs for the host to load)
-  client/index.tsx    # Team Workspace (TSX; built to lib/client.js)
-  test/smoke.js       # dependency-free smoke test (descriptors / structure / security hardening)
-  test/journal.test.js # journal behavior test (runs store.ts source directly)
+  package.json          # dsh.bundle.patch + dsh.client declarations; exports point to lib/
+  cordis.patch.yml      # plugin mount patch (insert block, entry uses the package root)
+  tsdown*.config.ts     # builds: client → lib/client.js; host/store/descriptors → lib/*.mjs
+  host/                 # TeamflowService + core/* (pipeline / backlog / runner / guard / triage / state…)
+  client/               # Web workbench (in-session tab + global panel + right-sidebar run detail)
+  store.ts              # persistence layer (atomic write / backup / corruption self-heal + journal serialize)
+  descriptors.ts        # Remote descriptors (pure data, shared by host / client)
+  test/                 # dependency-free tests (node test/*.js, 14 suites)
+  docs/                 # ADRs / dev log / benchmark corpus / release notes
 ```
 
-**TypeScript note**: the whole repo is TS/TSX. The host **must be built** (cannot rely on Node strip-types to run directly) — Node 22's type stripping does not apply to files under `node_modules` ("unsupported for files under node_modules"), while the host composition loads plugins from `profile/node_modules`. Consistent with the DSH ecosystem (the `@deepseek-ai/dsh-*` host packages' exports all point to lib/*.js). After changing source, run `pnpm bundle` to rebuild and sync the profile copy's `lib/`.
+The whole repo is TS/TSX: **the host must be built** (Node's type stripping does not apply to files under `node_modules`, and the host loads plugins from the profile's `node_modules`), so run `pnpm bundle` after changing source and sync the profile copy's `lib/`. Per-file details and the dev environment are in `CONTRIBUTING.md`.
+
 
 ## Requirements
 
@@ -105,11 +105,10 @@ dsh-plugin-teamflow/
 
 ### Version anchor (dsh host compatibility)
 
-This plugin is developed and verified against **dsh v0.1.5-rc.2 (2026-09-10, tag `dsh-v0.1.5-rc.2`)**; on npm the `@deepseek-ai/dsh` package has `next`=0.1.5-rc.2 and `latest`=0.1.5-rc.1 (`latest` lags behind `next` — do not use `latest` to judge the release line). `peerDependencies` stay at `*` (host-injected, deliberately loose), and `package.json` declares the compatibility window **`engines.dsh: ">=0.1.5-rc.2 <0.2.0"`** plus **`dsh.manifestVersion: 1`** — dsh does not read or validate either field today (they exist as types only), so they are declarative author metadata.
+This plugin is developed and verified against **dsh v0.1.5-rc.2**; `package.json` declares the compatibility window **`engines.dsh: ">=0.1.5-rc.2 <0.2.0"`** plus `dsh.manifestVersion: 1` (dsh does not read or validate either field today — declarative author metadata). When installing dsh, go by **`next`**: `latest` lags behind it, so don't use `latest` to judge the release line.
 
-Compatibility check of 2026-09-10 (dsh 0.1.5-rc.2): plugin panel slots (the old `conversation` root slot → the `conversation` key under `main`), session format V3 + Session lifecycle (`SessionHandle`, async `agentLoop.create()`, session locks), removal of `ctx.agent` and typed Inbox, adjusted default tools for SDK/Headless/ACP, subprocess handles without pid — **the plugin is compatible with all of them** (it uses none of the changed interfaces; the `conversation.view` / `conversation.input.right` declarations are unchanged and no slot was removed). One follow-up item:
+If behaviour looks wrong after a dsh upgrade, check two things first: ① the session events this plugin injects (`tool-workflow/agent-start`, `user/message` with `source.kind='plugin'`) must sit inside the host's event vocabulary — **new custom event types must carry `ignorable: true`**, and known types must not add keys outside it; ② metering reads the host **projection keys** (`tokenUsage` / `sessionStats`), so if the host renames them or bumps their state version, `host/core/metering.ts` has to be updated in step. Compatibility checks and open follow-ups are recorded in `CHANGELOG.md` (0.1.6–0.1.9) and `docs/TODO.md` (for example, repeat detection still reads the deprecated event readers).
 
-- **The synchronous session event readers are deprecated** (`session.eventAt()` / `snapshotEvents()` / `ownEvents()`; since 2026-09-09 the host allows existing calls but forbids new ones, aiming to stop keeping the full event sequence resident in memory): **token metering now prefers the official Session projection** (`ctx.sessionProjections.stateOf(session,'tokenUsage')` for the four buckets + `'sessionStats'.steps` for the call count), with event scanning degraded to a fallback for hosts without projections; **the guard reminder channel moved to the official `Agent.inject()` and the stall check to the official `subagentTiming` projection's `active.through`** (long silent tools are still exempted by the agent-activity guard). Only **repeat detection** still reads events (it needs streaming text; the official replacement — subscribing to `'session/event'` post-commit delivery — requires an equivalent predicate first, see `docs/TODO.md`).
 
 ## Install (for users)
 

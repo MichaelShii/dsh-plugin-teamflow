@@ -90,23 +90,19 @@ Node `fs`，能把 backlog 落到 `$DSH_HOME`，且 client 能注册独立 tab�
 
 ```
 dsh-plugin-teamflow/
-  package.json        # dsh.bundle.patch + dsh.client 声明；exports 指向 lib/ 构建产物
-  cordis.patch.yml    # insert 块；entry 名用包根（clientModules 才能扫到 dsh.client）
-  tsdown.config.ts    # client 构建（ModuleLoader bundle → lib/client.js）
-  tsdown.host.config.ts # host/store/descriptors 构建（ESM → lib/*.mjs）
-  descriptors.ts      # Remote 描述符（纯数据，host/client 共用）
-  store.ts            # 持久化层：原子写/备份/损坏自愈 + journal 序列化/加载（可独立测试）
-  host/index.ts       # TeamflowService（TS；构建为 lib/host.mjs 供宿主加载）
-  host/core/products.ts # 产品线装配（全局面板数据面：清单/摘要/地址）
-  client/index.tsx    # 会话内团队工作台 + 全部 slot 注册（TSX；构建为 lib/client.js）
-  client/panel.tsx    # 全局面板（sidebar.panellist + main）+ 右栏 run 详情 tab
-  client/shared.tsx   # 共享展示层（主题 token / 状态词表 / 格式化）
-  test/smoke.js       # 无依赖 smoke 测试（描述符/模块结构/安全加固）
-  test/product-scope.test.js # 产品线装配测试（地址/白名单/过滤/摘要/空态）
-  test/journal.test.js # journal 行为测试（直跑 store.ts 源码）
+  package.json          # dsh.bundle.patch + dsh.client 声明；exports 指向 lib/ 构建产物
+  cordis.patch.yml      # 插件挂载 patch（insert 块，entry 用包根）
+  tsdown*.config.ts     # 构建：client → lib/client.js；host/store/descriptors → lib/*.mjs
+  host/                 # TeamflowService + core/*（流水线 / backlog / runner / guard / triage / state…）
+  client/               # Web 工作台（会话内 tab + 全局面板 + 右栏 run 详情）
+  store.ts              # 持久化层（原子写 / 备份 / 损坏自愈 + journal 序列化）
+  descriptors.ts        # Remote 描述符（纯数据，host / client 共用）
+  test/                 # 无依赖测试（node test/*.js，14 套件）
+  docs/                 # ADR / 开发日志 / 评测语料 / release notes
 ```
 
-**TypeScript 说明**：全仓 TS/TSX。host 之所以**必须构建**（不能靠 Node strip-types 直跑）——Node 22 的 type stripping 对 `node_modules` 下的文件不生效（"unsupported for files under node_modules"），而宿主组合从 profile/node_modules 加载插件。与 DSH 生态一致（`@deepseek-ai/dsh-*` 宿主包 exports 均指向 lib/*.js）。改动源码后需 `pnpm bundle` 重建并同步 profile 副本的 `lib/`。
+全仓 TS/TSX：**host 必须构建**（Node 的 type stripping 对 `node_modules` 下的文件不生效，而宿主从 profile 的 `node_modules` 加载插件），改源码后跑 `pnpm bundle` 重建并同步 profile 副本的 `lib/`。逐文件说明与开发环境见 `CONTRIBUTING.md`。
+
 
 ## 环境要求
 
@@ -116,18 +112,10 @@ dsh-plugin-teamflow/
 
 ### 版本锚定（dsh 宿主兼容性）
 
-本插件开发与验证基于 **dsh v0.1.5-rc.2（2026-09-10，tag `dsh-v0.1.5-rc.2`）**；npm 侧 `next`=0.1.5-rc.2、`latest`=0.1.5-rc.1（`latest` 常滞后于 `next`，勿以 latest 判断发布线）。`peerDependencies` 保持 `*`（宿主注入，宽松兼容），并在 `package.json` 声明兼容窗口 **`engines.dsh: ">=0.1.5-rc.2 <0.2.0"`** 与 **`dsh.manifestVersion: 1`**——当前 dsh 不读取/校验这两个字段（源码内仅有类型声明），属作者声明性元数据。
+本插件开发与验证基于 **dsh v0.1.5-rc.2**；`package.json` 声明兼容窗口 **`engines.dsh: ">=0.1.5-rc.2 <0.2.0"`** 与 `dsh.manifestVersion: 1`（当前宿主不读取/校验这两个字段，属作者声明性元数据）。装 dsh 时以 **`next`** 为准——`latest` 常滞后于 `next`，不要用 `latest` 判断发布线。
 
-2026-09-10 兼容性核对（dsh 0.1.5-rc.2）：插件面板 Slot（原 `conversation` 根 slot → `main` 下的 `conversation` key）、会话格式 V3 + Session 生命周期（`SessionHandle`、异步 `agentLoop.create()`、会话锁）、`ctx.agent` 移除与 Inbox 类型化、SDK/Headless/ACP 默认工具调整、subprocess handle 去除 pid——**插件全部兼容**（未使用被改动的接口；`conversation.view` / `conversation.input.right` 声明未变，slot 树无删除）。其中一项需要跟进：
+升级 dsh 后若行为异常，先核对两处：① 插件注入的 session 事件（`tool-workflow/agent-start`、`user/message` + `source.kind='plugin'`）必须落在宿主事件词表内，**新增自定义事件类型要带 `ignorable: true`**、已知类型不要加词表外的键；② 计量读的是**宿主投影 key**（`tokenUsage` / `sessionStats`），宿主改 key 或 state 版本时需同步 `host/core/metering.ts`。历次兼容核对结论与待跟进项见 `CHANGELOG.md`（0.1.6–0.1.9 段）与 `docs/TODO.md`（例如复读检测仍读已弃用的事件读取器）。
 
-- **Session 同步事件读取器已弃用**（`session.eventAt()` / `snapshotEvents()` / `ownEvents()`，宿主 2026-09-09 起「存量可留、新调用禁止」，方向是不再把完整事件序列常驻内存）：**token 计量已改为官方 Session 投影优先**（`ctx.sessionProjections.stateOf(session,'tokenUsage')` 取四桶 + `'sessionStats'.steps` 取调用数），事件扫描降级为无投影宿主的回退；**护栏的提醒通道已改官方 `Agent.inject()`、挂死判据已改用官方 `subagentTiming` 投影的 `active.through`**（长工具静默仍由 agent 活动守卫豁免），只剩**复读检测**仍在读事件（需要流式文本内容，官方替代＝订阅 `'session/event'` post-commit 投递，需先定等价判据，见 `docs/TODO.md`）。
-
-2026-09-04 核对（dsh 0.1.3-alpha.1）：session 持久化 v2（write-lease/JSONL 快照/版本化导出）、attachment/file-upload 收口、Windows 子进程隐藏、workspace 全限定路径硬化——全部兼容，插件无需调整。
-
-插件侧契约约束（dsh 升级后若行为异常先核对本段；锚定版本变更会在此更新）：
-- 插件注入的 session 事件（`tool-workflow/agent-start`、`user/message` 带 `source.kind='plugin'`）均在宿主 `known-event-types` 词表内；**未来新增自定义事件类型须带 `ignorable: true`**，已知类型载荷不加词表外键；
-- `@deepseek-ai/dsh-client-modules` 自 0.1.2-rc.1 起替代 `@deepseek-ai/dsh-client-runtime`（后者已从 monorepo 移除）；
-- 计量读的是**宿主投影 key**（`tokenUsage` / `sessionStats`）而非插件自有格式：宿主若改 key 或 state 版本，此段与 `host/core/metering.ts` 同步更新。
 
 ## 安装（对使用者）
 
