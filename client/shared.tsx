@@ -106,6 +106,10 @@ export const phaseIconOf = (p) => PHASE_ICON[phaseKeyOf(p)] || '⚙️'
 export function stageLabelOf(s) {
   const raw = String((s && s.label) || '')
   if (s && s.taskKey) return raw || String(s.taskKey)
+  // dev 是**任务级阶段**（含 QA 缺陷修复轮）：label 自带任务名/轮次，缺 `taskKey` 时也**不能丢**。
+  // 0.1.9 回归实锤（tf-mtr9mi37-m9zx1u）：快照投影漏了 taskKey → 所有 dev 卡片退化成只有「开发」，
+  // 连「QA 缺陷修复（第 1 轮）」都被吃掉。投影已补 taskKey（host/index.ts snapshot），此处再兜一层。
+  if (s && phaseKeyOf(s.phase) === 'dev' && raw) return raw
   return (s && s.phase ? phaseNameOf(s.phase) : '') || raw
 }
 export const COLUMNS = {

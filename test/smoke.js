@@ -121,6 +121,9 @@ ok(/'stageStatus\.cancelled': '已中止'/.test(localesSrc) && /'stageStatus\.ca
 // 相位组头取色：`cancelled` 不得算「失败」（否则用户主动中断的组头被涂成错误色红，而阶段卡竖条/chip 是灰的
 // → 红头灰身）。回退写法 = anyFail 里出现 `'cancelled'`。
 ok(/const anyFail = g\.stages\.some\(\(s\) => s\.status === 'failed' \|\| s\.status === 'needs-human'\)/.test(clientSrc) && !/anyFail[\s\S]{0,120}'cancelled'/.test(clientSrc), 'client：相位组头取色不把 cancelled 当失败（anyFail 只认 failed/needs-human）')
+// dev 卡片标题（2026-09-16 回归锁）：客户端对 dev 阶段要有「缺 taskKey 也不丢 label」的兜底
+// （host 侧投影必须带 taskKey 的断言在 host 段，hostSrc 初始化之后）。
+ok(/phaseKeyOf\(s\.phase\) === 'dev' && raw/.test(sharedSrc), 'shared：stageLabelOf 对 dev 阶段兜底保留 label（缺 taskKey 时不退化成阶段名）')
 
 console.log('── 3) host 模块结构 ──')
 const hostSrc = [
@@ -145,6 +148,9 @@ for (const m of ['ping', 'setLocale', 'list', 'snapshot', 'start', 'cancel', 'ba
 ok(/export default TeamflowService/.test(hostSrc), '默认导出 TeamflowService')
 ok(/from '\.\.\/descriptors\.ts'/.test(hostSrc), 'import descriptors.ts')
 ok(/from '\.\.\/store\.ts'/.test(hostSrc), 'import store.ts（持久化层独立）')
+// dev 卡片标题（2026-09-16 回归锁）：快照投影**必须带 taskKey**——client 的 stageLabelOf 靠它保留 dev 任务名，
+// 漏掉它会让所有 dev 卡片退化成只剩「开发」（实锤 tf-mtr9mi37-m9zx1u：journal 里标题完好，UI 只剩「开发」）。
+ok(/stages: j\.stages\.map\(\(s\) => \(\{ seq: s\.seq, label: s\.label, phase: s\.phase, taskKey: s\.taskKey/.test(hostSrc), 'host：snapshot 的 stage 投影带 taskKey（client 靠它保留 dev 任务名，勿删）')
 
 console.log('── 3b) 断点续跑（v0.4.0）──')
 ok(/loadJournals\(\)/.test(hostSrc), '构造时加载磁盘 journal')

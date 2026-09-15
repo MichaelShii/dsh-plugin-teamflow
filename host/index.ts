@@ -75,7 +75,10 @@ function snapshotOf(j) {
     ownerSession: j.ownerSession || null,
     requirement: clip(j.requirement, 2000), options: sanitizeSnapOptions(j.options), agentsStarted: j.agentsStarted,
     humanIntervention: j.humanIntervention === true,
-    stages: j.stages.map((s) => ({ seq: s.seq, label: s.label, phase: s.phase, status: s.status, outcome: s.outcome, childId: s.childId, startedAt: s.startedAt, endedAt: s.endedAt, usage: s.usage, summary: clip(s.summary || '', 3000) })),
+    // ⚠️ `taskKey` 必须在投影里（2026-09-16 回归修正）：client 的 `stageLabelOf` 靠它区分「任务级阶段
+    // （dev 子卡，保留任务名）」与「其余阶段（走 phase 词表本地化）」。此前漏了它 → 所有 dev 卡片退化成
+    // 只显示阶段名「开发」（实锤：截图里的 tf-mtr9mi37-m9zx1u 三张卡片，journal 里标题完好，UI 却只剩「开发」）。
+    stages: j.stages.map((s) => ({ seq: s.seq, label: s.label, phase: s.phase, taskKey: s.taskKey || null, status: s.status, outcome: s.outcome, childId: s.childId, startedAt: s.startedAt, endedAt: s.endedAt, usage: s.usage, summary: clip(s.summary || '', 3000) })),
     logs: j.logs.slice(-200).map((l) => ({ t: l.t, level: l.level, message: clip(l.message, 500) })),
     error: j.error, resultPreview: j.result ? clip(JSON.stringify(j.result), 6000) : null,
   }
