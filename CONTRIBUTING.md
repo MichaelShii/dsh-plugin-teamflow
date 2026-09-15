@@ -52,6 +52,12 @@ test/                # dependency-free test suites
   is injected by the harness.
 - Every behavior change should carry a smoke assertion (`test/smoke.js` source-string
   assertions are the cheap safety net for this codebase).
+- **Docs & screenshots**: user-facing behavior changes must touch **both** `README.md` and
+  `README.en.md` (they are kept in sync line by line). Screenshots live in `docs/screenshots/`
+  and are **split by UI language**: Chinese UI → `docs/screenshots/<name>.png`, English UI →
+  `docs/screenshots/en/<name>.png`. Never point the English README at a Chinese screenshot
+  (or vice versa) — re-shoot and overwrite; keep each file under ~400 KB and the same viewport
+  for both languages.
 - Tests must stay dependency-free (no test framework; `node test/*.js`).
 
 ## PR workflow

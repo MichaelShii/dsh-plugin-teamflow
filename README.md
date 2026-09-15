@@ -40,6 +40,10 @@ TeamFlow 团队研发流水线 —— DeepSeek Harness 可分发插件（`dsh pl
 
    ![团队选择](docs/screenshots/team-selector.png)
 
+6. 全局面板——左侧边栏「🏭 团队工作台」图标（跨会话 / 产品线视角：产品线列表 + run 列表 + Backlog 标签页 + 覆盖式详情浮层）
+
+   ![全局面板](docs/screenshots/global-panel.png)
+
 ## 核心特性
 
 - **一句话需求 → 可验收的交付**：从需求到 PRD / 技术方案 / 并行开发 / QA / 验收全链路自动编排，每个阶段有任务卡、有产物、有结论；机械小改动可用 `patch` / `lite` 档裁剪阶段集，不必为一行改动跑完整瀑布。
@@ -151,10 +155,10 @@ dsh plugin --profile web remove dsh-plugin-teamflow
 ## 开发与验证
 
 ```bash
-npm test                # smoke（描述符/结构/安全）+ journal（断点续跑行为）
-npm run typecheck       # tsc --noEmit 类型检查（需本机 dsh profile 提供 @deepseek-ai/* 类型）
+pnpm test               # smoke（描述符/结构/安全）+ journal（断点续跑行为）
+pnpm run typecheck      # tsc --noEmit 类型检查（需本机 dsh profile 提供 @deepseek-ai/* 类型）
 node --check lib/host.mjs lib/client.js lib/store.mjs lib/descriptors.mjs
-npm run bundle          # 构建 client（tsdown → lib/client.js，__ModuleLoader__.load 注册）
+pnpm run bundle         # 构建 client（tsdown → lib/client.js，__ModuleLoader__.load 注册）
 ```
 
 **插件开发者**（本插件的本地开发链路）见仓库内 [`AGENTS.md`](./AGENTS.md) 与 [`docs/adr/`](./docs/adr)——含部署同步（`node deploy.mjs` → 重启 `dsh --profile web`）、生效前提（运行中 web 从 profile 部署副本加载 host，只构建源码不生效）、设计决策记录（ADR-0001~0009）与基准对比（`docs/benchmarks/`）。本仓库其余源码均为 TS/TSX，需先 `pnpm bundle` 构建后再运行（`node_modules` 下 strip-types 不生效）。

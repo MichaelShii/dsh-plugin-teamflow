@@ -22,23 +22,27 @@ requirement → PRD (based on existing patterns / product memory, archived to pr
 
 1. Pipeline view — stage serpentine lanes + node cards (status / duration / tokens / subagent session)
 
-   ![Pipeline view](docs/screenshots/pipeline-view.png)
+   ![Pipeline view](docs/screenshots/en/pipeline-view.png)
 
 2. Backlog board — draggable lanes for requirements / tasks / defects
 
-   ![Backlog board](docs/screenshots/board.png)
+   ![Backlog board](docs/screenshots/en/board.png)
 
 3. Stage detail drawer — full stage artifacts + token breakdown + "🎬 jump to subagent session"
 
-   ![Stage detail](docs/screenshots/stage-detail.png)
+   ![Stage detail](docs/screenshots/en/stage-detail.png)
 
 4. Board task detail — task-card drawer (requirement text / assignments / event timeline / subtasks / defects / tokens)
 
-   ![Board task detail](docs/screenshots/board-task-detail.png)
+   ![Board task detail](docs/screenshots/en/board-task-detail.png)
 
 5. Team selector — 🏭 button + team dropdown
 
-   ![Team selector](docs/screenshots/team-selector.png)
+   ![Team selector](docs/screenshots/en/team-selector.png)
+
+6. Global panel — the 🏭 Team Workspace icon in the left sidebar (cross-session, product-line view: product list + run list + Backlog tab + overlay detail pane)
+
+   ![Global panel](docs/screenshots/en/global-panel.png)
 
 ## Core Features
 
@@ -122,7 +126,7 @@ dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 
 After install, **restart** `dsh --profile web` for the host `teamflow-host` to take effect:
 - The model side gains 12 `teamflow_*` tools: `start / triage / status / backlog / claim / update / assign / cancel / resume / pause / resume_session / merge`;
-- The browser session header shows the "🏭 Team Workspace" tab;
+- The browser session header shows the "🏭 Team Workspace" tab (in-session) **and the "Team Workspace" icon in the left sidebar** (the global panel: product-line view, cross-session);
 - Backlog is written to `$DSH_HOME/teamflow/<product>/backlog/*.json`.
 
 > Note: `@deepseek-ai/*` are host-private packages; running requires the DeepSeek Harness (dsh) host environment; this package is neither published standalone nor runnable alone.
@@ -131,7 +135,7 @@ After install, **restart** `dsh --profile web` for the host `teamflow-host` to t
 
 1. **Pick a team**: click the 🏭 button next to the input box and choose a team (or "no team" = chat directly, no pipeline);
 2. **Say the requirement**: just describe it — the model calls `teamflow_start` automatically (auto-triage: patch / lite / tech / medium / full); or force a mode, e.g. "run this in medium mode";
-3. **Watch progress**: switch to the 🏭 Team Workspace tab in the session header — the pipeline graph live-refreshes (per-stage token / duration / sub-agent session), and the backlog kanban supports drag transitions and card detail drawers;
+3. **Watch progress**: switch to the 🏭 Team Workspace tab in the session header — the pipeline graph live-refreshes (per-stage token / duration / sub-agent session), and the backlog kanban supports drag transitions and card detail drawers; for a **cross-session / global** view, click the "Team Workspace" icon in the left sidebar (product-line perspective: product lines → runs + backlog), and hit "⏹ Stop" to cancel a live run (two-step confirm);
 4. **Get the result**: the pipeline reports back to the session automatically when done (status / stage stats / token / next steps); interrupted/failed runs can "↻ resume from checkpoint".
 
 > Note: after `teamflow_start`, the **main thread should not modify code or run verifications itself** — implementation, QA, and reporting are done by pipeline sub-agents (avoid fighting the pipeline over the workspace).
@@ -151,10 +155,10 @@ Optional cleanup (NOT done automatically; run as needed):
 ## Development & verification
 
 ```bash
-npm test                # smoke (descriptors / structure / security) + journal (resume behavior)
-npm run typecheck       # tsc --noEmit type check (same as VSCode, no drift)
+pnpm test               # smoke (descriptors / structure / security) + journal (resume behavior)
+pnpm run typecheck      # tsc --noEmit type check (needs the local dsh profile for @deepseek-ai/* types)
 node --check lib/host.mjs lib/client.js lib/store.mjs lib/descriptors.mjs
-npm run bundle          # build client (tsdown → lib/client.js, __ModuleLoader__.load registers)
+pnpm run bundle         # build client (tsdown → lib/client.js, registered via __ModuleLoader__.load)
 ```
 
 **For plugin developers** (the local dev loop of THIS plugin): see [`AGENTS.md`](./AGENTS.md) and [`docs/adr/`](./docs/adr) in the repo — deployment sync (`node deploy.mjs` → restart `dsh --profile web`), the "running web loads the host from the profile deployment copy, building source alone does not take effect" caveat, design decision records (ADR-0001~0009) and benchmarks (`docs/benchmarks/`). All repo source is TS/TSX and must be built first (`pnpm bundle`) to run (`strip-types` does not apply under `node_modules`).
