@@ -2,6 +2,13 @@
 
 > 本插件首次公开发布版本为 **v0.1.0**；发布前的内部迭代（v0.3~v0.13）记录于 `AGENTS.md` §5，对外统一归到 v0.1.0。
 
+## [0.2.0] - 未发布
+
+> 开发线分支：`release-v0.2.0`。`main` 与 npm `latest` 保持一致，只接收发布合入；本段随开发陆续补齐，发布时统一定稿日期与 `docs/releases/v0.2.0.md`。
+
+### 改进
+- **仓库发布流程正规化（对贡献者可见）**：`main` 只承载「已发布到 npm 的内容」，日常开发与文档改动落在当前 release 分支（`release-vX.Y.Z`），**贡献者向最新 release 分支提 PR**；发布时 release 分支 → PR → squash 合入 main → 打 tag → 发 GitHub Release → 另起下一条分支。同时落定两条 SOP 判据：**发布是否成功以写路径为准**（registry 读路径 `npm view` / packument / 版本端点可滞后数分钟；重发得到的 403 `cannot publish over the previously published versions` 才是权威回执，且幂等安全无副作用）；**`git push` 连不上先查本机 VPN/TUN 状态**，不要凭「换成 HTTP/1.1 后成功」归因（实测同一 h1 命令在链路恢复前也会失败，属伪相关）。细则见 `AGENTS.md` §4 与 `CONTRIBUTING.md`
+
 ## [0.1.9] - 2026-09-16
 
 ### 新增
