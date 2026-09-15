@@ -329,6 +329,13 @@ ok(/同名复用（2026-09-06/.test(backlogSrc) && /store\.tasks\.find\(\(t\) =>
 const devSeg = (/\/\* ── 开发阶段[\s\S]*?\/\* ── QA 测试阶段/.exec(pipelineSrc) || [''])[0]
 ok(/if \(journal\.cancelled\) return[\s\S]{0,140}const failedCount = \(devResults \|\| \[\]\)/.test(devSeg), 'pipeline：dev 收口的「取消检查 → 提测门禁」在 if(resume)/else 汇合点（两分支共用+先取消后门禁）')
 ok((devSeg.match(/const failedCount = \(devResults \|\| \[\]\)/g) || []).length === 1, 'pipeline：提测门禁只有一处（不重复、不漏分支）')
+// 终态归一（2026-09-16 实测：取消走正常返回 → catch 被跳过 → run 卡在 status='running' 且 cancelled=true，
+// 界面永远「运行中」+ 续跑按钮 → 点一次重跑一轮 dev → 再取消，死循环）：finally 顶部必须把 cancelled 的 running 落成终态。
+// 断言方式：先定位归一语句，再要求「其后第一个 endedAt」就在附近（= 同一 finally 块的顶部，先归一后收尾）。
+const normIdx = pipelineSrc.indexOf("if (journal.cancelled && journal.status === 'running')")
+const normEnded = normIdx >= 0 ? pipelineSrc.indexOf('journal.endedAt = Date.now()', normIdx) : -1
+ok(normIdx > 0 && /journal\.status = 'cancelled'/.test(pipelineSrc.slice(normIdx, normIdx + 200)), 'pipeline：finally 顶部终态归一（取消的正常返回路径也落 cancelled，不再卡 running）')
+ok(normEnded > normIdx && normEnded - normIdx < 800, 'pipeline：终态归一位于 endedAt（以及其后的归档/孤儿收口/汇报）之前')
 console.log('── 3o) 英文化改造（2026-09-06：代码判断/业务键全英文，中文只留 label 展示）──')
 ok(/PHASE_ORDER = \['prd', 'design'/.test(constantsSrc), 'constants：PHASE_ORDER 英文键（代码判断不再用中文阶段名）')
 ok(/export function phaseKeyOf/.test(constantsSrc), 'constants：phaseKeyOf 归一（中文存量兼容防御）')

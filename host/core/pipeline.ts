@@ -837,6 +837,17 @@ export async function executePipeline(
       journal.error = String((e && e.message) || e)
     }
   } finally {
+    /* 终态归一（2026-09-16 实测修正，勿删）：取消若走 `if (journal.cancelled) return` 这条**正常返回**路径，
+     * 唯一把 status 落成 cancelled 的 catch 块不会执行 → run 卡在 `status='running'` 且 `cancelled=true`：
+     * ① 工作台永远显示「运行中」+ 中断按钮（再按取消也无效——门禁只认 running、恰好放行，但已无在飞子代理可停），
+     *    界面同时给出「↻ 从断点重跑」→ 点一次就重跑一轮 dev → 再取消 → 循环（实测 01:59 / 02:03 两轮）；
+     * ② 完成汇报按 running 渲染，出现「状态：running」却 cancelled=true 的自相矛盾（主线程据此怀疑 host 在自动续跑）；
+     * ③ 紧随其后的归档与孤儿收口（`journal.status === 'cancelled'` 分支）也全被跳过。
+     * 故在此统一归一：仍是 running 且已置 cancelled → 落 cancelled（throw 路径已置 cancelled 时无副作用；completed 不受影响）。 */
+    if (journal.cancelled && journal.status === 'running') {
+      journal.status = 'cancelled'
+      journal.error = journal.error || t(locale, 'err.cancelled')
+    }
     journal.endedAt = Date.now()
     inFlight.delete(journal.id)
     activeProducts.delete(scopeKey) // 释放工作区级并发锁
