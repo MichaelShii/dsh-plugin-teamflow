@@ -56,12 +56,22 @@ test/                # dependency-free test suites
 
 ## PR workflow
 
+**Branch model**: `main` mirrors the **published release** (kept identical to npm `latest`) and only
+receives release merges — it is not a development branch. Day-to-day work accumulates on the current
+**release branch** `release-vX.Y.Z` (one per release cycle, long-lived, pushed to the remote; a new one
+is cut right after each release).
+
 1. Open an issue first if the change is non-trivial (pipeline stage semantics, state machine,
    persistence format, prompt contracts).
-2. Branch from `main`, keep PRs focused; squash commits on merge.
-3. CI runs `pnpm test` + `pnpm bundle`; make sure both are green locally too.
+2. **Branch from the latest release branch** (e.g. `release-v0.1.10`) — **not from `main`** — and open
+   your PR **against that release branch**. Keep PRs focused; squash commits on merge.
+3. CI runs `pnpm test` + `pnpm bundle` on pushes to `main` and `release-*` and on every PR; make sure
+   both are green locally too.
 4. Update `README.md`/`README.en.md` if user-facing, `CHANGELOG.md` for released behavior
    changes, and `AGENTS.md` (maintainer memory) for pipeline-level decisions.
+
+Releases are cut from the release branch: PR → squash merge into `main` → annotated tag → GitHub
+Release → `npm publish` (see `AGENTS.md` §4 for the exact order and the 2FA node).
 
 ## License
 
