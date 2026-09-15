@@ -7,6 +7,8 @@ import type { BacklogItem } from '../types.ts'
 import { stores } from './context.ts'
 import { STATUS, PHASE_ROLE } from '../constants.ts'
 import { clip, snippet } from '../util.ts'
+import { t } from '../locales.ts'
+import { ambientLocale, runLocaleOf } from './locale.ts'
 
 export class BacklogStore {
   product: string
@@ -100,8 +102,8 @@ export function backlogSummary(product: string | null | undefined) {
 export function transitionBacklog(product: string | null | undefined, kind, id: string, to: string, reason: string | null | undefined, _meta?) {
   const store = storeFor(product)
   const item = store.find(kind, id)
-  if (!item) return { ok: false, error: `找不到 ${kind} #${id}` }
-  if (STATUS[kind].indexOf(to) === -1) return { ok: false, error: `非法状态 ${to}` }
+  if (!item) return { ok: false, error: t(ambientLocale(), 'backlog.notFound', { kind, id }) }
+  if (STATUS[kind].indexOf(to) === -1) return { ok: false, error: t(ambientLocale(), 'backlog.badStatus', { to }) }
   if (to === 'needs-human') item.humanIntervention = true
   if (to === 'accepted' || to === 'verified' || to === 'closed') item.humanIntervention = false
   store.pushEvent(item, item.status, to, reason || '')
@@ -109,48 +111,154 @@ export function transitionBacklog(product: string | null | undefined, kind, id: 
   return { ok: true, item: { id: item.id, status: item.status, humanIntervention: item.humanIntervention } }
 }
 
+/** 去 markdown 修饰（加粗/反引号/引用符/首尾引号）后比对。 */
+function cellText(cell: unknown): string {
+  return String(cell === null || cell === undefined ? '' : cell).replace(/[*`>]/g, '').replace(/^["']|["']$/g, '').trim()
+}
+
 /**
- * 解析 QA 报告中的结构化缺陷行（| 编号 | P0-3 | 模块 |...），跳过表头与 OBS 观察项。
- * 按管道单元格解析（不依赖固定列数），容忍 markdown 加粗/反引号（如 **P1** / `P1`），
- * 且只认三要素齐全 + 严重级为 P0-P3 的行——修正历史「QA 标 **P1** 却解析不到」的漏登记。
+ * 按**未转义**的 `|` 切分表格行，并把契约要求的转义 `\|` 还原成字面量管道符。
+ *
+ * 为什么需要（2026-09-15 追加，配合缺陷表新增「检测命令」列）：qaPrompt 的 HOST-ENFORCED 条款要求
+ * 单元格内的字面量 `|` 转义为 `\|`（否则 markdown 渲染会切开单元格），但旧实现无条件 `split('|')`
+ * ——**转义过的行照样被切开**：转义只救了渲染，解析器自己仍会错列（实锤：R3-2 的「实际行为」串进了
+ * 「关联验收项」）。检测命令列几乎必然含 `|`（如 `grep -E 'a|b'`），所以这里必须按转义语义切。
+ */
+function splitTableRow(raw: string): string[] {
+  const cells: string[] = []
+  let cur = ''
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]
+    if (ch === '\\' && raw[i + 1] === '|') { cur += '|'; i++; continue }
+    if (ch === '|') { cells.push(cur); cur = ''; continue }
+    cur += ch
+  }
+  cells.push(cur)
+  return cells.map((s) => s.trim())
+}
+
+/**
+ * 由表头行判断这是不是缺陷表，并给出各列位置与表头名。
+ * **严重级列必须由表头显式声明**——这是与「复验对照表」区分的唯一可靠信号。
+ * @returns 列映射（含表头名数组）；非缺陷表返回 null。
+ */
+function defectHeaderCols(cells: string[]) {
+  const sev = cells.findIndex((c) => /严重级|严重度|等级|级别|severity|\bsev\b/i.test(cellText(c)))
+  if (sev === -1) return null
+  const mod = cells.findIndex((c) => /功能模块|模块|^module$/i.test(cellText(c)))
+  const id = cells.findIndex((c) => /编号|^id$|^no\.?$/i.test(cellText(c)))
+  return { id: id === -1 ? 0 : id, sev, mod: mod === -1 ? sev + 1 : mod, headers: cells.map((c) => cellText(c)) }
+}
+
+/** 缺陷行：核心三要素（契约）+ 报告里同行的其余列（人看详情用）。 */
+export interface DefectRow {
+  id: string
+  severity: string
+  module: string
+  /** 复现步骤（表头含 复现/重现/steps/reproduce）。 */
+  reproduce?: string
+  /** 期望行为。 */
+  expected?: string
+  /** 实际行为。 */
+  actual?: string
+  /** 关联验收项。 */
+  ac?: string
+  /** 检测命令（2026-09-15）：**当前就能失败**的命令——dev 用它验收、复验轮用它回归。
+   *  QA 侧对 P0–P2 必填（缺陷的可执行定义）；缺列时为空串（旧报告零回归）。 */
+  check?: string
+  /** 通过判据：修复后该命令应输出什么（判定标准，供 dev/复验双方对齐）。 */
+  criterion?: string
+  /** 原始「表头 → 单元格」映射（列名随报告可变，全部带出以免遗漏）。 */
+  columns?: Record<string, string>
+}
+
+/**
+ * 解析 QA 报告中的缺陷行（**富行**：保留同一行的所有列）。
+ *
+ * 2026-09-15 追加（用户实锤：backlog 缺陷卡详情「看不出这条缺陷是啥」）：此前只留
+ * `{id, severity, module}` → 缺陷卡只有「QA 缺陷：R3-1」这种合成标题，QA 报告里写好的
+ * 复现步骤/期望行为/实际行为**全部被丢掉**，卡详情只剩关联 run 的原始需求。
+ * 富行同时让 `qaFixPrompt` 的 [DEFECTS POINTED OUT BY QA] 从三要素升级为完整缺陷描述。
+ * 解析规则见 {@link parseDefects}（两者同一实现，本函数是超集）。
+ */
+export function parseDefectRows(qaText: string): DefectRow[] {
+  const rows: DefectRow[] = []
+  let cols: ReturnType<typeof defectHeaderCols> = null
+  for (const raw of String(qaText === null || qaText === undefined ? '' : qaText).split('\n')) {
+    if (raw.indexOf('|') === -1) { cols = null; continue }   // 非表格行 → 结束当前表格
+    const cells = splitTableRow(raw)
+    if (cells.length && cells[0] === '') cells.shift()        // 行首 `|` → 首格为空
+    if (cells.length && cells[cells.length - 1] === '') cells.pop()
+    if (cells.length < 3) { cols = null; continue }
+    // 分隔行（|---|---|）不改变表格上下文
+    if (cells.every((c) => /^:?-{2,}:?$/.test(c.replace(/\s/g, '')))) continue
+    if (cols === null) { cols = defectHeaderCols(cells); continue }  // 表头行
+    if (!cols) continue                                              // 非缺陷表：整表跳过
+    const id = cellText(cells[cols.id])
+    const sev = cellText(cells[cols.sev])
+    const mod = cellText(cells[cols.mod])
+    if (!id || !mod) continue
+    if (!/^P[0-3]$/.test(sev)) continue
+    if (id === '编号' || /^(id|no\.?|severity)$/i.test(id)) continue
+    if (id.indexOf('OBS') === 0) continue
+    const columns: Record<string, string> = {}
+    cols.headers.forEach((hd, i) => { if (hd && cells[i] !== undefined) columns[hd] = cellText(cells[i]) })
+    const pick = (re: RegExp): string => {
+      const k = Object.keys(columns).find((hd) => re.test(hd))
+      return k ? columns[k] : ''
+    }
+    rows.push({
+      id, severity: sev, module: mod,
+      reproduce: pick(/复现|重现|steps|reproduce/i),
+      expected: pick(/期望|expected/i),
+      actual: pick(/实际|actual/i),
+      ac: pick(/关联验收|验收项|related\s*ac/i),
+      check: pick(/检测命令|检测|check\s*command|check\s*cmd|^command$/i),
+      criterion: pick(/通过判据|判据|criterion|pass\s*(criterion|condition)/i),
+      columns,
+    })
+  }
+  return rows
+}
+
+/**
+ * 解析 QA 报告中的结构化缺陷行（**瘦身契约**：`{id, severity, module}`），跳过表头与 OBS 观察项。
+ *
+ * **2026-09-15 修正（实锤 tf-mu2ioilr-95l4th 停线）：改为按表头认表，不再只看列位置。**
+ * 旧实现「任一含 `|` 的行 + 第 2 格 ∈ P0-P3」会把 QA 报告里的**复验对照表**
+ * （`| 编号 | round-2 级 | 复验结论 | 独立证据 |`，R2-1 那行第 3 格写着「已关闭」）登记成一个新的
+ * P2 缺陷 → 每轮复验都重生一个阻断缺陷 → 复验必然超限停线（**自我实现的停线**，与交付质量无关）。
+ * 现规则：
+ *   1) 只解析**表头声明了严重级列**的表格，列位置由表头决定（不再假定必须是第 1/2/3 列）；
+ *   2) 非表格行结束当前表格上下文（markdown 表格是连续行块），无严重级表头的表格整体跳过；
+ *   3) 仍容忍 markdown 加粗/反引号（`**P1**` / `` `P1` ``）、跳过表头行与 OBS 观察项。
+ * 契约：QA 缺陷表必须带标准表头（zh `严重级(P0/P1/P2/P3)` / en `Severity (P0/P1/P2/P3)`，
+ * 见 qaPrompt 的 HOST-ENFORCED 条款与 L2 语料）。
+ * ⚠ 返回形状受**冻结语料逐字节比对**（`test/conformance.test.js`）——需要更多字段请用
+ * {@link parseDefectRows}，不要改本函数的投影形状。
  */
 export function parseDefects(qaText: string) {
-  const defects = []
-  const lines = qaText.split('\n')
-  for (const line of lines) {
-    if (line.indexOf('|') === -1) continue
-    const cells = line.split('|').map((s) => (s || '').trim())
-    // 行首可能以 `|` 开头 → 第一个空单元格；去掉
-    if (cells.length && cells[0] === '') cells.shift()
-    if (cells.length < 3) continue
-    const id = cells[0]
-    const sev = (cells[1] || '').replace(/[*`>]/g, '')
-    const mod = (cells[2] || '').replace(/[*`]/g, '').trim()
-    if (!/^P[0-3]$/.test(sev)) continue
-    if (!id || id === '编号' || id.indexOf('OBS') === 0) continue
-    if (!mod) continue
-    defects.push({ id, severity: sev, module: mod })
-  }
-  return defects
+  return parseDefectRows(qaText).map((r) => ({ id: r.id, severity: r.severity, module: r.module }))
 }
 
 /** 流水线启动时建立需求 backlog（req + 唯一轮转任务卡；任务不再按角色拆分）。 */
 export function initPipelineBacklog(journal, requirement, options) {
   const key = journal.workspace || 'default'
+  const locale = runLocaleOf(journal) // run 快照语言（QA-2：卡片标题/事件时间线随 run，不随界面）
   const store = storeFor(key)
   const reqId = store.nextId('req')
   const req = {
     id: reqId, product: key, productRoot: options.productRoot || null,
-      title: String(requirement || '未命名需求').replace(/\s+/g, ' ').trim().slice(0, 120), status: 'created',
+      title: String(requirement || t(locale, 'backlog.untitled')).replace(/\s+/g, ' ').trim().slice(0, 120), status: 'created',
     createdAt: Date.now(), updatedAt: Date.now(), events: [], taskIds: [], bugIds: [], humanIntervention: false,
   }
   store.requirements.push(req)
-  store.pushEvent(req, null, 'created', '流水线立项')
+  store.pushEvent(req, null, 'created', t(locale, 'event.created'))
   // 单任务模型：一个需求 = 一个轮转任务（dev/qa/验收 在同一张卡上流转）
   const taskId = store.nextId('task')
   const task = {
     id: taskId, reqId, product: key, type: 'task',
-    title: `需求任务 · ${snippet(requirement, 100)}`,
+    title: t(locale, 'backlog.reqTitle', { title: snippet(requirement, 100) }),
     status: 'pending', owner: null, devAssign: null, qaAssign: null, acceptBy: null,
     retries: 0, humanIntervention: false, createdAt: Date.now(), updatedAt: Date.now(),
     events: [], bugIds: [], usage: null, byRole: {},
@@ -161,7 +269,7 @@ export function initPipelineBacklog(journal, requirement, options) {
   journal.reqId = reqId
   journal.taskId = taskId
   journal.taskMap = {} // 保留字段（单任务模型下为空；兼容旧序列化）
-  store.pushEvent(req, 'created', 'in-progress', '流水线启动')
+  store.pushEvent(req, 'created', 'in-progress', t(locale, 'event.started'))
   store.persist()
   return { reqId, req, taskId }
 }
@@ -259,7 +367,7 @@ export function createSubtask(journal, title, spec) {
   const store = storeFor(journal.workspace || 'default')
   const mainTask = journal.taskId ? store.find('task', journal.taskId) : null
   if (!mainTask) return null
-  const fullTitle = `开发 · ${title}`
+  const fullTitle = t(runLocaleOf(journal), 'backlog.devTitle', { title })
   // 同名复用（2026-09-06，实锤 json-parse r1）：子卡 = 业务任务实体（同名一张，状态流转），
   // 执行历史在 journal stages（每次尝试独立记录）——不因重试/补跑新建卡导致看板膨胀。
   // retries 语义 = 本任务已被执行的次数 - 1（复用即递增）。
@@ -333,12 +441,12 @@ export function getSubtasks(journal) {
 export function assignTask(product: string | null | undefined, kind: string, id: string, role: string, assignee: string) {
   const store = storeFor(product)
   const item = store.find(kind, id)
-  if (!item) return { ok: false, error: `找不到 ${kind} #${id}` }
+  if (!item) return { ok: false, error: t(ambientLocale(), 'backlog.notFound', { kind, id }) }
   if (kind === 'task') {
     if (role === 'dev') item.devAssign = assignee
     else if (role === 'qa') item.qaAssign = assignee
     else if (role === 'accept') item.acceptBy = assignee
-    else return { ok: false, error: `未知角色 ${role}（支持 dev/qa/accept）` }
+    else return { ok: false, error: t(ambientLocale(), 'backlog.unknownRole', { role }) }
   } else {
     item.owner = assignee
   }
@@ -362,15 +470,27 @@ export function syncQaDefects(journal, defects) {
     if (!id || !/^P[0-3]$/.test(String(d && d.severity || ''))) continue
     const exist = store.bugs.find((b) => b.reqId === journal.reqId && b.defectId === id)
     if (exist) {
-      // 幂等：只刷新严重级与状态（若复验仍出现 → 保持 open/reopened 信号）
+      // 幂等：只刷新严重级/模块/缺陷描述与状态（若复验仍出现 → 保持 open/reopened 信号）
       exist.severity = String(d.severity)
       exist.module = String(d.module || '')
+      exist.reproduce = String(d.reproduce || '')
+      exist.expected = String(d.expected || '')
+      exist.actual = String(d.actual || '')
+      exist.ac = String(d.ac || '')
+      exist.check = String(d.check || '')
+      exist.criterion = String(d.criterion || '')
       exist.updatedAt = Date.now()
     } else {
       const bug = {
         id: store.nextId('bug'), defectId: id, reqId: journal.reqId, taskId: journal.taskId || null,
-        severity: String(d.severity), module: String(d.module || ''), title: `QA 缺陷：${id}`,
-        reproduce: '', expected: '', actual: '', ac: '', status: 'open', owner: null,
+        severity: String(d.severity), module: String(d.module || ''),
+        // 标题要能自解释：`R3-1` 这种裸编号 + 模块，比「QA 缺陷：R3-1」信息量大得多
+        // （用户实锤：卡详情只看到合成标题 + 关联 run 的原始需求，看不出缺陷是什么）
+        title: d.module ? `${id} · ${String(d.module)}` : t(runLocaleOf(journal), 'backlog.bugTitle', { id }),
+        reproduce: String(d.reproduce || ''), expected: String(d.expected || ''),
+        actual: String(d.actual || ''), ac: String(d.ac || ''),
+        check: String(d.check || ''), criterion: String(d.criterion || ''),
+        status: 'open', owner: null,
         retries: 0, humanIntervention: false, createdAt: Date.now(), updatedAt: Date.now(), events: [],
       }
       store.bugs.push(bug)

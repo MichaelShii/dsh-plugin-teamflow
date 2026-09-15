@@ -7,6 +7,8 @@ import { accumulateSessionUsage, freshTokensOf } from './metering.ts'
 import { startStageGuard } from './guard.ts'
 import { clip, extractText, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic } from '../util.ts'
 import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../constants.ts'
+import { t, type HostLocale } from '../locales.ts'
+import { runLocaleOf } from './locale.ts'
 import type { Journal, ParentAgentLike } from '../types.ts'
 import type { JournalStage } from '../../store.ts'
 
@@ -50,14 +52,14 @@ async function supportedEfforts(route: { provider?: string; model?: string }): P
  * - 未下发时返回原因文本 → 调用方记 warn（这类静默失败必须可见，见 2026-09-11 实锤）
  */
 async function resolveStageEffort(
-  route: { provider?: string; model?: string }, attempt: number, effortHint?: string | null,
+  route: { provider?: string; model?: string }, attempt: number, effortHint?: string | null, locale: HostLocale = 'zh',
 ): Promise<{ effort?: string; skip?: string }> {
   const base = effortHint && String(effortHint).trim() ? String(effortHint).trim() : null
   if (!base) return {}
   const wanted = attempt > 1 ? 'high' : base
   const supported = await supportedEfforts(route)
-  if (!supported) return { skip: `路由 ${route.provider || '?'}/${route.model || '?'} 未声明 reasoning.efforts（或探测不可用）` }
-  if (supported.indexOf(wanted) === -1) return { skip: `路由不支持 ${wanted}（可用：${supported.join('/') || '无'}）` }
+  if (!supported) return { skip: t(locale, 'diag.noEfforts', { provider: route.provider || '?', model: route.model || '?' }) }
+  if (supported.indexOf(wanted) === -1) return { skip: t(locale, 'diag.unsupportedEffort', { wanted, list: supported.join('/') || t(locale, 'diag.listNone') }) }
   return { effort: wanted }
 }
 
@@ -131,6 +133,8 @@ export async function runAgent(
   attempt = 1, effortHint?: string | null,
 ): Promise<string | null> {
   const maxSeq = journal.stages.length ? Math.max(...journal.stages.map((s) => s.seq)) : 0
+  // run 语言快照（AC-2）：诊断/日志/失败摘要一律随 run，不受界面当前语言影响
+  const locale = runLocaleOf(journal)
   let stageText = null
   const stage: JournalStage = {
     seq: maxSeq + 1, label, phase, status: 'running', outcome: null,
@@ -146,7 +150,7 @@ export async function runAgent(
     // 显式传当前生效路由，避免继承过期的 parent.options 快照（主线程已切换代理的情况）
     const route = resolveChildRoute(parent)
     // 机械阶段降档（可选）：只在宿主声明支持时下发；重试自动回升 high（见 resolveStageEffort）
-    const eff = await resolveStageEffort(route, attempt, effortHint)
+    const eff = await resolveStageEffort(route, attempt, effortHint, locale)
     const effort = eff.effort
     const agentOptions = (route.provider || route.model || effort) ? {
       ...(route.provider ? { provider: route.provider } : {}),
@@ -155,10 +159,10 @@ export async function runAgent(
       ...(effort ? { reasoningEffort: effort } : {}),
     } : undefined
     if (effort && !journal.cancelled) {
-      journal.logs.push({ t: Date.now(), level: 'info', message: `${label} 推理强度：${effort}${attempt > 1 ? '（重试回升）' : '（机械阶段降档）'}` })
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, attempt > 1 ? 'diag.effortRetry' : 'diag.effort', { label, effort }) })
     } else if (eff.skip && !journal.cancelled) {
       // 静默失败可见化（2026-09-11 实锤：efforts 对象数组被当字符串过滤 → 恒判不支持却无任何痕迹）
-      journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 推理强度未降档：${eff.skip}——保持宿主默认` })
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.effortSkip', { label, skip: eff.skip }) })
     }
     run = await runtime.subagents.start(providerName(), {
       label,
@@ -194,7 +198,7 @@ export async function runAgent(
       // 措辞只作诊断：命中拒绝词但已带验证证据块 → 仍判交付（2026-09-11 信号换轨）。
       // 留一条 warn 是为了审计可见（「为什么这句『无法执行』没判失败」有据可查），不改变结论。
       if (verdict.refusal) {
-        journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 产出含疑似拒绝措辞「${verdict.refusal.phrase}」（原文：${verdict.refusal.context}）——但已带 [Verification evidence] 块，判为交付；措辞仅作诊断不再否决` })
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.refusalWithEvidence', { label, phrase: verdict.refusal.phrase, context: verdict.refusal.context }) })
       }
       return text
     }
@@ -203,7 +207,7 @@ export async function runAgent(
       // 复读=degenerated（可干净重试），挂死/空转=stalled（走预算门转人工）
       stage.status = 'failed'
       stage.outcome = stage.guardOutcome || 'degenerated'
-      stage.summary = `进行中护栏中止（${stage.guardReason}），本次尝试无有效产出`
+      stage.summary = t(locale, 'diag.guardAbort', { reason: stage.guardReason })
       if (text) stage.output = clip(text, 4000) // 失败产出截断落盘（重试诊断/详情浮层）
       journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} ${stage.summary}` })
       return null
@@ -215,15 +219,15 @@ export async function runAgent(
     if (stage.outcome === 'insubstantial') {
       // 拒绝词命中点回灌（重试诊断需要「哪段输出被判拒绝」）；否则细分内容过短
       if (verdict.reason === 'refusal' && verdict.refusal) {
-        stage.summary = `产出未通过实质校验：无验证证据块且命中拒绝词「${verdict.refusal.phrase}」（原文：${verdict.refusal.context}），视为未交付`
-        journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 产出命中拒绝词「${verdict.refusal.phrase}」且无 [Verification evidence] 块` })
+        stage.summary = t(locale, 'diag.refusalNoEvidence', { phrase: verdict.refusal.phrase, context: verdict.refusal.context })
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.refusalNoEvidenceLog', { label, phrase: verdict.refusal.phrase }) })
       } else {
-        stage.summary = `产出未通过实质校验：内容过短（${verdict.length} 字符 < ${verdict.min} 下限），视为未交付`
-        journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 产出过短（${verdict.length} 字符），未通过实质校验` })
+        stage.summary = t(locale, 'diag.tooShort', { length: verdict.length, min: verdict.min })
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.tooShortLog', { label, length: verdict.length }) })
       }
       if (text) stage.output = clip(text, 4000)
     } else {
-      stage.summary = `未产出有效结果（stopReason=${stop || 'unknown'}${errDetail ? `，error=${String(errDetail).slice(0, 200)}` : ''}）`
+      stage.summary = t(locale, 'diag.noResult', { stop: stop || 'unknown', error: errDetail ? t(locale, 'diag.noResultError', { error: String(errDetail).slice(0, 200) }) : '' })
       journal.logs.push({ t: Date.now(), level: 'error', message: `${label} ${stage.summary}` })
       if (text) stage.output = clip(text, 4000) // 半截产出（如 stopReason=length）也落盘供诊断
     }
@@ -232,10 +236,10 @@ export async function runAgent(
     stage.status = journal.cancelled ? 'cancelled' : 'failed'
     if (!journal.cancelled && stage.guardReason) {
       stage.outcome = stage.guardOutcome || 'degenerated'
-      stage.summary = `进行中护栏中止（${stage.guardReason}）：${String((e && e.message) || e)}`
+      stage.summary = `${t(locale, 'diag.guardAbort', { reason: stage.guardReason })}${t(locale, 'diag.colon')}${String((e && e.message) || e)}`
     } else {
       stage.outcome = journal.cancelled ? 'cancelled' : 'error'
-      stage.summary = `启动/执行失败：${String((e && e.message) || e)}`
+      stage.summary = t(locale, 'diag.startFail', { msg: String((e && e.message) || e) })
     }
     journal.logs.push({ t: Date.now(), level: 'error', message: `${label} ${stage.summary}` })
     return null
@@ -260,12 +264,14 @@ export async function withRetry(
   let attempts = 0
   let freshTokens = 0
   let lastStage: JournalStage | null | undefined = null
+  // 重试诊断包与重试日志同样随 run 语言（诊断包是喂回子代理的注入文本）
+  const locale = runLocaleOf(journal)
   for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
     attempts = attempt
-    const labelNow = attempt > 1 ? `${label}（第 ${attempt} 次重试）` : label
+    const labelNow = attempt > 1 ? t(locale, 'dev.taskRetry', { label, n: attempt }) : label
     // 重试诊断包：原样重试=盲试（子代理不知道上次为什么失败，重试即碰运气）。
     // 诊断源现成：stage.summary（含拒绝词命中点/过短/stopReason 细节）+ guardReason + 失败产出尾部。
-    const promptNow = attempt > 1 && lastStage ? prompt + buildRetryDiagnostic(attempt, lastStage) : prompt
+    const promptNow = attempt > 1 && lastStage ? prompt + buildRetryDiagnostic(attempt, lastStage, locale) : prompt
     // ⚠️ 并发安全（并行 dev 子任务共享同一 journal.stages）：必须在调用前记录长度——
     // runAgent 同步 push 本次尝试的 stage（第一个 await 前），期间其他任务的 runAgent
     // 可能已 push 新 stage；用 length-1 取 stage 会错位（证据块/重试诊断/usage 累计全串）。
@@ -281,7 +287,7 @@ export async function withRetry(
     if (journal.cancelled) return { text: null, attempts, freshTokens, stage: lastStage }
     // 不可重试失败（上下文耗尽等）：重试同一 prompt 大概率复现 → 直接需人工
     if (lastStage && isUnretryable(lastStage.outcome, lastStage.outcome)) {
-      journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 失败原因不可重试（${lastStage.outcome}），跳过重试，需人工介入` })
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'diag.unretryable', { label, outcome: lastStage.outcome }) })
       journal.humanIntervention = true
       return { text: null, attempts, freshTokens, stage: lastStage }
     }
@@ -289,7 +295,7 @@ export async function withRetry(
     // needs-human 引导 resume 续跑（resume 精确补跑失败任务，已完成任务复用；实证 r29 重启后 resume 成功）。
     // 旧行为结算成「熔断」误导（freshTokens 是本次调用累计，含成功任务消耗；真实原因是外部中止）。
     if (lastStage && lastStage.outcome === 'aborted') {
-      journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 被外部中止（aborted），未正常产出——非预算问题；可 teamflow_resume 续跑（补跑失败任务，已完成任务复用）` })
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.aborted', { label }) })
       journal.humanIntervention = true
       return { text: null, attempts, freshTokens, stage: lastStage }
     }
@@ -297,14 +303,14 @@ export async function withRetry(
     // 6 次中止全部自动重试失败，复读计数 12→27 递增；resume 以全新会话续跑一次成功）→ 不再自动重试，
     // 直接 needs-human，引导 teamflow_resume（全新子代理会话 = 干净上下文）
     if (lastStage && lastStage.outcome === 'degenerated') {
-      journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 进行中护栏中止（退化/推理复读），不再自动重试（污染会话内重试大概率复现且烧钱）；可 teamflow_resume 以全新会话续跑` })
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.degenerated', { label }) })
       journal.humanIntervention = true
       return { text: null, attempts, freshTokens, stage: lastStage }
     }
     // 护栏中止（stalled = 挂死/空转）：对齐 guard 注释「走预算门转人工，不自动重试烧钱」——
     // 挂死无产出可救、空转已在烧钱，自动重试大概率复现（实证与 degenerated 同理）→ needs-human 引导 resume
     if (lastStage && lastStage.outcome === 'stalled') {
-      journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 进行中护栏中止（挂死/空转），不再自动重试（会话已无有效产出）；可 teamflow_resume 以全新会话续跑` })
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.stalled', { label }) })
       journal.humanIntervention = true
       return { text: null, attempts, freshTokens, stage: lastStage }
     }
@@ -312,14 +318,14 @@ export async function withRetry(
     // 位置在「自动重试」之前是刻意的：预算合理（≈2 轮尝试量级）时，首次失败走下方重试；
     // 只有该量级数倍的真跑飞才熔断——旧口径把 cacheRead 算进来，等于取消了自动重试（2026-09-11 修）。
     if (freshTokens >= FRESH_TOKEN_BUDGET) {
-      journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 累计新增 token ${Math.round(freshTokens / 1000)}k（input+cacheWrite+output，不含缓存命中）超出预算 ${Math.round(FRESH_TOKEN_BUDGET / 1000)}k，熔断，需人工介入` })
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'diag.breaker', { label, fresh: Math.round(freshTokens / 1000), budget: Math.round(FRESH_TOKEN_BUDGET / 1000) }) })
       journal.humanIntervention = true
       return { text: null, attempts, freshTokens, stage: lastStage }
     }
     if (attempt < RETRY_LIMIT) {
-      journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 第 ${attempt} 次尝试未成功（${lastStage ? lastStage.outcome || 'unknown' : 'unknown'}），自动重试（重试 prompt 已附上一轮失败诊断）…` })
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.retry', { label, n: attempt, outcome: lastStage ? lastStage.outcome || 'unknown' : 'unknown' }) })
     } else {
-      journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 连续 ${RETRY_LIMIT} 次尝试失败，超出重试阈值，需人工介入` })
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'diag.retryExhausted', { label, n: RETRY_LIMIT }) })
       journal.humanIntervention = true
     }
   }

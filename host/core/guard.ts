@@ -27,7 +27,9 @@
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { GUARD_NO_TOOL_MS, GUARD_POLL_MS, GUARD_REPEAT_LIMIT, GUARD_SILENCE_MS, GUARD_WINDOW_SIZE } from '../constants.ts'
+import { t, type HostLocale } from '../locales.ts'
 import { runtime } from './context.ts'
+import { runLocaleOf } from './locale.ts'
 import type { Journal, SubagentRunLike } from '../types.ts'
 import type { JournalStage } from '../../store.ts'
 
@@ -115,14 +117,14 @@ function timingOf(run: SubagentRunLike | null | undefined): { activeThrough: num
  *
  * 语义：`inject` 是 best-effort（可能晚一个 step），且不唤醒 idle driver——提醒只用于
  * 「仍在跑的 agent」；退化中止仍走 fire()/dispose()，不改为 steer 纠偏（后者是独立课题）。 */
-function injectReminder(run: SubagentRunLike, text: string): void {
+function injectReminder(run: SubagentRunLike, text: string, locale: HostLocale): void {
   try {
     const agent = run && (run as { localAgent?: { inject?: (m: unknown) => void } }).localAgent
     if (!agent || typeof agent.inject !== 'function') return
     agent.inject(createUserMessage({
       content: [{ type: 'text', text }],
       // form:'notice' 必须带 summary（宿主 ContextFormed 判别式要求一行说明）
-      source: { kind: 'plugin', plugin: 'dsh-plugin-teamflow', form: 'notice', summary: '护栏轻提醒' },
+      source: { kind: 'plugin', plugin: 'dsh-plugin-teamflow', form: 'notice', summary: t(locale, 'guard.noticeSummary') },
     }))
   } catch (e) { /* 注入失败静默 */ }
 }
@@ -140,6 +142,8 @@ export interface StageGuardTarget {
  */
 export function startStageGuard(opts: StageGuardTarget): () => void {
   const { run, journal, label, stage } = opts
+  // 护栏文案随 run 语言快照（AC-3③④）：journal 在作用域内，无需新增传参链路
+  const locale = runLocaleOf(journal)
   let fired = false
   // B/C 用计数而非时间戳判断（规避事件对象时间格式差异）
   let lastEventCount = -1
@@ -162,10 +166,10 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
   function warnOnce(key: string, set: Set<string>, message: string, hint?: string) {
     if (set.has(key)) return
     set.add(key)
-    try { journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} [token 观测] ${message}` }) } catch (e) { /* ignore */ }
+    try { journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} ${t(locale, 'guard.observeTag')} ${message}` }) } catch (e) { /* ignore */ }
     // 观测→执行闭环：轻提醒直接经官方 Agent 通道 inject（不打断；协议安全边界由宿主保证）。
     // 只提醒不强制——重复读常是写断言的合理需求。
-    if (hint) injectReminder(run, `[TOKEN GUARD · reminder] ${hint}`)
+    if (hint) injectReminder(run, `[TOKEN GUARD · reminder] ${hint}`, locale)
   }
 
   function fire(reason: string, outcome: 'degenerated' | 'stalled') {
@@ -181,7 +185,7 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
         const timing = timingOf(run)
         let detail: string
         if (timing) {
-          detail = `subagentTiming.through=${timing.activeThrough === undefined ? '（无 open turn）' : timing.activeThrough}`
+          detail = t(locale, 'guard.diagTiming', { through: timing.activeThrough === undefined ? t(locale, 'guard.diagNoTurn') : timing.activeThrough })
         } else {
           const local = (run as { localAgent?: { session?: { events?: unknown; snapshotEvents?: () => unknown; ownEvents?: () => unknown } } }).localAgent
           const session = local && local.session
@@ -191,13 +195,13 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
             try { lens.push(`snap=${typeof session.snapshotEvents === 'function' ? (session.snapshotEvents() as unknown[]).length : '-'}`) } catch (e) { lens.push('snap=err') }
             try { lens.push(`own=${typeof session.ownEvents === 'function' ? (session.ownEvents() as unknown[]).length : '-'}`) } catch (e) { lens.push('own=err') }
           }
-          detail = `投影不可用，回退事件视图：${lens.join(' / ') || 'session 不可访问'}`
+          detail = t(locale, 'guard.diagFallback', { detail: lens.join(' / ') || t(locale, 'guard.noSession') })
         }
-        journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 挂死诊断：${detail}` })
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.stallDiag', { label, detail }) })
       } catch (e) { /* 诊断失败不影响中止 */ }
     }
     try {
-      journal.logs.push({ t: Date.now(), level: 'error', message: `${label} 触发进行中护栏并中止本次尝试（${outcome}）：${reason}` })
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'guard.fire', { label, outcome, reason }) })
     } catch (e) { /* ignore */ }
     try { void Promise.resolve(run.dispose()).catch(() => {}) } catch (e) { /* ignore */ }
   }
@@ -245,10 +249,10 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
             if (lastMutationAt > 0) {
               if (!repeatWarned) {
                 repeatWarned = true
-                try { journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 复读计数达阈值但检测到变更进展（read-edit 循环属正常模式），不中止；仅零变更进展的纯复读才中止` }) } catch (e) { /* ignore */ }
+                try { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.repeatProgress', { label }) }) } catch (e) { /* ignore */ }
               }
             } else {
-              fire(`推理复读（同一片段在近 ${window.length} 条流式片段中出现 ${n} 次，且窗口内零变更进展）`, 'degenerated')
+              fire(t(locale, 'guard.reasonRepeat', { window: window.length, n }), 'degenerated')
               return
             }
           }
@@ -284,11 +288,11 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
           if (lastMutationAt > 0 && isAgentBusy(run)) {
             if (!busyWarned) {
               busyWarned = true
-              try { journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 已提交事件静默（subagentTiming.through ${Math.round((Date.now() - timing.activeThrough) / 1000)}s 未推进）但 agent 仍活动——视为长工具执行而非挂死，继续观察` }) } catch (e) { /* ignore */ }
+              try { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.busyTiming', { label, seconds: Math.round((Date.now() - timing.activeThrough) / 1000) }) }) } catch (e) { /* ignore */ }
             }
             lastGrowthAt = Date.now()
           } else {
-            fire(`挂死（${Math.round(GUARD_SILENCE_MS / 60000)} 分钟无任何已提交事件，来源：subagentTiming 投影）`, 'stalled')
+            fire(t(locale, 'guard.reasonStallTiming', { minutes: Math.round(GUARD_SILENCE_MS / 60000) }), 'stalled')
             return
           }
         } else {
@@ -304,11 +308,11 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
         if (lastMutationAt > 0 && isAgentBusy(run)) {
           if (!busyWarned) {
             busyWarned = true
-            try { journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} 事件视图零增长但 agent 仍活动（会话已动手）——视为视图失明而非挂死，继续观察（护栏诊断见 stall 分支）` }) } catch (e) { /* ignore */ }
+            try { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.busyEvents', { label }) }) } catch (e) { /* ignore */ }
           }
           lastGrowthAt = Date.now()
         } else {
-          fire(`挂死（${Math.round(GUARD_SILENCE_MS / 60000)} 分钟无任何新事件）`, 'stalled')
+          fire(t(locale, 'guard.reasonStallEvents', { minutes: Math.round(GUARD_SILENCE_MS / 60000) }), 'stalled')
           return
         }
       }
@@ -317,7 +321,7 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
       //    纯推理打转/改写式循环只会持续吐文本）。要求已见过至少一次工具调用，
       //    排除「启动阶段长推理」的误伤。
       if (seenToolCall && Date.now() - lastToolSignalAt > GUARD_NO_TOOL_MS) {
-        fire(`空转（${Math.round(GUARD_NO_TOOL_MS / 60000)} 分钟内无任何工具调用，但会话仍在产出）`, 'stalled')
+        fire(t(locale, 'guard.reasonIdle', { minutes: Math.round(GUARD_NO_TOOL_MS / 60000) }), 'stalled')
         return
       }
     } catch (e) { /* 护栏自身异常不影响流水线 */ }
@@ -337,14 +341,14 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
         const key = m[1].replace(/\\\\/g, '\\').toLowerCase()
         const n = (readCounts.get(key) || 0) + 1
         readCounts.set(key, n)
-        if (n === 3) warnOnce(key, warnedReads, `同一文件重复 read ${n} 次：${m[1].split(/[\\\\/]/).pop()}（TOKEN_HYGIENE 上限 1 次，多余读取在为后续每一步付 cache 重放费）`, `你已整读 ${m[1].split(/[\\\\/]/).pop()} 第 3 次（TOKEN_HYGIENE 上限 1 次）。停止整读：需要确认细节时用 grep 定位行号 + 限量片段读取。`)
+        if (n === 3) warnOnce(key, warnedReads, t(locale, 'guard.repeatRead', { n, file: m[1].split(/[\\/]/).pop() }), t(locale, 'guard.reminderRead', { file: m[1].split(/[\\/]/).pop() }))
       } else if (/bash|pwsh|shell|powershell/i.test(name || '')) {
         const sm = String(args).match(/(verify-[a-z0-9-]+\.cjs|assembly-check\.cjs|qa-e2e-jsdom\.cjs)/)
         if (!sm) continue
         const key = sm[1]
         const n = (scriptCounts.get(key) || 0) + 1
         scriptCounts.set(key, n)
-        if (n === 3) warnOnce(key, warnedScripts, `验证脚本重复执行 ${n} 次：${key}（批量修复纪律：一次修完所有失败再跑，≤3 轮）`, `验证脚本 ${key} 已重复执行 3 次。遵守批量修复纪律：一次读完所有失败用例 → 一次全修 → 再跑一次；超出 3 轮请输出诊断摘要并停止。`)
+        if (n === 3) warnOnce(key, warnedScripts, t(locale, 'guard.repeatScript', { n, file: key }), t(locale, 'guard.reminderScript', { file: key }))
       }
     }
   }

@@ -24,6 +24,30 @@ export const FRESH_TOKEN_BUDGET = 200000
 export const TEAMFLOW_ARTIFACT_ORDER = ['PRD.md', 'DESIGN.md', 'TECHNICAL.md', 'QA-REPORT.md', 'ACCEPTANCE.md', 'meta.json']
 
 /**
+ * TeamFlow 自有日志：**工作区内暂存目录**（B 方案 2026-09-15）。
+ *
+ * 为什么还留在工作区：子代理受 DSH 文件沙箱约束——`workspace-write` 只允许写会话工作区
+ * 与平台临时区，写 `$DSH_HOME` 直接 `FS_SANDBOX_DENIED`（实测：子代理写 `C:\Users\<u>\.dsh\...`
+ * 三步全拒，写工作区内同构命令 exit 0）。所以命令日志只能在项目内暂存。
+ * **终态不在这里**：run 结束 host 把本目录归档到 `$DSH_HOME/teamflow/<workspace>/logs/<runId>/`
+ * 并删除项目内副本（见 `host/core/runlogs.ts`）——项目里不留存，超额归档按最近 K 次淘汰。
+ * 与 store.runLogStagingDir 的路径段必须一致（test/runlogs.test.js 守门）。
+ */
+export const TF_LOG_DIR = 'logs/teamflow'
+/** 归档保留的最近 run 数（每个 run 一个目录；超出按 mtime 淘汰，防 $DSH_HOME 无界增长）。 */
+export const LOG_ARCHIVE_KEEP = 20
+
+/**
+ * 修复轮的「类别门禁」证据标记（A 方案，2026-09-15）：qaFixPrompt 要求 P0–P2 修复在证据块里给出
+ * `gate:`（新增/更新的门禁命令 → exit 0（修复前 exit <code> / <n> hits））与 `class sweep:`（命中数 before→after）。
+ *
+ * 为什么只 warn 不硬失败：host **无法证明**门禁真的存在（门禁长什么样、跑没跑过都在子代理侧），
+ * 硬失败会退化成「必须写这几个字」的形式主义；warn 留痕让「这一轮没落门禁」在 journal/工作台可见即可。
+ * 实锤动机：r9 的 round-1 只修了看得见的实例，同类 4 处留在 prompts/index.ts → QA round-2 原样打回，白烧一整轮。
+ */
+export const FIX_GATE_PATTERN = /(^|\n)\s*[-*]?\s*(gate|门禁)\s*[:：]/i
+
+/**
  * 机械型阶段的推理强度降档值（2026-09-11）：只用在**明确的机械阶段**（patch 档的单点确认、
  * scaffold 脚手架落地），其余阶段不传 = 宿主默认 `high`。
  *
@@ -55,7 +79,7 @@ export const GUARD_NO_TOOL_MS = 15 * 60_000
  * 模型汇报环境限制是本分，不是拒绝——措辞不能当交付判据。
  * 现用法见 `judgeDeliverable`：仅在**无验证证据块**时才作为否决依据；命中即回传供留痕。
  */
-export const REFUSAL_PATTERN = /(无法完成|不能完成|无法继续|抱歉|对不起|我(无法|不能)|无法执行|cannot complete|unable to)/i
+export const REFUSAL_PATTERN = /(无法完成|不能完成|无法继续|抱歉|对不起|我(无法|不能)|无法执行|cannot complete|unable to|I cannot|I can['’]t|not able to)/i
 /**
  * 真交付信号（结构件，非措辞）：prompt 强制的 `[Verification evidence]` 块——「命令 + 退出码 +
  * 断言计数」的具体自述。拒绝/放弃类产出给不出具体命令细节，故它出现即判交付，与措辞无关。

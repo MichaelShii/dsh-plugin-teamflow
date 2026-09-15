@@ -4,8 +4,56 @@
  * 会话内工作台（index.tsx）与全局面板（panel.tsx）共用：**只放无状态纯展示件**，
  * 不放任何 Remote 调用或会话上下文逻辑——两边数据来源不同（sessionId / productKey），
  * 展示语言必须一致。
+ *
+ * 双语（v0.1.9）：文案统一走宿主 locale 服务（机制说明见 client/locales.ts）。
+ * 组件里能拿到注入的 `t`，但**词表/格式化/折叠件是纯函数**，拿不到 prop，
+ * 故由 `apply()` 调 `setTranslator()` 注入模块级翻译函数：`bind()` 每次调用都读当前语言，
+ * 且宿主在切语言时会重渲染每个 slot outlet（ui-renderer `useLocaleRevision`），
+ * 因此模块级函数不会持有过期语言。
  */
 import React from 'react'
+
+/** 翻译函数（默认恒等：未注入时显示 key 本身，便于发现漏注册）。 */
+let translate: (key: string, params?: Record<string, unknown>) => string = (key) => key
+/** 当前语言 id 的读取器（默认 en）。 */
+let localeIdOf: () => string = () => 'en'
+
+/**
+ * 注入翻译函数与语言读取器（apply 时调用一次）。
+ * @param fn - `ctx.locale.bind(NS)` 的返回值（调用时读当前语言）。
+ * @param idOf - 返回当前语言 id 的函数（如 `() => ctx.locale.getSnapshot().active`）。
+ */
+export function setTranslator(fn, idOf?) {
+  if (typeof fn === 'function') translate = fn
+  if (typeof idOf === 'function') localeIdOf = idOf
+}
+
+/** 翻译（`{name}` 占位符由宿主替换）。 */
+export const t = (key, params?: Record<string, unknown>) => translate(key, params)
+
+/** 当前语言的 BCP 47 标签（时间格式化用；未知语言回退 en）。 */
+export function localeTag() {
+  let id = 'en'
+  try { id = String(localeIdOf() || 'en') } catch (e) { /* 服务未就绪 */ }
+  return id === 'zh' ? 'zh-CN' : id
+}
+
+/** 词表查表：命中返回译文，未命中回退原始值（未知状态/角色等）。 */
+function vocab(prefix, raw) {
+  const key = `${prefix}.${raw}`
+  const hit = t(key)
+  return hit === key ? String(raw === null || raw === undefined ? '' : raw) : hit
+}
+export const stText = (s) => vocab('status', s)
+export const runStatusText = (s) => vocab('runStatus', s)
+export const kindTitle = (k) => vocab('kind', k)
+export const roleName = (r) => vocab('role', r)
+/** 角色 chip（带图标；未知角色回退「⚙️ <raw>」）。 */
+export function roleChip(r) {
+  const key = `roleChip.${r}`
+  const hit = t(key)
+  return hit === key ? `⚙️ ${String(r)}` : hit
+}
 
 /* ── 主题 token（自动适配深浅色） ─────────────────────────────────── */
 export const T = {
@@ -22,12 +70,7 @@ export const T = {
   warn: 'var(--dsw-alias-state-warn-primary)',
 }
 
-export const STATUS_TEXT = {
-  created: '立项', 'in-progress': '进行中', 'pending-acceptance': '待验收', accepted: '已验收', closed: '已关闭',
-  pending: '待办', running: '开发中', testable: '待测试', testing: '测试中', rework: '打回',
-  'needs-human': '需人工', cancelled: '已关闭', open: '待认领', claimed: '处理中', fixed: '已修复待验',
-  verified: '已关闭', reopened: '重开', done: '已完成', completed: '已完成', failed: '失败',
-  interrupted: '已中断', superseded: '已取代',}
+/** 状态色表（与语言无关的纯视觉映射）。 */
 export const STATUS_COLOR = {
   created: T.text2, pending: T.text2, open: T.text2,
   'in-progress': T.brand, running: T.brand, claimed: T.brand, testing: T.brand, fixed: T.brand, reopened: '#8250df',
@@ -36,22 +79,32 @@ export const STATUS_COLOR = {
   rework: T.error, failed: T.error, 'needs-human': T.error, cancelled: T.text2, closed: T.text2,
   interrupted: T.warn, superseded: T.text2,
 }
-/** 阶段英文键 → 图标/中文展示名（2026-09-06 英文化：journal.phase 为英文键，展示名统一走映射——未来 i18n 换表即换语言）。 */
+/** 阶段英文键 → 图标（2026-09-06 英文化：journal.phase 为英文键，展示名统一走词表——换语言即换表）。 */
 export const PHASE_ICON = {
   prd: '📋', design: '🎨', scaffold: '🏗️', tech: '📐', dev: '💻', qa: '🧪', acceptance: '✅',
 }
-export const PHASE_NAME = { prd: 'PRD 产品需求', design: 'UI/UX 设计', scaffold: '架构规划', tech: '技术方案', dev: '开发', qa: 'QA 测试', acceptance: '产品验收' }
-export const phaseNameOf = (p) => PHASE_NAME[p] || p || '—'
-export const phaseIconOf = (p) => PHASE_ICON[p] || '⚙️'
 /** phase 归一：英文键直通；存量中文映射（防御性——新数据全英文）。 */
 export const phaseKeyOf = (p) => ({ 'PRD 产品需求': 'prd', 'UI/UX 设计': 'design', '架构规划': 'scaffold', '技术方案': 'tech', '开发': 'dev', 'QA 测试': 'qa', '产品验收': 'acceptance' })[p] || String(p || '')
-export const RUN_STATUS_TEXT = { pending: '等待中', running: '进行中', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', superseded: '已取代' }
+export const phaseNameOf = (p) => vocab('phase', phaseKeyOf(p))
+export const phaseIconOf = (p) => PHASE_ICON[phaseKeyOf(p)] || '⚙️'
+/**
+ * 阶段的展示名（双语安全的取法）。
+ *
+ * journal 里 `stage.label` 是**持久化中文**（teams.json 配置 + 历史数据），而每个阶段都带
+ * 英文 `phase` 键——所以展示时：任务级阶段（dev 子卡，`taskKey` 有值）保留任务名（LLM 数据，
+ * 不该翻译），其余阶段用 `phase` 键查当前语言词表。**只影响展示，不动数据**：
+ * `__taskKey`/`taskKeyOf` 的任务聚合身份仍走 label 清理（聚合语义不能随语言变）。
+ */
+export function stageLabelOf(s) {
+  const raw = String((s && s.label) || '')
+  if (s && s.taskKey) return raw || String(s.taskKey)
+  return (s && s.phase ? phaseNameOf(s.phase) : '') || raw
+}
 export const COLUMNS = {
   req: ['created', 'in-progress', 'pending-acceptance', 'accepted', 'closed', 'needs-human'],
   task: ['pending', 'running', 'testable', 'testing', 'pending-acceptance', 'accepted', 'rework', 'needs-human', 'cancelled'],
   bug: ['open', 'claimed', 'fixed', 'verified', 'reopened', 'needs-human'],
 }
-export const KIND_TITLE = { req: '需求', task: '任务', bug: '缺陷' }
 
 export const h = React.createElement
 export const MONO = 'ui-monospace, SFMono-Regular, Consolas, "Cascadia Mono", monospace'
@@ -73,34 +126,34 @@ export const chip = (text, color, opts: { style?: Record<string, string>; dot?: 
 export function FoldableText({ text, charLimit = 280, lineLimit = 5, style }: { text: unknown; charLimit?: number; lineLimit?: number; style?: Record<string, unknown> }) {
   const [open, setOpen] = React.useState(false)
   if (!text) return null
-  const t = String(text)
-  const lines = t.split('\n')
-  const compact = lines.length <= lineLimit && t.length <= charLimit
+  const s = String(text)
+  const lines = s.split('\n')
+  const compact = lines.length <= lineLimit && s.length <= charLimit
   const body = (txt) => h('div', { style: { fontSize: 11.5, color: T.text, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', ...(style || {}) } }, txt)
-  if (compact) return body(t)
+  if (compact) return body(s)
   if (open) return h('div', null,
-    body(t),
+    body(s),
     h('button', {
       onClick: () => setOpen(false),
-      title: '收起全文',
+      title: t('common.collapseFull'),
       style: { marginTop: 3, font: 'inherit', fontSize: 10.5, fontWeight: 600, color: T.text2, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' },
-    }, '收起'),
+    }, t('common.collapse')),
   )
-  const pre = lines.length > lineLimit ? lines.slice(0, lineLimit).join('\n') : t.slice(0, charLimit)
-  const more = lines.length > lineLimit ? `… +${lines.length - lineLimit} 行` : '…'
+  const pre = lines.length > lineLimit ? lines.slice(0, lineLimit).join('\n') : s.slice(0, charLimit)
+  const more = lines.length > lineLimit ? t('common.moreLines', { n: lines.length - lineLimit }) : '…'
   return h('div', null,
     body(pre),
     h('button', {
       onClick: () => setOpen(true),
-      title: '点击查看全文',
+      title: t('common.clickToExpand'),
       style: { marginTop: 3, font: 'inherit', fontSize: 10.5, fontWeight: 600, color: T.brand, background: 'transparent', border: 'none', padding: 0, cursor: 'pointer' },
-    }, `展开全文${more}`),
+    }, `${t('common.expandFull')}${more}`),
   )
 }
 
-export function fmtTime(t) {
-  if (!t) return '—'
-  const d = new Date(t)
+export function fmtTime(tm) {
+  if (!tm) return '—'
+  const d = new Date(tm)
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
 }
 export function fmtDur(a, b) {
@@ -135,9 +188,11 @@ export function usageDetail(s) {
   if (s.usage) {
     const u = s.usage
     const hit = hitRate(u)
-    return `输入(未命中) ${k(u.input)} / 输入(命中) ${k(u.cacheRead)} / 写缓存 ${k(u.cacheWrite)} / 输出 ${k(u.output)} · ${u.calls} 次调用${hit !== null ? ` · 缓存命中 ${hit}%` : ''}`
+    return t('token.usageLine', {
+      input: k(u.input), cacheRead: k(u.cacheRead), cacheWrite: k(u.cacheWrite), output: k(u.output), calls: u.calls,
+    }) + (hit !== null ? t('token.usageHit', { hit }) : '')
   }
-  return '无 usage 明细'
+  return t('token.usageMissing')
 }
 /** 节点卡主 token 行：官方口径 —— 输入(未命中)/输入(命中)/输出 + 缓存命中率。 */
 export function stageUsageLine(s) {
@@ -148,7 +203,6 @@ export function stageUsageLine(s) {
   }
   return null
 }
-export const ROLE_NAME = { pm: '产品', design: '设计', arch: '架构', tech: '方案', dev: '开发', qa: '测试', acceptance: '验收', other: '其他' }
 export const roleUsage = (u) => {
   if (!u) return ''
   const hit = hitRate(u)
@@ -159,22 +213,21 @@ export function byRoleLine(task) {
   const roles = (task && task.byRole) || {}
   const parts = Object.keys(roles)
     .filter((k) => roles[k] && (roles[k].input + roles[k].output + roles[k].cacheRead + roles[k].cacheWrite) > 0)
-    .map((k) => `${ROLE_NAME[k] || k} ${roleUsage(roles[k])}`)
+    .map((k) => `${roleName(k)} ${roleUsage(roles[k])}`)
   return parts.join(' · ')
 }
 /** 多阶段 usage 汇总（官方口径）。 */
 export function totalUsage(stages) {
-  const t = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 }
+  const sum = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 }
   for (const s of (stages || [])) {
     const u = s && s.usage
     if (!u) continue
-    t.input += u.input || 0
-    t.cacheRead += u.cacheRead || 0
-    t.cacheWrite += u.cacheWrite || 0
-    t.output += u.output || 0
-    t.calls += u.calls || 0
+    sum.input += u.input || 0
+    sum.cacheRead += u.cacheRead || 0
+    sum.cacheWrite += u.cacheWrite || 0
+    sum.output += u.output || 0
+    sum.calls += u.calls || 0
   }
-  return t
+  return sum
 }
-export const stText = (s) => STATUS_TEXT[s] || s
 export const stColor = (s) => STATUS_COLOR[s] || T.text2

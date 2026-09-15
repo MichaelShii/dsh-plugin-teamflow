@@ -67,6 +67,9 @@ export interface JournalRecord {
     tasks?: Array<{ title: string; files?: string[]; spec?: string }>
   } | null
   product?: string | null
+  /** run 级语言快照（AC-2）：起跑时解析一次并落盘，本 run 全部文案/产物语言读此值（resume 不重解析）。
+   * 升级前的历史 journal 无此字段 → 读取方按 zh 处理（见 host/core/locale.runLocaleOf）。 */
+  locale?: string | null
   /** 分支策略 A 自动创建的特性分支名（feat/<slug>；非 main 沿用/keep 时为 null）。 */
   branch?: string | null
   /** 收尾合回状态（ADR-2026-08-27 交互模式）：验收通过后由 teamflow_merge 设置——'pending'（验收通过未决策）/ 'merged'（host 已合回）/ 'kept'（用户暂缓）/ 'failed'（合并冲突）。 */
@@ -88,6 +91,13 @@ export interface JournalRecord {
   error?: string | null
   stages?: JournalStage[]
   logs?: Array<{ t: number; level: string; message: string }>
+  /**
+   * 逐轮 QA 阻断集合埋点（D 方案 2026-09-15：先测量再决定要不要把 `QA_REWORK_LIMIT` 换成收敛判据）。
+   * 每轮一条：`{ round, seq, blocking, p3, defects:[{id,sev,module,fp}], withCheck, withCriterion,
+   * qaCalls, fixCalls, gate, newFps, repeats, resolved, outcome }`——`fp` 是**稳定身份**
+   * （检测命令优先：QA 每轮重编号，缺陷 id 跨轮不可比，见 util.defectFingerprint）。
+   */
+  qaRounds?: Array<Record<string, unknown>> | null
   result?: unknown
   [key: string]: unknown
 }
@@ -205,6 +215,7 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     workspacePath: journal.workspacePath || null,
     ownerSession: journal.ownerSession || null,
     product: journal.product || null,
+    locale: journal.locale || null,
     sanity: journal.sanity || null,
     blueprint: journal.blueprint || null,
     reqId: journal.reqId || null,
@@ -213,6 +224,9 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     taskMap: journal.taskMap || {},
     agentsStarted: journal.agentsStarted || 0,
     humanIntervention: journal.humanIntervention === true,
+    /** E 方案（2026-09-15）：本轮验收是「已知问题」只读模式（QA 打回超限后补跑）——report 据此给
+     *  「结论被强制为需人工裁定、不要据此合回」的显式提示（持久化：重启/resume 后仍可判）。 */
+    knownIssuesAcceptance: journal.knownIssuesAcceptance === true,
     cancelled: journal.cancelled === true,
     interrupted: journal.interrupted === true,
     interruptedAt: journal.interruptedAt || null,
@@ -237,6 +251,17 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
       verifyEvidence: s.verifyEvidence ? clip(s.verifyEvidence, 8000) : null,
     })),
     logs: (journal.logs || []).slice(-300).map((l) => ({ t: l.t, level: l.level, message: clip(l.message, 500) })),
+    // D 埋点（2026-09-15）：逐轮 QA 阻断集合（稳定身份 = 检测命令优先）。留最近 12 轮、每轮最多 20 条缺陷。
+    qaRounds: (journal.qaRounds || []).slice(-12).map((r) => ({
+      round: r.round, seq: r.seq, blocking: r.blocking, p3: r.p3,
+      defects: Array.isArray(r.defects)
+        ? (r.defects as Array<Record<string, unknown>>).slice(0, 20).map((d) => ({ id: clip(d.id, 40), sev: d.sev, module: clip(d.module, 60), fp: clip(d.fp, 200) }))
+        : [],
+      withCheck: r.withCheck, withCriterion: r.withCriterion,
+      qaCalls: r.qaCalls, fixCalls: r.fixCalls, gate: r.gate,
+      newFps: r.newFps, repeats: r.repeats, resolved: r.resolved,
+      outcome: r.outcome,
+    })),
   }
 }
 
@@ -254,18 +279,56 @@ export function writeText(file: string, text: string): boolean {
   }
 }
 
-/** 工作区下日志落点：<工作区>/logs/teamflow/<runId>.log（存在 workspacePath 时才落）。 */
-export function runLogFile(journal: JournalRecord): string | null {
-  if (!journal.workspacePath) return null
-  return join(journal.workspacePath, 'logs', 'teamflow', `${journal.id}.log`)
+/* ── 运行日志落点（B 方案 2026-09-15：日志根离开用户项目） ──────────────
+ * 背景：子代理受 DSH 文件沙箱约束（workspace-write = **只允许写会话工作区 + 平台临时区**，
+ * 实测 `$DSH_HOME` 写入被拒），所以子代理产出的命令日志只能先在**工作区内暂存**；
+ * run 结束由 host（进程侧无沙箱限制）归档到 `$DSH_HOME/teamflow/<workspace>/logs/<runId>/`
+ * 并把暂存目录从项目里删掉——项目内不留存、`$DSH_HOME` 侧按最近 K 次保留（见 host/core/runlogs.ts）。
+ */
+
+/** 工作区内暂存目录段（与 host/constants.TF_LOG_DIR 同址；store 是独立 entry、刻意不引 host 代码，一致性由 test/runlogs.test.js 守门）。 */
+const STAGING_SEGMENTS = ['logs', 'teamflow'] as const
+
+/** 归档用的工作区槽位：优先 journal.workspace，缺失/兜底时按 workspacePath 派生（与 backlog 同键）。 */
+function logWorkspaceKey(journal: JournalRecord): string | null {
+  const w = journal && typeof journal.workspace === 'string' ? journal.workspace.trim() : ''
+  if (w && w !== 'default') return w
+  const p = journal ? journal.workspacePath : null
+  return p ? slugPath(p) : null
 }
 
-/** 把运行事件日志聚合写到 <工作区>/logs/teamflow/<runId>.log（logs 收口，防止污染宿主）。 */
+/** 归档根（工作区级）：`$DSH_HOME/teamflow/<workspace>/logs/`（每个 run 一个子目录）。 */
+export function logsArchiveRoot(journal: JournalRecord): string | null {
+  const key = logWorkspaceKey(journal)
+  return key ? join(teamflowRoot(), key, 'logs') : null
+}
+
+/** 归档落点（run 级目录）：`$DSH_HOME/teamflow/<workspace>/logs/<runId>/`（与 journal/backlog 同槽位）。 */
+export function runLogArchiveDir(journal: JournalRecord): string | null {
+  const root = logsArchiveRoot(journal)
+  return root ? join(root, journal.id) : null
+}
+
+/** 工作区内暂存落点（子代理写、run 结束归档后删除）：`<workspacePath>/logs/teamflow/<runId>/`。 */
+export function runLogStagingDir(journal: JournalRecord): string | null {
+  if (!journal.workspacePath) return null
+  return join(journal.workspacePath, ...STAGING_SEGMENTS, journal.id)
+}
+
+/** host 事件日志落点：`<归档 run 目录>/run.log`（run 期间即写终态位置，无需搬运）。 */
+export function runLogFile(journal: JournalRecord): string | null {
+  const dir = runLogArchiveDir(journal)
+  return dir ? join(dir, 'run.log') : null
+}
+
+/** 把运行事件日志聚合写到 `$DSH_HOME/teamflow/<workspace>/logs/<runId>/run.log`（logs 离开用户项目）。 */
 export function persistRunLog(journal: JournalRecord): boolean {
   const file = runLogFile(journal)
   if (!file) return false
   const lines = [
-    `# TeamFlow 运行日志（${journal.name}）`,
+    // 文件头随 run 语言（R3-1③）：store.ts 是独立 lib entry、不引 host 词典（保持持久化层零 host 依赖），
+    // 故只在这一行内联两语言取值；其余行是 `key=value` 机器可读格式，无需本地化。
+    journal.locale === 'en' ? `# TeamFlow run log (${journal.name})` : `# TeamFlow 运行日志（${journal.name}）`,
     `runId=${journal.id}`,
     `workspace=${journal.workspacePath || ''}`,
     `product=${journal.product || ''}`,

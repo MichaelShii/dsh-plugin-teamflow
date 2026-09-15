@@ -6,6 +6,9 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { clip } from '../util.ts'
 import { MODE_REGISTRY } from './triage.ts'
 import { gitCmd } from './sanity.ts'
+import { modeLabel, t } from '../locales.ts'
+import { phaseKeyOf } from '../constants.ts'
+import { runLocaleOf } from './locale.ts'
 import type { Journal, ParentAgentLike } from '../types.ts'
 
 /**
@@ -17,6 +20,8 @@ import type { Journal, ParentAgentLike } from '../types.ts'
 export function deliverCompletion(journal: Journal, parent: ParentAgentLike): void {
   try {
     if (!parent || typeof parent.inject !== 'function' || typeof parent.followup !== 'function') return
+    // 汇报语言 = run 语言快照（AC-3②）：resume/进程重启后仍正确（journal 落盘了 locale）
+    const locale = runLocaleOf(journal)
     const stages = journal.stages || []
     const done = stages.filter((s) => s.status === 'done').length
     const failed = stages.filter((s) => s.status === 'failed' || s.status === 'needs-human').length
@@ -44,61 +49,84 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
         const hit = hitRate(u.input, u.cacheRead)
         return `${String(s.label || '').split('·')[0].trim()} ⇅${tok(u.input)}/⇅${tok(u.cacheRead)}·⬆${tok(u.output)}${hit ? `·${hit}` : ''}`
       })
-      .join('，')
+      .join(t(locale, 'report.listSep'))
     const tokenLine = hasUsage
-      ? `Token：输入(未命中) ${tok(usageAgg.input)} / 输入(命中) ${tok(usageAgg.cacheRead)} / 写缓存 ${tok(usageAgg.cacheWrite)} / 输出 ${tok(usageAgg.output)} · ${usageAgg.calls} 次调用${hitTotal ? ` · 缓存命中 ${hitTotal}` : ''}`
-      : 'Token：—'
+      ? t(locale, 'report.token', {
+        input: tok(usageAgg.input), cacheRead: tok(usageAgg.cacheRead), cacheWrite: tok(usageAgg.cacheWrite),
+        output: tok(usageAgg.output), calls: usageAgg.calls, hit: hitTotal ? t(locale, 'report.tokenHit', { rate: hitTotal }) : '',
+      })
+      : t(locale, 'report.tokenNone')
     const statusLine = {
-      completed: journal.humanIntervention ? '⚠️ 已完成（需人工介入）' : '✅ 已完成',
-      failed: '❌ 失败',
-      cancelled: '⏹ 已取消',
-      interrupted: '⚠ 中断（可用 teamflow_resume 从断点重跑）',
+      completed: journal.humanIntervention ? t(locale, 'report.status.completedHuman') : t(locale, 'report.status.completed'),
+      failed: t(locale, 'report.status.failed'),
+      cancelled: t(locale, 'report.status.cancelled'),
+      interrupted: t(locale, 'report.status.interrupted'),
     }[journal.status] || journal.status
     const stagesLine = stages.length === 0
-      ? '尚未进入任何阶段'
-      : `${stages.length} 个阶段 · ${done} 完成${failed > 0 ? ` · ${failed} 失败` : ''}${cancelledStages > 0 ? ` · ${cancelledStages} 取消` : ''}`
+      ? t(locale, 'report.noStages')
+      : t(locale, 'report.stages', {
+        total: stages.length, done,
+        failed: failed > 0 ? t(locale, 'report.stagesFailed', { n: failed }) : '',
+        cancelled: cancelledStages > 0 ? t(locale, 'report.stagesCancelled', { n: cancelledStages }) : '',
+      })
     // 分支策略 A 收尾（ADR-2026-08-27）：验收通过 + 当前在特性分支 + 领先 main → 合回指引。
     // 合回由用户确认验收后人工执行（host 不自动合回）；非仓库/异常静默降级。
     // 收尾决策（ADR-2026-08-27 交互模式）：验收通过 + 特性分支领先 main → 决策邀请。
     // 与前置 needs-decision 对称：汇报带明确「请询问用户」的选项，用户确认后由 teamflow_merge 执行。
+    //
+    // ⚠ 2026-09-15 修正（实锤 tf-mu2ioilr-95l4th）：**必须确认验收真的跑过且无人为介入**再邀请合回。
+    // 旧条件只有 `status === 'completed' && !error`：QA 复验超限时流程 break、验收被跳过、status 仍是
+    // completed 且无 error → 汇报照样写「验收已通过，请询问用户是否合回」，诱导用户在未验收时合回 main。
+    const acceptanceDone = stages.some((s) => phaseKeyOf(s.phase) === 'acceptance' && s.status === 'done')
+    const mergeEligible = journal.status === 'completed' && !journal.humanIntervention && acceptanceDone && !journal.error
     let mergeHint = ''
-    if (journal.status === 'completed' && !journal.error && journal.workspacePath) {
+    if (mergeEligible && journal.workspacePath) {
       try {
         const branch = gitCmd(journal.workspacePath, ['rev-parse', '--abbrev-ref', 'HEAD'])
         if (branch && branch !== 'main') {
           const ahead = gitCmd(journal.workspacePath, ['rev-list', '--count', 'main..HEAD'])
           if (ahead && Number(ahead) > 0) {
             journal.mergeStatus = journal.mergeStatus || 'pending'
-            mergeHint = `🧩 合回决策：验收已通过，当前在特性分支 ${branch}（领先 main ${ahead} 个提交）。请**询问用户**是否合回，并按用户选择调用 teamflow_merge：\n   ① host 代为合回 → action="merge"\n   ② 给出命令用户自行合回 → action="command"\n   ③ 暂不合回 → action="keep"\n（选项之外用户自定义输入亦可，如实转述）`
+            mergeHint = t(locale, 'report.mergeHint', { branch, ahead })
           }
         }
         // preAction=stash：提醒用户恢复启动前暂存的改动
         const pa = (journal.options || {}).preAction
         if (pa === 'stash') {
-          const stashHint = '🧩 启动前 stash 的改动仍在暂存区：流水线完成后请执行 git stash pop 恢复你的改动'
+          const stashHint = t(locale, 'report.stashHint')
           mergeHint = mergeHint ? `${mergeHint}\n${stashHint}` : stashHint
         }
       } catch (e) { /* 非仓库/查询失败：跳过合回指引 */ }
     }
+    // 反向守卫：流程提前结束（需人工介入）且验收未跑 → 显式提示「不要合回」，不给决策邀请。
+    // E 方案（2026-09-15）：QA 打回超限时验收不再整段跳过，而是只读跑一次（结论强制需人工裁定）——
+    // 此时 acceptanceDone 会为真，必须换成「已知问题验收」的提示，否则「不要合回」的警告会消失。
+    const needsHumanNotice = journal.humanIntervention && !acceptanceDone
+      ? t(locale, 'report.needsHumanNoAcceptance')
+      : journal.knownIssuesAcceptance === true ? t(locale, 'report.knownIssuesNoMerge') : ''
+    // 通知摘要里的状态词（未知状态回落 status 字面量）
+    const noticeKey = `report.noticeStatus.${journal.status}`
+    const noticeStatus = t(locale, noticeKey) === noticeKey ? journal.status : t(locale, noticeKey)
     const text = [
-      `【团队研发流水线汇报】runId=${journal.id}`,
-      `状态：${statusLine}${journal.error ? `（${clip(journal.error, 300)}）` : ''}`,
-      `阶段：${stagesLine}`,
-      `Agent：共启动 ${journal.agentsStarted || 0} 个子代理`,
+      t(locale, 'report.header', { id: journal.id }),
+      t(locale, 'report.statusLine', { status: statusLine, error: journal.error ? t(locale, 'report.error', { error: clip(journal.error, 300) }) : '' }),
+      t(locale, 'report.stagesLine', { stages: stagesLine }),
+      t(locale, 'report.agents', { n: journal.agentsStarted || 0 }),
       tokenLine,
-      hasUsage && roleLine ? `Token（按角色）：${roleLine}` : '',
-      journal.product ? `产品：${journal.product}` : '',
+      hasUsage && roleLine ? t(locale, 'report.byRole', { list: roleLine }) : '',
+      journal.product ? t(locale, 'report.product', { product: journal.product }) : '',
       (() => {
         const m = journal.options && journal.options.mode
         return (typeof m === 'string' && m !== 'full' && m !== 'medium')
-          ? `模式：${MODE_REGISTRY[m as keyof typeof MODE_REGISTRY] ? MODE_REGISTRY[m as keyof typeof MODE_REGISTRY].label : m}`
+          ? t(locale, 'report.mode', { mode: modeLabel(locale, m, MODE_REGISTRY[m as keyof typeof MODE_REGISTRY] ? MODE_REGISTRY[m as keyof typeof MODE_REGISTRY].label : m) })
           : ''
       })(),
-      `backlog：需求 ${journal.reqId || '—'}（$DSH_HOME/teamflow/ 持久化）`,
+      t(locale, 'report.backlog', { reqId: journal.reqId || '—' }),
+      needsHumanNotice,
       mergeHint,
-      '用户可打开「🏭 团队工作台」tab 查看阶段泳道、拖拽看板与 token 明细。',
-      '如需继续处理：可认领缺陷（teamflow_claim）、人工流转（teamflow_update）、断点重跑（teamflow_resume）。',
-      '若用户在场请简明转述以上要点；若无人值守仅记录即可，不必长篇回复。',
+      t(locale, 'report.tabHint'),
+      t(locale, 'report.next'),
+      t(locale, 'report.relay'),
     ].filter(Boolean).join('\n')
     const message = createUserMessage({
       content: [{ type: 'text', text }],
@@ -106,7 +134,8 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
         kind: 'plugin',
         plugin: 'dsh-plugin-teamflow',
         form: 'notice',
-        summary: `团队研发流水线 ${journal.status === 'completed' ? '已完成' : journal.status}（runId=${journal.id}）`,
+        // 状态词走词典（未知状态回落原始 status 字面量）
+        summary: t(locale, 'report.notice', { status: noticeStatus, id: journal.id }),
       },
     })
     if (parent.status === 'idle') parent.followup(message)

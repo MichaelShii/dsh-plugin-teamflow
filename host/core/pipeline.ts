@@ -5,21 +5,31 @@
  * 展开实际执行阶段集（resolveStages），再与团队阶段取交集——见 ADR-0004。
  */
 import { runtime, runs, inFlight, activeProducts, providerName, workspaceScopeOf } from './context.ts'
-import { initPipelineBacklog, advanceTask, storeFor, parseDefects, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, createSubtask, completeSubtask, noteSubtaskUsage, getSubtasks, hasOpenBlockingBugs } from './backlog.ts'
+import { initPipelineBacklog, advanceTask, storeFor, parseDefectRows, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, createSubtask, completeSubtask, noteSubtaskUsage, getSubtasks, hasOpenBlockingBugs } from './backlog.ts'
 import { withRetry, runPool, resolveChildRoute } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
-import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore } from '../util.ts'
+import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
-import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT } from '../constants.ts'
+import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, FIX_GATE_PATTERN } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext } from '../types.ts'
 import { normalizeMode, runTriage } from './triage.ts'
-import { loadTeams, findTeam, getActiveStages } from './teams.ts'
+import { loadTeams, findTeam, getActiveStages, teamNameOf } from './teams.ts'
 import { loadState, extractStateBlock, mergeStateBlock, noteRun } from './state.ts'
-import { runSanityCheck, gitCmd, tfAddArgs, TF_LOG_DIR } from './sanity.ts'
+import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddArgs, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR } from './sanity.ts'
+import type { GitResult } from './sanity.ts'
+import { archiveRunLogs, sweepWorkspaceLogs } from './runlogs.ts'
 import { currentModelSupportsVision } from './context.ts'
+import { modeLabel, parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
+import { ambientLocale, localeForMissingSnapshot, runLocaleOf } from './locale.ts'
+
+/** dev 子卡/阶段 label 的「开发 · 」前缀与重试后缀：zh 存量兼容 + en 新增（QA-2：既有解析契约只增不改）。
+ *  en 侧必须覆盖词典 `dev.taskRetry` 的实际产出 `(attempt N)`（R3-2 实锤：只写 retry \d+ 时，
+ *  无 taskKey 的存量/异常数据走 label 兜底会漏剥离，任务标题归一失效）——**只增不改 zh 分支**。 */
+const DEV_TITLE_PREFIX = /^(?:开发|Dev) · /
+const RETRY_SUFFIX = /(?:（(?:第 \d+ 次重试|补跑)）| \((?:retry \d+|attempt \d+|follow-up run)\))$/
 
 /** 从 journal 已完成阶段重建断点续跑产物（prd/design/scaffold/tech/qa/acceptance/dev）。 */
 export function buildResumeProducts(journal) {
@@ -31,12 +41,32 @@ export function buildResumeProducts(journal) {
     if (key === 'dev') {
       products.dev = journal.stages
         .filter((x) => phaseKeyOf(x.phase) === 'dev' && x.status === 'done' && x.output)
-        .map((x) => ({ title: x.taskKey || x.label.replace(/^开发 · /, ''), failed: false, output: x.output }))
+        .map((x) => ({ title: x.taskKey || x.label.replace(DEV_TITLE_PREFIX, ''), failed: false, output: x.output }))
     } else {
       products[key] = s.output
     }
   }
   return products
+}
+
+/** add / commit 的失败原因合并成一条可查字符串（add 成功时不占篇幅）。 */
+function gitFailDetail(addR: GitResult, cmR: GitResult): string {
+  return [addR.ok ? '' : `add: ${addR.error || 'failed'}`, cmR.error || 'commit failed'].filter(Boolean).join(' | ')
+}
+
+/**
+ * 索引兜底的真摘出留痕：`tfUnstageArgs()` 正常时 stdout 为空（本就没被跟踪）。
+ * 一旦非空 = 自有日志**确实进过索引** → 说明 `.gitignore` 那条防线失效了（规则被用户删掉 / 写不进去），
+ * 这是必须可见的信号（2026-09-15：提交链路曾经「静默失效」，不能再来一次）。
+ */
+function noteLogsUnstaged(journal: Journal, r: GitResult, locale: HostLocale = 'zh'): void {
+  if (!r.ok) {
+    journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.logsUnstageFail', { msg: r.error || '' }) })
+    return
+  }
+  const list = r.out.split('\n').map((l) => l.trim()).filter(Boolean)
+  if (!list.length) return
+  journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.logsUnstaged', { n: list.length, list: list.slice(0, 3).join(locale === 'en' ? ', ' : '、') }) })
 }
 
 /**
@@ -49,23 +79,26 @@ export function buildResumeProducts(journal) {
  * ——交付前完全属实，是 host 在最后一刻扫进去的：**契约在 host 这一侧破的**。
  *
  * 两道防线缺一不可：
- *  ① 本函数写 .gitignore → IDE / `git status` / 用户自己的 CI 也不再看到这批文件（卫生）；
- *  ② `tfAddArgs()` 的 pathspec 强制排除 → 目标仓库只读、非 git、或用户把规则删回去时仍然兜得住（保证）。
+ *  ① 本函数写 .gitignore → IDE / `git status` / 用户自己的 CI 也不再看到这批文件（卫生），
+ *     而且它是 `tfAddArgs()` 整树 add 的唯一依赖（见 `sanity.tfAddArgs()` 的 2026-09-15 实锤）；
+ *  ② `tfUnstageArgs()` 在 add 之后把自有日志从索引里摘掉 → 规则被用户删掉、或本函数写不进去时仍然兜得住（保证）。
  * 只在**即将提交**时写入：跑失败/取消的 run 不留下一份未提交的 .gitignore 改动。
+ * 2026-09-15（B 方案）后该目录只是**run 期间的暂存**（终态由 runlogs.archiveRunLogs 归档到 `$DSH_HOME`
+ * 并从项目删除）——两道防线保留，覆盖「用户/子代理在 run 进行中自己提交」这个窗口。
  */
-function ensureLogGitignore(cwd: string | null | undefined, journal: Journal): boolean {
+function ensureLogGitignore(cwd: string | null | undefined, journal: Journal, locale: HostLocale = 'zh'): boolean {
   if (!cwd) return false
   try {
     const file = `${cwd}/.gitignore`
     const before = existsSync(file) ? readFileSync(file, 'utf8') : null
-    const merged = mergeGitignore(before, [`${TF_LOG_DIR}/`])
+    const merged = mergeGitignore(before, [`${TF_LOG_DIR}/`], locale)
     if (!merged.changed) return false
     writeFileSync(file, merged.text, 'utf8')
-    journal.logs.push({ t: Date.now(), level: 'info', message: `工作区 .gitignore 已补忽略 ${TF_LOG_DIR}/（插件自有运行日志，非交付物；随本次提交可见）` })
+    journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.gitignore', { dir: TF_LOG_DIR }) })
     return true
   } catch (e) {
-    // 写不进去不阻塞提交：pathspec 排除仍然生效（只影响 git status 的清爽度）
-    journal.logs.push({ t: Date.now(), level: 'warn', message: `补写 .gitignore 失败（不影响提交面排除）：${String((e && e.message) || e)}` })
+    // 写不进去不阻塞提交：tfUnstageArgs() 的索引兜底仍然生效（只影响 git status 的清爽度）
+    journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.gitignoreFail', { msg: String((e && e.message) || e) }) })
     return false
   }
 }
@@ -114,7 +147,7 @@ export function interruptedPhaseOf(journal) {
 function devTaskStatuses(stages: Array<{ taskKey?: string | null; label?: string; seq?: number; status?: string }>): Map<string, { done: boolean; lastStatus: string | null; lastSeq: number }> {
   const m = new Map<string, { done: boolean; lastStatus: string | null; lastSeq: number }>()
   for (const s of stages || []) {
-    const title = String(s.taskKey || String(s.label || '').replace(/^开发 · /, '').replace(/（(?:第 \d+ 次重试|补跑)）$/, '').trim())
+    const title = String(s.taskKey || String(s.label || '').replace(DEV_TITLE_PREFIX, '').replace(RETRY_SUFFIX, '').trim())
     if (!title) continue
     const cur = m.get(title) || { done: false, lastStatus: null, lastSeq: -1 }
     if ((s.seq || 0) > cur.lastSeq) { cur.lastSeq = s.seq || 0; cur.lastStatus = s.status || null }
@@ -126,17 +159,16 @@ function devTaskStatuses(stages: Array<{ taskKey?: string | null; label?: string
 
 /** 开发任务定义（单一来源）：架构蓝图自动拆 > 调用方显式 tasks > 整体开发兜底。
  * resume 补跑与正常执行共用（defByTitle 按 title 匹配失败子卡）。 */
-function buildDevTaskDefs(journal, tasks): Array<{ title: string; spec: string; files: string[] }> {
+function buildDevTaskDefs(journal, tasks, locale: HostLocale = 'zh'): Array<{ title: string; spec: string; files: string[] }> {
   const blueprintTasks = (journal.blueprint && Array.isArray(journal.blueprint.tasks) && journal.blueprint.tasks.length)
-    ? journal.blueprint.tasks.map((t) => ({ title: t.title || '开发任务', files: Array.isArray(t.files) ? t.files : [], spec: t.spec || '' }))
+    ? journal.blueprint.tasks.map((t) => ({ title: t.title || t(locale, 'dev.blueprintTask'), files: Array.isArray(t.files) ? t.files : [], spec: t.spec || '' }))
     : []
   return blueprintTasks.length
     ? blueprintTasks
     : tasks.length > 0
       ? tasks.map((t) => ({ title: t.title, spec: t.spec, files: [] }))
-      : [{ title: '整体开发', spec: '按技术方案/需求实现全部改动', files: [] }]
+      : [{ title: t(locale, 'dev.overall'), spec: t(locale, 'dev.overallSpec'), files: [] }]
 }
-
 /**
  * 执行流水线。resume = null 全新运行；resume = { phase, products } 从断点续跑：
  * phase 之前的阶段直接复用 products 产物（跳过执行），从 phase 阶段开始重跑。
@@ -146,6 +178,11 @@ export async function executePipeline(
   signal: unknown, resume: ResumeContext | null = null,
 ): Promise<void> {
   journal.status = 'running'
+  // run 级语言快照（AC-2）：起跑解析一次；历史 journal（升级前无字段）补写一次。
+  // 注意只在「缺失」时解析——resume 走 localeForMissingSnapshot(true)=zh（存量文案本就是中文，
+  // 不得按当前界面语言补写，QA-1）；新 run 用环境语言。
+  if (!parseLocale(journal.locale)) journal.locale = localeForMissingSnapshot(!!resume)
+  const locale = runLocaleOf(journal)
   if (!resume) journal.startedAt = Date.now()
   const root = options.productRoot || null
   journal.product = root
@@ -154,25 +191,28 @@ export async function executePipeline(
   // 产品级并发限制（防御：正常入口 startPipeline/resumeRun 已预检；按工作区隔离，互不阻塞）
   if (activeProducts.has(scopeKey) && activeProducts.get(scopeKey) !== journal.id) {
     journal.status = 'failed'
-    journal.error = `工作区 ${journal.workspacePath || scopeKey} 已有流水线 ${activeProducts.get(scopeKey)} 运行中`
+    journal.error = t(locale, 'run.workspaceBusy', { ws: journal.workspacePath || scopeKey, id: activeProducts.get(scopeKey) })
     journal.endedAt = Date.now()
     persistJournal(journal)
     return
   }
   activeProducts.set(scopeKey, journal.id)
+  // 日志生命周期（B 方案 2026-09-15）：先把上次崩溃/中断残留在工作区的暂存日志归档走（自愈），
+  // 再淘汰超额归档。清扫尽力而为，绝不阻断起跑。
+  try { sweepWorkspaceLogs(journal, locale) } catch (e) { /* 清扫失败不影响起跑 */ }
   // 自动分诊（对调用方透明）：未显式 mode 且非 lite 且非续跑 → 内部先用模型思考一轮再路由。
   // 使用者无需了解/选择 mode；mode 是内部路由 + 可选显式覆盖（审计可见）。
   let triageSlug = ''
   if (options.mode === undefined && !options.lite) {
     try {
-      const verdict = await runTriage(requirement, { needDesign: options.needDesign }, parent, signal)
+      const verdict = await runTriage(requirement, { needDesign: options.needDesign }, parent, signal, locale)
       options.mode = verdict.mode
       if (verdict.needDesign && !options.needDesign) options.needDesign = true
       triageSlug = verdict.slug || ''
       journal.options = Object.assign({}, options) as Record<string, unknown>
-      journal.logs.push({ t: Date.now(), level: 'info', message: `自动分诊：${verdict.kind} → ${verdict.mode}（source=${verdict.source}）` })
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.triage', { kind: verdict.kind, mode: verdict.mode, source: verdict.source }) })
     } catch (e) {
-      journal.logs.push({ t: Date.now(), level: 'warn', message: `自动分诊失败，按默认完整流程：${String((e && e.message) || e)}` })
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageFail', { msg: String((e && e.message) || e) }) })
     }
   }
   const tasks = normalizeTasks(options.tasks)
@@ -189,53 +229,56 @@ export async function executePipeline(
     if (team) {
       const active = getActiveStages(team, { needDesign: options.needDesign, needScaffold: options.needScaffold })
       activeStageKeys = new Set(active.map((s) => s.key))
-      journal.logs.push({ t: Date.now(), level: 'info', message: `团队「${team.name}」：阶段 ${active.map((s) => s.label).join(' → ')}` })
+      // 团队名与阶段名都按 run 语言取：阶段名走 phaseLabel（teams.json 的 label 是中文数据，只作 zh 源）
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.team', { name: teamNameOf(locale, team), list: active.map((s) => phaseLabel(locale, s.key)).join(' → ') }) })
     }
   }
-  journal.logs.push({ t: Date.now(), level: 'info', message: `档位阶段集：mode=${options.mode || 'full'} → ${stageSet.join(' → ') || '(空)'}` })
+  journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.stageSet', { mode: options.mode || 'full', list: stageSet.join(' → ') || t(locale, 'log.stageSetEmpty') }) })
   const enabled = (key: string) => stageSet.indexOf(key as any) !== -1 && (!activeStageKeys || activeStageKeys.has(key))
   // 断点续跑：跳过 resume.phase 之前的阶段
   const resumed = (phase) => !!resume && PHASE_ORDER.indexOf(phase) < PHASE_ORDER.indexOf(resume.phase)
-  const logSkip = (phase) => journal.logs.push({ t: Date.now(), level: 'warn', message: `跳过已完成阶段：${phase}（断点续跑）` })
+  const logSkip = (phase) => journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.skipStage', { phase: phaseLabel(locale, phase) }) })
   /** 阶段失败错误：带真实尝试次数/末次结果/累计消耗与熔断语义（取代千篇一律的「重试 N 次后仍无产出」）。 */
   const stageFailError = (label: string, r: { attempts?: number; freshTokens?: number }): Error => {
     const last = [...(journal.stages || [])].reverse().find((s) => phaseKeyOf(s.phase) === label)
     const attempts = r && r.attempts ? r.attempts : RETRY_LIMIT
     const burnt = Math.round(((r && r.freshTokens) || 0) / 1000)
-    const breaker = ((r && r.freshTokens) || 0) >= FRESH_TOKEN_BUDGET ? '，超出新增 token 预算熔断' : ''
-    const detail = last ? `末次 ${last.outcome || 'unknown'}${last.summary ? `（${last.summary}）` : ''}` : '无阶段记录'
-    return new Error(`${PHASE_KEY_OF[label] || label} 阶段失败：${attempts} 次尝试未交付，${detail}，累计新增消耗 ${burnt}k token（不含缓存命中）${breaker}，需人工介入`)
+    const breaker = ((r && r.freshTokens) || 0) >= FRESH_TOKEN_BUDGET ? t(locale, 'err.breaker') : ''
+    const detail = last
+      ? t(locale, 'err.stageLast', { outcome: last.outcome || 'unknown', summary: last.summary ? t(locale, 'err.stageLastSummary', { summary: last.summary }) : '' })
+      : t(locale, 'err.stageNone')
+    return new Error(t(locale, 'err.stageFail', { phase: phaseLabel(locale, label), attempts, detail, burnt, breaker }))
   }
   try {
     if (resume) {
-      journal.logs.push({ t: Date.now(), level: 'info', message: `断点续跑：复用 backlog（req=${journal.reqId}），从「${PHASE_KEY_OF[resume.phase] || resume.phase}」继续` })
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'run.resumeBacklog', { reqId: journal.reqId, phase: phaseLabel(locale, resume.phase) }) })
     } else {
       const init = initPipelineBacklog(journal, requirement, options)
       journal.reqId = init.reqId
-      journal.logs.push({ t: Date.now(), level: 'info', message: `backlog 已建立需求 ${init.reqId}（产品 ${root || 'unknown'}，并发 ${maxConcurrency}）` })
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.backlogInit', { reqId: init.reqId, product: root || 'unknown', n: maxConcurrency }) })
       // 分支策略 A 落地（ADR-2026-08-27，基调=启动前用户决策，见 index.ts needs-decision 检查）：
       // auto → 建特性分支 feat/<slug>（从当前 HEAD 派生，main 或 feature 上都建）；keep → 沿用当前分支。
       // 位置：initBacklog 之后（reqId 已生成——slug fallback 链依赖它；实锤 feat/feature：分支检查早于 reqId → fallback 'feature'）。
       if (options.branchPolicy !== 'keep' && journal.workspacePath) {
         try {
-          const s = runSanityCheck(journal.workspacePath)
+          const s = runSanityCheck(journal.workspacePath, locale)
           if (s.ok && s.inRepo && !s.hasDirty) {
             const slug = deriveBranchSlug(requirement, journal.reqId, triageSlug, options.branchName)
             const branch = `feat/${slug}`
             const exists = gitCmd(journal.workspacePath, ['branch', '--list', branch])
             if (exists && exists.trim()) {
-              journal.logs.push({ t: Date.now(), level: 'warn', message: `分支策略：分支 ${branch} 已存在，沿用现有分支` })
+              journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.branchExists', { branch }) })
               gitCmd(journal.workspacePath, ['checkout', branch])
               journal.branch = branch
             } else {
               const ok = gitCmd(journal.workspacePath, ['checkout', '-b', branch])
-              journal.logs.push({ t: Date.now(), level: 'info', message: ok !== null ? `分支策略：已创建特性分支 ${branch}（从 ${s.branch} 派生）` : `分支策略：自动建分支 ${branch} 失败（git 异常），沿用当前分支` })
+              journal.logs.push({ t: Date.now(), level: 'info', message: ok !== null ? t(locale, 'log.branchCreated', { branch, from: s.branch }) : t(locale, 'log.branchCreateFail', { branch }) })
               if (ok !== null) journal.branch = branch
             }
           } else if (s.ok && s.inRepo && s.branch) {
-            journal.logs.push({ t: Date.now(), level: 'warn', message: `分支策略：工作区仍有未提交改动（${s.dirty.split(/\r?\n/).filter((l) => l.trim()).length} 处），跳过建分支，沿用 ${s.branch}——请知悉改动将混入本次开发` })
+            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.branchDirty', { n: s.dirty.split(/\r?\n/).filter((l) => l.trim()).length, branch: s.branch }) })
           }
-        } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: `分支策略检查失败（降级沿用当前分支）：${String((e && e.message) || e)}` }) }
+        } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.branchCheckFail', { msg: String((e && e.message) || e) }) }) }
       }
     }
     persistJournal(journal)
@@ -253,9 +296,9 @@ export async function executePipeline(
             mode: options.mode || null, createdAt: Date.now(),
           }, null, 2), 'utf8')
         }
-        journal.logs.push({ t: Date.now(), level: 'info', message: `任务夹就绪：${journal.runDocs}/（本需求全部产物收口于此；建后不可变，重试/续跑复用）` })
+        journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.runDocs', { docs: journal.runDocs }) })
       } catch (e) {
-        journal.logs.push({ t: Date.now(), level: 'warn', message: `任务夹创建失败（不影响流程）：${String((e && e.message) || e)}` })
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.runDocsFail', { msg: String((e && e.message) || e) }) })
       }
     }
 
@@ -265,30 +308,39 @@ export async function executePipeline(
       try {
         const out = gitCmd(journal.workspacePath, ['stash', 'push', '-m', `teamflow:${journal.id} pre-pipeline`])
         if (out !== null) {
-          journal.logs.push({ t: Date.now(), level: 'info', message: `分支策略：工作区改动已 stash（teamflow:${journal.id}），流水线完成后 git stash pop 恢复你的改动` })
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.stash', { id: journal.id }) })
         } else {
-          journal.logs.push({ t: Date.now(), level: 'warn', message: '分支策略：stash 执行失败（可能无改动），继续' })
+          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.stashFail') })
         }
-      } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: `分支策略：stash 异常：${String((e && e.message) || e)}` }) }
+      } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.stashErr', { msg: String((e && e.message) || e) }) }) }
     } else if (!resume && journal.workspacePath && options.preAction === 'commit') {
       try {
-        const msg = (typeof options.commitMessage === 'string' && options.commitMessage.trim()) ? options.commitMessage.trim() : `chore(teamflow): 流水线启动前提交现有改动（${journal.id}）`
-        ensureLogGitignore(journal.workspacePath, journal) // 自有日志先写进 .gitignore（幂等）
-        const add = gitCmd(journal.workspacePath, tfAddArgs())
-        const cm = gitCmd(journal.workspacePath, ['commit', '-m', msg])
-        journal.logs.push({ t: Date.now(), level: 'info', message: (add !== null && cm !== null) ? `分支策略：已提交现有改动（preAction=commit：${msg.slice(0, 60)}）` : '分支策略：commit 执行失败（可能无改动），继续' })
-      } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: `分支策略：commit 异常：${String((e && e.message) || e)}` }) }
+        const msg = (typeof options.commitMessage === 'string' && options.commitMessage.trim()) ? options.commitMessage.trim() : t(locale, 'commit.preAction', { id: journal.id })
+        ensureLogGitignore(journal.workspacePath, journal, locale) // 自有日志先写进 .gitignore（幂等）
+        const addR = gitRun(journal.workspacePath, tfAddArgs())
+        noteLogsUnstaged(journal, gitRun(journal.workspacePath, tfUnstageArgs()), locale) // 索引兜底
+        const cmR = gitRun(journal.workspacePath, ['commit', '-m', msg])
+        // 失败要给原因（2026-09-15：旧写法只在 add/commit 任一为 null 时记一句「commit 执行失败」，
+        // 真实原因无处可查——而那正是收口提交静默失效 4 天没被发现的根因）
+        if (cmR.ok) {
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.preCommit', { msg: msg.slice(0, 60) }) })
+        } else {
+          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.preCommitFail', { msg: gitFailDetail(addR, cmR) }) })
+        }
+      } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.preCommitErr', { msg: String((e && e.message) || e) }) }) }
     }
 
     // 预编译 state（跨 run 累积索引）：各阶段 prompt 注入 slice；结束后提取/合并 state 块
     const state = loadState(journal.workspace || 'default')
     state.__runCtx = { ...(state.__runCtx || {}) }
     if (journal.runDocs) state.__runCtx.runDocs = journal.runDocs
+    // 注入块语言（AC-3⑤）：快照经既有 __runCtx 通道下发（不改任何 prompt 工厂签名）
+    state.__runCtx.locale = locale
     // M0 状态核对：核对代码库真实状态（多人/场外提交/非流水线改动），注入后续所有阶段。
     // 核心原则：认知可复用"减量"，但不替代"对现状的核对"。
     try {
       const wsCwd = workspaceScopeOf(parent).path
-      const sanity = runSanityCheck(wsCwd)
+      const sanity = runSanityCheck(wsCwd, locale)
       state.__runCtx = { ...(state.__runCtx || {}), sanity: sanity.summary }
       journal.sanity = { ok: sanity.ok, branch: sanity.branch, hasDirty: sanity.hasDirty, dirty: sanity.dirty.slice(0, 1000), recentCommits: sanity.recentCommits.slice(0, 1000), summary: sanity.summary }
       if (sanity.hasDirty || !sanity.ok) {
@@ -297,7 +349,7 @@ export async function executePipeline(
         journal.logs.push({ t: Date.now(), level: 'info', message: sanity.summary })
       }
     } catch (e) {
-      journal.logs.push({ t: Date.now(), level: 'warn', message: '状态核对失败（不影响流程）：' + String((e && e.message) || e) })
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.sanityFail', { msg: String((e && e.message) || e) }) })
     }
     const mergeStageState = (phaseKey, output) => {
       const block = extractStateBlock(output)
@@ -309,7 +361,7 @@ export async function executePipeline(
     const noteVerifyEvidence = (stage, output) => {
       try {
         const ev = extractVerificationEvidence(output)
-        if (!ev) { journal.logs.push({ t: Date.now(), level: 'warn', message: `${stage ? (PHASE_KEY_OF[phaseKeyOf(stage.phase)] || stage.phase) : '开发'} 回复缺少 [Verification evidence] 块（契约未兑现，已记录不中断）` }); return }
+        if (!ev) { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.noEvidence', { stage: stage ? phaseLabel(locale, phaseKeyOf(stage.phase)) : phaseLabel(locale, 'dev') }) }); return }
         if (stage) stage.verifyEvidence = ev
       } catch (e) { /* 存证失败不影响流水线 */ }
     }
@@ -328,14 +380,14 @@ export async function executePipeline(
     if (resumed('prd')) {
       prd = resume.products.prd
       timeline.prd = prd
-      logSkip(PHASE_KEY_OF.prd)
+      logSkip('prd')
     } else {
-      journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：PRD 产品需求' })
+      journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'prd') }) })
       const pForm = options.mode === 'tech'
-        ? { label: '技术负责人 · 出技术变更单', fn: techChangePrompt }
+        ? { label: t(locale, 'dev.prdTechChange'), fn: techChangePrompt }
         : options.mode === 'patch'
-          ? { label: '工程师 · 单点确认', fn: patchConfirmPrompt }
-          : { label: '产品经理 · 梳理 PRD', fn: prdPrompt }
+          ? { label: t(locale, 'dev.prdPatch'), fn: patchConfirmPrompt }
+          : { label: t(locale, 'dev.prdFull'), fn: prdPrompt }
       // patch 档的「单点确认」是机械阶段（核对现状 + 给直改指令，不做架构判断）→ 降档省 token
       const prdR = await withRetry(journal, parent, pForm.label, 'prd', pForm.fn(requirement, root, journal.id, state), signal, undefined, options.mode === 'patch' ? MECHANICAL_STAGE_EFFORT : null)
       if (!prdR.text) { throw stageFailError('prd', prdR) }
@@ -352,10 +404,10 @@ export async function executePipeline(
       if (resumed('design')) {
         design = resume.products.design
         timeline.design = design
-        logSkip(PHASE_KEY_OF.design)
+        logSkip('design')
       } else {
-        journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：UI/UX 设计' })
-        const designR = await withRetry(journal, parent, 'UI/UX 设计师 · 设计说明', 'design', designPrompt(prd, root, journal.id, state), signal)
+        journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'design') }) })
+        const designR = await withRetry(journal, parent, t(locale, 'dev.design'), 'design', designPrompt(prd, root, journal.id, state), signal)
         if (!designR.text) { throw stageFailError('design', designR) }
         design = designR.text
         timeline.design = design
@@ -371,11 +423,11 @@ export async function executePipeline(
       if (resumed('scaffold')) {
         scaffold = resume.products.scaffold
         timeline.scaffold = scaffold
-        logSkip(PHASE_KEY_OF.scaffold)
+        logSkip('scaffold')
       } else {
-        journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：架构规划' })
+        journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'scaffold') }) })
         // 脚手架落地是机械阶段（按蓝图建骨架/搬文件，不做判据）→ 降档省 token
-        const scR = await withRetry(journal, parent, '架构师 · 脚手架规划与落地', 'scaffold', scaffoldPrompt(requirement, design, root, journal.id, state), signal, undefined, MECHANICAL_STAGE_EFFORT)
+        const scR = await withRetry(journal, parent, t(locale, 'dev.scaffold'), 'scaffold', scaffoldPrompt(requirement, design, root, journal.id, state), signal, undefined, MECHANICAL_STAGE_EFFORT)
         if (!scR.text) { throw stageFailError('scaffold', scR) }
         scaffold = scR.text
         timeline.scaffold = scaffold
@@ -391,11 +443,11 @@ export async function executePipeline(
       if (resumed('tech')) {
         tech = resume.products.tech
         timeline.tech = tech
-        logSkip(PHASE_KEY_OF.tech)
+        logSkip('tech')
       } else {
       const isHeavy = !options.lite && options.mode !== 'tech' && options.mode !== 'patch'
-      journal.logs.push({ t: Date.now(), level: 'phase', message: isHeavy ? '进入阶段：技术方案' : '进入阶段：架构蓝图' })
-      const label = isHeavy ? '高级全栈工程师 · 技术方案' : '架构师 · 架构蓝图'
+      journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: isHeavy ? phaseLabel(locale, 'tech') : t(locale, 'stageLabel.blueprint') }) })
+      const label = isHeavy ? t(locale, 'dev.techHeavy') : t(locale, 'dev.techLite')
       const prompt = isHeavy
         ? techPrompt(prd, design, scaffold, tasks, root, journal.id, state)
         : architectPrompt(prd, root, journal.id, state)
@@ -413,7 +465,7 @@ export async function executePipeline(
             ? `${journal.workspacePath}/${journal.runDocs}/TECHNICAL.md`
             : null
           if (techFile && existsSync(techFile)) bd = extractBlueprint(readFileSync(techFile, 'utf8'))
-          if (bd) journal.logs.push({ t: Date.now(), level: 'info', message: '蓝图从任务夹 TECHNICAL.md 提取（模型把蓝图写进了文档而非回复输出）' })
+          if (bd) journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintFromFile') })
         } catch (e) { /* 回退失败走既有告警 */ }
       }
       if (bd && bd.summary !== undefined) {
@@ -424,7 +476,7 @@ export async function executePipeline(
         } catch (e) { /* 蓝图注入失败不影响 */ }
       } else if (/<!-- blueprint -->/.test(String(tech))) {
         // 蓝图块存在但解析失败：显式告警（否则静默回退整体开发，并行度丢失难排查）
-        journal.logs.push({ t: Date.now(), level: 'warn', message: '技术方案蓝图块解析失败（JSON 畸形），开发任务将回退整体开发——TECHNICAL.md 蓝图块需人工检查' })
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.blueprintParseFail') })
       }
       noteTaskStageUsage(journal)
       if (journal.cancelled) return
@@ -439,27 +491,27 @@ export async function executePipeline(
       // 判定完全基于 journal stages（devTaskStatuses），不读 backlog 子卡。
       devResults = resume.products.dev || []
       const taskStatuses = devTaskStatuses(journal.stages || [])
-      const todo = buildDevTaskDefs(journal, tasks).filter((d) => {
+      const todo = buildDevTaskDefs(journal, tasks, locale).filter((d) => {
         const st = taskStatuses.get(String(d.title || '').trim())
         return !st || !st.done
       })
       if (todo.length === 0) {
         timeline.dev = devResults
-        logSkip('开发')
+        logSkip('dev')
       } else {
         const reused = devResults.filter((r) => r && !todo.some((d) => d.title === r.title))
-        journal.logs.push({ t: Date.now(), level: 'warn', message: `断点续跑开发：复用 ${reused.length} 个已完成任务，补跑 ${todo.length} 个失败任务` })
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.resumeDev', { reused: reused.length, todo: todo.length }) })
         const rerun = await runPool(todo, maxConcurrency, async (task) => {
           // resume 补跑诊断（缺口修复 2026-09-04）：resume 是全新子代理会话，不拼诊断=盲试
           // （与 withRetry 自动重试同构的问题——模型不知道上次为何失败，会重复踩同一坑）。
           // 找该任务上次失败 stage（同 title 的最近失败），附 buildRetryDiagnostic（outcome/summary/产出尾部）。
           const prevStage = [...journal.stages].reverse().find((s) => phaseKeyOf(s.phase) === 'dev' && s.status !== 'done' && ((s.taskKey && s.taskKey === String(task.title || '')) || (!s.taskKey && (s.label || '').includes(String(task.title || '')))))
           const resumePrompt = devPrompt(task, tech, prd, root, journal.id, state) + (prevStage ? buildRetryDiagnostic(2, prevStage) : '')
-          const devR = await withRetry(journal, parent, `开发 · ${task.title}（补跑）`, 'dev', resumePrompt, signal, task.title)
+          const devR = await withRetry(journal, parent, t(locale, 'dev.taskRerun', { title: task.title }), 'dev', resumePrompt, signal, task.title)
           const rerunText = stageTextOf(devR)
           noteVerifyEvidence(devR.stage, rerunText)
           const ok = !!devR.text
-          return { title: task.title, failed: !ok, output: rerunText || '开发失败（Agent 未产出结果）' }
+          return { title: task.title, failed: !ok, output: rerunText || t(locale, 'dev.failedPlaceholder') }
         })
         for (const t of rerun) {
           // 子卡同步：createSubtask 同名复用（业务任务实体一张卡）+ completeSubtask 更新状态
@@ -470,11 +522,11 @@ export async function executePipeline(
         timeline.dev = devResults
       }
     } else {
-      journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：开发' })
+      journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'dev') }) })
       // 开发任务来源（按优先级）：架构蓝图自动拆 > 调用方显式 tasks > 整体开发兜底。
       // M2「认知前置 + 架构落地」：架构师（tech/architect 阶段）已按文件边界拆好蓝图 tasks，
       // dev 继承蓝图在既有架构上实现；无蓝图时退化为整体开发或调用方 tasks。
-      const devTaskDefs = buildDevTaskDefs(journal, tasks)
+      const devTaskDefs = buildDevTaskDefs(journal, tasks, locale)
       // 冲突检测：蓝图任务文件有交集 → 合并（保证并发不写同一文件）；无交集才可并行
       const mergedDefs: Array<{ title: string; files: string[]; spec: string }> = []
       for (const t of devTaskDefs) {
@@ -489,8 +541,8 @@ export async function executePipeline(
           mergedDefs.push({ title: t.title, files: t.files || [], spec: t.spec || '' })
         }
       }
-      journal.logs.push({ t: Date.now(), level: 'info', message: `开发阶段开始，任务数：${mergedDefs.length}（并发 ${maxConcurrency}${journal.blueprint && Array.isArray(journal.blueprint.tasks) && journal.blueprint.tasks.length ? '，源自架构蓝图自动拆解' : ''}）` })
-      advanceTask(journal, 'running', null, '开发开始（待办 → 开发中）', { by: 'dev' })
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devStart', { n: mergedDefs.length, concurrency: maxConcurrency, fromBlueprint: journal.blueprint && Array.isArray(journal.blueprint.tasks) && journal.blueprint.tasks.length ? t(locale, 'log.devFromBlueprint') : '' }) })
+      advanceTask(journal, 'running', null, t(locale, 'event.devStart'), { by: 'dev' })
       // 为每个 dev 子任务建一张子卡（并行 agent 各自独立跟踪）
       const subCards = mergedDefs.map((dt) => createSubtask(journal, dt.title, dt.spec))
       devResults = await runPool(mergedDefs, maxConcurrency, async (task, idx) => {
@@ -501,7 +553,7 @@ export async function executePipeline(
           const subLive = store.find('task', sub.id)
           if (subLive) { subLive.status = 'running'; subLive.startedAt = Date.now(); store.persist(); persistJournal(journal) }
         }
-        const devR = await withRetry(journal, parent, `开发 · ${task.title}`, 'dev', devPrompt(task, tech, prd, root, journal.id, state), signal, task.title)
+        const devR = await withRetry(journal, parent, t(locale, 'dev.task', { title: task.title }), 'dev', devPrompt(task, tech, prd, root, journal.id, state), signal, task.title)
         const devText = stageTextOf(devR)
         noteVerifyEvidence(devR.stage, devText)
         const ok = !!devR.text
@@ -512,7 +564,7 @@ export async function executePipeline(
           // filter().pop() 会取错 stage：后完成的任务吸收先创建任务的 usage，且被多次累计超计）
           if (devR.stage) noteSubtaskUsage(journal, sub.id, devR.stage)
         }
-        return { title: task.title, failed: !ok, output: devText || '开发失败（Agent 未产出结果）' }
+        return { title: task.title, failed: !ok, output: devText || t(locale, 'dev.failedPlaceholder') }
       })
       timeline.dev = devResults
       // dev 阶段 state 沉淀：汇总各 dev 产出中提取的 state 块
@@ -522,20 +574,20 @@ export async function executePipeline(
       // 累计全部 dev stage usage 到主卡（汇总）
       noteTaskStageUsage(journal)
       const devStages = journal.stages.filter((s) => phaseKeyOf(s.phase) === 'dev')
-      noteTaskAssign(journal, 'dev', devStages.map((s) => (s.childId || '').slice(0, 8)).filter(Boolean).join(',') || '开发组')
+      noteTaskAssign(journal, 'dev', devStages.map((s) => (s.childId || '').slice(0, 8)).filter(Boolean).join(',') || t(locale, 'role.devTeam'))
       const failedCount = devResults.filter((r) => r && r.failed).length
       if (failedCount > 0) {
-        advanceTask(journal, 'needs-human', null, '开发失败，需人工介入', { by: 'dev' })
+        advanceTask(journal, 'needs-human', null, t(locale, 'event.devFail'), { by: 'dev' })
         const req = storeFor(scopeKey).find('req', journal.reqId)
         if (req) { req.humanIntervention = true; storeFor(scopeKey).persist() }
         // 提测门禁（方案 A，实锤 r26）：任务 failed = 已知缺口——QA 检查轮必然重复报告同一缺项
         // （r26：T2 failed → QA 450k 白烧，D1-D4 全是 T2 缺项；修复子代理补做任务过重复读 27 次挂掉）。
         // 一律停止流水线不进 QA；人工处理后 teamflow_resume 从开发补跑 failed 任务（done 任务复用）。
-        journal.logs.push({ t: Date.now(), level: 'error', message: `开发失败任务数：${failedCount}/${devResults.length}（提测门禁拦截）：停止流水线，需人工介入——处理后可 teamflow_resume 从开发阶段补跑失败任务（已完成任务复用）` })
-        throw new Error(`开发失败任务 ${failedCount}/${devResults.length}：提测门禁拦截，不进 QA（已知缺口，QA 检查轮必然重复报告）`)
+        journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.devFailGate', { failed: failedCount, total: devResults.length }) })
+        throw new Error(t(locale, 'err.devFail', { failed: failedCount, total: devResults.length }))
       } else {
-        advanceTask(journal, 'testable', null, '开发完成待测试（开发中 → 待测试）', { by: 'dev' })
-        journal.logs.push({ t: Date.now(), level: 'info', message: `开发完成，失败任务数：0（任务置为待测试，可指派 QA）` })
+        advanceTask(journal, 'testable', null, t(locale, 'event.devTestable'), { by: 'dev' })
+        journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devDone') })
       }
       if (journal.cancelled) return
     }
@@ -546,55 +598,65 @@ export async function executePipeline(
     let qaBlocked = false
     if (!enabled('qa')) {
       // 档位阶段集无 QA（patch）或团队未启用 QA：跳过独立 QA
-      journal.logs.push({ t: Date.now(), level: 'info', message: '当前档位阶段集不含独立 QA：跳过（单点修复，开发自测兜底）' })
-      qa = '（独立 QA 跳过：当前档位由开发自测兜底）'
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.qaSkipped') })
+      qa = t(locale, 'qa.skippedValue')
     } else if (resumed('qa') && !hasOpenBlockingBugs(journal)) {
       // 复用旧 QA 产物（QA 干净/仅 P3 时续跑）；QA 打回缺陷未闭环时不复用——重走修复-复验闭环
       // 单轨契约：文件即产物——QA-REPORT.md 优先，journal 兜底（兼容存量 run/文件缺失）
       qa = artifactText(journal, 'QA-REPORT.md') || resume.products.qa
       timeline.qa = qa
-      logSkip(PHASE_KEY_OF.qa)
+      logSkip('qa')
     } else {
-      journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：QA 测试' })
-      advanceTask(journal, 'testing', null, 'QA 开始（待测试 → 测试中）', { by: 'qa' })
+      journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'qa') }) })
+      advanceTask(journal, 'testing', null, t(locale, 'event.qaStart'), { by: 'qa' })
       const store = storeFor(scopeKey)
-      const qaStageChildren = () => journal.stages.filter((s) => phaseKeyOf(s.phase) === 'qa').map((s) => (s.childId || '').slice(0, 8)).filter(Boolean).join(',') || '测试组'
+      const qaStageChildren = () => journal.stages.filter((s) => phaseKeyOf(s.phase) === 'qa').map((s) => (s.childId || '').slice(0, 8)).filter(Boolean).join(',') || t(locale, 'role.qaTeam')
       // QA → 开发修复 → 复验 打回闭环：QA 发现 P0-P2 缺陷则打回开发确认/修复，干净才进验收；超 QA_REWORK_LIMIT 轮需人工。
       let round = 0
       let qaClean = false
       const devFixRounds = []
       const qaDevSummary = () => {
         const src = JSON.stringify(timeline.dev)
-        return devFixRounds.length ? `${src}\n【QA 打回后的修复摘要】\n${devFixRounds.join('\n---\n')}` : src
+        return devFixRounds.length ? `${src}\n${t(locale, 'ctx.qaFixSummary')}\n${devFixRounds.join('\n---\n')}` : src
       }
       let defects = []
       do {
         round += 1
         const isReverify = round > 1
-        const label = isReverify ? `QA 复验 · 第${round - 1}轮修复后` : 'QA 测试工程师 · 功能测试'
+        const label = isReverify ? t(locale, 'dev.qaReverify', { n: round - 1 }) : t(locale, 'dev.qaTest')
+        // C 方案（2026-09-15）：复验轮必须在 prompt 里显式说明——复用上一轮探针（就在 logs/teamflow/<runId>/scripts/）
+        // 并重跑缺陷行自带的检测命令。经既有 __runCtx 注入通道下发（不改 prompt 工厂签名）。
+        state.__runCtx = { ...(state.__runCtx || {}), qaReverify: isReverify, qaRound: round }
         const qaR = await withRetry(journal, parent, label, 'qa', qaPrompt(prd, qaDevSummary(), root, journal.id, state, await currentModelSupportsVision(resolveChildRoute(parent).provider, resolveChildRoute(parent).model)), signal)
-        if (!qaR.text) { advanceTask(journal, 'needs-human', null, isReverify ? `QA 复验失败（第 ${round - 1} 轮修复后）` : 'QA 失败', { by: 'qa' }); throw stageFailError('qa', qaR) }
+        if (!qaR.text) { advanceTask(journal, 'needs-human', null, isReverify ? t(locale, 'event.qaReverifyFail', { round: round - 1 }) : t(locale, 'event.qaFail'), { by: 'qa' }); throw stageFailError('qa', qaR) }
         // 单轨契约：文件即产物——QA-REPORT.md 是缺陷表/补测清单/结论的唯一事实来源；
         // state 块仍在回复尾部（host 机器元数据，不进文件）
         mergeStageState('qa', qaR.text)
         qa = artifactText(journal, 'QA-REPORT.md')
         if (!qa) {
           // 硬失败而非回退解析回复：回复仅摘要无缺陷表，回退=「QA 未发现缺陷」静默假交付（本次要治的病）
-          journal.logs.push({ t: Date.now(), level: 'error', message: `QA 子代理回复成功但 ${journal.runDocs ? journal.runDocs + '/' : ''}QA-REPORT.md 未落盘/为空——单轨契约（文件即产物）未兑现，需人工介入` })
-          advanceTask(journal, 'needs-human', null, 'QA-REPORT.md 未落盘（单轨契约未兑现）', { by: 'qa' })
+          journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.qaNoFile', { file: `${journal.runDocs ? journal.runDocs + '/' : ''}QA-REPORT.md` }) })
+          advanceTask(journal, 'needs-human', null, t(locale, 'event.qaNoReport'), { by: 'qa' })
           throw stageFailError('qa', { attempts: qaR.attempts, freshTokens: qaR.freshTokens })
         }
         timeline.qa = qa
         noteTaskStageUsage(journal) // QA 角色的真实 usage 累计
         noteTaskAssign(journal, 'qa', qaStageChildren())
-        defects = parseDefects(qa)
+        // 用**富行**解析：缺陷卡要存复现/期望/实际（qaFix prompt 也据此给出完整缺陷描述），
+        // parseDefects（瘦身契约）只留给冻结语料比对
+        defects = parseDefectRows(qa)
         // 登记全部缺陷（含 P3 观察项，幂等）
         syncQaDefects(journal, defects)
         // 阻断判定：只认 P0/P1/P2（P3 观察项非阻断，记卡不循环）
         const blocking = defects.filter((d) => d.severity !== 'P3')
+        /* D 埋点（2026-09-15）：逐轮记录阻断集合的**稳定身份**与增/减/停滞计数（纯函数在 util.qaRoundEntry）。
+         * 目的：为「把 QA_REWORK_LIMIT 硬上限换成收敛判据」攒真实数据（当前 52 个 run 里从未出现
+         * 真正需要第 3 轮的情况，而 id 跨轮不可比——QA 每轮重编号）。只记录、不改变任何行为。 */
+        const qaRoundEntry = buildQaRoundEntry(round, qaR.stage ? qaR.stage.seq : null, defects, journal.qaRounds, qaR.stage && qaR.stage.usage ? qaR.stage.usage.calls : null, QA_REWORK_LIMIT)
+        journal.qaRounds = [...(journal.qaRounds || []), qaRoundEntry].slice(-12)
         if (blocking.length === 0) {
           qaClean = true
-          journal.logs.push({ t: Date.now(), level: 'info', message: defects.length ? `QA 仅有 P3 观察项 ${defects.map((d) => d.id).join('、')}（非阻断）` : 'QA 未发现阻断缺陷' })
+          journal.logs.push({ t: Date.now(), level: 'info', message: defects.length ? t(locale, 'log.qaP3', { ids: defects.map((d) => d.id).join(t(locale, 'log.idSep')) }) : t(locale, 'log.qaClean') })
           break
         }
         if (journal.cancelled) return
@@ -602,28 +664,37 @@ export async function executePipeline(
           // 超过复验轮次上限 → 需人工介入，跳过产品验收（QA 不干净不验收）
           qaBlocked = true
           journal.humanIntervention = true
-          journal.logs.push({ t: Date.now(), level: 'error', message: `QA 连续 ${round} 轮（含复验）仍有 ${blocking.length} 个阻断缺陷（${blocking.map((d) => d.id).join('、')}），超出复验上限 ${QA_REWORK_LIMIT}，需人工介入` })
-          advanceTask(journal, 'needs-human', snippet(qa, 3000), `QA ${round} 轮复验仍有阻断缺陷，超出上限 ${QA_REWORK_LIMIT}，需人工介入`, { by: 'qa' })
+          journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.qaReworkLimit', { round, n: blocking.length, ids: blocking.map((d) => d.id).join(t(locale, 'log.idSep')), limit: QA_REWORK_LIMIT }) })
+          advanceTask(journal, 'needs-human', snippet(qa, 3000), t(locale, 'event.qaReworkLimit', { round, limit: QA_REWORK_LIMIT }), { by: 'qa' })
           const req = store.find('req', journal.reqId)
-          if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', `QA 复验 ${QA_REWORK_LIMIT} 轮仍含阻断缺陷，需人工介入（${blocking.map((d) => d.id).join('、')}）`) }
+          if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', t(locale, 'event.qaReworkLimitHuman', { limit: QA_REWORK_LIMIT, list: blocking.map((d) => d.id).join(locale === 'en' ? ', ' : '、') })) }
           break
         }
         // 打回开发确认/修复 → 下一轮复验
-        journal.logs.push({ t: Date.now(), level: 'warn', message: `QA 发现 ${blocking.length} 个阻断缺陷（第 ${round} 轮），打回开发确认修复后复验` })
-        advanceTask(journal, 'rework', snippet(qa, 3000), `QA 打回开发修复（第 ${round}/${QA_REWORK_LIMIT + 1} 轮）`, { by: 'qa' })
-        const fixR = await withRetry(journal, parent, `开发 · QA 缺陷修复（第 ${round} 轮）`, 'dev', qaFixPrompt(blocking, qa, tech, prd, root, journal.id, state), signal, null)
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.qaRework', { n: blocking.length, round }) })
+        advanceTask(journal, 'rework', snippet(qa, 3000), t(locale, 'event.qaRework', { round, limit: QA_REWORK_LIMIT + 1 }), { by: 'qa' })
+        const fixR = await withRetry(journal, parent, t(locale, 'dev.qaFix', { n: round }), 'dev', qaFixPrompt(blocking, qa, tech, prd, root, journal.id, state), signal, null)
         noteVerifyEvidence(fixR.stage, stageTextOf(fixR))
-        if (!fixR.text) { advanceTask(journal, 'needs-human', null, 'QA 打回后开发修复失败', { by: 'qa' }); throw stageFailError('开发（QA 打回修复）', fixR) }
+        if (!fixR.text) { advanceTask(journal, 'needs-human', null, t(locale, 'event.qaFixFail'), { by: 'qa' }); throw stageFailError(t(locale, 'dev.qaFixStage'), fixR) }
         devFixRounds.push(snippet(fixR.text, 3000))
+        // A 方案（2026-09-15）观测：P0–P2 修复要求「类别门禁 + 命中数 before→after」进证据块。
+        // policy 级（host 无法证明门禁真的存在），但**没写就是可见的**——warn 留痕供人工/复验核对。
+        const fixGate = FIX_GATE_PATTERN.test(String(stageTextOf(fixR) || ''))
+        if (!fixGate) {
+          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.noGateEvidence', { n: blocking.length, round }) })
+        }
+        // D 埋点：把本轮修复的代价与「有没有落门禁」补进同一轮记录（收敛判据要同时看质量与成本）
+        qaRoundEntry.fixCalls = fixR.stage && fixR.stage.usage ? fixR.stage.usage.calls : null
+        qaRoundEntry.gate = fixGate
         noteTaskStageUsage(journal) // 修复子代理真实 usage 累计到任务卡
         if (journal.cancelled) return
       } while (true)
       if (!qaBlocked && qaClean) {
         verifyReqBugs(journal) // 复验通过 → 关闭全部 open 缺陷
-        advanceTask(journal, 'pending-acceptance', snippet(qa, 3000), 'QA 通过（待验收）', { by: 'qa' })
-        journal.logs.push({ t: Date.now(), level: 'info', message: round > 1 ? `QA 复验通过（第 ${round - 1} 轮修复后），无阻断缺陷` : 'QA 未发现 P0/P1/P2 阻断缺陷' })
+        advanceTask(journal, 'pending-acceptance', snippet(qa, 3000), t(locale, 'event.qaPass'), { by: 'qa' })
+        journal.logs.push({ t: Date.now(), level: 'info', message: round > 1 ? t(locale, 'log.qaPassReverify', { n: round - 1 }) : t(locale, 'log.qaPass') })
       } else {
-        journal.logs.push({ t: Date.now(), level: 'warn', message: 'QA 阶段打回超限结束：产品验收跳过，需求需人工介入' })
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.qaBlocked') })
       }
       if (journal.cancelled) return
     }
@@ -633,66 +704,105 @@ export async function executePipeline(
     if (!enabled('acceptance')) {
       // patch 档：单 agent 直改 + 自测即交付（无独立 QA/验收，STAGE_POLICY 兑现 desc）——
       // dev 成功即收尾（req/task → accepted + run completed），统一收口提交走现有门控
-      journal.logs.push({ t: Date.now(), level: 'info', message: 'patch 档交付完成：单 agent 直改 + 自测即收口（无独立 QA/验收）' })
-      advanceTask(journal, 'accepted', null, 'patch 直改交付（自测通过）', { by: 'dev' })
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.patchDone') })
+      advanceTask(journal, 'accepted', null, t(locale, 'event.patchDelivered'), { by: 'dev' })
       const store = storeFor(scopeKey)
       const req = store.find('req', journal.reqId)
       if (req && req.status !== 'accepted') {
-        store.pushEvent(req, req.status, 'accepted', 'patch 交付通过（自测）')
+        store.pushEvent(req, req.status, 'accepted', t(locale, 'event.patchAccepted'))
         req.status = 'accepted'
         store.persist()
       }
       journal.status = 'completed'
-    } else if (!qaBlocked) {
-      journal.logs.push({ t: Date.now(), level: 'phase', message: '进入阶段：产品验收' })
+    } else if (qaBlocked) {
+      /* ── E 方案（2026-09-15）：已知问题模式验收 ────────────────────────────
+       * QA 打回超限时不再「验收整段跳过」（旧行为：人工只拿到一个 needs-human 旗标，
+       * 任务夹里连 ACCEPTANCE.md 都没有——实锤 tf-mu2ioilr-95l4th，最后靠人工补写验收记录）。
+       * 这里只读跑一次验收，产出交付级视图 + 未闭环清单。
+       * **硬约束（信息而非判定）**：结论一律强制为「需人工裁定」——绝不产出可据以合回/提交的
+       * accepted；验收失败也不改变 run 结局（保持 completed + needs-human，只记 warn）。 */
+      journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'acceptance') }) })
+      const store = storeFor(scopeKey)
+      const openBlocking = store.bugs.filter((b) => b.reqId === journal.reqId && b.status !== 'verified' && b.status !== 'closed' && b.severity !== 'P3')
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.accKnownIssues', { n: openBlocking.length, ids: openBlocking.map((b) => b.defectId || b.id).join(t(locale, 'log.idSep')) }) })
+      state.__runCtx = { ...(state.__runCtx || {}), knownIssues: true }
+      let accR = null
+      try {
+        accR = await withRetry(journal, parent, t(locale, 'dev.acceptance'), 'acceptance', acceptancePrompt(prd, qa, JSON.stringify(timeline.dev), root, journal.id, state, await currentModelSupportsVision(resolveChildRoute(parent).provider, resolveChildRoute(parent).model)), signal)
+      } catch (e) {
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.accKnownIssuesFail', { msg: String((e && e.message) || e) }) })
+      }
+      if (accR && accR.text) {
+        try {
+          mergeStageState('acceptance', accR.text)
+          const acceptance = artifactText(journal, 'ACCEPTANCE.md')
+          if (acceptance) {
+            timeline.acceptance = acceptance
+            noteTaskStageUsage(journal) // 验收角色的真实 usage 照常累计（口径不变）
+            const accStage = journal.stages.find((s) => phaseKeyOf(s.phase) === 'acceptance' && s.childId)
+            noteTaskAssign(journal, 'accept', accStage ? String(accStage.childId).slice(0, 8) : t(locale, 'role.acceptTeam'))
+            // 记录模型自己的结论仅供人参考——**host 不采用它**（下面的 knownIssuesAcceptance 才是事实）
+            journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.accKnownIssuesVerdict', { verdict: parseAcceptanceVerdict(acceptance), n: openBlocking.length }) })
+          } else {
+            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.accKnownIssuesFail', { msg: 'ACCEPTANCE.md missing' }) })
+          }
+        } catch (e) {
+          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.accKnownIssuesFail', { msg: String((e && e.message) || e) }) })
+        }
+      }
+      journal.humanIntervention = true // 不变：需求仍需人工裁定
+      journal.knownIssuesAcceptance = true // 报到 report.ts：给「不要据此合回」的显式提示
+      journal.status = 'completed'
+    } else {
+      journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'acceptance') }) })
       // 单任务模型：验收前任务置「待验收」（patch/无独立 QA 时 task 仍在 testable）
       {
         const curTask = storeFor(scopeKey).find('task', journal.taskId)
         if (curTask && curTask.status !== 'pending-acceptance' && curTask.status !== 'needs-human' && curTask.status !== 'rework') {
-          advanceTask(journal, 'pending-acceptance', null, '进入验收（待验收）', { by: 'pm' })
+          advanceTask(journal, 'pending-acceptance', null, t(locale, 'event.acceptEnter'), { by: 'pm' })
         }
       }
-      const accR = await withRetry(journal, parent, '产品经理 · 最终验收', 'acceptance', acceptancePrompt(prd, qa, JSON.stringify(timeline.dev), root, journal.id, state, await currentModelSupportsVision(resolveChildRoute(parent).provider, resolveChildRoute(parent).model)), signal)
-      if (!accR.text) { advanceTask(journal, 'needs-human', null, '验收失败', { by: 'pm' }); throw stageFailError('acceptance', accR) }
+      const accR = await withRetry(journal, parent, t(locale, 'dev.acceptance'), 'acceptance', acceptancePrompt(prd, qa, JSON.stringify(timeline.dev), root, journal.id, state, await currentModelSupportsVision(resolveChildRoute(parent).provider, resolveChildRoute(parent).model)), signal)
+      if (!accR.text) { advanceTask(journal, 'needs-human', null, t(locale, 'event.acceptFail'), { by: 'pm' }); throw stageFailError('acceptance', accR) }
       // 单轨契约：文件即产物——ACCEPTANCE.md 是结论行/核对表唯一事实来源；state 块仍在回复尾部
       mergeStageState('acceptance', accR.text)
       const acceptance = artifactText(journal, 'ACCEPTANCE.md')
       if (!acceptance) {
         // 硬失败而非回退解析回复：回复仅摘要无结论行，回退=保守 accepted 误放行（无结论行默认过）
-        journal.logs.push({ t: Date.now(), level: 'error', message: `验收子代理回复成功但 ${journal.runDocs ? journal.runDocs + '/' : ''}ACCEPTANCE.md 未落盘/为空——单轨契约（文件即产物）未兑现，需人工介入` })
-        advanceTask(journal, 'needs-human', null, 'ACCEPTANCE.md 未落盘（单轨契约未兑现）', { by: 'pm' })
+        journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.accNoFile', { file: `${journal.runDocs ? journal.runDocs + '/' : ''}ACCEPTANCE.md` }) })
+        advanceTask(journal, 'needs-human', null, t(locale, 'event.acceptNoReport'), { by: 'pm' })
         throw stageFailError('acceptance', { attempts: accR.attempts, freshTokens: accR.freshTokens })
       }
       timeline.acceptance = acceptance
       noteTaskStageUsage(journal) // 验收角色的真实 usage 累计
       const accStage = journal.stages.find((s) => phaseKeyOf(s.phase) === 'acceptance' && s.childId)
-      noteTaskAssign(journal, 'accept', accStage ? String(accStage.childId).slice(0, 8) : '验收组')
+      noteTaskAssign(journal, 'accept', accStage ? String(accStage.childId).slice(0, 8) : t(locale, 'role.acceptTeam'))
       // 结论解析：见 parseAcceptanceVerdict（只认结论行，避免正文「无需改动」等否定/引用话术误杀整条流水线；
       // 无结论行 → needs-human，不猜结论——防模型写 ❌ 但漏「验收结论：」前缀被默认 accepted）
       const accVerdict = parseAcceptanceVerdict(acceptance)
       if (accVerdict === 'needs-human') {
         // 契约未兑现：ACCEPTANCE.md 无「验收结论」行（prompt 已强制最后一行字面量模板）。
         // 宁严勿松：误拦截=人工看一眼，误放行=假交付（旧实现无结论行默认 accepted=漏报）
-        journal.logs.push({ t: Date.now(), level: 'error', message: 'ACCEPTANCE.md 缺少「验收结论：」行（字面量模板未兑现）——不自动判通过，需人工确认结论' })
-        advanceTask(journal, 'needs-human', snippet(acceptance, 3000), 'ACCEPTANCE.md 缺少验收结论行（契约未兑现），需人工确认', { by: 'pm' })
+        journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.accNoVerdict') })
+        advanceTask(journal, 'needs-human', snippet(acceptance, 3000), t(locale, 'event.acceptNoVerdict'), { by: 'pm' })
         const store = storeFor(scopeKey)
         const req = store.find('req', journal.reqId)
-        if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', '验收结论行缺失，需人工确认') }
+        if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', t(locale, 'event.acceptVerdictMissing')) }
         journal.humanIntervention = true
         persistJournal(journal)
-        throw new Error('ACCEPTANCE.md 缺少验收结论行，需人工确认结论')
+        throw new Error(t(locale, 'err.accNoVerdict'))
       }
       if (accVerdict === 'reject') {
         // 需求与现状不符（无有效变更）→ 拦截：task needs-human、req needs-human、流水线中断（非 accepted）
-        advanceTask(journal, 'needs-human', snippet(acceptance, 3000), '需求与现状不符（无需改动），需人工决定调整或取消需求', { by: 'pm' })
+        advanceTask(journal, 'needs-human', snippet(acceptance, 3000), t(locale, 'event.reqMismatch'), { by: 'pm' })
         const store = storeFor(scopeKey)
         const req = store.find('req', journal.reqId)
-        if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', '需求与现状不符，需人工处理（调整或取消）') }
-        journal.logs.push({ t: Date.now(), level: 'error', message: '需求与现状不符（无需改动），流水线中断，需人工处理' })
+        if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', t(locale, 'event.reqMismatchHuman')) }
+        journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.accReject') })
         persistJournal(journal)
-        throw new Error('需求与现状不符，无需改动，需人工决定调整或取消需求')
+        throw new Error(t(locale, 'err.accReject'))
       }
-      advanceTask(journal, accVerdict, snippet(acceptance, 3000), accVerdict === 'rework' ? '验收不通过（需返工）' : '验收完成（待验收 → 已验收）', { by: 'pm' })
+      advanceTask(journal, accVerdict, snippet(acceptance, 3000), accVerdict === 'rework' ? t(locale, 'event.acceptRework') : t(locale, 'event.acceptDone'), { by: 'pm' })
       const store = storeFor(scopeKey)
       const req = store.find('req', journal.reqId)
       if (req) {
@@ -700,25 +810,21 @@ export async function executePipeline(
         if (accVerdict === 'rework') {
           req.humanIntervention = true
           journal.humanIntervention = true // 汇报状态线：completed+humanIntervention → ⚠️ 已完成（需人工介入）
-          store.pushEvent(req, req.status, 'needs-human', '验收不通过（需返工）')
+          store.pushEvent(req, req.status, 'needs-human', t(locale, 'event.acceptRework'))
         } else if (openBugs.length > 0) {
-          store.pushEvent(req, req.status, 'pending-acceptance', '存在未关闭缺陷')
+          store.pushEvent(req, req.status, 'pending-acceptance', t(locale, 'event.bugsOpen'))
         } else {
           verifyReqBugs(journal) // 验收通过 → 关闭遗留 open 缺陷
-          store.pushEvent(req, req.status, 'accepted', '验收通过')
+          store.pushEvent(req, req.status, 'accepted', t(locale, 'event.acceptPass'))
         }
       }
-      journal.logs.push({ t: Date.now(), level: 'info', message: '流水线全部完成 ✅' })
-      journal.status = 'completed'
-    } else {
-      // QA 打回超限：验收跳过，需求已 needs-human（humanIntervention=true）
-      journal.logs.push({ t: Date.now(), level: 'error', message: '产品验收跳过：QA 复验超限，需求已置 needs-human，需人工介入' })
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.allDone') })
       journal.status = 'completed'
     }
   } catch (e) {
     if (journal.cancelled) {
       journal.status = 'cancelled'
-      journal.error = '运行已取消'
+      journal.error = t(locale, 'err.cancelled')
     } else {
       journal.status = 'failed'
       journal.error = String((e && e.message) || e)
@@ -731,23 +837,44 @@ export async function executePipeline(
     // try 内验收通过后已提交过（幂等：无改动时 commit 跳过）；此处兜底异常路径。
     // 只有「验收通过」才提交；failed/cancelled/打回超限 needs-human 不提交——工作区保留，人工处理或 resume 修复后再收口。
     // 结构上消灭文档漏提交（实测 r16 漏 QA-REPORT/ACCEPTANCE；整树 add 必然全带），
-    // 但**不再用裸 add -A**：提交面 = 工作区整树**减去插件自有日志** `logs/teamflow/`
-    // （tfAddArgs 的 pathspec 强制排除 + .gitignore 幂等补写）——实锤 assetd 一次提交 92% 是日志噪音。
+    // 提交面 = 工作区整树**减去插件自有日志** `logs/teamflow/`：`.gitignore` 幂等补写（卫生 + 整树 add 的
+    // 唯一依赖）+ `tfUnstageArgs()` 索引兜底（保证）——**不再用负 pathspec 点名自有日志**
+    // （2026-09-15 实锤：点名被忽略路径 → `git add` 退出 1 → 收口提交被静默短路 4 天，见 sanity.tfAddArgs）。
     if (journal.workspacePath && journal.status === 'completed' && !journal.humanIntervention) {
       try {
         const reqHead = String(journal.requirement || '').replace(/\s+/g, ' ').trim().slice(0, 80)
-        ensureLogGitignore(journal.workspacePath, journal) // 自有日志先写进 .gitignore（幂等）
-        const add = gitCmd(journal.workspacePath, tfAddArgs())
-        const cm = add === null ? null : gitCmd(journal.workspacePath, ['commit', '-m', `feat: ${reqHead}（runId=${journal.id}${journal.runDocs ? `，任务夹 ${journal.runDocs}` : ''}）`])
-        if (cm !== null) {
-          journal.logs.push({ t: Date.now(), level: 'info', message: '统一收口提交完成（代码 + 任务夹产物，验收通过后一个 commit）' })
-        } else if (add !== null) {
-          journal.logs.push({ t: Date.now(), level: 'info', message: '统一收口提交：无待提交改动（跳过）' })
+        ensureLogGitignore(journal.workspacePath, journal, locale) // 自有日志先写进 .gitignore（幂等）
+        // 交付文档强制入库（QA-7）：任务夹/memory.md 是交付物，目标仓库 .gitignore 可能忽略 docs/teamflow/
+        const docAdd = tfDocAddArgs([journal.runDocs, `${TF_DOCS_DIR}/memory.md`].filter((p) => existsSync(`${journal.workspacePath}/${p}`)))
+        if (docAdd.length) gitRun(journal.workspacePath, docAdd)
+        const addR = gitRun(journal.workspacePath, tfAddArgs())
+        noteLogsUnstaged(journal, gitRun(journal.workspacePath, tfUnstageArgs()), locale) // 索引兜底（幂等）
+        // ③（2026-09-15 修复）：add 的结果**不再决定要不要提交**——旧写法 `add === null ? null : git commit(...)`
+        // 让一次 add 失败（索引其实已写好）把整个提交短路掉，且三条日志一条都不写。现在**永远尝试提交**，
+        // 由提交结果决定日志级别；add 的错误与提交错误一并写进 commitFail，故障不再不可见。
+        // 「无事可做」优先用状态判定（确定性，不依赖 git 措辞）：索引为空 = 这次没有内容要提交。
+        const pend = gitRun(journal.workspacePath, ['status', '--porcelain'])
+        if (pend.ok && pend.out === '') {
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.commitSkip') })
+        } else {
+          const cmR = gitRun(journal.workspacePath, ['commit', '-m', t(locale, 'commit.final', { req: reqHead, id: journal.id, docs: journal.runDocs ? t(locale, 'commit.finalDocs', { docs: journal.runDocs }) : '' })])
+          if (cmR.ok) {
+            journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.commitDone') })
+          } else if (GIT_NOTHING_TO_COMMIT.test(cmR.error || '')) {
+            // 兜底分类：索引非空、但 git 仍说没东西可提交（例如只剩「未跟踪且未纳入」的文件）
+            journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.commitSkip') })
+          } else {
+            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.commitFail', { msg: gitFailDetail(addR, cmR) }) })
+          }
         }
-      } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: `统一收口提交失败（忽略）：${String((e && e.message) || e)}` }) }
+      } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.commitFail', { msg: String((e && e.message) || e) }) }) }
     } else if (journal.workspacePath && journal.runDocs && (journal.status === 'failed' || journal.status === 'cancelled' || journal.status === 'interrupted')) {
-      journal.logs.push({ t: Date.now(), level: 'warn', message: `终态非验收通过：工作区改动与任务夹产物 ${journal.runDocs}/ 保留未提交，供人工处理（resume 修复通过后自动收口提交）` })
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.notCommitted', { docs: journal.runDocs }) })
     }
+    // 日志生命周期（B 方案 2026-09-15）：暂存日志归档离开项目 → $DSH_HOME/teamflow/<workspace>/logs/<runId>/，
+    // 项目内 **只在 run 进行期间** 存在（子代理沙箱只允许写工作区，见 core/runlogs.ts 的实测依据）。
+    // 放在收口提交之后：run 期间的 pathspec 排除 + .gitignore 补写仍覆盖「用户自己在 run 中提交」的窗口。
+    try { archiveRunLogs(journal, locale) } catch (e) { /* 归档尽力而为，不影响收尾 */ }
     journal.result = { requirement, options: sanitizeSnapOptions(options), timeline: summarizeTimeline(timeline) }
     persistJournal(journal) // 终态 checkpoint（含日志刷新；阶段全文保留在磁盘+内存，供详情抽屉/断点续跑读取）
     // 孤儿收尾：run 异常/取消时把未到终态的 req/task 落成可见状态（中断不再永远 in-progress；cancelled 保留 resume 入口）
@@ -757,18 +884,18 @@ export async function executePipeline(
         const req = store.find('req', journal.reqId)
         if (req && (req.status === 'in-progress' || req.status === 'created')) {
           req.humanIntervention = true
-          store.pushEvent(req, req.status, 'needs-human', `流水线异常退出（${String(journal.error || '').slice(0, 120)}），需人工确认后继续（teamflow_resume）或关闭（backlogUpdate closed）`)
+          store.pushEvent(req, req.status, 'needs-human', t(locale, 'event.abnormalExit', { err: String(journal.error || '').slice(0, 120) }))
           req.status = 'needs-human'
         }
         const task = journal.taskId ? store.find('task', journal.taskId) : null
         if (task && (task.status === 'running' || task.status === 'pending')) {
-          store.pushEvent(task, task.status, 'needs-human', '流水线异常退出（中断），需人工确认')
+          store.pushEvent(task, task.status, 'needs-human', t(locale, 'event.abnormalInterrupt'))
           task.status = 'needs-human'
         }
         store.persist()
       } else if (journal.status === 'cancelled') {
         const req = store.find('req', journal.reqId)
-        if (req && req.status === 'in-progress') store.pushEvent(req, req.status, 'in-progress', '流水线已取消（可 teamflow_resume 续跑，或 backlogUpdate → closed 放弃并关闭）')
+        if (req && req.status === 'in-progress') store.pushEvent(req, req.status, 'in-progress', t(locale, 'event.cancelled'))
         if (req) store.persist()
       }
     } catch (e) { /* 孤儿收尾尽力而为，不影响主收尾 */ }
@@ -801,11 +928,12 @@ export function summarizeTimeline(timeline) {
 /** 启动流水线：预检 + 建 journal + 异步 executePipeline（按发起会话的工作区绑 scope）。 */
 export function startPipeline(agent: unknown, requirement: string, options: PipelineOptions, signal: unknown): string {
   const provider = providerName()
-  if (!provider) throw new Error('没有可用的子代理提供者（subagents 注册表为空）')
+  const locale = ambientLocale()
+  if (!provider) throw new Error(t(locale, 'run.noProvider'))
   const ws = workspaceScopeOf(agent)
   const productKey = ws.projectKey
   const active = activeProducts.get(productKey)
-  if (active) throw new Error(`工作区 ${ws.path || ws.projectKey} 已有流水线 ${active} 运行中——请等待完成、取消（teamflow_cancel）或先处理中断（teamflow_resume）`)
+  if (active) throw new Error(t(locale, 'run.workspaceBusyHint', { ws: ws.path || ws.projectKey, id: active }))
   // 分支策略决策（ADR-2026-08-27 基调）：已在 teamflow_start 层完成（needs-decision → 用户选择 → 带参重发），此处不再阻断。
   // mode：显式指定 / lite 兼容 / 否则留空 → 由 executePipeline 自动分诊（对调用方透明）
   const mode = normalizeMode(options.mode) ?? (options.lite ? 'lite' : undefined)
@@ -818,6 +946,8 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
     workspace: ws.projectKey,
     workspacePath: ws.path,
     ownerSession,
+    // run 级语言快照（AC-2）：起跑解析一次并随 journal 落盘（resume/重启读回，不重解析）
+    locale,
     product: normalizeRoot(options.productRoot),
     options: {
       needDesign: !!options.needDesign,
@@ -861,7 +991,7 @@ export function cancelRun(runId: string | null | undefined): boolean {
 /** 从断点续跑：跳过已完成阶段，从第一个未完成阶段重跑（service 与工具共用）。 */
 export function resumeRun(runId: string | null | undefined, sessionId: string | null | undefined): { ok: boolean; runId?: string; resumedFrom?: string; error?: string } {
   const id = typeof runId === 'string' ? runId : null
-  if (!id) return { ok: false, error: '缺少 runId' }
+  if (!id) return { ok: false, error: t(ambientLocale(), 'run.missingId') }
   // 从磁盘加载完整 journal（内存版已裁剪 output，磁盘保留阶段产物全文）
   let j = null
   try {
@@ -869,22 +999,26 @@ export function resumeRun(runId: string | null | undefined, sessionId: string | 
     if (disk && typeof disk === 'object' && disk.id === id) j = disk
   } catch (e) { /* 落到内存版 */ }
   if (!j) j = runs.get(id)
-  if (!j) return { ok: false, error: `未找到运行：${id}` }
+  if (!j) return { ok: false, error: t(ambientLocale(), 'run.notFound', { id }) }
+  // 历史 journal 兼容（升级前无 locale 字段）：补写一次快照（AC-2：resume 不重解析已有值）。
+  // QA-1：历史 run 一律 zh（与 core/locale.ts:runLocaleOf 缺省口径一致）——绝不按当前界面语言补写。
+  if (!parseLocale(j.locale)) j.locale = localeForMissingSnapshot(true)
+  const locale = runLocaleOf(j)
   if (j.status !== 'interrupted' && j.status !== 'failed' && j.status !== 'cancelled') {
-    return { ok: false, error: `只有 interrupted/failed/cancelled 可续跑（当前 ${j.status}）` }
+    return { ok: false, error: t(locale, 'run.badStatus', { status: j.status }) }
   }
   // 全阶段已 done 的 failed/cancelled：没有断点可续（阶段全绿≠run 成功，如「需求与现状不符」拦截单），
   // 续跑只会兜底重跑验收、循环失败——硬拒绝，引导起新流水线（实锤 tf-mt8kxyef-29ruxt）
   if ((j.stages || []).length > 0 && (j.stages || []).every((s) => s.status === 'done')) {
-    return { ok: false, error: `所有阶段均已完成，无断点可续（run=${j.status}）；如需重跑请启动新需求` }
+    return { ok: false, error: t(locale, 'run.noBreakpoint', { status: j.status }) }
   }
   const productKey = j.workspace || j.product || 'default'
   if (activeProducts.has(productKey) && activeProducts.get(productKey) !== id) {
-    return { ok: false, error: `工作区 ${j.workspacePath || productKey} 已有流水线 ${activeProducts.get(productKey)} 运行中` }
+    return { ok: false, error: t(locale, 'run.workspaceBusy', { ws: j.workspacePath || productKey, id: activeProducts.get(productKey) }) }
   }
   const sid = typeof sessionId === 'string' ? sessionId : null
   const agent = sid && runtime.agents ? runtime.agents.get(sid) : undefined
-  if (agent === undefined) return { ok: false, error: `找不到会话对应的 Agent：${sid}` }
+  if (agent === undefined) return { ok: false, error: t(locale, 'run.agentNotFound', { sid }) }
   try {
     const resumePhase = interruptedPhaseOf(j)
     const products = buildResumeProducts(j)
@@ -900,20 +1034,20 @@ export function resumeRun(runId: string | null | undefined, sessionId: string | 
       const store = storeFor(productKey)
       const req = store.find('req', j.reqId)
       if (req && req.status === 'needs-human' && req.humanIntervention) {
-        store.pushEvent(req, req.status, 'in-progress', `断点续跑（从「${resumePhase}」恢复流水线执行）`)
+        store.pushEvent(req, req.status, 'in-progress', t(locale, 'event.resumeFrom', { phase: resumePhase }))
         req.status = 'in-progress'
         req.humanIntervention = false
       }
       const task = j.taskId ? store.find('task', j.taskId) : null
       if (task && task.status === 'needs-human') {
-        store.pushEvent(task, task.status, 'running', '断点续跑（恢复流水线执行）')
+        store.pushEvent(task, task.status, 'running', t(locale, 'event.resumeTask'))
         task.status = 'running'
       }
       store.persist()
     } catch (e) { /* 恢复尽力而为 */ }
     j.endedAt = null
     j.logs = (j.logs || []).slice(-200)
-    j.logs.push({ t: Date.now(), level: 'warn', message: `断点续跑：从「${resumePhase}」继续（已完成阶段复用产物）` })
+    j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.resume', { phase: phaseLabel(locale, resumePhase) }) })
     j.stages = (j.stages || []).filter((s) => s.status !== 'running' && s.status !== 'pending') // 清理未完成 stage；保留 done/failed 历史（失败痕迹不消失）
     runs.set(id, j) // 内存换用磁盘完整版（含 output 全文）
     persistJournal(j)

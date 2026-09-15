@@ -95,6 +95,72 @@
       "parser": "judgeDeliverable",
       "note": "兜底未被削弱：无证据块 + 拒绝措辞（且只有 state 块）→ 判未交付 reason=refusal",
       "expect": { "ok": false, "reason": "refusal" }
+    },
+    {
+      "id": "acc-en-pass",
+      "file": "acceptance-en-pass.md",
+      "parser": "parseAcceptanceVerdict",
+      "note": "en 结论行（新增识别，AC-6）：Acceptance verdict: ✅ Pass → accepted",
+      "expect": "accepted"
+    },
+    {
+      "id": "acc-en-rework",
+      "file": "acceptance-en-rework.md",
+      "parser": "parseAcceptanceVerdict",
+      "note": "en 打回：Acceptance verdict: ❌ Fail → rework",
+      "expect": "rework"
+    },
+    {
+      "id": "acc-en-not-applicable",
+      "file": "acceptance-en-not-applicable.md",
+      "parser": "parseAcceptanceVerdict",
+      "note": "en 等价物（ADR-0005 拦截形态）：Acceptance verdict: 📝 Not applicable → reject",
+      "expect": "reject"
+    },
+    {
+      "id": "qa-en-defects-p1-bold",
+      "file": "qa-report-en-defects.md",
+      "parser": "parseDefects",
+      "note": "en 缺陷表位置式解析：en 表头跳过、**P1** 加粗命中、OBS 观察项跳过",
+      "expect": [
+        { "id": "BUG-1", "severity": "P1", "module": "persist.js" },
+        { "id": "BUG-2", "severity": "P2", "module": "audio.js" }
+      ]
+    },
+    {
+      "id": "qa-en-reverify-table-not-defects",
+      "file": "qa-report-en-reverify-table.md",
+      "parser": "parseDefects",
+      "note": "2026-09-15 停线回归（tf-mu2ioilr-95l4th）：复验对照表（第 2 列 P 级 + 第 3 列结论「已关闭」）整表不得登记；只有带严重级表头的标准缺陷表被解析（R3-1/R3-3 两条 P3），OBS 跳过",
+      "expect": [
+        { "id": "R3-1", "severity": "P3", "module": "logging" },
+        { "id": "R3-3", "severity": "P3", "module": "tools" }
+      ]
+    },
+    {
+      "id": "dev-en-evidence-present",
+      "file": "dev-reply-en-evidence.md",
+      "parser": "extractVerificationEvidence",
+      "note": "en 回复的证据块同样整体提取（[Verification evidence] 为 ASCII，中英通用）",
+      "expect": { "contains": ["node test/verify-persist.cjs", "12/12 passed"] }
+    },
+    {
+      "id": "dev-en-bare-refusal",
+      "file": "dev-reply-en-refusal.md",
+      "parser": "judgeDeliverable",
+      "note": "en 兜底不得失效：无证据块 + `I cannot`/`not able to` 命中拒绝措辞 → 判未交付",
+      "expect": { "ok": false, "reason": "refusal", "refusalPhrase": "I cannot" }
+    },
+    {
+      "id": "qa-check-columns-and-escaped-pipe",
+      "file": "qa-report-check-columns.md",
+      "parser": "parseDefects",
+      "note": "2026-09-15 B 方案（缺陷行新增「检测命令/通过判据」两列）：多出来的两列不得错列；单元格内转义管道符 `\\|` 必须还原成字面量而不是切开单元格（R3-2 错列实锤的回归门禁）；复验对照表仍整表跳过；OBS 观察项跳过",
+      "expect": [
+        { "id": "R2-1", "severity": "P2", "module": "prompt 语言面" },
+        { "id": "R2-2", "severity": "P1", "module": "缺陷解析面" },
+        { "id": "R2-3", "severity": "P1", "module": "运行时" }
+      ]
     }
   ]
 }

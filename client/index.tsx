@@ -15,11 +15,13 @@
 import React from 'react'
 import { TEAMFLOW_REMOTE_CONTRIBUTION } from '../descriptors.js'
 import {
-  T, STATUS_TEXT, STATUS_COLOR, PHASE_ICON, PHASE_NAME, phaseNameOf, phaseIconOf, phaseKeyOf,
-  RUN_STATUS_TEXT, COLUMNS, KIND_TITLE, h, MONO, SANS, flexRow, chip, FoldableText,
+  T, STATUS_COLOR, PHASE_ICON, phaseNameOf, phaseIconOf, phaseKeyOf,
+  COLUMNS, h, MONO, SANS, flexRow, chip, FoldableText,
   fmtTime, fmtDur, fmtTokens, totalTokens, hitRate, usageDetail, stageUsageLine,
-  ROLE_NAME, roleUsage, byRoleLine, totalUsage, stText, stColor,
+  roleUsage, byRoleLine, totalUsage, stText, stColor, runStatusText, kindTitle, roleChip, stageLabelOf,
+  t, setTranslator, localeTag,
 } from './shared.js'
+import { NS, zh, en } from './locales.js'
 import { GlobalPanel, TeamflowPanelIcon, RunDetailTab, runTabDefinition, RUN_TAB_ID } from './panel.js'
 
 export const inject = ['remote', 'slots', 'sessions', 'locale']
@@ -82,7 +84,7 @@ function FlowStageCard(s, key, onOpen) {
   const usage = stageUsageLine(s)
   return h('div', {
     key,
-    title: `${s.label} —— 点击查看阶段详情`,
+    title: t('stage.cardTip', { label: stageLabelOf(s) }),
     onMouseDown: (e) => e.stopPropagation(), // 不触发画布拖动，允许点击
     onClick: () => onOpen && onOpen(s),
     style: {
@@ -99,8 +101,8 @@ function FlowStageCard(s, key, onOpen) {
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
       running ? h('span', { style: { width: 7, height: 7, borderRadius: 999, background: color, animation: 'tf-pulse 1.15s ease-in-out infinite' } })
         : h('span', { style: { width: 6, height: 6, borderRadius: 2, background: color } }),
-      h('span', { title: s.label, style: { flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, s.__taskKey || s.label),
-      (s.attempts && s.attempts.length > 1) ? h('span', { title: `重试 ${s.attempts.length - 1} 次（共 ${s.attempts.length} 次尝试）`, style: { fontFamily: MONO, fontSize: 10, fontWeight: 800, color: T.warn, background: `color-mix(in srgb, ${T.warn} 14%, transparent)`, borderRadius: 999, padding: '0 6px', lineHeight: '15px', flex: '0 0 auto' } }, `↻${s.attempts.length - 1}`) : null,
+      h('span', { title: s.label, style: { flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, stageLabelOf(s)),
+      (s.attempts && s.attempts.length > 1) ? h('span', { title: t('stage.retryTip', { n: s.attempts.length - 1, m: s.attempts.length }), style: { fontFamily: MONO, fontSize: 10, fontWeight: 800, color: T.warn, background: `color-mix(in srgb, ${T.warn} 14%, transparent)`, borderRadius: 999, padding: '0 6px', lineHeight: '15px', flex: '0 0 auto' } }, `↻${s.attempts.length - 1}`) : null,
       chip(stText(s.status), color, { dot: true }),
       h('span', { style: { color: T.text2, fontSize: 11, opacity: 0.5 } }, '↗'),
     ),
@@ -175,10 +177,10 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
     try { sessions.openSubagent({ parentSessionId: (ownerSession || sessionId), childSessionId: cur.childId, mode: 'one-shot' }) } catch (e) { /* 会话跳转失败忽略 */ }
   }
   const outText = cur && cur.output ? cur.output
-    : cur && cur.summary ? `（该 run 未保存完整正文，展示摘要）\n\n${cur.summary}`
-    : det.err ? `⚠ 加载失败：${det.err}`
-    : det.loading ? '加载中…'
-    : '（无产物正文）'
+    : cur && cur.summary ? t('stage.summaryFallback', { summary: cur.summary })
+    : det.err ? t('stage.loadFailed', { err: det.err })
+    : det.loading ? t('common.loading')
+    : t('stage.noOutput')
   const closeBtn = { font: 'inherit', width: 26, height: 26, borderRadius: 8, cursor: 'pointer', border: `1px solid ${T.border}`, background: 'transparent', color: T.text2, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, lineHeight: 1 }
   // 悬浮于画布右上（不挤占画布宽度）。滚轮在浮层内只滚自身内容：
   // 用原生 wheel stopPropagation 在冒泡到画布前拦下，避免触发画布缩放。
@@ -206,23 +208,23 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 9, padding: '12px 14px', borderBottom: `1px solid ${T.border}`, background: `linear-gradient(135deg, color-mix(in srgb, ${color} 14%, transparent), transparent 62%)` } },
       h('span', { style: { fontSize: 17 } }, phaseIconOf(st && st.phase)),
       h('div', { style: { flex: 1, minWidth: 0 } },
-        h('div', { title: st ? st.label : undefined, style: { fontSize: 12.5, fontWeight: 700, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, st ? st.label : '阶段详情'),
+        h('div', { title: st ? st.label : undefined, style: { fontSize: 12.5, fontWeight: 700, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, st ? stageLabelOf(st) : t('stage.detailTitle')),
         h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 1, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' } },
           `${st ? `#${st.seq} · ${st.phase}` : ''}${(st && (st.startedAt || st.endedAt)) ? ` · ${fmtDur(st.startedAt, st.endedAt)}` : ''}`),
       ),
       st ? chip(stText(st.status), color, { dot: true }) : null,
-      h('button', { onClick: onClose, style: closeBtn, title: '关闭' }, '✕'),
+      h('button', { onClick: onClose, style: closeBtn, title: t('common.close') }, '✕'),
     ),
     /* 内容 */
     h('div', { style: { flex: 1, overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 11 } },
       /* usage 明细（官方口径全字段） */
       h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-        h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, 'TOKEN · 官方口径'),
+        h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, t('token.officialTitle')),
         h('span', { style: { fontSize: 11.5, fontFamily: MONO, color: T.text, lineHeight: 1.65 } }, usageDetail(cur || st || {})),
       ),
       /* 尝试历史时间线（同任务多次尝试；单次不渲染——保持现状简洁） */
       attempts ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
-        h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, `↻ 尝试历史（${attempts.length} 次 · 点击查看该次详情）`),
+        h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, t('stage.attemptHistory', { n: attempts.length })),
         h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
           attempts.map((a, idx) => {
             const aColor = a.status === 'done' ? T.success : (a.status === 'failed' ? T.error : T.warn)
@@ -237,8 +239,8 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
               },
             },
               h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2, flex: '0 0 52px' } }, `#${a.seq}`),
-              h('span', { style: { fontSize: 11, color: aColor, flex: '0 0 64px', fontWeight: 700 } }, a.status === 'done' ? '✅ 成功' : a.status === 'failed' ? `❌ ${a.outcome || '失败'}` : '⏳ 进行中'),
-              h('span', { style: { flex: 1, minWidth: 0, fontSize: 10.5, color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, (a.summary || a.outcome || '（无摘要）').slice(0, 80)),
+              h('span', { style: { fontSize: 11, color: aColor, flex: '0 0 64px', fontWeight: 700 } }, a.status === 'done' ? t('stage.attemptDone') : a.status === 'failed' ? t('stage.attemptFailed', { outcome: a.outcome || t('common.failed') }) : t('stage.attemptRunning')),
+              h('span', { style: { flex: 1, minWidth: 0, fontSize: 10.5, color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, (a.summary || a.outcome || t('common.noSummary')).slice(0, 80)),
               h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2, flex: '0 0 auto' } }, a.startedAt ? fmtDur(a.startedAt, a.endedAt) : '—'),
               h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2, flex: '0 0 auto' } }, a.usage ? fmtTokens(totalTokens(a.usage)) : ''),
             )
@@ -251,8 +253,8 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
         h('button', {
           onClick: openChild, disabled: !hasChild,
           title: crossSession
-            ? `该子代理由会话 ${ownerSession.slice(-6)} 发起，跨会话跳转暂不支持——请打开其发起会话的团队工作台查看`
-            : hasChild ? '跳转到该阶段子代理会话（完整推理与工具调用轨迹）；跳转后请切换「对话」tab 查看' : '该阶段无可用子代理会话',
+            ? t('stage.childCrossSessionTip', { sid: ownerSession.slice(-6) })
+            : hasChild ? t('stage.childJumpTip') : t('stage.childNoneTip'),
           style: {
             font: 'inherit', fontSize: 12, fontWeight: 600, padding: '8px 12px', borderRadius: 9, cursor: 'pointer',
             display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center',
@@ -260,23 +262,23 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
             background: `color-mix(in srgb, ${T.brand} 12%, transparent)`, color: T.brand,
             opacity: hasChild ? 1 : 0.45,
           },
-        }, '🎬 跳转子代理会话'),
+        }, t('stage.childJumpBtn')),
         crossSession
           ? h('div', { style: { fontSize: 10.5, color: T.text2, textAlign: 'center', lineHeight: 1.55 } },
-            `跨会话暂不支持：该子代理由会话 ${ownerSession ? ownerSession.slice(-6) : ''} 发起。如需查看轨迹，请打开其发起会话的团队工作台。`)
+            t('stage.childCrossSessionNote', { sid: ownerSession ? ownerSession.slice(-6) : '' }))
           : hasChild ? h('div', { style: { fontSize: 10.5, color: T.text2, textAlign: 'center', lineHeight: 1.55 } },
-            '跳转成功后，请切「对话」tab 查看该子代理的完整会话轨迹') : null,
+            t('stage.childJumpNote')) : null,
       ),
       /* 验证证据（dev/qaFix 契约；policy 级——缺失已记 warn，此处置灰提示可见） */
       (st && phaseKeyOf(st.phase) === 'dev') ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
-        h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, '🔬 验证证据'),
+        h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, t('stage.evidenceTitle')),
         (cur && cur.verifyEvidence)
           ? h('div', { style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11.5, lineHeight: 1.62, color: T.text, background: `color-mix(in srgb, ${T.layer2} 55%, transparent)`, border: `1px solid ${T.border}`, borderRadius: 10, padding: '10px 12px', maxHeight: 180, overflowY: 'auto', fontFamily: MONO } }, cur.verifyEvidence)
-          : h('div', { style: { fontSize: 11, color: T.warn, background: `color-mix(in srgb, ${T.warn} 8%, transparent)`, border: `1px dashed color-mix(in srgb, ${T.warn} 45%, transparent)`, borderRadius: 10, padding: '8px 12px', lineHeight: 1.55 } }, '（缺失——契约未兑现，host 已记警告；可与 logs/teamflow/<runId>/ 命令输出日志对照）'),
+          : h('div', { style: { fontSize: 11, color: T.warn, background: `color-mix(in srgb, ${T.warn} 8%, transparent)`, border: `1px dashed color-mix(in srgb, ${T.warn} 45%, transparent)`, borderRadius: 10, padding: '8px 12px', lineHeight: 1.55 } }, t('stage.evidenceMissing')),
       ) : null,
       /* 产物全文 */
       h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
-        h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, '📄 阶段性产物'),
+        h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, t('stage.artifactsTitle')),
         h('div', {
           style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, lineHeight: 1.62, color: T.text, background: `color-mix(in srgb, ${T.layer2} 55%, transparent)`, border: `1px solid ${T.border}`, borderRadius: 10, padding: '10px 12px', maxHeight: 240, overflowY: 'auto' },
         }, outText),
@@ -288,7 +290,7 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
 function PipelinePanel({ active, api, runId, sessionId, sessions }) {
   if (!active) return h('div', { style: { color: T.text2, fontSize: 13, padding: '28px 20px', textAlign: 'center' } },
     h('div', { style: { fontSize: 28, marginBottom: 8 } }, '🏭'),
-    '暂无运行中的流水线——让模型调用 teamflow_start，或在上方输入需求')
+    t('pipeline.empty'))
   const groups = []
   // 任务键（2026-09-06 英文化）：stage.taskKey 优先（结构化）；存量数据 label 兜底（去中文结构标记）
   const taskKeyOf = (s) => String(s.taskKey || String(s.label || '').replace(/^开发 · /, '').replace(/（(?:第 \d+ 次重试|补跑)）$/, '').trim())
@@ -434,19 +436,19 @@ function PipelinePanel({ active, api, runId, sessionId, sessions }) {
         layout.nodes.map((n) => FlowNode(n, openDetail)),
       ),
     ),
-    layout.nodes.length === 0 ? h('div', { style: { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.text2, fontSize: 13 } }, '流水线还没有开始执行节点') : null,
+    layout.nodes.length === 0 ? h('div', { style: { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.text2, fontSize: 13 } }, t('pipeline.noNodes')) : null,
     /* 浮层控制簇（不参与画布拖拽） */
     h('div', {
       onMouseDown: (e) => e.stopPropagation(),
       style: { position: 'absolute', top: 10, right: 12, zIndex: 6, display: 'flex', alignItems: 'center', gap: 6, padding: 5, borderRadius: 11, border: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.layer1} 82%, transparent)`, backdropFilter: 'blur(8px)', boxShadow: '0 6px 20px rgba(0,0,0,.16)' },
     },
-      h('button', { title: '缩小', onClick: () => zoomBy(0.86), style: zoomStyle }, '−'),
+      h('button', { title: t('pipeline.zoomOut'), onClick: () => zoomBy(0.86), style: zoomStyle }, '−'),
       h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2, minWidth: 34, textAlign: 'center' } }, `${Math.round(view.s * 100)}%`),
-      h('button', { title: '放大', onClick: () => zoomBy(1.16), style: zoomStyle }, '+'),
+      h('button', { title: t('pipeline.zoomIn'), onClick: () => zoomBy(1.16), style: zoomStyle }, '+'),
       h('span', { style: { width: 1, height: 14, background: T.border } }),
-      h('button', { title: '适应画布', onClick: fitNow, style: { ...zoomStyle, fontSize: 13 } }, '⤢'),
+      h('button', { title: t('pipeline.fitCanvas'), onClick: fitNow, style: { ...zoomStyle, fontSize: 13 } }, '⤢'),
       h('span', { style: { width: 1, height: 14, background: T.border } }),
-      h('span', { style: { fontSize: 10.5, color: T.text2, paddingRight: 4, opacity: 0.85 } }, '✥ 拖动画布 · 滚轮缩放'),
+      h('span', { style: { fontSize: 10.5, color: T.text2, paddingRight: 4, opacity: 0.85 } }, t('pipeline.canvasHint')),
     ),
     /* 阶段详情浮层：悬浮于画布右上，不挤占画布宽度；浮层内滚轮只滚正文（原生 stopPropagation），不触发画布缩放 */
     det ? h(StageDetailDrawer, { det, onClose: closeDet, sessionId, sessions }) : null,
@@ -469,7 +471,7 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
   }
   if (!backlog) return h('div', { style: { color: T.text2, fontSize: 13, padding: '28px 20px', textAlign: 'center' } },
     h('div', { style: { fontSize: 28, marginBottom: 8 } }, '📋'),
-    'backlog 为空（还没有流水线运行过）')
+    t('board.empty'))
 
   // 子卡查找表：subtaskId → subtask
   const subtaskMap = {}
@@ -478,7 +480,7 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
   }
 
   const move = async (kind, id, to) => {
-    try { await api.backlogUpdate(kind, id, to, sessionId, '看板拖拽流转') } catch (e) { /* 面板吞错，轮询自愈 */ }
+    try { await api.backlogUpdate(kind, id, to, sessionId, t('board.dragReason')) } catch (e) { /* 面板吞错，轮询自愈 */ }
     onRefresh()
   }
   const card = (item, kind) => h('div', {
@@ -497,7 +499,7 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
       transition: 'opacity .1s ease, transform .12s ease',
       boxShadow: '0 1px 2px rgba(0,0,0,.05)',
     },
-    title: `${item.id} · ${item.status}${item.summary ? '\n' + item.summary : ''}（点击查看详情）`,
+    title: t('board.cardTip', { id: item.id, status: item.status, summary: item.summary ? '\n' + item.summary : '' }),
   },
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 } },
       h('span', { style: { fontFamily: MONO, color: T.text2, fontSize: 10.5, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.id),
@@ -511,9 +513,9 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
       item.humanIntervention || item.status === 'needs-human' ? h('span', { style: { fontSize: 10.5, color: T.error, fontWeight: 700 } }, '⚠') : null,
     ),
     (kind === 'task' && (item.devAssign || item.qaAssign || item.acceptBy)) ? h('div', { style: { ...flexRow, marginTop: 3, fontSize: 10.5, color: T.text2, fontFamily: MONO, minWidth: 0 } },
-      item.devAssign ? h('span', { title: `dev 分配\n${item.devAssign}`, style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', minWidth: 0, whiteSpace: 'nowrap' } }, `👨‍💻${item.devAssign}`) : null,
-      item.qaAssign ? h('span', { title: `qa 分配\n${item.qaAssign}`, style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', minWidth: 0, whiteSpace: 'nowrap' } }, `🧪${item.qaAssign}`) : null,
-      item.acceptBy ? h('span', { title: `验收/汇报人\n${item.acceptBy}`, style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', minWidth: 0, whiteSpace: 'nowrap' } }, `✅${item.acceptBy}`) : null,
+      item.devAssign ? h('span', { title: t('board.assignDevTip', { who: item.devAssign }), style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', minWidth: 0, whiteSpace: 'nowrap' } }, `👨‍💻${item.devAssign}`) : null,
+      item.qaAssign ? h('span', { title: t('board.assignQaTip', { who: item.qaAssign }), style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', minWidth: 0, whiteSpace: 'nowrap' } }, `🧪${item.qaAssign}`) : null,
+      item.acceptBy ? h('span', { title: t('board.acceptTip', { who: item.acceptBy }), style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', minWidth: 0, whiteSpace: 'nowrap' } }, `✅${item.acceptBy}`) : null,
     ) : null,
     /* 按角色 token 行：等宽数字是不可断的长串 → 允许在任意处换行（否则撑破窄列） */
     (kind === 'task' && byRoleLine(item)) ? h('div', { style: { ...flexRow, marginTop: 3, fontSize: 10.5, color: T.warn, fontFamily: MONO, minWidth: 0, maxWidth: '100%' } },
@@ -529,7 +531,7 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
       const running = subs.filter((s) => s.status === 'running').length
       return h('div', { style: { marginTop: 5 } },
         h('div', { style: { ...flexRow, fontSize: 10.5, color: T.text2, fontFamily: MONO, marginBottom: 3 } },
-          h('span', null, `📦 ${subs.length} 子卡`),
+          h('span', null, t('board.subtaskCount', { n: subs.length })),
           done > 0 ? h('span', { style: { color: T.success } }, `${done}✓`) : null,
           running > 0 ? h('span', { style: { color: T.brand } }, `${running}⟳`) : null,
           failed > 0 ? h('span', { style: { color: T.error } }, `${failed}✗`) : null,
@@ -545,7 +547,7 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
         },
           h('span', { style: { color: stColor(sub.status), fontWeight: 600, minWidth: 12, flex: '0 0 auto' } }, sub.status === 'done' ? '✓' : sub.status === 'failed' ? '✗' : sub.status === 'running' ? '⟳' : '…'),
           h('span', { title: sub.title || undefined, style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, (sub.title || '').replace(/^开发 · /, '')),
-          sub.devAssign ? h('span', { title: `dev 分配\n${sub.devAssign}`, style: { flex: '0 1 auto', color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 70, minWidth: 0, whiteSpace: 'nowrap' } }, sub.devAssign) : null,
+          sub.devAssign ? h('span', { title: t('board.assignDevTip', { who: sub.devAssign }), style: { flex: '0 1 auto', color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 70, minWidth: 0, whiteSpace: 'nowrap' } }, sub.devAssign) : null,
         ))
       )
     })() : null,
@@ -572,7 +574,7 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
           },
         },
           h('span', { style: { fontSize: 14 } }, kind === 'req' ? '📌' : kind === 'task' ? '🔧' : '🐞'),
-          KIND_TITLE[kind],
+          kindTitle(kind),
           h('span', {
             style: { fontSize: 11, fontWeight: 600, color: T.text2, background: T.layer2, borderRadius: 999, padding: '0 8px', lineHeight: '18px' },
           }, String(list.length)),
@@ -624,7 +626,7 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
 }
 
 /* ── TeamFlow Backlog 条目详情抽屉 ──────────────────────────────── */
-function fmtAt(ts) { return ts ? new Date(ts).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '—' }
+function fmtAt(ts) { return ts ? new Date(ts).toLocaleTimeString(localeTag(), { hour: '2-digit', minute: '2-digit' }) : '—' }
 
 function ItemDetailDrawer({ det, onClose, onShowRun, openArtifact }) {
   const d = det && det.data
@@ -645,7 +647,7 @@ function ItemDetailDrawer({ det, onClose, onShowRun, openArtifact }) {
       it.severity ? chip(it.severity, it.severity === 'P0' ? T.error : it.severity === 'P1' ? T.warn : T.text2) : null,
       chip(stText(it.status), stColor(it.status)),
       extra && extra.usage ? h('span', { style: { fontSize: 10, fontFamily: MONO, color: T.warn, flex: '0 0 auto' } }, `⛽${fmtTokens((extra.usage.input || 0) + (extra.usage.cacheRead || 0) + (extra.usage.cacheWrite || 0) + (extra.usage.output || 0))}`) : null,
-      extra && extra.assignee ? h('span', { title: `dev 分配\n${extra.assignee}`, style: { display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 10, fontFamily: MONO, color: T.text2, flex: '0 0 auto', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 90, whiteSpace: 'nowrap' } }, `👨‍💻${String(extra.assignee).slice(0, 14)}`) : null,
+      extra && extra.assignee ? h('span', { title: t('board.assignDevTip', { who: extra.assignee }), style: { display: 'inline-flex', alignItems: 'center', gap: 2, fontSize: 10, fontFamily: MONO, color: T.text2, flex: '0 0 auto', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 90, whiteSpace: 'nowrap' } }, `👨‍💻${String(extra.assignee).slice(0, 14)}`) : null,
       h('span', { title: it.title || undefined, style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: T.text } }, (it.title || '').slice(0, 44)),
     ),
     it.summary ? h('div', { title: it.summary, style: { fontSize: 10.5, color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '100%' } }, it.summary) : null,
@@ -671,17 +673,17 @@ function ItemDetailDrawer({ det, onClose, onShowRun, openArtifact }) {
           `${d.id} · ${d.kind}${d.severity ? ' · ' + d.severity : ''}`) : null,
       ),
       d ? chip(stText(d.status), color, { dot: true }) : null,
-      h('button', { onClick: onClose, style: closeBtn, title: '关闭' }, '✕'),
+      h('button', { onClick: onClose, style: closeBtn, title: t('common.close') }, '✕'),
     ),
     /* 内容 */
     h('div', { style: { flex: 1, overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 13 } },
-      loading ? h('div', { style: { color: T.text2, fontSize: 12, padding: 12 } }, '加载中…') :
+      loading ? h('div', { style: { color: T.text2, fontSize: 12, padding: 12 } }, t('common.loading')) :
         err ? h('div', { style: { color: T.error, fontSize: 12, padding: 12 } }, '⚠ ' + err) :
           !d ? null :
           [
             /* 概览 */
             h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-              secTitle('概览'),
+              secTitle(t('item.overview')),
               d.spec ? h(FoldableText, { text: d.spec, charLimit: 300, lineLimit: 4, style: { background: T.layer2, borderRadius: 8, padding: '8px 10px' } }) : null,
               h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
                 d.summary ? h(FoldableText, { text: d.summary }) : null,
@@ -689,78 +691,93 @@ function ItemDetailDrawer({ det, onClose, onShowRun, openArtifact }) {
               h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2 } },
                 d.devAssign ? kv('👨‍💻 dev', d.devAssign.slice(0, 26), true) : null,
                 d.qaAssign ? kv('🧪 qa', d.qaAssign.slice(0, 26), true) : null,
-                d.assignBy ? kv('✅ 验收', d.assignBy.slice(0, 26), true) : null,
+                d.assignBy ? kv(t('item.acceptRow'), d.assignBy.slice(0, 26), true) : null,
                 d.owner ? kv('👤 owner', d.owner.slice(0, 26), true) : null,
-                (typeof d.retries === 'number' && d.retries > 0) ? kv('↻ 重试', String(d.retries)) : null,
-                d.humanIntervention ? kv('⚠ 人工介入', '需人工介入') : null,
-                kv('更新于', fmtAt(d.updatedAt) || '—'),
+                (typeof d.retries === 'number' && d.retries > 0) ? kv(t('item.retryRow'), String(d.retries)) : null,
+                d.humanIntervention ? kv(t('item.humanRow'), t('common.needsHuman')) : null,
+                kv(t('item.updatedAt'), fmtAt(d.updatedAt) || '—'),
               ),
             ),
+            /* 缺陷卡自身的内容（复现/期望/实际）：先于「关联 run 的原始需求」给出，否则点开只看到需求原文 */
+            kind === 'bug' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 10px', borderRadius: 8, background: T.layer2, border: `1px solid ${T.border}` } },
+              secTitle(t('panelItem.defectSection')),
+              d.spec ? h(FoldableText, { text: d.spec, charLimit: 300, lineLimit: 4 }) : null,
+              h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2 } },
+                d.defectId ? kv(t('panelItem.row.defectId'), String(d.defectId)) : null,
+                d.severity ? kv(t('panelItem.row.severity'), String(d.severity)) : null,
+                d.module ? kv(t('panelItem.row.module'), String(d.module)) : null,
+                d.reproduce ? kv(t('panelItem.row.reproduce'), String(d.reproduce)) : null,
+                d.expected ? kv(t('panelItem.row.expected'), String(d.expected)) : null,
+                d.actual ? kv(t('panelItem.row.actual'), String(d.actual)) : null,
+                d.defectCheck ? kv(t('panelItem.row.defectCheck'), String(d.defectCheck)) : null,
+                d.defectCriterion ? kv(t('panelItem.row.defectCriterion'), String(d.defectCriterion)) : null,
+                d.defectAc ? kv(t('panelItem.row.defectAc'), String(d.defectAc)) : null),
+              (d.reproduce || d.expected || d.actual) ? null : h('div', { style: { fontSize: 10.5, color: T.warn, lineHeight: 1.5 } }, t('panelItem.noDefectDetail'))) : null,
             /* 需求原文 + 运行信息（req / 关联 journal） */
             d.runInfo ? (() => {
               const ri = d.runInfo
               return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
                 h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
                   h('div', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
-                    secTitle('运行'),
+                    secTitle(t('item.runSection')),
                     h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2, whiteSpace: 'nowrap' } }, ri.runId),
                     chip(stText(ri.status), stColor(ri.status)),
                     onShowRun ? h('button', {
                       onClick: () => onShowRun(ri.runId),
-                      title: `跳转到该需求的流水线视图 #${String(ri.runId).slice(-6)}`,
+                      title: t('item.jumpRunTip', { id: String(ri.runId).slice(-6) }),
                       style: { marginLeft: 'auto', flex: '0 0 auto', whiteSpace: 'nowrap', fontSize: 10.5, fontWeight: 600, padding: '2px 9px', borderRadius: 6, cursor: 'pointer', border: `1px solid color-mix(in srgb, ${T.brand} 38%, transparent)`, background: `color-mix(in srgb, ${T.brand} 10%, transparent)`, color: T.brand, lineHeight: '16px' },
-                    }, '▶ 流水线') : null,
+                    }, t('item.runBtn')) : null,
                   ),
                   (ri.startedAt || ri.endedAt) ? h('span', { style: { fontSize: 10.5, color: T.text2, fontFamily: MONO } }, `${fmtAt(ri.startedAt)} → ${fmtAt(ri.endedAt)} · ${fmtDur(ri.startedAt, ri.endedAt)}`) : null,
                 ),
                   h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-                    secTitle('需求原文'),
-                    h(FoldableText, { text: ri.requirement || '（无原文）', charLimit: 300, lineLimit: 4, style: { background: T.layer2, borderRadius: 8, padding: '8px 10px' } }),
+                    secTitle(t('item.requirement')),
+                    h(FoldableText, { text: ri.requirement || t('item.noRequirement'), charLimit: 300, lineLimit: 4, style: { background: T.layer2, borderRadius: 8, padding: '8px 10px' } }),
                   ),
               )
             })() : null,
             /* 任务夹（ADR-0008）：路径 + 产物一键右侧栏预览（host 只回存在且带好地址的文件） */
             d.runDocs ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-              secTitle('任务夹'),
+              secTitle(t('item.runDocs')),
               h('div', { style: { fontSize: 11.5, fontFamily: MONO, color: T.brand, background: T.layer2, borderRadius: 8, padding: '7px 10px', wordBreak: 'break-all' } }, d.runDocs + '/'),
               (Array.isArray(d.artifacts) && d.artifacts.length > 0) ? h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 1 } },
                 d.artifacts.map((a) => h('button', {
                   key: a.name,
                   onClick: () => { if (openArtifact) openArtifact(a.address, a.name) },
-                  title: `在右侧栏预览 ${d.runDocs}/${a.name}`,
+                  title: t('item.previewTip', { path: `${d.runDocs}/${a.name}` }),
                   style: { fontSize: 10.5, fontWeight: 600, padding: '3px 9px', borderRadius: 6, cursor: 'pointer', lineHeight: '16px', border: `1px solid color-mix(in srgb, ${T.brand} 38%, transparent)`, background: `color-mix(in srgb, ${T.brand} 10%, transparent)`, color: T.brand, whiteSpace: 'nowrap' },
                 }, `📄 ${String(a.name).replace(/\.md$/, '')}`)),
               ) : null,
             ) : null,
             /* TOKEN（task） */
             (kind === 'task' && d.usage) ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-              secTitle('TOKEN · 官方口径'),
+              secTitle(t('token.officialTitle')),
               h('span', { style: { fontSize: 11.5, fontFamily: MONO, color: T.text, lineHeight: 1.65 } }, usageDetail(d)),
               (d.byRole && Object.keys(d.byRole).length > 0) ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, marginTop: 2 } },
                 Object.entries(d.byRole).sort((a, b) => (totalTokens(b[1]) - totalTokens(a[1]))).map(([role, uRaw]) => {
                   const u = uRaw as { input?: number; cacheRead?: number; cacheWrite?: number; output?: number; calls?: number }
-                  const label = role === 'dev' ? '👨‍💻 开发' : role === 'qa' ? '🧪 QA' : role === 'acceptance' ? '✅ 验收' : role === 'pm' ? '📌 产品' : role === 'design' ? '🎨 设计' : role === 'arch' ? '🏗 架构' : '⚙️ ' + role
+                  const label = roleChip(role)
                   return h('div', { key: role, style: { display: 'flex', gap: 7, alignItems: 'center', fontSize: 10.5, fontFamily: MONO, color: T.text2 } },
                     h('span', { style: { flex: '0 0 64px' } }, label),
                     h('span', { style: { color: T.text } }, `⛽${fmtTokens(totalTokens(u))}`),
-                    h('span', null, `${fmtTokens(u.input || 0)}i / ${fmtTokens(u.cacheRead || 0)}c / ${fmtTokens(u.output || 0)}o · ${u.calls || 0} 次`),
+                    h('span', null, `${fmtTokens(u.input || 0)}i / ${fmtTokens(u.cacheRead || 0)}c / ${fmtTokens(u.output || 0)}o · ${t('common.calls', { n: u.calls || 0 })}`),
                   )
                 }),
               ) : null,
             ) : null,
             /* 关联子卡 */
             (d.subtasks && d.subtasks.length > 0) ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-              secTitle(`关联子卡（${d.subtasks.length}）`),
+              secTitle(t('item.subtasks', { n: d.subtasks.length })),
               h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } }, d.subtasks.map((s) => linkRow(s, { usage: s.usage, assignee: s.devAssign }))),
             ) : null,
             /* 关联缺陷 */
             (d.bugs && d.bugs.length > 0) ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-              secTitle(`关联缺陷（${d.bugs.length}）`),
+              secTitle(t('item.bugs', { n: d.bugs.length })),
               h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } }, d.bugs.map((b) => linkRow(b, {}))),
             ) : null,
             /* 流转时间线 */
             (d.events && d.events.length > 0) ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-              secTitle(`流转时间线（${d.events.length}）`),
+              secTitle(t('item.timeline', { n: d.events.length })),
               h('div', { style: { display: 'flex', flexDirection: 'column', gap: 0 } },
                 d.events.slice().reverse().map((ev) => h('div', { key: `${ev.at}-${ev.to}`, style: { display: 'flex', gap: 8, alignItems: 'baseline', padding: '5px 0', borderBottom: `1px dashed ${T.border}`, fontSize: 11.5 } },
                   h('span', { style: { fontFamily: MONO, color: T.text2, fontSize: 10.5, flex: '0 0 42px' } }, fmtAt(ev.at)),
@@ -777,7 +794,7 @@ function ItemDetailDrawer({ det, onClose, onShowRun, openArtifact }) {
 }
 
 /* ── 团队选择器（input.right 注入） ─────────────────────────────── */
-function TeamSelector({ sessionId, remote }) {
+function TeamSelector({ sessionId, remote, locale }) {
   const [teams, setTeams] = React.useState([])
   const [active, setActive] = React.useState(null)
   const [open, setOpen] = React.useState(false)
@@ -791,7 +808,9 @@ function TeamSelector({ sessionId, remote }) {
       const at = unwrap(await remote.getActiveTeam(sessionId), 'getActiveTeam')
       setActive(at && at.team ? at.team : null)
     } catch (e) { /* 静默 */ }
-  }, [remote, sessionId])
+    // locale 是依赖：团队名/描述由 host 按界面语言本地化后下发，切语言必须重取
+    // （团队配置是用户数据，client 侧不翻译，见 host/index.ts teamPayload）
+  }, [remote, sessionId, locale])
 
   React.useEffect(() => { load() }, [load])
 
@@ -822,7 +841,7 @@ function TeamSelector({ sessionId, remote }) {
   return h('div', { ref, style: { position: 'relative' } },
     h('button', {
       onClick: () => setOpen(!open),
-      title: active ? `当前团队：${active.name}（点击切换）` : '选择团队',
+      title: active ? t('team.currentTip', { name: active.name }) : t('team.pick'),
       style: {
         display: 'inline-flex', alignItems: 'center', gap: 4,
         padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
@@ -834,7 +853,7 @@ function TeamSelector({ sessionId, remote }) {
       },
     },
       h('span', { style: { fontSize: 12 } }, active ? active.icon : '🏭'),
-      h('span', { title: active && active.name ? String(active.name) : '团队', style: { maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, active ? active.name : '团队'),
+      h('span', { title: active && active.name ? String(active.name) : t('team.label'), style: { maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, active ? active.name : t('team.label')),
       h('span', { style: { fontSize: 8, opacity: .6 } }, open ? '▲' : '▼'),
     ),
     open ? h('div', {
@@ -845,7 +864,7 @@ function TeamSelector({ sessionId, remote }) {
         zIndex: 100, overflow: 'hidden',
       },
     },
-      h('div', { style: { padding: '7px 12px', fontSize: 10, color: T.text2, borderBottom: `1px solid ${T.border}` } }, '选择团队'),
+      h('div', { style: { padding: '7px 12px', fontSize: 10, color: T.text2, borderBottom: `1px solid ${T.border}` } }, t('team.pick')),
       // "无团队"选项：清除选择，回到原生模式
       h('button', {
         onClick: () => select(null),
@@ -859,8 +878,8 @@ function TeamSelector({ sessionId, remote }) {
       },
         h('span', { style: { fontSize: 14, opacity: .5, width: 18, flexShrink: 0, lineHeight: 1.4 } }, '💬'),
         h('div', { style: { minWidth: 0, flex: 1 } },
-          h('div', { style: { fontWeight: 600, lineHeight: 1.35 } }, '无团队（直接对话）'),
-          h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 3, lineHeight: 1.45, whiteSpace: 'normal', wordBreak: 'break-word' } }, '不走 teamflow，模型直接工作'),
+          h('div', { style: { fontWeight: 600, lineHeight: 1.35 } }, t('team.none')),
+          h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 3, lineHeight: 1.45, whiteSpace: 'normal', wordBreak: 'break-word' } }, t('team.noneNote')),
         ),
         !active ? h('span', { style: { marginLeft: 'auto', color: T.text2, fontSize: 12, flexShrink: 0 } }, '✓') : null,
       ),
@@ -896,7 +915,7 @@ interface RpcEnvelope {
 /** 解包 remote 信封：失败抛错；成功返回 value。 */
 function unwrap(res: RpcEnvelope | undefined | null, what?: string): any {
   if (!res || !res.ok) {
-    throw new Error(`${what || 'remote'} 调用失败：${(res && res.error && (res.error.message || res.error.code)) || '未知错误'}`)
+    throw new Error(t('common.remoteCallFailed', { what: what || 'remote', detail: (res && res.error && (res.error.message || res.error.code)) || t('common.unknownError') }))
   }
   return res.value
 }
@@ -933,7 +952,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
   const [busy, setBusy] = React.useState(false)
 
   const refresh = React.useCallback(async () => {
-    if (!api) { setState((s) => ({ ...s, err: 'remote 未就绪' })); return }
+    if (!api) { setState((s) => ({ ...s, err: t('common.remoteNotReady') })); return }
     try {
       const lr = unwrap(await api.list(props.sessionId), 'list') as { runs?: Array<Record<string, unknown>>; workspace?: { slug?: string; path?: string | null } }
       const runsList = (lr && lr.runs) || []
@@ -1005,7 +1024,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
         },
       }, '🏭'),
       h('div', { style: { display: 'flex', flexDirection: 'column', gap: 1 } },
-        h('span', { style: { fontWeight: 700, fontSize: 14, lineHeight: '18px' } }, '团队工作台'),
+        h('span', { style: { fontWeight: 700, fontSize: 14, lineHeight: '18px' } }, t('workbench.title')),
         h('span', { style: { fontSize: 11, color: T.text2, display: 'flex', alignItems: 'center', gap: 5 } },
           h('span', {
             style: {
@@ -1014,15 +1033,15 @@ function TeamFlowView(props: TeamFlowViewProps) {
               animation: anyRunning ? 'tf-pulse 1.6s ease-in-out infinite' : 'none',
             },
           }),
-          anyRunning ? '流水线运行中' : '空闲',
+          anyRunning ? t('workbench.running') : t('workbench.idle'),
         ),
       ),
-      h('button', { onClick: refresh, style: { ...btn, marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5 } }, '🔄 刷新'),
+      h('button', { onClick: refresh, style: { ...btn, marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5 } }, t('workbench.refresh')),
       canResume ? h('button', {
         onClick: onResume, disabled: busy,
-        title: `断点续跑 ${activeRun.id}\n当前状态：${RUN_STATUS_TEXT[activeRun.status] || activeRun.status}；跳过已完成阶段，从第一个未完成阶段重跑`,
+        title: t('workbench.resumeTip', { id: activeRun.id, status: runStatusText(activeRun.status) }),
         style: { ...btn, background: T.error, color: '#fff', border: 'none', fontWeight: 600 },
-      }, busy ? '续跑中…' : `↻ 从断点重跑 #${String(activeRun.id).slice(-6)}`) : null,
+      }, busy ? t('workbench.resuming') : t('workbench.resumeBtn', { id: String(activeRun.id).slice(-6) })) : null,
     ),
 
     err ? h('div', {
@@ -1030,7 +1049,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
         color: T.error, fontSize: 12, background: `color-mix(in srgb, ${T.error} 8%, transparent)`,
         border: `1px solid color-mix(in srgb, ${T.error} 30%, transparent)`, borderRadius: 8, padding: '7px 11px',
       },
-    }, `⚠ ${err}（确认已安装 dsh-plugin-teamflow 且 web 已重启）`) : null,
+    }, t('workbench.loadFailed', { err })) : null,
 
     /* 人工介入横幅 */
     needHuman.length > 0 ? h('div', {
@@ -1041,23 +1060,23 @@ function TeamFlowView(props: TeamFlowViewProps) {
         borderRadius: 10, padding: '9px 12px',
       },
     },
-      h('span', { style: { fontWeight: 700, color: T.warn, fontSize: 12.5 } }, `⚠ ${needHuman.length} 项需人工介入`),
+      h('span', { style: { fontWeight: 700, color: T.warn, fontSize: 12.5 } }, t('workbench.needsHumanBanner', { n: needHuman.length })),
       needHuman.slice(0, 5).map((item) => {
         const kind = (backlog.requirements || []).some((r) => r.id === item.id) ? 'req'
           : (backlog.tasks || []).some((t) => t.id === item.id) ? 'task' : 'bug'
         const fin = kind === 'bug' ? 'verified' : 'accepted'
         return h('button', {
           key: item.id,
-          onClick: async () => { await api.backlogUpdate(kind, item.id, fin, props.sessionId, '人工处理'); refresh() },
+          onClick: async () => { await api.backlogUpdate(kind, item.id, fin, props.sessionId, t('workbench.manualReason')); refresh() },
           style: { ...btn, background: T.success, color: '#fff', border: 'none', fontWeight: 600 },
-        }, `处理 ${item.id}`)
+        }, t('workbench.handle', { id: item.id }))
       }),
     ) : null,
 
     /* tab 栏 */
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 2, borderBottom: `1px solid ${T.border}` } },
-      h('button', { onClick: () => setTab('pipeline'), style: tabBtn(tab === 'pipeline') }, '🔄 流水线'),
-      h('button', { onClick: () => setTab('board'), style: tabBtn(tab === 'board') }, '📋 Backlog 看板'),
+      h('button', { onClick: () => setTab('pipeline'), style: tabBtn(tab === 'pipeline') }, t('workbench.tabPipeline')),
+      h('button', { onClick: () => setTab('board'), style: tabBtn(tab === 'board') }, t('workbench.tabBoard')),
       h('div', { style: { marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 } },
         activeRun ? h('span', {
           title: `${activeRun.id}\n${activeRun.requirement || ''}`,
@@ -1066,14 +1085,14 @@ function TeamFlowView(props: TeamFlowViewProps) {
             background: T.layer2, color: activeRun.status === 'interrupted' ? T.warn : T.text2,
             border: `1px solid ${T.border}`,
           },
-        }, `#${String(activeRun.id).slice(-8)} · ${RUN_STATUS_TEXT[activeRun.status] || activeRun.status}`) : null,        total && (total.input + total.cacheRead + total.cacheWrite + total.output) > 0 ? h('span', { style: { fontSize: 11.5, fontFamily: MONO, color: T.text2, cursor: 'help' }, title: '输入(未命中)/输入(命中)/输出 全部阶段合计' }, `∑ ⇅${fmtTokens(total.input)}/⇅${fmtTokens(total.cacheRead)}·⬆${fmtTokens(total.output)}`) : null,
+        }, `#${String(activeRun.id).slice(-8)} · ${runStatusText(activeRun.status)}`) : null,        total && (total.input + total.cacheRead + total.cacheWrite + total.output) > 0 ? h('span', { style: { fontSize: 11.5, fontFamily: MONO, color: T.text2, cursor: 'help' }, title: t('token.allStagesTip') }, `∑ ⇅${fmtTokens(total.input)}/⇅${fmtTokens(total.cacheRead)}·⬆${fmtTokens(total.output)}`) : null,
       ),
     ),
 
     /* 作用域条：当前工作区（项目）+ 本工作区历史流水线 */
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, flexWrap: 'wrap' } },
       h('span', {
-        title: `当前工作区（workspace 级隔离）：${(workspace && workspace.path) || '未连接工作区'}`,
+        title: t('workbench.workspaceTip', { path: (workspace && workspace.path) || t('workbench.noWorkspace') }),
         style: {
           display: 'inline-flex', alignItems: 'center', gap: 6, fontFamily: MONO,
           fontSize: 11.5, padding: '2px 10px', borderRadius: 999,
@@ -1088,23 +1107,23 @@ function TeamFlowView(props: TeamFlowViewProps) {
       /* 历史 run 切换：仅流水线 tab 下有意义（Backlog 看板是工作区级，不随 run 变化，
          展示在这里点击无反应还会误导 —— 故只看板 tab 时隐藏） */
       tab === 'pipeline' ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 5 } },
-        h('span', { style: { color: T.text2 } }, '历史'),
+        h('span', { style: { color: T.text2 } }, t('workbench.history')),
         runs.length ? runs.map((r) => {
           const sel = r.id === (runId || (runs[0] && runs[0].id))
           return h('button', { key: r.id, onClick: () => setRunId(r.id), style: chipBtn(sel), title: `${r.id}\n${r.requirement || ''}` },
             `#${String(r.id).slice(-6)}`)
-        }) : h('span', { style: { color: T.text2, fontSize: 11.5 } }, '（暂无）'),
+        }) : h('span', { style: { color: T.text2, fontSize: 11.5 } }, t('common.noneDash')),
       ) : null,
       /* 右栏 run 详情（v0.1.8）：与任务夹产物并排看；右侧栏不可用时点按无效（只 console 提示） */
       tab === 'pipeline' && activeRun && activeRun.address
         ? h('button', {
           style: chipBtn(false),
-          title: '在右侧栏打开该 run 详情（与任务夹产物并排看）',
+          title: t('workbench.openRightBarTip'),
           onClick: () => {
             const opened = props.openResource && props.openResource(activeRun.address, activeRun.id)
             if (!opened) console.warn('[teamflow] 右侧栏不可用，run 详情请在画布节点里查看')
           },
-        }, '⇥ 右栏打开')
+        }, t('workbench.openRightBarBtn'))
         : null,
     ),
 
@@ -1135,6 +1154,30 @@ if (typeof document !== 'undefined') {
 export async function apply(ctx) {
   await ctx.remote.$mount(TEAMFLOW_REMOTE_CONTRIBUTION)
   const teamflow = ctx.get('remote.teamflow')
+  /* ── 双语（v0.1.9）：词典注册 + 翻译函数注入（机制见 client/locales.ts） ──
+   * - register：两个词典进宿主 locale 服务（切语言时宿主重渲染每个 slot outlet）；
+   * - bind：返回的函数每次调用读当前语言，故可常驻 shared 的模块变量
+   *   （词表/格式化/折叠件是纯函数，拿不到组件 prop，只能走这条注入路径）；
+   * - labels 用 thunk：侧边栏面板名与 tab 名由宿主在读取时求值（ui-sidebar /
+   *   ui-conversation 都订阅了 locale），切语言不需要重新注册。 */
+  const t = ctx.locale.bind(NS)
+  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'teamflow: dictionaries')
+  ctx.effect(() => ctx.locale.subscribe(() => setTranslator(t, () => ctx.locale.getSnapshot().active)), 'teamflow: translator sync')
+  setTranslator(t, () => ctx.locale.getSnapshot().active)
+  /* host 侧语言上报（host 无浏览器语言通道）：初始上报一次 + 宿主语言变化时推送。
+   * 只走既有 Remote 面（teamflow/setLocale），不自建浏览器存储/语言探测；
+   * 失败静默（老宿主无该方法 / RPC 未就绪 / 连接断开都不影响客户端渲染与流水线）。 */
+  const pushLocaleToHost = (active?: string): void => {
+    try {
+      if (typeof active !== 'string' || !active) return
+      const p = teamflow.setLocale(active)
+      if (p && typeof p.catch === 'function') p.catch(() => {})
+    } catch (e) { /* 推送失败静默：host 走兜底链 */ }
+  }
+  ctx.effect(() => {
+    pushLocaleToHost(ctx.locale.getSnapshot().active)
+    return ctx.locale.subscribe(() => pushLocaleToHost(ctx.locale.getSnapshot().active))
+  }, 'teamflow: host locale push')
   // 右侧栏打开（产物预览 / run 详情共用）：地址（dsh-resource://…）由 host 生成，这里只交给右侧栏。
   // 服务名 sidebarRight（@deepseek-ai/dsh-client-ui-sidebar-right 提供）；未挂载/未认领地址时返回 false
   // ——右侧栏只是增强路径，缺它时调用方降级（故不进 inject，避免激活期硬依赖）。
@@ -1159,11 +1202,13 @@ export async function apply(ctx) {
     name: 'sidebar.panellist',
     id: 'teamflow',
     order: 60,
-    label: '团队工作台',
+    locale: NS,
+    label: () => t('workbench.title'),
   }, TeamflowPanelIcon))
   ctx.slots.inject('main', () => ctx.slots.register({
     name: 'main',
     key: 'teamflow',
+    locale: NS,
     inject: () => ({
       remote: teamflow,
       sessions: ctx.get('sessions'),
@@ -1184,6 +1229,7 @@ export async function apply(ctx) {
   ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab',
     key: RUN_TAB_ID,
+    locale: NS,
     inject: () => ({ remote: teamflow, openArtifact }),
   }, RunDetailTab))
   // 注册团队工作台 tab
@@ -1191,7 +1237,8 @@ export async function apply(ctx) {
     name: 'conversation.view',
     id: 'teamflow',
     order: 20,
-    label: '🏭 团队工作台',
+    locale: NS,
+    label: () => `🏭 ${t('workbench.title')}`,
     inject: (sessionId) => ({ sessionId, remote: teamflow, sessions: ctx.get('sessions'), openArtifact, openResource: openResourceSafe }),
   }, TeamFlowView))
   // 注册输入框旁的团队选择按钮
@@ -1199,6 +1246,8 @@ export async function apply(ctx) {
     name: 'conversation.input.right',
     id: 'teamflow-team-select',
     order: 5,
-    inject: (sessionId) => ({ sessionId, remote: teamflow }),
+    locale: NS,
+    // locale 一并注入：团队名/描述由 host 按界面语言本地化下发，切语言时组件需重取列表
+    inject: (sessionId) => ({ sessionId, remote: teamflow, locale: ctx.locale.getSnapshot().active }),
   }, TeamSelector))
 }

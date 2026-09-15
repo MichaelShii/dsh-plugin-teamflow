@@ -10,7 +10,7 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSy
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
-  journalFile, runsDir, persistJournal, loadJournals, serializeJournal, readJson, slugPath, runLogFile,
+  journalFile, runsDir, persistJournal, loadJournals, serializeJournal, readJson, slugPath, runLogFile, runLogArchiveDir,
 } from '../store.ts'
 
 let failed = 0
@@ -52,7 +52,11 @@ ok(onDisk.id === 'tf-test1' && onDisk.status === 'running', '落盘内容正确'
 ok(onDisk.workspacePath === wsPath && onDisk.taskId === 'task-1', 'workspacePath/taskId 持久化')
 ok(onDisk.stages[0].output === '【完整 PRD 全文】...', '已完成阶段产物全文保留（续跑重建用）')
 ok(onDisk.stages[1].status === 'running', '未完成阶段保留 running 状态')
-ok(readdirSync(join(home, 'workspace', 'logs', 'teamflow')).length === 1, 'run 日志落到 <workspace>/logs/teamflow/<runId>.log')
+// 2026-09-15（B 方案）：host run 日志不再落用户项目，改为 $DSH_HOME/teamflow/<workspace>/logs/<runId>/run.log
+const archiveDir = runLogArchiveDir(journal)
+ok(!!archiveDir && archiveDir.startsWith(join(home, 'teamflow')) && archiveDir.endsWith(join('logs', 'tf-test1')), `run 日志归档到 $DSH_HOME/teamflow/<workspace>/logs/<runId>/（${archiveDir}）`)
+ok(existsSync(runLogFile(journal)), '归档内有 host 事件日志 run.log')
+ok(!archiveDir.startsWith(wsPath), '归档落点不在工作区（项目内不再落 host 日志）')
 
 console.log('── 2) 模拟进程崩溃 → loadJournals 标记 interrupted ──')
 const loaded = loadJournals()

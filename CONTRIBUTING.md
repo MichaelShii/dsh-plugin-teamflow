@@ -35,7 +35,7 @@ host/                # TeamflowService + core/* (pipeline, backlog, runner, guar
 client/index.tsx     # 🏭 Team Workspace web tab (hyperscript/preact-style, no JSX build deps)
 store.ts             # persistence layer (atomic write / journal serialization), independently testable
 descriptors.ts       # Remote descriptors (pure data, shared host/client)
-docs/adr/            # design decision records (ADR-0001~0008) — read before touching pipeline internals
+docs/adr/            # design decision records (ADR-0001~0009) — read before touching pipeline internals
 AGENTS.md            # maintainer's product memory & engineering conventions (internal, Chinese)
 test/                # dependency-free test suites
 ```

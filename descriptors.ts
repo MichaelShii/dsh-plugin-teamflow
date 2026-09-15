@@ -46,6 +46,15 @@ export const TEAMFLOW_DESCRIPTORS: readonly InvocationDescriptor[] = Object.free
     result: strict,
   },
   {
+    id: 'dsh-plugin-teamflow#teamflow/setLocale',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'setLocale',
+    invocation: { kind: 'direct' },
+    parameters: [p('locale')],
+    result: strict,
+  },
+  {
     id: 'dsh-plugin-teamflow#teamflow/list',
     service: 'teamflow',
     namespace: 'teamflow',

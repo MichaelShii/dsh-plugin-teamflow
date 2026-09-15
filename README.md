@@ -48,8 +48,9 @@ TeamFlow 团队研发流水线 —— DeepSeek Harness 可分发插件（`dsh pl
 - **backlog 持久化（v0.1.0 起按工作区隔离）到 `$DSH_HOME/teamflow/<workspace>/backlog/`**
   `requirements.json` / `tasks.json` / `bugs.json`，跨重启不丢；backlog 按「工作区（项目）」隔离——一个工作区就是一条项目线，不同工作区各看各的团队工作台。
 - **单任务模型**：一个需求 = 一张轮转任务卡（不再按角色拆任务），任务卡记录 `devAssign` / `qaAssign` / 验收人，状态轮转：待办→开发中→待测试→测试中→待验收→已验收|打回|需人工；交付前端页面同时展示每个角色花在该任务上的**真实 token usage**。
-- **产物收口**：流水线文档（PRD/设计/架构/技术方案/QA/记忆/历史）全部收口到 `docs/teamflow/`，命令运行日志收口到 `logs/teamflow/<runId>/`，宿主 `docs/<职责>/` 与项目根不再被 TeamFlow 污染；host 端 run 日志同样落 `<工作区>/logs/teamflow/<runId>.log`。
-- **交付面与噪音隔离**：只有**代码 + `docs/teamflow/` 任务夹**进收口提交（一个 run 一个 commit）；`logs/teamflow/` 是插件自己的运行日志（含子代理的临时验证脚本），**不属于交付物**——host 提交时会把它写进工作区 `.gitignore`（幂等追加，随本次提交可见），并用 git pathspec 强制排除，因此**目标项目不需要预先配置 .gitignore**。若你的仓库已经提交过这批日志，可在目标仓库执行 `git rm -r --cached logs/teamflow` 移出（本地文件保留）。
+- **产物收口**：流水线文档（PRD/设计/架构/技术方案/QA/记忆/历史）全部收口到 `docs/teamflow/`，命令运行日志在 run 期间暂存到 `logs/teamflow/<runId>/`，宿主 `docs/<职责>/` 与项目根不再被 TeamFlow 污染。
+- **日志根在 `$DSH_HOME`，不在你的项目里（v0.1.9）**：子代理受 DSH 文件沙箱约束（`workspace-write` 只能写会话工作区），所以只能先在项目内暂存；**run 一结束 host 就把其中值得留的东西归档到 `$DSH_HOME/teamflow/<workspace>/logs/<runId>/` 并删掉项目内副本**（host 自身的事件日志 `run.log` 直接落归档位）。**不制造输出 dump**：子代理被要求**不要**把命令/套件输出重定向进文件——长输出本来就由宿主截成 tail、全文 spill 到它报告的临时路径（这是 DSH 原生能力），所以要留存的只有**检查脚本**（`scripts/`）、**不可重跑的命令载荷**（`captures.json`）与结论笔记（`.md`），其余（`*.log`/`*.out`/`*.txt`/源码快照）**归档时一律丢弃**。实测一次真实 run 里 93% 是可重跑输出或 git 里已有的副本。崩溃/被 kill 的 run 不留残渣：下次同工作区起跑按同一标准处理残留（自愈），**每个工作区只保留最近 20 次 run**。
+- **交付面与噪音隔离**：只有**代码 + `docs/teamflow/` 任务夹**进收口提交（一个 run 一个 commit）；`logs/teamflow/` 是插件自己的运行日志（含子代理的临时验证脚本），**不属于交付物**——host 提交前先把这条规则**幂等写进工作区 `.gitignore`**（随本次提交可见），整树 `git add` 之后再**把该目录从索引里摘掉**（`git rm -r --cached --ignore-unmatch`，只动索引、不删你的文件），因此**目标项目不需要预先配置 .gitignore**（这两道防线覆盖的是「run 进行中你自己提交」的窗口）。若你的仓库已经提交过这批日志，可在目标仓库执行 `git rm -r --cached logs/teamflow` 移出（本地文件保留）。
 - **状态机 + 事件日志**：需求（立项→进行中→待验收→已验收）、任务（待办→开发中→待测试→测试中→待验收→完成|打回|需人工）、缺陷（待认领→处理中→已修复待验→已关闭）。
 - **打回阈值**：单阶段连续 2 次 Agent 失败自动重试，仍失败 → `needs-human`，需人工介入。
 - **并发池**：开发任务按 `maxConcurrency`（默认 3，最大 8）并行执行。
@@ -65,6 +66,8 @@ TeamFlow 团队研发流水线 —— DeepSeek Harness 可分发插件（`dsh pl
     - 人工介入中心（needs-human 项聚合 + 一键终态）
     - 历史 run 切换 + 产品切换 + 「⇥ 右栏打开 run 详情」
   - **全局面板**（v0.1.8）：侧边栏图标 → 中央主区整块切换为**产品线视角**——左栏产品线列表（`$DSH_HOME/teamflow/<key>`，含 run 计数/活跃数/最近需求与结论），右栏该产品线的 run 列表 + backlog 分组（不依附会话，跨会话可用）。点 run 在**面板内联**看详情（阶段/尝试/验证证据/产出/日志）；要并排看产物就点 run 行的「对话右栏」= 切回对话并在右侧栏打开（**右侧栏的会话内容宿主只在对话视图渲染**，这是宿主设计，不是面板缺陷；任何一步不可用都会降级为面板内联并给出可见提示）
+
+- **界面中英双语（v0.1.9，P1 客户端面）**：工作台文案跟随宿主语言（设置 → 通用 → 语言）**实时切换、无需重启**——走宿主 `ctx.locale` 服务（插件注册词典 + slot 注册项声明 `locale`，宿主切语言时重渲染每个 outlet），不自建 i18n；状态/阶段/角色/token 口径/时间格式等词表统一查表，247 条 key 中英逐条对齐（`test/smoke.js` 断言守门：两侧 key 集合必须一致，且客户端除 console 诊断外不得残留中文字面量）。**范围边界**：仅**客户端展示层**；host 生成的完成汇报/工具返回/流水线日志与产物文档（PRD/QA-REPORT/ACCEPTANCE…）仍是中文——产物语言与「验收结论」是 host 解析契约，属 P3（见 `docs/TODO.md`）。
 
 ## AGENTS.md 最小侵入原则（重要）
 
@@ -190,7 +193,7 @@ node --check lib/host.mjs lib/client.js lib/store.mjs lib/descriptors.mjs
 npm run bundle          # 构建 client（tsdown → lib/client.js，__ModuleLoader__.load 注册）
 ```
 
-**插件开发者**（本插件的本地开发链路）见仓库内 [`AGENTS.md`](./AGENTS.md) 与 [`docs/adr/`](./docs/adr)——含部署同步（`node deploy.mjs` → 重启 `dsh --profile web`）、生效前提（运行中 web 从 profile 部署副本加载 host，只构建源码不生效）、设计决策记录（ADR-0001~0008）与基准对比（`docs/benchmarks/`）。本仓库其余源码均为 TS/TSX，需先 `pnpm bundle` 构建后再运行（`node_modules` 下 strip-types 不生效）。
+**插件开发者**（本插件的本地开发链路）见仓库内 [`AGENTS.md`](./AGENTS.md) 与 [`docs/adr/`](./docs/adr)——含部署同步（`node deploy.mjs` → 重启 `dsh --profile web`）、生效前提（运行中 web 从 profile 部署副本加载 host，只构建源码不生效）、设计决策记录（ADR-0001~0009）与基准对比（`docs/benchmarks/`）。本仓库其余源码均为 TS/TSX，需先 `pnpm bundle` 构建后再运行（`node_modules` 下 strip-types 不生效）。
 
 注意：`lib/` 被 `.gitignore` 排除，但发布必须带上构建产物（`files` 白名单已含 `lib/`；`exports["./client"]` 指向 `./lib/client.js`）。
 

@@ -2,6 +2,8 @@
  * dsh-plugin-teamflow — 通用纯工具（底座；依赖 constants.ts，无其他依赖）。
  */
 import { REFUSAL_PATTERN, STAGE_MIN_LENGTH, DELIVERY_EVIDENCE_PATTERN } from './constants.ts'
+import { t } from './locales.ts'
+import type { HostLocale } from './locales.ts'
 
 export function toText(v) {
   if (v === null || v === undefined) return ''
@@ -106,6 +108,8 @@ export function normalizeSignal(s) {
  * 场景（实锤 assetd `tf-mtwvwpxa-p3vw08`）：插件强制把命令日志/临时脚本写进 `logs/teamflow/`，
  * 目标仓库没忽略它时，收口提交的 227 个文件里 208 个是这批噪音（92%）——本函数负责「补规则」这一半，
  * 另一半（提交面强制排除）在 `sanity.tfAddArgs()`。
+ * 2026-09-15（B 方案）后该目录只是 **run 期间的工作区暂存**（终态由 `core/runlogs` 归档到 `$DSH_HOME`
+ * 并从项目删除）——两道防线保留，用于覆盖「run 进行中用户自己提交」的窗口。
  *
  * 覆盖判定不只看字面相等：已有 `logs/`、`logs/**` 这类**更宽的目录规则**同样算已忽略
  * （否则会往一个已经生效的仓库里塞冗余规则）。返回 `changed=false` 时调用方**不要写文件**。
@@ -113,6 +117,7 @@ export function normalizeSignal(s) {
 export function mergeGitignore(
   existing: string | null | undefined,
   entries: string[],
+  locale: HostLocale = 'zh',
 ): { text: string; changed: boolean; added: string[] } {
   const src = existing === null || existing === undefined ? '' : String(existing)
   const lines = src.split(/\r?\n/).map((l) => l.trim())
@@ -129,7 +134,7 @@ export function mergeGitignore(
   const added = entries.filter((e) => e && !coveredBy(e))
   if (added.length === 0) return { text: src, changed: false, added: [] }
   const head = src ? `${src}${src.endsWith('\n') ? '' : '\n'}` : ''
-  const block = `${src ? '\n' : ''}# TeamFlow 运行日志（插件自有产物，非交付物；host 提交时另有 pathspec 强制排除）\n${added.join('\n')}\n`
+  const block = `${src ? '\n' : ''}${t(locale, 'log.gitignoreHeader')}\n${added.join('\n')}\n`
   return { text: head + block, changed: true, added }
 }
 
@@ -193,6 +198,89 @@ export function judgeDeliverable(phase: string, text: string | null | undefined)
   return { ok: false, reason: 'refusal', refusal, min, length }
 }
 
+/* ── QA 轮次收敛的**埋点**（D 方案 2026-09-15：先测量，再决定要不要动状态机语义） ──────────
+ * 背景：52 个历史 run 里「真正需要第 3 轮修复」从未发生，而「同一缺陷原样复现就早停」这条判据
+ * **按缺陷 id 判不出来**——QA 每轮重新编号（实锤 r9：`QA-*` → `R2-*` → `R3-*`）。
+ * 所以先记录**稳定身份**与逐轮集合，等攒到真实复验轮数据再决定是否把 `QA_REWORK_LIMIT` 换成收敛判据。
+ * 身份优先级：**缺陷行自带的检测命令**（B 方案起 QA 必填，最稳定、机器写给机器看）> 模块+实际行为文本
+ * （自由文本，跨轮容易被改写，只作兜底）> 缺陷 id（最不稳定，最后兜底）。
+ */
+
+/** 归一化：去 markdown 装饰、压平空白、小写（仅用于身份比较，不改原值）。 */
+function fpNorm(s: unknown): string {
+  return String(s === null || s === undefined ? '' : s).replace(/[`*]/g, '').replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+/** 缺陷的**稳定身份**（跨轮次可比）：检测命令优先，其次 模块+实际/期望文本，最后回落 id。 */
+export function defectFingerprint(d: { check?: string | null; module?: string | null; actual?: string | null; expected?: string | null; id?: string | null } | null | undefined): string {
+  if (!d) return ''
+  const cmd = fpNorm(d.check)
+  if (cmd) return `cmd:${cmd}`.slice(0, 200)
+  const mod = fpNorm(d.module)
+  const body = fpNorm(d.actual || d.expected || '')
+  if (mod || body) return `txt:${mod}|${body}`.slice(0, 200)
+  return `id:${fpNorm(d.id)}`
+}
+
+/**
+ * 与**历史轮次**对比本轮阻断集合（收敛判据的原始素材）。
+ * @param prevFps - 之前每一轮的指纹数组（按时间顺序，不含本轮）
+ * @param curFps - 本轮的指纹数组
+ * @returns newFps = 历史从未出现过；repeats = 至少出现过一次（**修完还在 → 停滞信号**）；
+ *          resolved = 上一轮出现过、本轮消失（消解数）。返回指纹列表（便于人工核对是哪几条）。
+ */
+export function compareDefectRounds(prevFps: string[][], curFps: string[]): { newFps: string[]; repeats: string[]; resolved: string[] } {
+  const seen = new Set<string>()
+  for (const round of prevFps || []) for (const fp of round || []) seen.add(fp)
+  const last = (prevFps && prevFps.length ? prevFps[prevFps.length - 1] : []) || []
+  const cur = new Set(curFps || [])
+  return {
+    newFps: (curFps || []).filter((fp) => !seen.has(fp)),
+    repeats: (curFps || []).filter((fp) => seen.has(fp)),
+    resolved: last.filter((fp) => !cur.has(fp)),
+  }
+}
+
+/**
+ * 组装一轮 QA 的埋点记录（D 方案 2026-09-15；纯函数，便于回归测试）。
+ * @param round - 轮次（1 = 首轮）
+ * @param seq - 该轮 QA stage 的 seq（审计定位；未知传 null）
+ * @param defects - 本轮解析出的全部缺陷（含 P3）
+ * @param prevRounds - 之前的埋点记录（用于算 新增/重复/消解）
+ * @param qaCalls - 该轮 QA 的实际调用数（未知传 null）
+ * @param limit - 当前复验上限（`outcome` 用）
+ */
+export function qaRoundEntry(
+  round: number,
+  seq: number | null,
+  defects: Array<{ id?: string; severity?: string; module?: string; check?: string; criterion?: string; actual?: string; expected?: string }>,
+  prevRounds: Array<Record<string, unknown>> | null | undefined,
+  qaCalls: number | null,
+  limit: number,
+): Record<string, unknown> {
+  const all = defects || []
+  const blocking = all.filter((d) => d.severity !== 'P3')
+  const fps = blocking.map((d) => defectFingerprint(d))
+  const prevFps = (prevRounds || []).map((r) => (((r && r.defects) as Array<{ fp?: string }>) || []).map((d) => String((d && d.fp) || '')))
+  const cmp = compareDefectRounds(prevFps, fps)
+  return {
+    round,
+    seq,
+    blocking: blocking.length,
+    p3: all.length - blocking.length,
+    defects: blocking.map((d, i) => ({ id: d.id, sev: d.severity, module: d.module || '', fp: fps[i] })),
+    withCheck: blocking.filter((d) => String(d.check || '').trim()).length,
+    withCriterion: blocking.filter((d) => String(d.criterion || '').trim()).length,
+    qaCalls,
+    fixCalls: null,
+    gate: null,
+    newFps: cmp.newFps.length,
+    repeats: cmp.repeats.length,
+    resolved: cmp.resolved.length,
+    outcome: blocking.length === 0 ? 'pass' : round > limit ? 'limit' : 'rework',
+  }
+}
+
 /** 不可重试的失败原因（上下文耗尽/超长/provider 客户端拒绝等——重试同一 prompt 大概率复现）。
  * 实锤 tf-mtcnejqj：opencode-go 400 invalid_request_error（tool 消息序列非法）被当作可重试 → 烧 1.98M 熔断。 */
 export function isUnretryable(reason: unknown, outcome: unknown): boolean {
@@ -219,19 +307,32 @@ export function refusalHit(text: string | null | undefined): { phrase: string; c
 }
 
 /** 重试诊断包：上一轮失败详情回灌进重试 prompt（盲试 → 带因重试）。
- * 失败分类/详情/护栏原因取自 stage；产出尾部截断 1000 字符供自查修正。 */
-export function buildRetryDiagnostic(attempt: number, stage: { outcome?: string | null; summary?: string | null; guardReason?: string | null; output?: string | null }): string {
+ * 失败分类/详情/护栏原因取自 stage；产出尾部截断 1000 字符供自查修正。
+ * `locale` 为**尾参可选**（缺省/`zh` → 现状中文**逐字不变**；`en` → 新增英文文案，AC-3④）。
+ * 文案自带 zh/en 两份而不经 `host/locales/pipeline.ts`：该词典的 `diag.*` 归流水线面（T2），
+ * 冻结键表列出的 `retryHeader/outcome/guardReason/detail/tail/end` 尚未落地——若在此强行查词典，
+ * 缺 key 会回落成 key 字面量污染喂回子代理的注入文本；故本函数不引入对词典的强依赖。 */
+export function buildRetryDiagnostic(
+  attempt: number,
+  stage: { outcome?: string | null; summary?: string | null; guardReason?: string | null; output?: string | null },
+  locale?: HostLocale | null,
+): string {
+  const en = locale === 'en'
   const lines: string[] = []
-  lines.push(`[重试诊断 · 第 ${attempt} 次尝试] 上一轮尝试未成功。这不是新任务——请先阅读以下失败详情，再执行原任务并修正上一轮的问题。`)
-  lines.push(`- 失败分类：${stage.outcome || 'unknown'}`)
-  if (stage.guardReason) lines.push(`- 护栏中止原因：${stage.guardReason}`)
-  if (stage.summary) lines.push(`- 详情：${stage.summary}`)
+  lines.push(en
+    ? `[Retry diagnostic · attempt ${attempt}] The previous attempt did not succeed. This is not a new task — read the failure details below first, then perform the original task while fixing the previous attempt's problems.`
+    : `[重试诊断 · 第 ${attempt} 次尝试] 上一轮尝试未成功。这不是新任务——请先阅读以下失败详情，再执行原任务并修正上一轮的问题。`)
+  lines.push(en ? `- Failure class: ${stage.outcome || 'unknown'}` : `- 失败分类：${stage.outcome || 'unknown'}`)
+  if (stage.guardReason) lines.push(en ? `- Guard abort reason: ${stage.guardReason}` : `- 护栏中止原因：${stage.guardReason}`)
+  if (stage.summary) lines.push(en ? `- Details: ${stage.summary}` : `- 详情：${stage.summary}`)
   const out = String(stage.output || '')
   if (out) {
     const tail = out.length > 1000 ? `…${out.slice(-1000)}` : out
-    lines.push(`- 上一轮产出末尾（节选，供自查修正）：\n${tail}`)
+    lines.push(en
+      ? `- End of the previous output (excerpt, for self-correction):\n${tail}`
+      : `- 上一轮产出末尾（节选，供自查修正）：\n${tail}`)
   }
-  return `\n\n${lines.join('\n')}\n[/重试诊断结束]`
+  return `\n\n${lines.join('\n')}\n${en ? '[/Retry diagnostic end]' : '[/重试诊断结束]'}`
 }
 
 /**
@@ -250,7 +351,7 @@ export function buildRetryDiagnostic(attempt: number, stage: { outcome?: string 
  */
 export function parseAcceptanceVerdict(text) {
   const acc = String(text || '')
-  const accLine = (acc.split('\n').find((l) => /验收结论|整体结论/.test(l)) || '').replace(/\|.*/, '').trim()
+  const accLine = (acc.split('\n').find((l) => /验收结论|整体结论|Acceptance verdict|Overall verdict/i.test(l)) || '').replace(/\|.*/, '').trim()
   // M3 架构门禁：明确的架构打回信号 → rework（无论结论行写没写「通过」）。
   // 修正误杀（tf-mt1pulkw）：验收正文「架构一致性核验 — PASS，无返工项」被朴素正则
   // 当成打回信号 → 误判 rework。现在改为「独立断言词 + 否定保护」：
@@ -261,16 +362,25 @@ export function parseAcceptanceVerdict(text) {
   const archNegated =
     /无返工|无.*返工|不返工|无架构打回|无.*打回|非漂移|无.*重复|无.*偏离|无.*抽象.*问题|无.*蓝图.*问题|架构一致性.*(PASS|良好|达标|通过|无问题)|M3.*(PASS|通过|达标)|架构.*(达标|无问题|良好)/.test(acc)
   if (hasArchRedFlag && !archNegated) return 'rework'
-  if (/📝\s*需求不适用/.test(acc)) return 'reject'
+  if (/📝\s*需求不适用|📝\s*(?:Not applicable|N\/A)/i.test(acc)) return 'reject'
   // 结论行显式否定 → rework；✅ 通过同现时通过词优先；双重否定保护（无不通过/未发现不通过=通过）
-  if (/不通过|需返工|未通过/.test(accLine) && !/无\s*不通过|未发现不通过|未出现不通过/.test(accLine)) {
-    if (/✅\s*通过/.test(accLine)) return 'accepted'
+  // en 新增（AC-6）：`fail/failed/not pass/not passed` 进否定词表；**明确不把裸 `rework` 当否定词**
+  // ——en 模板 `⚠️ Conditional pass (rework items listed)` 含 `rework`，混入即误判打回。
+  // `no failed/no failures` 与中文否定保护同效；通过词用负向先行断言排除 `not passed` 里的 `passed`。
+  if (
+    /不通过|需返工|未通过|\b(?:fail|failed|not pass|not passed)\b/i.test(accLine) &&
+    !/无\s*不通过|未发现不通过|未出现不通过|no failed|no failures/i.test(accLine)
+  ) {
+    if (/✅\s*通过|(?<!not\s)\bpass(?:ed)?\b|⚠️\s*conditional\s+pass/i.test(accLine)) return 'accepted'
     return 'rework'
   }
-  if (!/通过|✅|⚠️/.test(accLine) && /需求不适用|需求与实际不符|需求站不住|需求无效|无需改动|无需修改/.test(accLine)) return 'reject'
+  if (!/通过|✅|⚠️/.test(accLine) && /需求不适用|需求与实际不符|需求站不住|需求无效|无需改动|无需修改|not applicable|requirement (?:does not|invalid)/i.test(accLine)) return 'reject'
   if (!accLine) return 'needs-human'
   // 结论行存在但未命中任何四档词（空结论行「验收结论：」/待定/无结论）→ 不猜结论（漏报变体：
   // 旧实现只对「无结论行」→ needs-human，前缀残留的空行因 accLine 非空漏回 accepted）
+  // en 新增档位词（`Pass`/`Fail`/`Not applicable`，AC-6）：无 emoji 的英文结论行不得漏成 needs-human。
+  // 单独成行而**不改写**下面的中文四档白名单——`test/smoke.js` 对该行做源码断言（改之即红）。
+  if (!/通过|✅|⚠️|❌|📝/.test(accLine) && /\bpass(?:ed)?\b|\bfail(?:ed)?\b|not applicable/i.test(accLine)) return 'accepted'
   if (!/通过|✅|⚠️|❌|📝/.test(accLine)) return 'needs-human'
   return 'accepted'
 }
@@ -328,7 +438,7 @@ function repairBlueprintJson(raw: string): string | null {
   return null
 }
 
-export function extractBlueprint(text: string | null | undefined): Blueprint | null {
+export function extractBlueprint(text: string | null | undefined, locale?: HostLocale | null): Blueprint | null {
   const s = String(text || '')
   const i = s.indexOf(bdOpen)
   const j = s.indexOf(bdClose)
@@ -344,11 +454,21 @@ export function extractBlueprint(text: string | null | undefined): Blueprint | n
   const modules = parsed.modules || {}
   const duplications = Array.isArray(parsed.duplications) ? parsed.duplications : []
   const tasks = Array.isArray(parsed.tasks) ? parsed.tasks : []
+  // render 包裹标签按 locale 输出（缺省/zh → 现状中文逐字不变；en → 新增英文）。
+  // 与 buildRetryDiagnostic 同理：冻结键表未给 blueprint.* 键名，故文案自带于此，避免缺 key 回落成 key 字面量。
+  const en = locale === 'en'
   const parts: string[] = []
-  if (summary) parts.push(`架构判断：${summary}`)
+  if (summary) parts.push(en ? `Architecture judgment: ${summary}` : `架构判断：${summary}`)
   const modEntries = Object.entries(modules)
-  if (modEntries.length) parts.push(`模块蓝图：${modEntries.map(([f, m]) => `${f}→${m.responsibility || ''}${m.why ? `（${m.why}）` : ''}`).join('；')}`)
-  if (duplications.length) parts.push(`重复风险：${duplications.join('；')}`)
-  if (tasks.length) parts.push(`架构拆解任务：${tasks.map((t) => t.title).join('，')}`)
-  return { summary, modules, duplications, tasks, render: `【架构蓝图（tech 阶段产出，dev 须在既有架构上实现，勿重建）】\n${parts.join('\n')}` }
+  if (modEntries.length) {
+    parts.push(en
+      ? `Module blueprint: ${modEntries.map(([f, m]) => `${f}→${m.responsibility || ''}${m.why ? ` (${m.why})` : ''}`).join('; ')}`
+      : `模块蓝图：${modEntries.map(([f, m]) => `${f}→${m.responsibility || ''}${m.why ? `（${m.why}）` : ''}`).join('；')}`)
+  }
+  if (duplications.length) parts.push(en ? `Duplication risks: ${duplications.join('; ')}` : `重复风险：${duplications.join('；')}`)
+  if (tasks.length) parts.push(en ? `Decomposed tasks: ${tasks.map((t) => t.title).join(', ')}` : `架构拆解任务：${tasks.map((t) => t.title).join('，')}`)
+  const head = en
+    ? '[Architecture blueprint (produced by the tech stage; implement on the existing architecture, do not rebuild)]'
+    : '【架构蓝图（tech 阶段产出，dev 须在既有架构上实现，勿重建）】'
+  return { summary, modules, duplications, tasks, render: `${head}\n${parts.join('\n')}` }
 }

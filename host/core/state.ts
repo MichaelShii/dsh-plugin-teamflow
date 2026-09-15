@@ -14,6 +14,8 @@ import { join } from 'node:path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { teamflowRoot } from '../../store.ts'
 import type { RoleKey } from '../constants.ts'
+import { t } from '../locales.ts'
+import { runCtxLocale } from './locale.ts'
 
 /** 各阶段会额外输出一段 `<!-- state -->...<!-- /state -->` 的结构化 JSON，host 提取后合并进 state.json。 */
 export interface StageStateBlock {
@@ -65,6 +67,16 @@ export interface TeamflowState {
     sanity?: string
     blueprint?: string
     runDocs?: string
+    /** run 快照语言（'zh' | 'en'）：pipeline 按 journal.locale 写入，prompts/注入块据此渲染。 */
+    locale?: string
+    /** 本轮 QA 是否复验轮（C 方案 2026-09-15）：pipeline 的 QA 循环写入，qaPrompt 据此追加复验纪律
+     *  （复用上一轮探针 + 重跑缺陷行的检测命令）。缺省/夹具无此字段 = 首轮。 */
+    qaReverify?: boolean
+    /** 当前 QA 轮次（1 = 首轮；含复验）。 */
+    qaRound?: number
+    /** 验收是否「已知问题」只读模式（E 方案 2026-09-15）：QA 打回超限时 pipeline 写入，
+     *  acceptancePrompt 据此产出交付级视图 + 未闭环清单（结论由 host 强制为需人工裁定）。 */
+    knownIssues?: boolean
   } | null
 }
 
@@ -181,42 +193,48 @@ export function noteRun(projectKey: string, run: { id?: string; requirement?: st
   saveState(projectKey, state)
 }
 
-/** 按角色渲染 state slice（注入到子代理 prompt）。角色 → 只拿相关片段。 */
+/** 按角色渲染 state slice（注入到子代理 prompt）。角色 → 只拿相关片段。
+ * 语言：读 `state.__runCtx.locale`（由 pipeline 按 run 快照写入；缺省/历史缺字段 → zh，逐字不变）。 */
 export function stateSliceFor(state: TeamflowState, role: RoleKey): string {
+  const locale = runCtxLocale(state)
   const lines: string[] = []
   // 本次 run 注入上下文（任务夹路径 + M0 状态核对 + M1 架构蓝图）：所有角色都先看到
   if (state.__runCtx) {
-    if (state.__runCtx.runDocs) lines.push(`【本次任务产物夹】${state.__runCtx.runDocs}/（host 已创建；本需求的 PRD/TECHNICAL/QA-REPORT/ACCEPTANCE 全部写这里，夹建后不可变、不归档不升版）`)
+    if (state.__runCtx.runDocs) lines.push(t(locale, 'state.runDocs', { docs: state.__runCtx.runDocs }))
     if (state.__runCtx.sanity) lines.push(state.__runCtx.sanity)
     if (state.__runCtx.blueprint && (role === 'arch' || role === 'tech' || role === 'dev')) lines.push(state.__runCtx.blueprint)
   }
-  lines.push('【预编译产品状态（state.json · 权威记忆在 docs/teamflow/memory.md，本块已是够用的索引，勿再全量读历史文档）】')
-  if (state.product.summary) lines.push(`- 产品概要：${state.product.summary}`)
-  if (state.product.techStack && (role === 'tech' || role === 'dev' || role === 'arch')) lines.push(`- 技术栈：${state.product.techStack}`)
+  lines.push(t(locale, 'state.header'))
+  if (state.product.summary) lines.push(t(locale, 'state.productSummary', { summary: state.product.summary }))
+  if (state.product.techStack && (role === 'tech' || role === 'dev' || role === 'arch')) lines.push(t(locale, 'state.techStack', { stack: state.product.techStack }))
   if (Object.keys(state.acIndex).length && (role === 'pm' || role === 'qa' || role === 'acceptance' || role === 'tech')) {
     const acs = Object.entries(state.acIndex).slice(0, 40)
-    lines.push(`- AC 索引（${acs.length} 条）：${acs.map(([k, v]) => `${k} ${v}`).join('；')}`)
+    lines.push(t(locale, 'state.acIndex', { n: acs.length, list: acs.map(([k, v]) => `${k} ${v}`).join(t(locale, 'state.listSep')) }))
   }
   if (Object.keys(state.modules).length && (role === 'tech' || role === 'dev' || role === 'arch' || role === 'qa')) {
-    lines.push(`- 模块（${Object.keys(state.modules).length}）：${Object.entries(state.modules).map(([f, c]) => `${f}${c ? '→' + c : ''}`).join('，')}`)
+    lines.push(t(locale, 'state.modules', { n: Object.keys(state.modules).length, list: Object.entries(state.modules).map(([f, c]) => `${f}${c ? '→' + c : ''}`).join(t(locale, 'state.commaSep')) }))
   }
   if (state.verifyScripts.length && (role === 'qa' || role === 'tech' || role === 'dev')) {
-    lines.push(`- 验证脚本：${state.verifyScripts.join('，')}`)
+    lines.push(t(locale, 'state.verifyScripts', { list: state.verifyScripts.join(t(locale, 'state.commaSep')) }))
   }
   // 各阶段结论：本角色只需要前后几段
   if (role === 'pm' || role === 'acceptance') {
-    if (state.stages.prd) lines.push(`- PRD 摘要：${state.stages.prd}`)
-    if (state.stages.tech) lines.push(`- 技术方案摘要：${state.stages.tech}`)
-    if (state.stages.qa) lines.push(`- QA 摘要：${state.stages.qa}`)
+    if (state.stages.prd) lines.push(t(locale, 'state.prdSummary', { summary: state.stages.prd }))
+    if (state.stages.tech) lines.push(t(locale, 'state.techSummary', { summary: state.stages.tech }))
+    if (state.stages.qa) lines.push(t(locale, 'state.qaSummary', { summary: state.stages.qa }))
   } else if (role === 'dev' || role === 'tech') {
-    if (state.stages.tech) lines.push(`- 技术方案摘要：${state.stages.tech}`)
-    if (state.stages.prd) lines.push(`- PRD 摘要：${state.stages.prd}`)
+    if (state.stages.tech) lines.push(t(locale, 'state.techSummary', { summary: state.stages.tech }))
+    if (state.stages.prd) lines.push(t(locale, 'state.prdSummary', { summary: state.stages.prd }))
   } else if (role === 'qa') {
-    if (state.stages.qa) lines.push(`- 上轮 QA 摘要：${state.stages.qa}`)
+    if (state.stages.qa) lines.push(t(locale, 'state.lastQaSummary', { summary: state.stages.qa }))
   }
   if (state.lastRun) {
     const r = state.lastRun
-    lines.push(`- 上轮：${r.requirement ? r.requirement : ''}${r.verdict ? ' → ' + r.verdict : ''}${r.folder ? `（${r.folder}）` : ''}`)
+    lines.push(t(locale, 'state.lastRun', {
+      requirement: r.requirement ? r.requirement : '',
+      verdict: r.verdict ? ' → ' + r.verdict : '',
+      folder: r.folder ? t(locale, 'state.lastRunFolder', { folder: r.folder }) : '',
+    }))
   }
   return lines.join('\n')
 }

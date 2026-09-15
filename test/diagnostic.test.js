@@ -80,6 +80,46 @@ ok(!diagGuard.includes('上一轮产出末尾'), '无产出时不带产出尾部
 
 const diagNoDiag = buildRetryDiagnostic(2, { outcome: 'error', summary: null, output: null })
 ok(diagNoDiag.includes('失败分类：error') && !diagNoDiag.includes('详情：'), '缺省字段容错（无 summary/无产出）')
+ok(diag.includes('上一轮尝试未成功') && diag.includes('[/重试诊断结束]'), 'zh 诊断包文案逐字不变（头部整句 + 闭合标记）')
+
+console.log('── en 拒绝措辞 / 证据块 / 诊断包（AC-6 兜底判据在 en 下不得失效）──')
+const hitEn = refusalHit('I reviewed the request, and I cannot complete it: the authorization model is unclear.')
+ok(hitEn !== null, 'en 拒绝措辞命中（I cannot）')
+expect(hitEn ? hitEn.phrase : '', 'I cannot', '命中短语「I cannot」')
+ok(refusalHit("I can't proceed without the permission model.") !== null, "en 缩写命中（I can't）")
+ok(refusalHit('The sandbox denies child process pipes, so I am not able to execute the suite.') !== null, 'en 「not able to」命中')
+
+// en 兜底未被削弱：无证据块 + 拒绝措辞 = 未交付
+const bareEn = 'I cannot finish this task: the sandbox denies the permissions this change requires, so I am stopping here instead of guessing.' + 'y'.repeat(80)
+const bareEnVerdict = judgeDeliverable('dev', bareEn)
+ok(!bareEnVerdict.ok && bareEnVerdict.reason === 'refusal', 'en 无证据块 + 拒绝措辞 → 未交付 reason=refusal')
+
+// en 证据块豁免同样生效（如实汇报环境限制不是拒绝）
+const envLimitEn = [
+  'T5 implemented; only src/query.mjs changed.',
+  'Note: this sandbox forbids child-process pipes, so I am not able to run tests/run.mjs (7 cases) here; it needs a rerun in an unrestricted shell.',
+  '',
+  '[Verification evidence]',
+  '- cmd: node test/verify-query.mjs → exit 0, 12/12 passed',
+  '',
+  '<!-- state -->{"phase":"dev","summary":"T5 done"}<!-- /state -->',
+].join('\n')
+const envEnVerdict = judgeDeliverable('dev', envLimitEn)
+ok(envEnVerdict.ok && envEnVerdict.reason === 'ok', 'en 如实汇报环境限制 + 证据块 → 判交付（豁免路径同 zh）')
+ok(envEnVerdict.refusal !== null, 'en 命中措辞仍回传留痕（diagnostic only）')
+
+const diagEn = buildRetryDiagnostic(2, {
+  outcome: 'insubstantial',
+  summary: 'output failed substance validation: no verification evidence block and a refusal phrase was hit',
+  output: 'Previous attempt body'.repeat(80),
+}, 'en')
+ok(!/[\u4e00-\u9fff]/.test(diagEn), 'en 诊断包无 CJK（语言跟随 run 快照）')
+ok(diagEn.includes('attempt 2') && diagEn.includes('Failure class: insubstantial'), 'en 诊断包头部与失败分类为英文')
+ok(!diagEn.includes('diag.'), 'en 诊断包无未命中词典键字面量泄漏')
+ok(diagEn.includes('[/Retry diagnostic end]') && diagEn.endsWith('[/Retry diagnostic end]'), 'en 诊断包闭合标记')
+ok(diagEn.length < 2000, 'en 诊断包产出尾部同样截断（块长受控）')
+ok(buildRetryDiagnostic(3, { outcome: 'stalled', output: '', guardReason: 'spin' }, 'en').includes('Guard abort reason: spin'), 'en 护栏原因入块')
+ok(!buildRetryDiagnostic(3, { outcome: 'stalled', output: '' }, 'en').includes('End of the previous output'), 'en 无产出时不带产出尾部段')
 
 console.log(failed === 0 ? '\n✅ diagnostic 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

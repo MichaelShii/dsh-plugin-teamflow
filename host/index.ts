@@ -29,7 +29,7 @@ import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, devPrompt, qaPromp
 import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, setSessionProjections, workspaceScopeOf } from './core/context.ts'
 import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/backlog.ts'
 import { runsFor, runAddress, productKeyOf, runVisibleIn, runBrief, productMetaOf, listProducts } from './core/products.ts'
-import { loadTeams, findTeam, type TeamConfig } from './core/teams.ts'
+import { loadTeams, findTeam, teamNameOf, teamDescOf, type TeamConfig } from './core/teams.ts'
 import { runPool, runAgent, withRetry } from './core/runner.ts'
 import { deliverCompletion } from './core/report.ts'
 import { runSanityCheck, gitCmd } from './core/sanity.ts'
@@ -37,6 +37,8 @@ import { join } from 'node:path'
 import { mkdirSync, readdirSync } from 'node:fs'
 import { executePipeline, summarizeTimeline, startPipeline, cancelRun, resumeRun } from './core/pipeline.ts'
 import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, normalizeMode, runTriage } from './core/triage.ts'
+import { t, modeDesc } from './locales.ts'
+import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.ts'
 
 /* BacklogStore / storeFor 见 core/backlog.ts（数据层与状态机）。 */
 
@@ -131,28 +133,28 @@ function registerTools(ctx) {
       render: (args, value) => {
         if (value && value.status === 'needs-decision') {
           const opts = Array.isArray(value.options) ? value.options.map((o, i) => `${i + 1}. ${o.label}`).join('\n') : ''
-          return [{ type: 'text', text: `【分支决策】${value.question}\n${opts}\n（也可自定义输入）——请询问用户选择，确认后把所选选项的 value 作为 branchPolicy 重新调用 teamflow_start（如 'new'/'keep'；脏工作区选项可拆为 branchPolicy + preAction 组合），自定义分支名则传 branchName。` }]
+          return [{ type: 'text', text: t(ambientLocale(), 'tool.start.decision', { question: value.question, options: opts }) }]
         }
         if (value && value.status === 'needs-confirmation') {
-          return [{ type: 'text', text: `【需求确认】${value.question}\n${value.note || ''}——请按此询问用户后再决定。` }]
+          return [{ type: 'text', text: t(ambientLocale(), 'tool.start.needsConfirm', { question: value.question, note: value.note || '' }) }]
         }
-        return [{ type: 'text', text: `团队研发流水线已启动（runId=${value.runId}，${value.status}），正在后台执行。【重要】你现在停手：不要自行读取/修改代码实现该需求，不要重复跑测试验证——实现、QA、汇报由流水线各阶段完成。你只需告知用户流水线已启动，等待流水线完成后的官方完成汇报，再向用户转述结果。可用 teamflow_status 查询进度/阶段 token；backlog 已持久化到 $DSH_HOME/teamflow。` }]
+        return [{ type: 'text', text: t(ambientLocale(), 'tool.start.started', { runId: value.runId, status: value.status }) }]
       },
     },
     async execute(args, exec) {
       const parent = exec && exec.agent
-      if (!parent) throw new Error('teamflow_start 需要由会话内的 Agent 调用')
+      if (!parent) throw new Error(t(ambientLocale(), 'err.tool.sessionAgentStart'))
       // 暂停检查：会话级暂停时拒绝启动
       const sessionId = parent.session && parent.session.id
       if (sessionId && pausedSessions.has(String(sessionId))) {
-        return { runId: null, status: 'paused', message: '当前会话已暂停 teamflow。如需恢复，调用 teamflow_resume_session；或直接写代码。' }
+        return { runId: null, status: 'paused', message: t(ambientLocale(), 'tool.start.paused') }
       }
       // 团队检查：必须先通过 UI "+" 按钮选择团队，否则拒绝
       const teamId = (args && typeof args.teamId === 'string' && args.teamId.trim())
         || (sessionId && activeTeams.get(String(sessionId)))
         || null
       if (!teamId) {
-        return { runId: null, status: 'no-team', message: '请先通过输入框旁的 🏭 按钮选择团队，再发送需求消息。未选团队时不走 teamflow。' }
+        return { runId: null, status: 'no-team', message: t(ambientLocale(), 'tool.start.noTeam') }
       }
       // 需求意图预检（ADR-2026-08-28）：疑问/建议/反馈句式（「是不是应该」「要不要」）→ 更像反馈而非明确
       // 开发需求——不启动，返回确认请求由主线程 Agent 先向用户确认（实锤：用户反馈「是不是应该加个 Toast」
@@ -162,12 +164,12 @@ function registerTools(ctx) {
       if (/是不是|要不要|需不需要|是否应该|要不要考虑|建议|我感觉|感觉不出|我们是不是|咱是不是/.test(rawReq)) {
         return {
           status: 'needs-confirmation',
-          question: `这条消息（「${rawReq.slice(0, 60)}」）更像反馈/建议（含疑问句式）而非明确开发需求。请先向用户确认：是否要实现？`,
-          note: '用户确认要实现后，请把明确需求（如「实现 combo/t-spin 触发 Toast 提示」）作为 requirement 重新调用 teamflow_start；若用户只是表达感受/讨论，直接正常回复即可。',
+          question: t(ambientLocale(), 'tool.start.confirmQuestion', { requirement: rawReq.slice(0, 60) }),
+          note: t(ambientLocale(), 'tool.start.confirmNote'),
         }
       }
       try {
-        const requirement = typeof args.requirement === 'string' && args.requirement.trim() ? args.requirement.trim() : '(未提供需求)'
+        const requirement = typeof args.requirement === 'string' && args.requirement.trim() ? args.requirement.trim() : t(ambientLocale(), 'tool.start.noRequirement')
         const options = {
           needDesign: !!args.needDesign,
           needScaffold: !!args.needScaffold,
@@ -200,38 +202,38 @@ function registerTools(ctx) {
                 let question = ''
                 let optionsList: Array<{ label: string; value: string }> = []
                 if (onMain && !dirty) {
-                  question = `工作区 ${sc.path} 当前在 main 分支（工作区干净）。流水线默认在特性分支上开发，请选择：`
+                  question = t(ambientLocale(), 'branch.q.mainClean', { path: sc.path })
                   optionsList = [
-                    { label: '基于 main 新建分支开发（推荐，分支名取需求 slug，可自定义）', value: 'new' },
-                    { label: '直接在 main 上开发', value: 'keep' },
+                    { label: t(ambientLocale(), 'branch.opt.newFromMain'), value: 'new' },
+                    { label: t(ambientLocale(), 'branch.opt.keepOnMain'), value: 'keep' },
                   ]
                 } else if (onMain && dirty) {
-                  question = `工作区 ${sc.path} 当前在 main 分支，且有 ${dirtyN} 处未提交改动。请选择启动方式：`
+                  question = t(ambientLocale(), 'branch.q.mainDirty', { path: sc.path, n: dirtyN })
                   optionsList = [
-                    { label: `stash 现有改动后新建分支开发（推荐，改动暂存，流水线完成后 git stash pop 恢复）`, value: 'stash+auto' },
-                    { label: '提交现有改动后新建分支开发（提交信息可自定义）', value: 'commit+auto' },
-                    { label: '直接在 main 上继续（未提交改动将混入本次开发）', value: 'keep' },
+                    { label: t(ambientLocale(), 'branch.opt.stashNew'), value: 'stash+auto' },
+                    { label: t(ambientLocale(), 'branch.opt.commitNew'), value: 'commit+auto' },
+                    { label: t(ambientLocale(), 'branch.opt.keepMainDirty'), value: 'keep' },
                   ]
                 } else if (!onMain && !dirty) {
-                  question = `工作区 ${sc.path} 当前在特性分支 ${s.branch}（工作区干净）。请选择启动方式：`
+                  question = t(ambientLocale(), 'branch.q.featureClean', { path: sc.path, branch: s.branch })
                   optionsList = [
-                    { label: '沿用当前分支开发（推荐）', value: 'keep' },
-                    { label: '基于当前分支再新建子分支开发', value: 'new' },
+                    { label: t(ambientLocale(), 'branch.opt.keepFeature'), value: 'keep' },
+                    { label: t(ambientLocale(), 'branch.opt.newChild'), value: 'new' },
                   ]
                 } else {
-                  question = `工作区 ${sc.path} 当前在特性分支 ${s.branch}，且有 ${dirtyN} 处未提交改动。请选择启动方式：`
+                  question = t(ambientLocale(), 'branch.q.featureDirty', { path: sc.path, branch: s.branch, n: dirtyN })
                   optionsList = [
-                    { label: 'stash 现有改动后沿用当前分支开发（推荐，完成后 git stash pop 恢复）', value: 'stash+keep' },
-                    { label: '直接沿用当前分支（未提交改动混入本次开发）', value: 'keep' },
-                    { label: 'stash 现有改动后新建子分支开发', value: 'stash+auto' },
-                    { label: '提交现有改动后新建子分支开发', value: 'commit+auto' },
+                    { label: t(ambientLocale(), 'branch.opt.stashKeep'), value: 'stash+keep' },
+                    { label: t(ambientLocale(), 'branch.opt.keepDirtyFeature'), value: 'keep' },
+                    { label: t(ambientLocale(), 'branch.opt.stashNewChild'), value: 'stash+auto' },
+                    { label: t(ambientLocale(), 'branch.opt.commitNewChild'), value: 'commit+auto' },
                   ]
                 }
                 return {
                   status: 'needs-decision',
                   question,
                   options: optionsList,
-                  note: '选项之外可自定义输入（如指定分支名）。确认选择后，请以 teamflow_start 的 branchPolicy（回传所选选项 value，如 new/keep）与 branchName/preAction/commitMessage 参数重新调用本工具。',
+                  note: t(ambientLocale(), 'branch.decisionNote'),
                 }
               }
             } catch (e) { /* 分支检查失败：放行，由 sanity 注入 git 现状 */ }
@@ -240,7 +242,7 @@ function registerTools(ctx) {
         const runId = startPipeline(parent, requirement, options, exec && exec.signal)
         return { runId, status: 'running' }
       } catch (e) {
-        throw new Error(`启动流水线失败：${String((e && e.message) || e)}`)
+        throw new Error(t(ambientLocale(), 'err.tool.startFail', { msg: String((e && e.message) || e) }))
       }
     },
   })
@@ -258,22 +260,22 @@ function registerTools(ctx) {
     },
     async execute(args, exec) {
       const action = args && args.action
-      if (action !== 'merge' && action !== 'command' && action !== 'keep') throw new Error('action 必须是 merge / command / keep')
+      if (action !== 'merge' && action !== 'command' && action !== 'keep') throw new Error(t(ambientLocale(), 'err.tool.mergeAction'))
       const sc = workspaceScopeOf(exec && exec.agent)
-      if (!sc.path) throw new Error('当前会话无项目工作区')
+      if (!sc.path) throw new Error(t(ambientLocale(), 'err.tool.noWorkspace'))
       const key = sc.projectKey
       const target = (typeof args.runId === 'string' && args.runId) ? runs.get(args.runId)
         : [...runs.values()].filter((j) => j.workspace === key && j.status === 'completed').sort((a, b) => (b.endedAt || 0) - (a.endedAt || 0))[0]
-      if (!target) throw new Error('未找到已完成流水线（可传 runId 指定）')
+      if (!target) throw new Error(t(ambientLocale(), 'err.tool.noCompletedRun'))
       const branch = gitCmd(sc.path, ['rev-parse', '--abbrev-ref', 'HEAD'])
-      if (!branch || branch === 'main') return { status: 'noop', message: '当前已在 main 分支，无需合回' }
+      if (!branch || branch === 'main') return { status: 'noop', message: t(ambientLocale(), 'tool.merge.noop') }
       if (action === 'command') {
-        return { status: 'command', command: `git checkout main && git merge --no-ff ${branch}`, message: `请用户在项目目录执行以下命令完成合回（合回后可 git branch -d ${branch} 清理特性分支）：\ngit checkout main && git merge --no-ff ${branch}` }
+        return { status: 'command', command: `git checkout main && git merge --no-ff ${branch}`, message: t(ambientLocale(), 'tool.merge.command', { branch }) }
       }
       if (action === 'keep') {
         target.mergeStatus = 'kept'
         persistJournal(target)
-        return { status: 'kept', message: `已标记暂不合回：特性分支 ${branch} 保留，后续可随时调用 teamflow_merge 合回` }
+        return { status: 'kept', message: t(ambientLocale(), 'tool.merge.kept', { branch }) }
       }
       // action=merge：host 代为执行（用户已确认）
       const co = gitCmd(sc.path, ['checkout', 'main'])
@@ -281,11 +283,11 @@ function registerTools(ctx) {
       if (co === null || mg === null) {
         target.mergeStatus = 'failed'
         persistJournal(target)
-        return { status: 'failed', message: `合并失败（工作区可能不干净或有冲突）。请人工处理：先提交/处理当前工作区改动，再执行 git merge --no-ff ${branch}（冲突文件需手动解决）` }
+        return { status: 'failed', message: t(ambientLocale(), 'tool.merge.failed', { branch }) }
       }
       target.mergeStatus = 'merged'
       persistJournal(target)
-      return { status: 'merged', message: `✅ 已合回 main（git merge --no-ff ${branch}）。如需清理特性分支：git branch -d ${branch}` }
+      return { status: 'merged', message: t(ambientLocale(), 'tool.merge.merged', { branch }) }
     },
   })
 
@@ -299,7 +301,7 @@ function registerTools(ctx) {
     output: { schema: { type: 'object', additionalProperties: true }, render: simpleRender },
     async execute(args, exec) {
       const requirement = typeof args.requirement === 'string' ? args.requirement : ''
-      const t = await runTriage(requirement, { needDesign: !!args.needDesign }, exec && exec.agent, exec && exec.signal)
+      const t = await runTriage(requirement, { needDesign: !!args.needDesign }, exec && exec.agent, exec && exec.signal, ambientLocale())
       return {
         suggestedMode: t.mode,
         kind: t.kind,
@@ -308,7 +310,7 @@ function registerTools(ctx) {
         confidence: t.confidence,
         rationale: t.rationale,
         source: t.source,
-        stages: MODE_REGISTRY[t.mode].desc,
+        stages: modeDesc(ambientLocale(), t.mode, MODE_REGISTRY[t.mode].desc),
         allModes: PIPELINE_MODES,
       }
     },
@@ -323,9 +325,9 @@ function registerTools(ctx) {
       const id = args && typeof args.runId === 'string' ? args.runId : null
       if (id) {
         const j = runs.get(id)
-        if (!j) return { error: `未找到运行：${id}` }
+        if (!j) return { error: t(ambientLocale(), 'err.tool.runNotFound', { id }) }
         const running = j.status === 'running'
-        return { runId: j.id, status: j.status, workspace: j.workspace || null, reminder: running ? '流水线仍在后台执行：不要自行改代码实现该需求或重复跑验证，等待完成汇报。' : null, snapshot: snapshotOf(j) }
+        return { runId: j.id, status: j.status, workspace: j.workspace || null, reminder: running ? t(ambientLocale(), 'tool.status.reminder') : null, snapshot: snapshotOf(j) }
       }
       const sc = workspaceScopeOf(exec && exec.agent)
       const arr = runsFor(sc.projectKey).slice(0, 10).map((j) => ({ id: j.id, status: j.status, startedAt: j.startedAt, endedAt: j.endedAt, agentsStarted: j.agentsStarted, stageCount: j.stages.length, incompleteStages: (j.stages || []).some((x) => x.status !== 'done'), requirement: clip(j.requirement, 60) }))
@@ -357,14 +359,14 @@ function registerTools(ctx) {
     async execute(args, exec) {
       const kind = String((args && args.kind) || '')
       const id = String((args && args.id) || '')
-      if (!kind || !id) return { ok: false, error: '缺少 kind/id' }
+      if (!kind || !id) return { ok: false, error: t(ambientLocale(), 'err.tool.missingKindId') }
       const role = args && typeof args.role === 'string' ? String(args.role) : (kind === 'task' ? 'dev' : null)
       const product = args && typeof args.product === 'string' && args.product.trim() ? normalizeRoot(args.product) : workspaceScopeOf(exec && exec.agent).projectKey
       let to = 'running'
       if (kind === 'bug') to = 'claimed'
       else if (kind === 'req') to = 'in-progress'
       else if (kind === 'task') to = role === 'qa' ? 'testing' : 'running'
-      return transitionBacklog(product, kind, id, to, kind === 'bug' ? 'QA 缺陷认领' : '开发/QA 认领')
+      return transitionBacklog(product, kind, id, to, kind === 'bug' ? t(ambientLocale(), 'tool.reason.bugClaim') : t(ambientLocale(), 'tool.reason.claim'))
     },
   })
 
@@ -381,7 +383,7 @@ function registerTools(ctx) {
     output: { schema: simple, render: simpleRender },
     execute: async (args, exec) => {
       const product = args && typeof args.product === 'string' && args.product.trim() ? normalizeRoot(args.product) : workspaceScopeOf(exec && exec.agent).projectKey
-      return transitionBacklog(product, String(args.kind || ''), String(args.id || ''), String(args.to || ''), args.reason ? String(args.reason) : '人工流转')
+      return transitionBacklog(product, String(args.kind || ''), String(args.id || ''), String(args.to || ''), args.reason ? String(args.reason) : t(ambientLocale(), 'tool.reason.manual'))
     },
   })
 
@@ -406,12 +408,12 @@ function registerTools(ctx) {
     name: 'teamflow_pause',
     description: 'Pause teamflow triggering for the CURRENT session: after calling, teamflow_start returns a hint instead of launching. For user phrases like「别走 teamflow 了」「直接改」「暂停 teamflow」. Session-scoped; auto-resets on new session.',
     parameters: {},
-    output: { schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' }, message: { type: 'string' } } }, render: (args, value) => [{ type: 'text', text: value.message || (value.ok ? '已暂停 teamflow，当前会话不会启动流水线。' : '暂停失败') }] },
+    output: { schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' }, message: { type: 'string' } } }, render: (args, value) => [{ type: 'text', text: value.message || (value.ok ? t(ambientLocale(), 'tool.pause.done') : t(ambientLocale(), 'tool.pause.fail')) }] },
     async execute(args, exec) {
       const sessionId = exec && exec.agent && exec.agent.session && exec.agent.session.id
-      if (!sessionId) return { ok: false, message: '无法获取当前会话 ID' }
+      if (!sessionId) return { ok: false, message: t(ambientLocale(), 'err.tool.noSessionId') }
       pausedSessions.add(String(sessionId))
-      return { ok: true, message: `已暂停 teamflow（会话 ${String(sessionId).slice(-6)}）。如需恢复，调用 teamflow_resume_session。` }
+      return { ok: true, message: t(ambientLocale(), 'tool.pause.ok', { session: String(sessionId).slice(-6) }) }
     },
   })
 
@@ -419,12 +421,12 @@ function registerTools(ctx) {
     name: 'teamflow_resume_session',
     description: 'Resume teamflow triggering for the CURRENT session (undo teamflow_pause). For user phrases like「恢复 teamflow」「可以走 teamflow 了」.',
     parameters: {},
-    output: { schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' }, message: { type: 'string' } } }, render: (args, value) => [{ type: 'text', text: value.message || (value.ok ? '已恢复 teamflow，开发需求可走流水线。' : '恢复失败') }] },
+    output: { schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' }, message: { type: 'string' } } }, render: (args, value) => [{ type: 'text', text: value.message || (value.ok ? t(ambientLocale(), 'tool.resumeSession.done') : t(ambientLocale(), 'tool.resumeSession.fail')) }] },
     async execute(args, exec) {
       const sessionId = exec && exec.agent && exec.agent.session && exec.agent.session.id
-      if (!sessionId) return { ok: false, message: '无法获取当前会话 ID' }
+      if (!sessionId) return { ok: false, message: t(ambientLocale(), 'err.tool.noSessionId') }
       pausedSessions.delete(String(sessionId))
-      return { ok: true, message: `已恢复 teamflow（会话 ${String(sessionId).slice(-6)}）。开发需求可走流水线。` }
+      return { ok: true, message: t(ambientLocale(), 'tool.resumeSession.ok', { session: String(sessionId).slice(-6) }) }
     },
   })
 
@@ -432,7 +434,7 @@ function registerTools(ctx) {
     name: 'teamflow_cancel',
     description: 'Cancel a running team R&D pipeline.',
     parameters: { runId: { type: 'string', required: true, description: 'Pipeline run id' } },
-    output: { schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' } } }, render: (args, value) => [{ type: 'text', text: value.ok ? `已请求取消流水线 ${args.runId}` : '取消失败' }] },
+    output: { schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' } } }, render: (args, value) => [{ type: 'text', text: value.ok ? t(ambientLocale(), 'tool.cancel.ok', { runId: args.runId }) : t(ambientLocale(), 'tool.cancel.fail') }] },
     async execute(args) {
       const id = args && typeof args.runId === 'string' ? args.runId : null
       return { ok: id ? cancelRun(id) : false }
@@ -445,10 +447,10 @@ function registerTools(ctx) {
     parameters: {
       runId: { type: 'string', required: true, description: 'Pipeline run id' },
     },
-    output: { schema: { type: 'object', additionalProperties: false, required: ['ok'], properties: { ok: { type: 'boolean' }, runId: { type: 'string' }, resumedFrom: { type: 'string' }, error: { type: 'string' } } }, render: (args, value) => [{ type: 'text', text: value.ok ? `流水线 ${value.runId} 已从断点「${value.resumedFrom}」续跑` : `续跑失败：${value.error || '未知错误'}` }] },
+    output: { schema: { type: 'object', additionalProperties: false, required: ['ok'], properties: { ok: { type: 'boolean' }, runId: { type: 'string' }, resumedFrom: { type: 'string' }, error: { type: 'string' } } }, render: (args, value) => [{ type: 'text', text: value.ok ? t(ambientLocale(), 'tool.resume.ok', { runId: value.runId, phase: value.resumedFrom }) : t(ambientLocale(), 'tool.resume.fail', { error: value.error || t(ambientLocale(), 'err.tool.unknown') }) }] },
     async execute(args, exec) {
       const parent = exec && exec.agent
-      if (!parent) throw new Error('teamflow_resume 需要由会话内的 Agent 调用')
+      if (!parent) throw new Error(t(ambientLocale(), 'err.tool.sessionAgentResume'))
       const id = args && typeof args.runId === 'string' ? args.runId : null
       return resumeRun(id, parent.session.id)
     },
@@ -484,7 +486,16 @@ const pendingInjections = new Map<string, { teamName: string; teamIcon: string; 
 /** 尝试补发延迟注入：agent 可用时注入上下文并清除 pending。 */
 /** 会话注入的 TeamFlow 契约文案（单一事实来源）：何时走流水线 + 启动后主线程必须停手等汇报。 */
 function teamflowContextText(teamIcon: string, teamName: string, teamId: string): string {
-  return `[TeamFlow 上下文] 用户已选择「${teamIcon} ${teamName}」团队。只有收到明确的开发需求（新功能/迭代/重构/bug修复/代码改动请求）时才调用 teamflow_start 并指定 teamId="${teamId}"，requirement 参数忠实转写用户原话即可（不要自行扩写、不要臆造文件路径或技术细节）。收到反馈、讨论、闲聊、UI 意见等非开发请求时，不要调用 teamflow_start，直接正常回复。调用 teamflow_start 之后：流水线在后台执行，你不要再自行读取/修改代码实现该需求，也不要重复跑测试验证——只需告知用户流水线已启动，等待流水线的完成汇报后再答复用户。`
+  return t(ambientLocale(), 'tool.ctx.team', { icon: teamIcon, name: teamName, teamId })
+}
+
+/**
+ * 团队的下发载荷（client 直接渲染）：`name`/`description` 已按语言本地化。
+ * 为什么不给 client 双语字段让它自己挑：**语言只有一个读取点**（`core/locale.ts`），
+ * 且 client 侧语言与 ambient 同源（都来自浏览器），host 本地化一次即可；client 拿到即用。
+ */
+function teamPayload(locale: string, team: TeamConfig): { id: string; name: string; icon: string; description: string } {
+  return { id: team.id, name: teamNameOf(locale, team), icon: team.icon, description: teamDescOf(locale, team) }
 }
 
 function tryFlushPendingInjections(sessionId: string): void {
@@ -514,6 +525,15 @@ export class TeamflowService extends TypertRemoteService {
     // 走 ctx.inject 而非 static inject——服务缺失（最小 profile）时插件仍加载，计量回退事件扫描。
     ctx.inject(['sessionProjections'], (projectionCtx) => {
       setSessionProjections(projectionCtx.get('sessionProjections'))
+    })
+    // 宿主显式语言（只读）：@deepseek-ai/dsh-client-locale 的 host face 注册 'locale' 命名空间；
+    // 服务缺失/未注册 → undefined → 解析链降级（AC-10 不报错不阻塞）。
+    ctx.inject(['settings'], (settingsCtx) => {
+      setSettingsPort(() => {
+        const settings = settingsCtx.get('settings')
+        const v = settings && typeof settings.get === 'function' ? settings.get('locale') : null
+        return v && v.preference
+      })
     })
     loadActiveTeams() // 重启后恢复会话→团队映射（UI 状态与启动通道一致）
     // 断点续跑基座：加载磁盘 journal；running/pending 残留 → 标记 interrupted
@@ -545,6 +565,12 @@ export class TeamflowService extends TypertRemoteService {
 
   ping() {
     return { ok: true }
+  }
+
+  /** 客户端语言上报（浏览器当前语言含系统探测结果）→ 写入运行期语言源；返回解析后的环境语言。 */
+  setLocale(locale) {
+    noteClientLocale(locale)
+    return { ok: true, locale: ambientLocale() }
   }
 
   /** 工作区级看板：只返回当前会话 workspace（项目）下启动的流水线，不同 workspace 互不可见。 */
@@ -584,7 +610,8 @@ export class TeamflowService extends TypertRemoteService {
     if (!runVisibleIn(j, key)) return null
     const s = (j.stages || []).find((st) => Number(st.seq) === Number(seq))
     if (!s) return null
-    const taskKeyOf = (x) => String(x.taskKey || String(x.label || '').replace(/^开发 · /, '').replace(/（(?:第 \d+ 次重试|补跑)）$/, '').trim())
+    // zh 存量前缀 + en 新增前缀都要剥（QA-2：en run 子卡标题为 "Dev · X"，任务键匹配不得失配）
+    const taskKeyOf = (x) => String(x.taskKey || String(x.label || '').replace(/^(?:开发|Dev) · /, '').replace(/(?:（(?:第 \d+ 次重试|补跑)）| \((?:retry \d+|follow-up run)\))$/, '').trim())
     const taskKey = taskKeyOf(s)
     const attempts = taskKey
       ? (j.stages || [])
@@ -678,6 +705,16 @@ export class TeamflowService extends TypertRemoteService {
       status: item.status, spec: String(item.spec || ''),
       summary: String(item.summary || ''),
       severity: item.severity || null, owner: item.owner || null,
+      // 缺陷卡的自解释字段（2026-09-15）：此前只下发 severity/module，卡详情看不出缺陷内容
+      defectId: item.defectId || null,
+      module: item.module || null,
+      reproduce: item.reproduce || '',
+      expected: item.expected || '',
+      actual: item.actual || '',
+      defectAc: item.ac || '',
+      // 检测命令/通过判据（2026-09-15）：缺陷的**可执行定义**——没有它，修复方只能猜「改到哪算改完」
+      defectCheck: item.check || '',
+      defectCriterion: item.criterion || '',
       devAssign: item.devAssign || null, qaAssign: item.qaAssign || null,
       assignBy: item.acceptBy || null, retries: item.retries !== undefined ? item.retries : 0,
       humanIntervention: !!item.humanIntervention,
@@ -738,9 +775,9 @@ export class TeamflowService extends TypertRemoteService {
   start(sessionId, requirement, options) {
     const sid = typeof sessionId === 'string' ? sessionId : null
     const req = typeof requirement === 'string' && requirement.trim() ? requirement.trim() : null
-    if (!sid || !req) return { ok: false, error: '缺少 sessionId 或需求描述' }
+    if (!sid || !req) return { ok: false, error: t(ambientLocale(), 'err.tool.missingSessionReq') }
     const agent = runtime.agents && runtime.agents.get(sid)
-    if (agent === undefined) return { ok: false, error: `找不到会话对应的 Agent：${sid}` }
+    if (agent === undefined) return { ok: false, error: t(ambientLocale(), 'err.tool.agentNotFound', { sid }) }
     // 补发延迟注入（选团队时 agent 可能尚未加载）
     tryFlushPendingInjections(sid)
     try {
@@ -755,7 +792,7 @@ export class TeamflowService extends TypertRemoteService {
 
   cancel(runId) {
     const id = typeof runId === 'string' ? runId : null
-    if (!id) return { ok: false, error: '缺少 runId' }
+    if (!id) return { ok: false, error: t(ambientLocale(), 'err.tool.missingRunId') }
     return { ok: cancelRun(id) }
   }
 
@@ -780,10 +817,10 @@ export class TeamflowService extends TypertRemoteService {
   backlogUpdate(kind, id, to, sessionId, reason) {
     const k = String(kind || '')
     const i = String(id || '')
-    const t = String(to || '')
-    if (!k || !i || !t) return { ok: false, error: '缺少 kind/id/to' }
+    const toSt = String(to || '')
+    if (!k || !i || !toSt) return { ok: false, error: t(ambientLocale(), 'err.tool.missingKindIdTo') }
     const sc = sessionScope(sessionId)
-    return transitionBacklog(sc.projectKey, k, i, t, reason ? String(reason) : '人工流转')
+    return transitionBacklog(sc.projectKey, k, i, toSt, reason ? String(reason) : t(ambientLocale(), 'tool.reason.manual'))
   }
 
   /** 分配任务卡给某角色（只写 assign 字段，不碰 status）。 */
@@ -792,7 +829,7 @@ export class TeamflowService extends TypertRemoteService {
     const i = String(id || '')
     const r = String(role || '')
     const a = String(assignee || '')
-    if (!k || !i || !r || !a) return { ok: false, error: '缺少 kind/id/role/assignee' }
+    if (!k || !i || !r || !a) return { ok: false, error: t(ambientLocale(), 'err.tool.missingAssign') }
     const sc = sessionScope(sessionId)
     return assignTask(sc.projectKey, k, i, r, a)
   }
@@ -800,7 +837,7 @@ export class TeamflowService extends TypertRemoteService {
   /** 暂停当前会话的 teamflow 触发（会话级）。 */
   pause(sessionId) {
     const sid = typeof sessionId === 'string' ? sessionId : null
-    if (!sid) return { ok: false, error: '缺少 sessionId' }
+    if (!sid) return { ok: false, error: t(ambientLocale(), 'err.tool.missingSession') }
     pausedSessions.add(sid)
     return { ok: true }
   }
@@ -808,44 +845,47 @@ export class TeamflowService extends TypertRemoteService {
   /** 恢复当前会话的 teamflow 触发（会话级）。 */
   resumeSession(sessionId) {
     const sid = typeof sessionId === 'string' ? sessionId : null
-    if (!sid) return { ok: false, error: '缺少 sessionId' }
+    if (!sid) return { ok: false, error: t(ambientLocale(), 'err.tool.missingSession') }
     pausedSessions.delete(sid)
     return { ok: true }
   }
 
-  /** 列出当前工作区可用的团队。 */
+  /** 列出当前工作区可用的团队。
+   *  展示名/描述按**环境语言**（= 客户端推送的界面语言）下发：团队配置是用户数据（中文为主），
+   *  英文界面下必须由 host 本地化后再给 client，否则下拉里就是中文（2026-09-15 实测）。 */
   listTeams(sessionId) {
     const sc = sessionScope(sessionId)
     const teams = loadTeams(sc.projectKey)
-    return { teams: teams.map((t) => ({ id: t.id, name: t.name, icon: t.icon, description: t.description })), projectKey: sc.projectKey }
+    const loc = ambientLocale()
+    return { teams: teams.map((t) => teamPayload(loc, t)), projectKey: sc.projectKey }
   }
 
   /** 设置当前会话的活跃团队。同时注入上下文提示，让模型区分开发请求和普通聊天。 */
   selectTeam(sessionId, teamId) {
     const sid = typeof sessionId === 'string' ? sessionId : null
     const tid = typeof teamId === 'string' ? teamId : null
-    if (!sid || !tid) return { ok: false, error: '缺少 sessionId 或 teamId' }
+    if (!sid || !tid) return { ok: false, error: t(ambientLocale(), 'err.tool.missingSessionTeam') }
     const sc = sessionScope(sid)
     const teams = loadTeams(sc.projectKey)
     const team = findTeam(teams, tid)
-    if (!team) return { ok: false, error: `团队 ${tid} 不存在` }
+    if (!team) return { ok: false, error: t(ambientLocale(), 'err.tool.teamNotFound', { teamId: tid }) }
     activeTeams.set(sid, tid)
     saveActiveTeams()
     // 注入会话级上下文：告诉模型什么该走 teamflow，什么不该
     const agent = runtime.agents && runtime.agents.get(sid)
     // 必须经 createUserMessage（同上：裸 payload 缺 id/role → 宿主 v2 加载校验失败）
     const injectPayload = createUserMessage({
-      content: [{ type: 'text', text: teamflowContextText(team.icon, team.name, tid) }],
+      content: [{ type: 'text', text: teamflowContextText(team.icon, teamNameOf(ambientLocale(), team), tid) }],
       source: { kind: 'plugin', plugin: 'dsh-plugin-teamflow', form: 'instructions' },
     })
     if (agent && typeof agent.inject === 'function') {
       try { agent.inject(injectPayload) } catch (e) { /* inject 失败不影响主流程 */ }
     } else {
       // agent 尚未加载（新会话懒加载），存入 pending，2 秒后重试（agent 通常 1-2s 内就绪）
-      pendingInjections.set(sid, { teamName: team.name, teamIcon: team.icon, teamId: tid })
+      pendingInjections.set(sid, { teamName: teamNameOf(ambientLocale(), team), teamIcon: team.icon, teamId: tid })
       setTimeout(() => tryFlushPendingInjections(sid), 2000)
     }
-    return { ok: true, team: { id: team.id, name: team.name, icon: team.icon } }
+    return { ok: true, team: teamPayload(ambientLocale(), team) }
   }
 
   /** 获取当前会话的活跃团队。 */
@@ -859,13 +899,13 @@ export class TeamflowService extends TypertRemoteService {
     const sc = sessionScope(sid)
     const teams = loadTeams(sc.projectKey)
     const team = findTeam(teams, tid)
-    return team ? { team: { id: team.id, name: team.name, icon: team.icon, description: team.description } } : { team: null }
+    return team ? { team: teamPayload(ambientLocale(), team) } : { team: null }
   }
 
   /** 清除当前会话的活跃团队（回到原生模式）。 */
   clearTeam(sessionId) {
     const sid = typeof sessionId === 'string' ? sessionId : null
-    if (!sid) return { ok: false, error: '缺少 sessionId' }
+    if (!sid) return { ok: false, error: t(ambientLocale(), 'err.tool.missingSession') }
     activeTeams.delete(sid)
     saveActiveTeams()
     return { ok: true }

@@ -8,6 +8,7 @@ import type { PipelineMode, PipelineOptions } from '../types.ts'
 import { extractText } from '../util.ts'
 import { runtime, providerName } from './context.ts'
 import { TRIAGE_PROMPT } from '../prompts/index.ts'
+import { t, type HostLocale } from '../locales.ts'
 
 /** 各档流水线规格（策略表条目）。 */
 export interface ModeSpec {
@@ -37,34 +38,49 @@ export const MODE_REGISTRY: Record<PipelineMode, ModeSpec> = {
 
 /** 确定性护栏关键词（双语，仅 fallback 兜底用；主路由是模型——TRIAGE_PROMPT 语义判断）。
  * 架构信号：持久化/存储/独立模块/抽象/跨模块——防「轻档位局部实现塌方」（M1 架构护栏）。
- * UI 信号：UI 相关需求不得落 patch/tech（无设计/QA 的档位）——最低 lite。 */
+ * UI 信号：UI 相关需求不得落 patch/tech（无设计/QA 的档位）——最低 lite。
+ * ⚠️ en 词必须**语义强**：泛技术名词（module/api/plugin/cache/queue 等）在中文需求里以英文术语形式
+ * 偶发出现（「用 cache 优化加载」「plugin 系统拆分 module」），命中即把 full 拉成 medium —— 属档位漂移
+ * （QA-4：AC-7/AC-9「既有中文样本档位逐一不变」）。故只保留多词/强语义项（standalone module /
+ * cross-module / abstraction / refactor / migration / schema 等）。
+ * 【R2-3 收口】单字泛词（refactor/schema/form/dependency…）即使语义强，夹在中文句里仍是弱信号 ——
+ * 故新增英文项分表存放，**只对无 CJK 的英文需求生效**：中文/中英混排需求只走存量词表（= HEAD 原文，
+ * 含中文词与 HEAD 英文词），档位与 HEAD 逐字等价（AC-9）；英文需求（无 CJK）才叠加新增表（AC-7）。 */
+/** 存量词表（= HEAD 原文；改一项即中文档位漂移，AC-9 禁止）。 */
 const ARCH_SIGNALS = ['持久化', '存储', '保存', '恢复', '存档', '独立模块', '抽象', '存储层', 'localStorage', 'sessionStorage', 'IndexedDB', '跨模块', '数据层', 'persistence', 'storage', 'database', '数据库', 'standalone module', 'abstraction']
+/** 本需求新增英文项（AC-7）：仅对无 CJK 的英文需求生效（见上）。 */
+const ARCH_SIGNALS_EN = ['refactor', 'optimize', 'optimisation', 'optimization', 'dependency', 'dependencies', 'schema', 'migrate', 'migration', 'cross-module', 'module']
+/** 存量词表（= HEAD 原文；同上）。 */
 const UI_SIGNALS = ['界面', 'UI', '视觉', '页面', '按钮', '样式', '交互', '布局', '组件', 'page', 'button', 'style', 'layout', 'component', 'visual', 'interaction']
+/** 本需求新增英文项（AC-7）：仅对无 CJK 的英文需求生效（见上）。 */
+const UI_SIGNALS_EN = ['pages', 'screen', 'form', 'styles', 'components', 'responsive']
+/** 需求文本含 CJK → 不叠加新增英文词表（AC-9：中文样本档位与 HEAD 逐一一致）。 */
+const CJK_IN_REQ = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/
 
 /** 对原始需求做启发式分诊（兜底路径专用）。返回建议 mode + 判定理由 + 置信。
  * 只做确定性护栏（架构强升/UI 禁轻档/needDesign 升档）——不再逐词匹配五档信号：
  * 主路由是模型（TRIAGE_PROMPT 语义判断，天然双语），正则兜底在模型不可用时宁重勿漏（默认 full）。 */
-export function suggestMode(requirement: string, opts?: { needDesign?: boolean; tasks?: unknown }): { mode: PipelineMode; kind: string; rationale: string[]; confidence: 'high' | 'medium' | 'low' } {
+export function suggestMode(requirement: string, opts?: { needDesign?: boolean; tasks?: unknown }, locale: HostLocale = 'zh'): { mode: PipelineMode; kind: string; rationale: string[]; confidence: 'high' | 'medium' | 'low' } {
   const text = String(requirement || '')
   const rationale: string[] = []
   let mode: PipelineMode = 'full' // 默认完整（护栏优先，宁重勿漏）
 
-  const archHit = ARCH_SIGNALS.find((w) => text.includes(w))
+  const archHit = (CJK_IN_REQ.test(text) ? ARCH_SIGNALS : ARCH_SIGNALS.concat(ARCH_SIGNALS_EN)).find((w) => text.includes(w))
   if (archHit) {
     mode = 'medium'
-    rationale.push(`架构护栏：需求含「${archHit}」→ 强升 medium（需架构阶段产蓝图，防塌）`)
+    rationale.push(t(locale, 'triage.arch', { word: archHit }))
   }
-  const uiHit = !archHit ? UI_SIGNALS.find((w) => text.includes(w)) : undefined
+  const uiHit = !archHit ? (CJK_IN_REQ.test(text) ? UI_SIGNALS : UI_SIGNALS.concat(UI_SIGNALS_EN)).find((w) => text.includes(w)) : undefined
   if (uiHit) {
     mode = mode === 'full' ? 'lite' : mode // UI 信号最低 lite（不得落 patch/tech）
-    rationale.push(`UI 护栏：需求含「${uiHit}」→ 不低于 lite（UI 改动需 QA/验收）`)
+    rationale.push(t(locale, 'triage.ui', { word: uiHit }))
   }
   if (opts && opts.needDesign && mode !== 'medium') {
     mode = 'medium'
-    rationale.push('needDesign=true → 强升 medium（显式要求设计阶段）')
+    rationale.push(t(locale, 'triage.needDesign'))
   }
-  if (rationale.length === 0) rationale.push('无强护栏信号，默认 full（模型不可用时宁重勿漏）')
-  const kind = mode === 'medium' ? '标准功能(含UI)' : mode === 'lite' ? '微功能' : '完整需求'
+  if (rationale.length === 0) rationale.push(t(locale, 'triage.noSignal'))
+  const kind = mode === 'medium' ? t(locale, 'triage.kind.medium') : mode === 'lite' ? t(locale, 'triage.kind.lite') : t(locale, 'triage.kind.full')
   const confidence: 'high' | 'medium' | 'low' = mode === 'medium' && !opts?.needDesign ? 'medium' : 'low'
   return { mode, kind, rationale, confidence }
 }
@@ -124,11 +140,11 @@ function parseVerdictText(text: string): TriageVerdict | null {
 }
 
 /** 兜底：正则预筛 → fallback verdict（模型分诊不可用/超时/解析失败时）。 */
-function fallbackVerdict(requirement: string, opts?: { needDesign?: boolean }): TriageVerdict {
-  const pre = suggestMode(requirement, opts)
+function fallbackVerdict(requirement: string, opts?: { needDesign?: boolean }, locale: HostLocale = 'zh'): TriageVerdict {
+  const pre = suggestMode(requirement, opts, locale)
   return {
     mode: pre.mode, kind: pre.kind, needDesign: !!(opts && opts.needDesign), complexity: 'medium',
-    rationale: [...pre.rationale, '（模型分诊不可用，已用正则兜底）'], confidence: pre.confidence, slug: '', source: 'fallback',
+    rationale: [...pre.rationale, t(locale, 'triage.fallback')], confidence: pre.confidence, slug: '', source: 'fallback',
   }
 }
 
@@ -140,10 +156,11 @@ export async function runTriage(
   opts?: { needDesign?: boolean },
   parent?: unknown,
   signal?: unknown,
+  locale: HostLocale = 'zh',
 ): Promise<TriageVerdict> {
   const subagents = runtime.subagents as { start?: (provider: string, init: unknown) => Promise<{ result: Promise<{ output?: unknown; stopReason?: string }>; dispose?: () => Promise<void> | void }> } | undefined
-  if (!subagents || typeof subagents.start !== 'function') return fallbackVerdict(requirement, opts)
-  const pre = suggestMode(requirement, opts)
+  if (!subagents || typeof subagents.start !== 'function') return fallbackVerdict(requirement, opts, locale)
+  const pre = suggestMode(requirement, opts, locale)
   for (let attempt = 1; attempt <= 2; attempt++) {
     let run: { result: Promise<{ output?: unknown; stopReason?: string }>; dispose?: () => Promise<void> | void } | null = null
     try {
@@ -151,14 +168,14 @@ export async function runTriage(
         ? 'Your previous reply contained only a preface (e.g. "Let me output the JSON.") with NO JSON object — that is a failed reply. Reply now with the JSON object ITSELF as the first and only content, starting with {.'
         : ''
       run = await subagents.start(providerName() as string, {
-        label: '需求分诊',
-        prompt: [{ type: 'text', text: TRIAGE_PROMPT(requirement, opts, pre, hint) }],
+        label: t(locale, 'triage.label'),
+        prompt: [{ type: 'text', text: TRIAGE_PROMPT(requirement, opts, pre, hint, locale) }],
         parent,
         signal,
       })
       const result = await Promise.race([
         run.result,
-        new Promise<never>((_, rej) => setTimeout(() => rej(new Error('triage 超时（90s）')), 90000)),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error(t(locale, 'err.triageTimeout'))), 90000)),
       ]) as { output?: unknown; stopReason?: string }
       const parsed = parseVerdictText(extractText(result && result.output))
       if (parsed) return parsed
@@ -168,5 +185,5 @@ export async function runTriage(
       if (run && run.dispose) { try { await run.dispose() } catch (e) { /* ignore */ } }
     }
   }
-  return fallbackVerdict(requirement, opts)
+  return fallbackVerdict(requirement, opts, locale)
 }

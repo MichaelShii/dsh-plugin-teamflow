@@ -19,9 +19,15 @@ export interface TeamStage {
 /** 团队配置。 */
 export interface TeamConfig {
   id: string
+  /** 中文展示名（同时是存量 teams.json 的兼容字段）。 */
   name: string
+  /** 英文展示名（可选；缺省时内置团队按 id 回落，见 `teamNameOf`）。 */
+  nameEn?: string
   icon: string
+  /** 中文描述。 */
   description: string
+  /** 英文描述（可选，规则同 `nameEn`）。 */
+  descriptionEn?: string
   stages: TeamStage[]
   mode?: string
   needDesign?: boolean
@@ -34,12 +40,17 @@ interface TeamsFile {
   teams: TeamConfig[]
 }
 
-/** 内置默认团队：软件开发（当前完整流水线）。 */
+/** 内置默认团队：软件开发（当前完整流水线）。
+ *  ⚠ 双语字段（2026-09-15）：`nameEn`/`descriptionEn` 是**展示名**的英文来源；`name`/`description`
+ *  保持中文（zh 展示 + 存量 teams.json 兼容）。**已落盘的 teams.json 不会被改写**（用户数据），
+ *  故缺失 `nameEn` 时按团队 id 回落到 `BUILTIN_EN`（见 `teamNameOf`），保证老工作区也能出英文名。 */
 const BUILTIN_DEV_TEAM: TeamConfig = {
   id: 'dev',
   name: '软件开发',
+  nameEn: 'Software Development',
   icon: '💻',
   description: 'PRD→设计→技术→开发→QA→验收',
+  descriptionEn: 'PRD → design → tech → dev → QA → acceptance',
   stages: [
     { key: 'prd', label: 'PRD 产品需求', role: '产品经理', promptKey: 'prd' },
     { key: 'design', label: 'UI/UX 设计', role: 'UI/UX 设计师', optional: true, promptKey: 'design' },
@@ -50,6 +61,28 @@ const BUILTIN_DEV_TEAM: TeamConfig = {
     { key: 'acceptance', label: '产品验收', role: '产品经理', promptKey: 'acceptance' },
   ],
   mode: 'auto',
+}
+
+/** 内置团队 id → 英文展示名（存量 teams.json 没有 nameEn 字段时的回落表）。 */
+const BUILTIN_EN: Record<string, { name: string; description: string }> = {
+  dev: { name: 'Software Development', description: 'PRD → design → tech → dev → QA → acceptance' },
+}
+
+/**
+ * 团队展示名（按语言取值）：en 优先 `nameEn` → 内置回落表 → 中文 `name`（**永不返回空**）。
+ * @param locale - 展示语言（host 侧用 run 快照或环境语言；client 侧由 host 直接下发已本地化的值）。
+ */
+export function teamNameOf(locale: string, team: TeamConfig | null | undefined): string {
+  if (!team) return ''
+  if (locale === 'en') return team.nameEn || BUILTIN_EN[team.id]?.name || team.name || team.id || ''
+  return team.name || team.id || ''
+}
+
+/** 团队描述（按语言取值，规则同 {@link teamNameOf}）。 */
+export function teamDescOf(locale: string, team: TeamConfig | null | undefined): string {
+  if (!team) return ''
+  if (locale === 'en') return team.descriptionEn || BUILTIN_EN[team.id]?.description || team.description || ''
+  return team.description || ''
 }
 
 /** 默认团队配置文件内容。 */

@@ -14,8 +14,8 @@
 import React from 'react'
 import {
   T, h, MONO, SANS, flexRow, chip, FoldableText, stColor, stText,
-  fmtTime, fmtDur, fmtTokens, totalTokens, hitRate, phaseNameOf, phaseIconOf,
-  RUN_STATUS_TEXT, COLUMNS, KIND_TITLE, byRoleLine, stageUsageLine,
+  fmtTime, fmtDur, fmtTokens, totalTokens, hitRate, phaseIconOf,
+  COLUMNS, byRoleLine, stageUsageLine, runStatusText, kindTitle, stageLabelOf, t,
 } from './shared.js'
 
 /* ── 右栏 run tab 的类型标识（host 生成地址，client 只解析） ────────── */
@@ -49,16 +49,16 @@ export function runTabDefinition() {
  * 此时不能静默返回 undefined（调用方会把它再包成「未知错误」，丢掉定位信息），故显式报出原始信封。 */
 function unwrap(res, what) {
   if (!res || !res.ok) {
-    let detail = '未知错误'
-    try { detail = (res && res.error && (res.error.message || res.error.code)) || JSON.stringify(res) || '未知错误' } catch (e) { /* 循环引用等 */ }
+    let detail = t('common.unknownError')
+    try { detail = (res && res.error && (res.error.message || res.error.code)) || JSON.stringify(res) || t('common.unknownError') } catch (e) { /* 循环引用等 */ }
     try { console.warn('[teamflow] remote 调用失败', what, res) } catch (e) { /* ignore */ }
-    throw new Error(`${what || 'remote'} 调用失败：${detail}`)
+    throw new Error(t('common.remoteCallFailed', { what: what || 'remote', detail }))
   }
   if (res.value === undefined) {
     try { console.warn('[teamflow] remote 返回空信封（ok 但无 value）', what, res) } catch (e) { /* ignore */ }
     let raw = ''
     try { raw = JSON.stringify(res) } catch (e) { raw = String(res) }
-    throw new Error(`${what || 'remote'} 返回空结果（ok=true 但无 value；原始信封=${raw}）`)
+    throw new Error(t('common.remoteEmptyResult', { what: what || 'remote', raw }))
   }
   return res.value
 }
@@ -92,9 +92,9 @@ const sectionTitle = (text, extra?) => h('div', { style: { ...flexRow, justifyCo
   extra || null)
 const muted = (text, style = {}) => h('div', { style: { fontSize: 11, color: T.text2, lineHeight: 1.6, ...style } }, text)
 const runUsageText = (u) => {
-  if (!u || !(u.input || u.cacheRead || u.cacheWrite || u.output)) return '无 token 数据'
+  if (!u || !(u.input || u.cacheRead || u.cacheWrite || u.output)) return t('common.noUsage')
   const hit = hitRate(u)
-  return `⇅${fmtTokens(u.input)} ⇅${fmtTokens(u.cacheRead)} ⬆${fmtTokens(u.output)}${hit !== null ? ` ·${hit}%` : ''} · ${u.calls} 次`
+  return `⇅${fmtTokens(u.input)} ⇅${fmtTokens(u.cacheRead)} ⬆${fmtTokens(u.output)}${hit !== null ? ` ·${hit}%` : ''} · ${t('common.calls', { n: u.calls })}`
 }
 
 /* ── 密度控制（v0.1.8 ①：分栏 + 默认折叠） ──────────────────────
@@ -112,11 +112,11 @@ function ProductRail({ products, current, loadingKey, onSelect, onRefresh, busy 
     },
   },
     h('div', { style: { ...flexRow, justifyContent: 'space-between', padding: '10px 12px 8px' } },
-      h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text2 } }, `产品线 · ${products.length}`),
-      h('button', { style: panelBtn, onClick: onRefresh, disabled: busy, title: '重新扫描 $DSH_HOME/teamflow' }, busy ? '刷新中' : '刷新')),
+      h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text2 } }, t('panel.railTitle', { n: products.length })),
+      h('button', { style: panelBtn, onClick: onRefresh, disabled: busy, title: t('panel.rescanTip') }, busy ? t('panel.refreshing') : t('panel.refresh'))),
     h('div', { style: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 8px 12px' } },
       products.length === 0
-        ? muted('还没有产品线。在某个工作区跑过一次流水线后，这里会出现对应产品线（$DSH_HOME/teamflow/<key>）。', { padding: '10px 4px' })
+        ? muted(t('panel.noProducts'), { padding: '10px 4px' })
         : products.map((p) => {
           const on = p.key === current
           return h('div', {
@@ -131,15 +131,15 @@ function ProductRail({ products, current, loadingKey, onSelect, onRefresh, busy 
           },
             h('div', { style: { ...flexRow, justifyContent: 'space-between' } },
               h('span', { style: { fontSize: 12, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.title || p.key),
-              p.activeRuns > 0 ? chip(`运行 ${p.activeRuns}`, T.brand, { dot: true }) : null),
+              p.activeRuns > 0 ? chip(t('panel.activeRuns', { n: p.activeRuns }), T.brand, { dot: true }) : null),
             h('div', { style: { fontSize: 10, color: T.text2, fontFamily: MONO, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.key),
             h('div', { style: { ...flexRow, gap: 8, marginTop: 3, fontSize: 10, color: T.text2 } },
               h('span', null, `run ${p.totalRuns}`),
-              p.updatedAt ? h('span', null, `更新 ${fmtTime(p.updatedAt)}`) : null,
+              p.updatedAt ? h('span', null, t('panel.updated', { time: fmtTime(p.updatedAt) })) : null,
               // 选中但视图还没回来时给出明确状态：避免"卡片是选中态、右侧却在读取中"的误导
-              p.key === loadingKey ? h('span', { style: { color: T.brand, fontWeight: 600 } }, '读取中…') : null),
+              p.key === loadingKey ? h('span', { style: { color: T.brand, fontWeight: 600 } }, t('panel.reading')) : null),
             p.lastRequirement ? h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 3, lineHeight: 1.45, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' } }, p.lastRequirement) : null,
-            p.lastVerdict ? h('div', { style: { marginTop: 4 } }, chip(`验收 ${p.lastVerdict}`, stColor(p.lastVerdict === 'accepted' ? 'accepted' : p.lastVerdict))) : null,
+            p.lastVerdict ? h('div', { style: { marginTop: 4 } }, chip(t('panel.verdict', { v: p.lastVerdict }), stColor(p.lastVerdict === 'accepted' ? 'accepted' : p.lastVerdict))) : null,
           )
         })),
   )
@@ -147,7 +147,7 @@ function ProductRail({ products, current, loadingKey, onSelect, onRefresh, busy 
 
 /* ── run 列表 ───────────────────────────────────────────────────── */
 function RunList({ runs, activeRunId, onOpenRun, onInlineRun }) {
-  if (!runs.length) return muted('该产品线还没有 run 记录。', { padding: '2px 2px 8px' })
+  if (!runs.length) return muted(t('runList.empty'), { padding: '2px 2px 8px' })
   return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
     runs.map((r) => {
       const on = r.id === activeRunId
@@ -164,20 +164,20 @@ function RunList({ runs, activeRunId, onOpenRun, onInlineRun }) {
       },
         h('div', { style: { flex: 1, minWidth: 0 } },
           h('div', { style: { ...flexRow, gap: 6 } },
-            chip(RUN_STATUS_TEXT[r.status] || r.status, stColor(r.status), { dot: true }),
+            chip(runStatusText(r.status), stColor(r.status), { dot: true }),
             r.mode ? chip(String(r.mode), T.text2) : null,
             h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2 } }, r.id),
-            active ? h('span', { style: { fontSize: 10, color: T.brand } }, '进行中') : null),
-          h('div', { style: { fontSize: 11.5, color: T.text, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.requirement || '(无需求描述)'),
+            active ? h('span', { style: { fontSize: 10, color: T.brand } }, t('runList.running')) : null),
+          h('div', { style: { fontSize: 11.5, color: T.text, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.requirement || t('runList.noRequirement')),
           h('div', { style: { ...flexRow, gap: 10, marginTop: 3, fontSize: 10, color: T.text2, fontFamily: MONO } },
-            h('span', null, `阶段 ${r.doneStages}/${r.stageCount}`),
+            h('span', null, t('runList.stageProgress', { done: r.doneStages, total: r.stageCount })),
             h('span', null, runUsageText(r.usage)),
             h('span', null, `${fmtTime(r.startedAt)}${r.endedAt ? ` → ${fmtTime(r.endedAt)}` : ''} ${fmtDur(r.startedAt, r.endedAt)}`))),
         h('button', {
           style: brandBtn,
-          title: '跳到该 run 的发起会话，并在那个会话的右侧栏打开详情（右侧栏是会话级的：挂到无关会话上没有意义）',
+          title: t('runList.openRightBarTip'),
           onClick: (e) => { e.stopPropagation(); onOpenRun(r) },
-        }, '去会话右栏'),
+        }, t('runList.openRightBar')),
       )
     }))
 }
@@ -205,16 +205,16 @@ function BacklogCard({ kind, item, onOpen }) {
     h('div', { style: { ...flexRow, gap: 6, marginTop: 3, fontSize: 10, color: T.text2 } },
       item.devAssign ? h('span', null, `dev ${item.devAssign}`) : null,
       item.qaAssign ? h('span', null, `qa ${item.qaAssign}`) : null,
-      item.acceptBy ? h('span', null, `验收 ${item.acceptBy}`) : null,
-      item.retries ? h('span', { style: { color: T.warn } }, `重试 ${item.retries}`) : null,
-      item.humanIntervention ? h('span', { style: { color: T.error } }, '需人工') : null),
+      item.acceptBy ? h('span', null, t('panel.verdict', { v: item.acceptBy })) : null,
+      item.retries ? h('span', { style: { color: T.warn } }, t('board.retries', { n: item.retries })) : null,
+      item.humanIntervention ? h('span', { style: { color: T.error } }, t('status.needs-human')) : null),
   )
 }
 
 /** 可点筛选徽章（多选）：单击切换该状态，选中态用状态色实心；再点取消。 */
 const filterChip = (text, color, on, onToggle) => h('button', {
   onClick: onToggle,
-  title: on ? '点击取消该状态筛选' : '点击只看该状态（可多选）',
+  title: on ? t('panelBoard.filterChipOn') : t('panelBoard.filterChipOff'),
   style: {
     font: 'inherit', fontSize: 11, fontWeight: 600, padding: '1px 8px', borderRadius: 999, cursor: 'pointer',
     lineHeight: '16px', whiteSpace: 'nowrap',
@@ -235,7 +235,7 @@ function BacklogGroups({ backlog, onOpen, productKey }) {
   if (!backlog) return null
   const groups = [['req', backlog.requirements || []], ['task', (backlog.tasks || []).filter((t) => t.type !== 'subtask')], ['bug', backlog.bugs || []]]
   const total = groups.reduce((a, [, arr]) => a + arr.length, 0)
-  if (!total) return muted('backlog 为空（该产品线还没有立项卡片）。', { padding: '2px 2px 8px' })
+  if (!total) return muted(t('panelBoard.empty'), { padding: '2px 2px 8px' })
   return h('div', null,
     groups.map(([kind, list]) => {
       if (!list.length) return null
@@ -258,26 +258,26 @@ function BacklogGroups({ backlog, onOpen, productKey }) {
       const visible = filtering ? matched : (open ? list : active)
       return h('div', { key: kind, style: { marginBottom: 12 } },
         h('div', { style: { ...flexRow, gap: 6, marginBottom: 6, minWidth: 0 } },
-          h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text, flex: '0 0 auto' } }, `${KIND_TITLE[kind]} · ${list.length}`),
-          h('span', { style: { fontSize: 10, color: T.text2, flex: '0 0 auto' } }, `活动 ${active.length}`),
+          h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text, flex: '0 0 auto' } }, t('panelBoard.groupCount', { kind: kindTitle(kind), n: list.length })),
+          h('span', { style: { fontSize: 10, color: T.text2, flex: '0 0 auto' } }, t('panelBoard.activeCount', { n: active.length })),
           ...Object.keys(byStatus).map((s) => filterChip(`${stText(s)} ${byStatus[s]}`, stColor(s), selSet.has(s), () => toggle(s))),
           filtering
             ? h('button', {
               style: { ...panelBtn, marginLeft: 'auto', flex: '0 0 auto' },
-              title: '清除本组筛选',
+              title: t('panelBoard.clearFilterTip'),
               onClick: () => setFilters((m) => ({ ...m, [kind]: [] })),
-            }, `筛选中 ${sel.length} 项 · 显示 ${matched.length}/${list.length} × 清除`)
+            }, t('panel.filtered', { sel: sel.length, shown: matched.length, total: list.length }))
             : done.length
               ? h('button', {
                 style: { ...panelBtn, marginLeft: 'auto', flex: '0 0 auto' },
-                title: open ? '收起已完成/已关闭卡片' : '展开已完成/已关闭卡片',
+                title: open ? t('panelBoard.collapseDoneTip') : t('panelBoard.expandDoneTip'),
                 onClick: () => setShowDone((m) => ({ ...m, [kind]: !open })),
-              }, open ? `收起已完成 ${done.length}` : `已完成 ${done.length} ▸`)
+              }, open ? t('panelBoard.collapseDone', { n: done.length }) : t('panelBoard.expandDone', { n: done.length }))
               : null),
         visible.length
           ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(228px, 1fr))', gap: 6 } },
             visible.map((it) => h(BacklogCard, { key: it.id, kind, item: it, onOpen })))
-          : muted('该筛选下没有卡片。', { fontSize: 10.5 }))
+          : muted(t('panelBoard.emptyFiltered'), { fontSize: 10.5 }))
     }))
 }
 
@@ -292,38 +292,50 @@ function ItemDetailPane({ det, openArtifact, onClose }) {
       h('div', { style: { ...flexRow, gap: 6 } },
         h('span', { style: { fontFamily: MONO, fontSize: 11, color: T.text2 } }, det.id),
         chip(stText(det.status), stColor(det.status), { dot: true }),
-        h('span', { style: { fontSize: 10.5, color: T.text2 } }, KIND_TITLE[det.kind] || det.kind)),
-      h('button', { style: panelBtn, onClick: onClose }, '关闭')),
+        h('span', { style: { fontSize: 10.5, color: T.text2 } }, kindTitle(det.kind))),
+      h('button', { style: panelBtn, onClick: onClose }, t('common.close'))),
     h('div', { style: { fontSize: 13, fontWeight: 600, color: T.text, lineHeight: 1.45 } }, det.title),
+    /* 缺陷卡：先给缺陷自身的内容（复现/期望/实际）——用户实锤「点开只看得到关联 run 的原始需求」 */
+    det.kind === 'bug' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 10px', borderRadius: 8, background: T.layer2, border: `1px solid ${T.border}` } },
+      h('div', { style: { ...flexRow, gap: 6 } },
+        h('span', { style: { fontSize: 11, fontWeight: 700, color: T.text } }, t('panelItem.defectSection')),
+        det.severity ? chip(String(det.severity), String(det.severity) === 'P0' ? T.error : String(det.severity) === 'P1' ? T.warn : T.text2) : null),
+      row(t('panelItem.row.defectId'), det.defectId), row(t('panelItem.row.module'), det.module),
+      row(t('panelItem.row.reproduce'), det.reproduce), row(t('panelItem.row.expected'), det.expected),
+      row(t('panelItem.row.actual'), det.actual), row(t('panelItem.row.defectCheck'), det.defectCheck),
+      row(t('panelItem.row.defectCriterion'), det.defectCriterion), row(t('panelItem.row.defectAc'), det.defectAc),
+      (det.reproduce || det.expected || det.actual)
+        ? null
+        : h('div', { style: { fontSize: 10.5, color: T.warn, lineHeight: 1.5 } }, t('panelItem.noDefectDetail'))) : null,
     h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } },
-      row('需求', det.reqId), row('负责人', det.owner), row('开发', det.devAssign), row('测试', det.qaAssign),
-      row('验收', det.assignBy), row('重试', det.retries), row('任务夹', det.runDocs)),
-    det.spec ? h('div', null, h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, '规格'), h(FoldableText, { text: det.spec })) : null,
-    det.summary ? h('div', null, h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, '结论摘要'), h(FoldableText, { text: det.summary })) : null,
+      row(t('panelItem.row.req'), det.reqId), row(t('panelItem.row.owner'), det.owner), row(t('panelItem.row.dev'), det.devAssign), row(t('panelItem.row.qa'), det.qaAssign),
+      row(t('panelItem.row.accept'), det.assignBy), row(t('panelItem.row.retries'), det.retries), row(t('panelItem.row.runDocs'), det.runDocs)),
+    det.spec ? h('div', null, h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, t('panelItem.spec')), h(FoldableText, { text: det.spec })) : null,
+    det.summary ? h('div', null, h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, t('panelItem.summary')), h(FoldableText, { text: det.summary })) : null,
     det.artifacts && det.artifacts.length
       ? h('div', null,
-        h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 4 } }, `任务夹产物 · ${det.artifacts.length}`),
+        h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 4 } }, t('panelItem.artifacts', { n: det.artifacts.length })),
         h('div', { style: { ...flexRow, gap: 5 } }, det.artifacts.map((a) => h('button', {
           key: a.name,
           style: brandBtn,
-          title: `${a.address}\n（跳到产物所属会话后在该会话右侧栏打开）`,
+          title: t('panelItem.artifactTip', { address: a.address }),
           onClick: () => openArtifact && openArtifact(a.address, a.name, (det.runInfo && det.runInfo.ownerSession) || null),
         }, a.name))))
-      : muted('该条目没有可预览的任务夹产物（或缺少会话上下文，无法生成文件地址）。'),
+      : muted(t('panelItem.noArtifacts')),
     det.subtasks && det.subtasks.length
       ? h('div', null,
-        h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 4 } }, `子卡 · ${det.subtasks.length}`),
+        h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 4 } }, t('panelItem.subtasks', { n: det.subtasks.length })),
         h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } }, det.subtasks.map((s) => h('div', {
           key: s.id, style: { ...flexRow, gap: 6, fontSize: 11, padding: '4px 7px', borderRadius: 7, background: T.layer1, border: `1px solid ${T.border}` },
         },
           h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2 } }, s.id),
           chip(stText(s.status), stColor(s.status)),
           h('span', { style: { color: T.text, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, s.title),
-          s.failed ? chip('失败', T.error) : null))))
+          s.failed ? chip(t('common.failed'), T.error) : null))))
       : null,
     det.bugs && det.bugs.length
       ? h('div', null,
-        h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 4 } }, `关联缺陷 · ${det.bugs.length}`),
+        h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 4 } }, t('panelItem.bugs', { n: det.bugs.length })),
         h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } }, det.bugs.map((b) => h('div', {
           key: b.id, style: { ...flexRow, gap: 6, fontSize: 11, padding: '4px 7px', borderRadius: 7, background: T.layer1, border: `1px solid ${T.border}` },
         },
@@ -334,7 +346,7 @@ function ItemDetailPane({ det, openArtifact, onClose }) {
       : null,
     det.events && det.events.length
       ? h('div', null,
-        h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 4 } }, `流转时间线 · 最近 ${Math.min(det.events.length, 30)} 条`),
+        h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 4 } }, t('panelItem.events', { n: Math.min(det.events.length, 30) })),
         h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3, fontFamily: MONO, fontSize: 10, color: T.text2 } },
           det.events.slice(-30).map((e, i) => h('div', { key: i }, `${fmtTime(e.at)} ${e.from || '—'} → ${e.to || '—'}${e.by ? ` · ${e.by}` : ''}${e.reason ? ` · ${e.reason}` : ''}`))))
       : null,
@@ -346,7 +358,7 @@ function RunDetailPane({ snap, product, api }) {
   const [sel, setSel] = React.useState(null)     // 选中的阶段详情
   const [err, setErr] = React.useState(null)
   React.useEffect(() => { setSel(null); setErr(null) }, [snap && snap.id])
-  if (!snap) return muted('未找到该 run（可能已被清理，或地址已过期）。', { padding: 12 })
+  if (!snap) return muted(t('detail.runMissing'), { padding: 12 })
   const stages = snap.stages || []
   const totals = stages.reduce((a, s) => {
     const u = s.usage
@@ -362,23 +374,23 @@ function RunDetailPane({ snap, product, api }) {
   const logs = (snap.logs || []).slice(-60)
   return h('div', { style: { padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 10, minHeight: 0, overflowY: 'auto' } },
     h('div', { style: { ...flexRow, gap: 6 } },
-      chip(RUN_STATUS_TEXT[snap.status] || snap.status, stColor(snap.status), { dot: true }),
+      chip(runStatusText(snap.status), stColor(snap.status), { dot: true }),
       snap.options && snap.options.mode ? chip(String(snap.options.mode), T.text2) : null,
       h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2 } }, snap.id),
       product ? h('span', { style: { fontSize: 10, color: T.text2, fontFamily: MONO } }, product) : null),
-    h('div', { style: { fontSize: 12, color: T.text, lineHeight: 1.5 } }, snap.requirement || '(无需求描述)'),
+    h('div', { style: { fontSize: 12, color: T.text, lineHeight: 1.5 } }, snap.requirement || t('runList.noRequirement')),
     h('div', { style: { ...flexRow, gap: 12, fontSize: 10.5, color: T.text2, fontFamily: MONO } },
-      h('span', null, `${fmtTime(snap.startedAt)}${snap.endedAt ? ` → ${fmtTime(snap.endedAt)}` : ' → 进行中'} · ${fmtDur(snap.startedAt, snap.endedAt)}`),
-      h('span', null, `阶段 ${stages.filter((s) => s.status === 'done').length}/${stages.length}`),
-      h('span', null, `子代理 ${snap.agentsStarted || 0}`)),
+      h('span', null, `${fmtTime(snap.startedAt)}${snap.endedAt ? ` → ${fmtTime(snap.endedAt)}` : ' → ' + t('detail.endedRunning')} · ${fmtDur(snap.startedAt, snap.endedAt)}`),
+      h('span', null, t('runList.stageProgress', { done: stages.filter((s) => s.status === 'done').length, total: stages.length })),
+      h('span', null, t('detail.subagents', { n: snap.agentsStarted || 0 }))),
     h('div', { style: { ...flexRow, gap: 10, fontSize: 10.5, color: T.text2, fontFamily: MONO, padding: '6px 8px', borderRadius: 8, background: `color-mix(in srgb, ${T.layer2} 60%, transparent)`, border: `1px solid ${T.border}` } },
-      h('span', null, `输入(未命中) ${fmtTokens(totals.input) || '0'}`),
-      h('span', null, `输入(命中) ${fmtTokens(totals.cacheRead) || '0'}`),
-      h('span', null, `写缓存 ${fmtTokens(totals.cacheWrite) || '0'}`),
-      h('span', null, `输出 ${fmtTokens(totals.output) || '0'}`),
-      h('span', null, `${totals.calls} 次调用`),
-      h('span', null, `合计 ${fmtTokens(totalTokens(totals)) || '0'}`)),
-    sectionTitle(`阶段 · ${stages.length}`),
+      h('span', null, t('token.inputMiss', { v: fmtTokens(totals.input) || '0' })),
+      h('span', null, t('token.inputHit', { v: fmtTokens(totals.cacheRead) || '0' })),
+      h('span', null, t('token.cacheWrite', { v: fmtTokens(totals.cacheWrite) || '0' })),
+      h('span', null, t('token.output', { v: fmtTokens(totals.output) || '0' })),
+      h('span', null, t('common.callsCount', { n: totals.calls })),
+      h('span', null, t('token.total', { v: fmtTokens(totalTokens(totals)) || '0' }))),
+    sectionTitle(t('detail.stages', { n: stages.length })),
     h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
       stages.map((s) => {
         const on = sel && Number(sel.seq) === Number(s.seq)
@@ -394,34 +406,34 @@ function RunDetailPane({ snap, product, api }) {
           h('div', { style: { ...flexRow, gap: 6 } },
             h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2 } }, `#${s.seq}`),
             h('span', null, phaseIconOf(s.phase)),
-            h('span', { style: { fontSize: 11.5, color: T.text, fontWeight: 500 } }, s.label || phaseNameOf(s.phase)),
+            h('span', { style: { fontSize: 11.5, color: T.text, fontWeight: 500 } }, stageLabelOf(s)),
             chip(stText(s.status), color, { dot: true }),
             s.outcome && s.outcome !== 'completed' ? chip(String(s.outcome), stColor(s.outcome)) : null,
             h('span', { style: { marginLeft: 'auto', fontFamily: MONO, fontSize: 10, color: T.text2 } }, `${fmtTime(s.startedAt)}${s.endedAt ? ` · ${fmtDur(s.startedAt, s.endedAt)}` : ''}`)),
           h('div', { style: { ...flexRow, gap: 10, marginTop: 3, fontFamily: MONO, fontSize: 10, color: T.text2 } },
-            h('span', null, stageUsageLine(s) || '无 token 数据'),
-            s.childId ? h('span', { title: s.childId }, `子代理 ${String(s.childId).slice(0, 14)}`) : null),
+            h('span', null, stageUsageLine(s) || t('common.noUsage')),
+            s.childId ? h('span', { title: s.childId }, t('detail.subagentChip', { id: String(s.childId).slice(0, 14) })) : null),
           s.summary ? h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 3, lineHeight: 1.45 } }, String(s.summary).slice(0, 200)) : null)
       })),
-    err ? muted(`阶段详情读取失败：${err}`, { color: T.error }) : null,
+    err ? muted(t('detail.stageFailed', { err }), { color: T.error }) : null,
     sel ? h('div', { style: { padding: '9px 10px', borderRadius: 9, border: `1px solid ${T.border}`, background: T.layer2, display: 'flex', flexDirection: 'column', gap: 8 } },
       h('div', { style: { ...flexRow, justifyContent: 'space-between' } },
         h('div', { style: { ...flexRow, gap: 6 } },
-          h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text } }, `阶段 #${sel.seq} 详情`),
+          h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text } }, t('detail.stageTitle', { seq: sel.seq })),
           chip(stText(sel.status), stColor(sel.status))),
-        h('button', { style: panelBtn, onClick: () => setSel(null) }, '收起')),
-      h('div', { style: { fontSize: 10.5, color: T.text2, fontFamily: MONO } }, `阶段 token：${stageUsageLine(sel) || '无'}`),
+        h('button', { style: panelBtn, onClick: () => setSel(null) }, t('common.collapse'))),
+      h('div', { style: { fontSize: 10.5, color: T.text2, fontFamily: MONO } }, t('token.stageLine', { v: stageUsageLine(sel) || t('common.none') })),
       sel.verifyEvidence
         ? h('div', null,
-          h('div', { style: { fontSize: 11, color: T.success, marginBottom: 3 } }, '🔬 验证证据'),
+          h('div', { style: { fontSize: 11, color: T.success, marginBottom: 3 } }, t('stage.evidenceTitle')),
           h('div', { style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11, lineHeight: 1.6, color: T.text, background: `color-mix(in srgb, ${T.layer1} 70%, transparent)`, border: `1px solid ${T.border}`, borderRadius: 8, padding: '7px 9px', maxHeight: 200, overflowY: 'auto', fontFamily: MONO } }, sel.verifyEvidence))
-        : muted('（缺失——契约未兑现，host 已记警告）', { color: T.warn }),
+        : muted(t('stage.evidenceMissingShort'), { color: T.warn }),
       sel.output ? h('div', null,
-        h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, '阶段产出'),
+        h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, t('detail.output')),
         h(FoldableText, { text: sel.output, charLimit: 400, lineLimit: 8, style: { fontFamily: MONO, fontSize: 11 } })) : null,
       sel.attempts && sel.attempts.length > 1
         ? h('div', null,
-          h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, `同任务尝试 · ${sel.attempts.length}`),
+          h('div', { style: { fontSize: 11, color: T.text2, marginBottom: 3 } }, t('detail.attempts', { n: sel.attempts.length })),
           h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } }, sel.attempts.map((a) => h('div', {
             key: a.seq, style: { ...flexRow, gap: 6, fontSize: 10.5, fontFamily: MONO, color: T.text2 },
           },
@@ -430,7 +442,7 @@ function RunDetailPane({ snap, product, api }) {
         : null)
       : null,
     logs.length ? h('div', null,
-      sectionTitle(`日志 · 最近 ${logs.length} 条`),
+      sectionTitle(t('detail.logs', { n: logs.length })),
       h('div', { style: { display: 'flex', flexDirection: 'column', gap: 2, fontFamily: MONO, fontSize: 10, color: T.text2, maxHeight: 220, overflowY: 'auto' } },
         logs.map((l, i) => h('div', { key: i, style: { color: l.level === 'error' ? T.error : l.level === 'warn' ? T.warn : T.text2 } }, `${fmtTime(l.t)} [${l.level}] ${l.message}`)))) : null,
   )
@@ -470,10 +482,10 @@ export function RunDetailTab(props) {
     let alive = true
     if (!runId) {
       setSnap(null)
-      setErr(address ? `无法解析 run 地址：${address}` : (readTab ? '读取 tab 地址中…' : '宿主 tab 信息钩子不可用（useTabInfo 缺失）'))
+      setErr(address ? t('tab.resolveFailed', { address }) : (readTab ? t('tab.readingAddress') : t('tab.noHook')))
       return undefined
     }
-    if (!api) { setSnap(null); setErr('remote 不可用（插件未挂载或版本过旧）'); return undefined }
+    if (!api) { setSnap(null); setErr(t('tab.remoteUnavailable')); return undefined }
     api.runDetail(runId).then((v) => { if (alive) { setSnap(v); setErr(null) } }, (e) => { if (alive) setErr(String((e && e.message) || e)) })
     const timer = setInterval(() => {
       api.runDetail(runId).then((v) => {
@@ -489,10 +501,10 @@ export function RunDetailTab(props) {
     // 「地址还没就绪」不是错误态：tab 刚挂载的那一帧宿主可能尚未提交记录，等下一次渲染即可
     const pending = !address && !!readTab
     return h('div', { style: { padding: 12, display: 'flex', flexDirection: 'column', gap: 8 } },
-      muted(pending ? '读取 tab 地址中…' : err, { color: pending ? T.text2 : T.error }),
-      pending ? null : h('button', { style: panelBtn, onClick: () => { setErr(null); setNonce((n) => n + 1) } }, '重试'))
+      muted(pending ? t('tab.readingAddress') : err, { color: pending ? T.text2 : T.error }),
+      pending ? null : h('button', { style: panelBtn, onClick: () => { setErr(null); setNonce((n) => n + 1) } }, t('common.retry')))
   }
-  if (!snap) return muted('读取 run 详情中…', { padding: 12 })
+  if (!snap) return muted(t('tab.readingRun'), { padding: 12 })
   return h(RunDetailPane, { snap, product, api })
 }
 
@@ -532,7 +544,7 @@ export function GlobalPanel(props) {
     const attempt = (quiet) => !!(props.openResource && address && props.openResource(address, label, quiet))
     if (attempt(false)) return
     if (!address) {
-      setHint(`${label}：host 未生成可打开的地址（可能缺少会话上下文）`)
+      setHint(t('panel.hintNoAddress', { label }))
       if (fallback) fallback()
       return
     }
@@ -542,7 +554,7 @@ export function GlobalPanel(props) {
       tries += 1
       if (attempt(true)) return
       if (tries < 12) { setTimeout(tick, 120); return }
-      setHint(`右侧栏打开失败（宿主只在对话视图挂载它）：${label}${fallback ? '——已在本面板内联显示' : ''}`)
+      setHint(t('panel.hintRightbarFailed', { label }) + (fallback ? t('panel.hintInlineSuffix') : ''))
       if (fallback) fallback()
     }
     setTimeout(tick, 140)
@@ -567,7 +579,7 @@ export function GlobalPanel(props) {
       return
     }
     try { sessions.open(ownerSession) } catch (e) {
-      setHint(`发起会话 ${String(ownerSession).slice(0, 8)}… 不在会话列表里（可能已被清理）——已在本面板展示详情`)
+      setHint(t('panel.hintSessionGone', { sid: String(ownerSession).slice(0, 8) }))
       if (fallback) fallback()
       return
     }
@@ -581,14 +593,14 @@ export function GlobalPanel(props) {
       const sessionReady = nowCurrent === ownerSession || tries >= 6
       if (sessionReady && props.openResource && address && props.openResource(address, label, tries < 6)) return
       if (tries < 14) { setTimeout(tick, 130); return }
-      setHint(`已切到发起会话，但右栏没打开（${label}）——可在该会话里用「⇥ 右栏打开」重试`)
+      setHint(t('panel.hintSwitchedNoRightbar', { label }))
     }
     setTimeout(tick, 140)
   }
 
   const loadProducts = React.useCallback(async (preferKey?: string | null) => {
     if (!remote || typeof remote.products !== 'function') {
-      setState((s) => ({ ...s, err: 'remote.products 不可用（插件未挂载或版本过旧）' }))
+      setState((s) => ({ ...s, err: t('panel.remoteProductsUnavailable') }))
       return
     }
     setState((s) => ({ ...s, busy: true }))
@@ -694,27 +706,27 @@ export function GlobalPanel(props) {
   },
     h('div', { style: { ...flexRow, justifyContent: 'space-between', padding: '10px 14px', borderBottom: `1px solid ${T.border}` } },
       h('div', { style: { ...flexRow, gap: 8 } },
-        h('span', { style: { fontSize: 13, fontWeight: 700 } }, '🏭 团队工作台'),
-        h('span', { style: { fontSize: 11, color: T.text2 } }, '全局面板 · 按产品线'),
-        currentSessionId ? h('span', { style: { fontSize: 10, color: T.text2, fontFamily: MONO } }, `当前会话 ${String(currentSessionId).slice(0, 8)}`) : h('span', { style: { fontSize: 10, color: T.text2 } }, '无当前会话')),
+        h('span', { style: { fontSize: 13, fontWeight: 700 } }, t('panel.title')),
+        h('span', { style: { fontSize: 11, color: T.text2 } }, t('panel.subtitle')),
+        currentSessionId ? h('span', { style: { fontSize: 10, color: T.text2, fontFamily: MONO } }, t('panel.currentSession', { sid: String(currentSessionId).slice(0, 8) })) : h('span', { style: { fontSize: 10, color: T.text2 } }, t('panel.noSession'))),
       h('div', { style: { ...flexRow, gap: 6 } },
-        product ? h('button', { style: panelBtn, onClick: () => loadView(state.current) }, '刷新数据') : null,
+        product ? h('button', { style: panelBtn, onClick: () => loadView(state.current) }, t('panel.reload')) : null,
         h('button', {
           style: panelBtn,
-          title: '回到对话（再点侧边栏图标即可切回本面板）',
+          title: t('panel.backToChatTip'),
           onClick: () => { try { const layout = props.layout; if (layout && layout.selectPanel) layout.selectPanel(null) } catch (e) { /* ignore */ } },
-        }, '回到对话'))),
+        }, t('panel.backToChat')))),
     state.err ? h('div', { style: { padding: '6px 14px', fontSize: 11, color: T.error, borderBottom: `1px solid ${T.border}` } }, state.err) : null,
     hint ? h('div', { style: { ...flexRow, justifyContent: 'space-between', gap: 8, padding: '6px 14px', fontSize: 11, color: T.warn, borderBottom: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.warn} 8%, transparent)` } },
       h('span', null, hint),
-      h('button', { style: panelBtn, onClick: () => setHint(null) }, '知道了')) : null,
+      h('button', { style: panelBtn, onClick: () => setHint(null) }, t('common.gotIt'))) : null,
     h('div', { style: { flex: 1, minHeight: 0, display: 'flex', position: 'relative' } },
       h(ProductRail, { products: state.products, current: state.current, loadingKey: state.view ? null : state.current, busy: state.busy, onRefresh: () => loadProducts(state.current), onSelect: selectProduct }),
       h('div', { style: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' } },
         !state.current
-          ? h('div', { style: { padding: '12px 14px' } }, muted('选择左侧产品线查看 backlog 与 run（首次进入默认选最近更新的产品线）。'))
+          ? h('div', { style: { padding: '12px 14px' } }, muted(t('panel.pickProduct')))
           : !view
-            ? h('div', { style: { padding: '12px 14px' } }, muted('读取产品线数据中…'))
+            ? h('div', { style: { padding: '12px 14px' } }, muted(t('panel.loadingView')))
             : h(React.Fragment, null,
               /* 产品头：固定（不参与滚动） */
               h('div', { style: { ...flexRow, justifyContent: 'space-between', gap: 10, padding: '12px 14px 6px' } },
@@ -722,18 +734,18 @@ export function GlobalPanel(props) {
                   h('div', { style: { fontSize: 15, fontWeight: 700, color: T.text } }, product.title || product.key),
                   h('div', { style: { fontSize: 10.5, color: T.text2, fontFamily: MONO, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, product.path || product.key)),
                 h('div', { style: { ...flexRow, gap: 6, flex: '0 0 auto' } },
-                  chip(`run ${product.totalRuns}`, T.text2),
-                  product.activeRuns > 0 ? chip(`活跃 ${product.activeRuns}`, T.brand, { dot: true }) : null,
-                  product.lastVerdict ? chip(`验收 ${product.lastVerdict}`, stColor('accepted')) : null)),
+                  chip(t('panel.runChip', { n: product.totalRuns }), T.text2),
+                  product.activeRuns > 0 ? chip(t('panel.activeChip', { n: product.activeRuns }), T.brand, { dot: true }) : null,
+                  product.lastVerdict ? chip(t('panel.verdictChip', { v: product.lastVerdict }), stColor('accepted')) : null)),
               /* 标签页：一次只显示一个列表 —— 宽度全给它，不再多栏挤压（第三版布局） */
               h('div', { style: { display: 'flex', alignItems: 'flex-end', gap: 2, padding: '0 14px', borderBottom: `1px solid ${T.border}` } },
-                panelTabBtn('run', `🚀 流水线 run · ${runs.length}`),
-                panelTabBtn('backlog', `📋 Backlog · ${backlogCount}`),
+                panelTabBtn('run', t('panel.tabRuns', { n: runs.length })),
+                panelTabBtn('backlog', t('panel.tabBacklog', { n: backlogCount })),
                 h('div', { style: { marginLeft: 'auto', ...flexRow, gap: 6, paddingBottom: 7 } },
-                  panelTab === 'run' && !runsExpanded && pinnedActive.length > 0 ? chip(`已置顶进行中 ${pinnedActive.length}`, T.brand, { dot: true }) : null,
+                  panelTab === 'run' && !runsExpanded && pinnedActive.length > 0 ? chip(t('panel.pinnedActive', { n: pinnedActive.length }), T.brand, { dot: true }) : null,
                   panelTab === 'run' && runsMatched.length > RUN_PREVIEW
                     ? h('button', { style: panelBtn, onClick: () => setRunsExpanded((v) => !v) },
-                      runsExpanded ? `只看最近 ${RUN_PREVIEW} 条` : `展开全部 ${runsMatched.length} 条`)
+                      runsExpanded ? t('panel.showRecent', { n: RUN_PREVIEW }) : t('panel.showAll', { n: runsMatched.length }))
                     : null)),
               /* 单一滚动区（自己滚；页面级滚动条不会出现） */
               h('div', { style: { flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '12px 14px 18px' } },
@@ -742,20 +754,20 @@ export function GlobalPanel(props) {
                     /* run 状态筛选（多选；与 backlog 侧同款交互） */
                     h('div', { style: { ...flexRow, gap: 6, marginBottom: 8 } },
                       ...RUN_STATUS_ORDER.filter((st) => runStatusCounts[st]).map((st) => filterChip(
-                        `${RUN_STATUS_TEXT[st] || st} ${runStatusCounts[st]}`, stColor(st), runSelSet.has(st), () => toggleRunStatus(st))),
+                        `${runStatusText(st)} ${runStatusCounts[st]}`, stColor(st), runSelSet.has(st), () => toggleRunStatus(st))),
                       runFiltering
                         ? h('button', {
                           style: panelBtn,
-                          title: '清除 run 状态筛选',
+                          title: t('panel.clearRunFilterTip'),
                           onClick: () => setRunFilter([]),
-                        }, `筛选中 ${runSel.length} 项 · 显示 ${runsMatched.length}/${runs.length} × 清除`)
+                        }, t('panel.filtered', { sel: runSel.length, shown: runsMatched.length, total: runs.length }))
                         : null),
                     visibleRuns.length
                       ? h(RunList, { runs: visibleRuns, activeRunId: detail && detail.kind === 'run' && detail.run ? detail.run.id : null, onOpenRun: openRun, onInlineRun: showInline })
-                      : muted('该筛选下没有 run。', { fontSize: 10.5 }),
-                    muted('点一行看详情浮层；「去会话右栏」= 跳到该 run 的发起会话并在其右侧栏打开（与任务夹产物并排）', { fontSize: 10, marginTop: 8 }))
+                      : muted(t('panel.emptyRunFilter'), { fontSize: 10.5 }),
+                    muted(t('panel.runHint'), { fontSize: 10, marginTop: 8 }))
                   : h(React.Fragment, null,
-                    muted('点状态徽章可筛选（多选）；终态卡片默认收起，筛选时自动显示', { fontSize: 10, marginBottom: 8 }),
+                    muted(t('panel.boardHint'), { fontSize: 10, marginBottom: 8 }),
                     h(BacklogGroups, { backlog: view.backlog, onOpen: openItem, productKey: state.current }))),
             ),
       ),
@@ -773,20 +785,20 @@ export function GlobalPanel(props) {
             ? h(ItemDetailPane, { det: detail.data, openArtifact: openArtifactInPanel, onClose: closeDetail })
             : h('div', null,
               h('div', { style: { ...flexRow, justifyContent: 'space-between', padding: '10px 12px 0' } },
-                h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text } }, 'run 详情'),
+                h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text } }, t('panel.runDetail')),
                 h('div', { style: { ...flexRow, gap: 6 } },
                   detail && detail.data && detail.data.address
                     ? h('button', {
                       style: brandBtn,
-                      title: '跳到该 run 的发起会话，并在那个会话的右侧栏打开（与任务夹产物并排看）',
+                      title: t('panel.goOwnerSessionTip'),
                       onClick: () => goOwnerSessionAndOpen({
                         ownerSession: detail.data.ownerSession,
                         address: detail.data.address,
                         label: detail.data.id,
                       }),
-                    }, '去发起会话')
+                    }, t('panel.goOwnerSession'))
                     : null,
-                  h('button', { style: panelBtn, onClick: closeDetail }, '关闭'))),
+                  h('button', { style: panelBtn, onClick: closeDetail }, t('common.close')))),
               h(RunDetailPane, { snap: detail && detail.data, product: state.current, api })))
         : null,
     ),
