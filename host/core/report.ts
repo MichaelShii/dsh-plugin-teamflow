@@ -107,9 +107,16 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
     // 通知摘要里的状态词（未知状态回落 status 字面量）
     const noticeKey = `report.noticeStatus.${journal.status}`
     const noticeStatus = t(locale, noticeKey) === noticeKey ? journal.status : t(locale, noticeKey)
+    // 取消来源（2026-09-16 实测补充）：主线程看到「已取消」但不知道谁停的，曾据错误前提怀疑
+    // 「另一会话在自动续跑」（实际是人工点界面按钮）。来源随汇报显式给出，并说明**不会自动续跑**。
+    const cancelSrcKey = `cancelSource.${journal.cancelSource || 'unknown'}`
+    const cancelSourceLine = (journal.status === 'cancelled' || journal.cancelled === true)
+      ? t(locale, 'report.cancelSource', { source: t(locale, cancelSrcKey) })
+      : ''
     const text = [
       t(locale, 'report.header', { id: journal.id }),
       t(locale, 'report.statusLine', { status: statusLine, error: journal.error ? t(locale, 'report.error', { error: clip(journal.error, 300) }) : '' }),
+      cancelSourceLine,
       t(locale, 'report.stagesLine', { stages: stagesLine }),
       t(locale, 'report.agents', { n: journal.agentsStarted || 0 }),
       tokenLine,
@@ -125,7 +132,8 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
       needsHumanNotice,
       mergeHint,
       t(locale, 'report.tabHint'),
-      t(locale, 'report.next'),
+      // 取消态的「下一步」换措辞：不给模型续跑引导（续跑是人的决定，且本 run 不会自动续跑）
+      (journal.status === 'cancelled' || journal.cancelled === true) ? t(locale, 'report.nextCancelled') : t(locale, 'report.next'),
       t(locale, 'report.relay'),
     ].filter(Boolean).join('\n')
     const message = createUserMessage({

@@ -438,7 +438,7 @@ function registerTools(ctx) {
     output: { schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' } } }, render: (args, value) => [{ type: 'text', text: value.ok ? t(ambientLocale(), 'tool.cancel.ok', { runId: args.runId }) : t(ambientLocale(), 'tool.cancel.fail') }] },
     async execute(args) {
       const id = args && typeof args.runId === 'string' ? args.runId : null
-      return { ok: id ? cancelRun(id) : false }
+      return { ok: id ? cancelRun(id, 'tool') : false }
     },
   })
 
@@ -794,7 +794,8 @@ export class TeamflowService extends TypertRemoteService {
   cancel(runId) {
     const id = typeof runId === 'string' ? runId : null
     if (!id) return { ok: false, error: t(ambientLocale(), 'err.tool.missingRunId') }
-    return { ok: cancelRun(id) }
+    // 来源=界面（人工点击）——与模型工具 teamflow_cancel 区分：主线程据此知道「是人停的，不是别人在自动续跑」
+    return { ok: cancelRun(id, 'ui') }
   }
 
   /** 工作区级 backlog 视图（自动按当前会话 workspace 隔离）。productOverride：全局面板按产品线 key 寻址。 */

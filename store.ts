@@ -228,6 +228,9 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
      *  「结论被强制为需人工裁定、不要据此合回」的显式提示（持久化：重启/resume 后仍可判）。 */
     knownIssuesAcceptance: journal.knownIssuesAcceptance === true,
     cancelled: journal.cancelled === true,
+    /** 取消来源（ui=界面按钮/人工，tool=模型工具，unknown=历史 run）：主线程据此判断「谁停的」。 */
+    cancelSource: journal.cancelSource || null,
+    cancelRequestedAt: journal.cancelRequestedAt || null,
     interrupted: journal.interrupted === true,
     interruptedAt: journal.interruptedAt || null,
     supersededBy: journal.supersededBy || null,

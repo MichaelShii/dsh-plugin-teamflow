@@ -100,6 +100,24 @@ untrackInFlight(bad.id, { seq: 1 })
 untrackInFlight(bad.id, { seq: 2 })
 await sleep(10) // 给 rejected Promise 的 .catch 一个回合；若有未处理拒绝，Node 会在此后报错
 
+console.log('── 5b) 取消来源落盘（主线程据此判断「谁停的」，实测踩过：它误以为是别的会话在自动续跑）──')
+{
+  const uiRun = put(J('running'))
+  eq(cancelRun(uiRun.id, 'ui'), true, '界面来源 → 取消成功')
+  eq(uiRun.cancelSource, 'ui', 'journal.cancelSource = ui')
+  ok(!!uiRun.cancelRequestedAt, 'journal.cancelRequestedAt 已记录')
+  ok((uiRun.logs || []).some((l) => /中断请求/.test(String(l.message))), 'journal.logs 留一条「收到中断请求（来源：…）」')
+  ok(!!onDisk(uiRun.id) && onDisk(uiRun.id).cancelSource === 'ui', 'cancelSource 随 journal 落盘（serializeJournal 覆盖）')
+
+  const toolRun = put(J('running'))
+  eq(cancelRun(toolRun.id, 'tool'), true, '模型工具来源 → 取消成功')
+  eq(toolRun.cancelSource, 'tool', 'journal.cancelSource = tool')
+
+  const legacy = put(J('running'))
+  eq(cancelRun(legacy.id), true, '缺省来源 → 取消成功')
+  eq(legacy.cancelSource, 'unknown', '缺省来源记 unknown（历史调用方）')
+}
+
 console.log('── 6) 取消后并发池不再取新任务（「中断了又自动启动一个」的回归锁）──')
 {
   const started = []
@@ -128,11 +146,14 @@ const hostSrc = readFileSync(join(here, '../host/index.ts'), 'utf8')
 const indexSrc = readFileSync(join(here, '../client/index.tsx'), 'utf8')
 const panelSrc = readFileSync(join(here, '../client/panel.tsx'), 'utf8')
 const pipelineSrc = readFileSync(join(here, '../host/core/pipeline.ts'), 'utf8')
+const reportSrc = readFileSync(join(here, '../host/core/report.ts'), 'utf8')
 const block = /id: 'dsh-plugin-teamflow#teamflow\/cancel',[\s\S]*?\n  \}/.exec(descriptorSrc)
 ok(!!block, 'descriptors.ts 声明 teamflow/cancel')
 ok(!!block && /method: 'cancel'/.test(block[0]), "wire method = 'cancel'")
 ok(!!block && /parameters: \[p\('runId'\)\]/.test(block[0]), '参数恰为 [runId]（按钮只传这一个，无会话参数）')
-ok(/cancel\(runId\) \{/.test(hostSrc) && /return \{ ok: cancelRun\(id\) \}/.test(hostSrc), 'host 服务方法 cancel(runId) → cancelRun')
+ok(/cancel\(runId\) \{/.test(hostSrc) && /return \{ ok: cancelRun\(id, 'ui'\) \}/.test(hostSrc), "host 服务方法 cancel(runId) → cancelRun(id, 'ui')（界面=人工来源）")
+ok(/cancelRun\(id, 'tool'\)/.test(hostSrc), "模型工具传 source='tool'（与界面来源可辨：主线程据此知道「是人停的」）")
+ok(/'report\.cancelSource'/.test(reportSrc) && /'report\.nextCancelled'/.test(reportSrc) && /cancelSource\.\$\{journal\.cancelSource \|\| 'unknown'\}/.test(reportSrc), 'report：取消汇报带中断来源 + 取消态换「不会自动续跑」措辞（不给模型续跑引导）')
 ok(/teamflow_cancel/.test(hostSrc), '模型工具 teamflow_cancel 仍共用同一条路径')
 ok(/api\.cancel\(id\)/.test(indexSrc), '会话内工作台有 cancel 调用点')
 ok(/remote\.cancel\(runId\)/.test(panelSrc), '全局面板/右栏经 productApi.cancel 调同一条 wire 面')

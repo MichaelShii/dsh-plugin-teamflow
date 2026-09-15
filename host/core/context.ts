@@ -5,6 +5,8 @@
  * 这是 ADR-0004「共享状态」在编排层的落点：共享对象集中、单向被 core 各模块 import（不反向）。
  */
 import { slugPath, persistJournal } from '../../store.ts'
+import { t } from '../locales.ts'
+import { runLocaleOf } from './locale.ts'
 
 /** 子代理/计量等宿主能力（由 TeamflowService 装配时 setRuntime 注入）。字段为鸭子类型：消费方自行窄化。 */
 export const runtime: {
@@ -74,11 +76,22 @@ export const activeProducts = new Map()
  * 只置位、不改状态机：run 终态由 executePipeline 收尾落定（cancelled + 不提交 + 保留 resume 入口）。
  * 在飞子代理**全部** dispose（并发 dev 的多路都要停——只停最后一路是 2026-09-16 实测的缺陷）；
  * `dispose()` 是异步的，其 Promise 一律挂 `.catch`，避免拒绝变成未处理拒绝。
+ *
+ * **取消来源必须落盘**（2026-09-16 实测补充）：主线程收到 `⏹ 已取消` 的汇报后无从判断「谁取消的」，
+ * 曾据错误前提怀疑「另一会话在自动续跑」（实际是人工点界面按钮）。来源三类：界面按钮（人工）、
+ * 模型工具、未知（历史 run）。它进 journal.logs（可见）+ `journal.cancelSource`（随汇报一起给主线程）。
  */
-export function cancelRun(runId: string | null | undefined): boolean {
+export type CancelSource = 'ui' | 'tool' | 'unknown'
+export function cancelRun(runId: string | null | undefined, source: CancelSource = 'unknown'): boolean {
   const j = runs.get(runId)
   if (!j || j.status !== 'running') return false
   j.cancelled = true
+  j.cancelSource = source
+  j.cancelRequestedAt = Date.now()
+  try {
+    const locale = runLocaleOf(j)
+    j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.cancelRequested', { source: t(locale, `cancelSource.${source}`) }) })
+  } catch (e) { /* 日志失败不影响取消 */ }
   const live = inFlight.get(runId)
   if (live) {
     for (const run of live.values()) {
