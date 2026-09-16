@@ -9,6 +9,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { TEAMFLOW_DESCRIPTORS } from '../descriptors.ts'
+import { parseAcceptanceVerdict } from '../host/util.ts'
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -137,6 +138,8 @@ const hostSrc = [
   ...['context', 'backlog', 'metering', 'runner', 'guard', 'report', 'pipeline', 'teams', 'state', 'products', 'triage', 'locale', 'runlogs'].map((f) => readFileSync(join(here, `../host/core/${f}.ts`), 'utf8')),
 ].join('\n//#region host-pool\n')
 const utilSrc = readFileSync(join(here, '../host/util.ts'), 'utf8')
+// smoke 自身源码（用于断言「测试里确实写了这条回归样本」——防测试被悄悄删掉而源码仍在/或反之）
+const smokeSelf = readFileSync(join(here, 'verdict.test.js'), 'utf8')
 const constantsSrc = readFileSync(join(here, '../host/constants.ts'), 'utf8')
 ok(/ownerSession: j\.ownerSession \|\| null/.test(hostSrc), 'host：run 快照/摘要携带 ownerSession（全局面板据此跳到发起会话）')
 ok(/class TeamflowService extends TypertRemoteService/.test(hostSrc), 'TeamflowService extends TypertRemoteService')
@@ -574,6 +577,13 @@ ok(/log\.triagePreflightFail/.test(pipelineSrc) && /log\.clarifyAbort/.test(pipe
 ok(/do NOT re-ask/.test(hostSrc) && /do NOT re-ask/.test(pipelineSrc), '分诊输入必须带上 requirementSupplement（[CLARIFIED]），否则已答复的问题会被反复问')
 ok(/const alreadyClarified = !!String\(options\.requirementSupplement \|\| ''\)\.trim\(\)/.test(hostSrc) && /&& !alreadyClarified/.test(hostSrc), '收敛规则：调用方还没给过澄清答复时才拦（给过就不再拦，防不收敛）')
 ok(/log\.clarifyProceedWithAssumptions/.test(pipelineSrc) && /const clarified = !!String\(journal\.requirementSupplement/.test(pipelineSrc), 'pipeline 同收敛规则：已澄清 → 残余 blocker 作假设开工（可见 warn）')
+// 验收结论行取值（2026-09-17 实测 bug tf-mu4bve7t-duux2k：`## 1. 验收结论摘要` 蒙住真正的结论行 →
+// 明明「验收结论：✅ 通过」却判 needs-human）。规则：只认**字面量模板行**（冒号连写），且取最后一个。
+ok(/const literal = \/\^\\s\*\(\?:#\{1,6\}\\s\*\|\[-\*\+\]\\s\*\)\?\(\?:验收结论\|整体结论\|Acceptance verdict\|Overall verdict\)\\s\*\[:：]\/i/.test(utilSrc), 'util：结论行按字面量模板行匹配（`验收结论：` 冒号连写，不被章节标题蒙住）')
+ok(/literalHits\.length \? literalHits\[literalHits\.length - 1\]/.test(utilSrc), 'util：多个命中取**最后一个**（报告末尾的结论章才是终判）')
+ok(parseAcceptanceVerdict('## 1. 验收结论摘要\n摘要文本\n## 6. 验收结论\n验收结论：✅ 通过') === 'accepted', 'util：真实结构（摘要章在前）→ accepted（回归核心，行为断言）')
+ok(smokeSelf.includes('验收结论摘要'), 'verdict.test.js 内保留该真实结构样本（防回归样本被悄悄删掉）')
+ok(parseAcceptanceVerdict('## 1. 验收结论摘要\n## 6. 验收结论\n（未写结论）') === 'needs-human', 'util：只有标题、无字面量结论行 → needs-human（不猜）')
 ok(/\[Clarify first, do not jump the gun\]/.test(hostSrc) && /\[After clarifying, come back to the pipeline\]/.test(hostSrc), '注入（en）：同上（语言跟随会话，双语同形门禁另有 locale 测试）')
 ok(/若 teamflow_start 返回 needs-clarification，按它列出的 blockers 继续问用户/.test(hostSrc) && /If teamflow_start returns needs-clarification, keep asking the user about the blockers/.test(hostSrc), '注入：needs-clarification 的处理指引（按 blockers 问 → 带 supplement 重调，禁止替用户假设）')
 

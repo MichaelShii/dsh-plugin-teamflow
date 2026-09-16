@@ -346,12 +346,25 @@ export function buildRetryDiagnostic(
  * 反向护栏（漏报实锤 2026-09-03）：模型写「❌ 不通过」但漏写「验收结论：」前缀 → accLine 为空 →
  * 旧实现落回默认 accepted（最乐观默认值，质量门禁漏报=假交付）。现改为 **找不到结论行 → needs-human**
  * （宁严勿松：误拦截=人工看一眼，误放行=假交付；📝 全文命中与架构红词仍优先于该默认）。
+ * ⚠️ 结论行取值（2026-09-17 实测 bug，`tf-mu4bve7t-duux2k`）：旧实现 `find(第一个含「验收结论」的行)` 会被
+ * **章节标题**蒙住 —— 真实产物里 `## 1. 验收结论摘要`（含"验收结论"四字）排在真正的结论行
+ * `验收结论：✅ 通过` 之前 → 抓到标题行 → 四档词全落空 → **明明通过却判 needs-human**。
+ * 现规则：**优先取字面量模板行**（行首 `验收结论：` / `Acceptance verdict:` / `Overall verdict:`，
+ * 允许 `## ` 前缀与列表符），且取**最后一个**（报告末尾的"结论"章才是终判）；仍找不到时，回退到
+ * **最后一个非标题、含结论词的行**（避免"只写 ❌ 不通过、漏写前缀"的漏报变体）。
  * @param {unknown} text 验收报告全文
  * @returns {'accepted'|'rework'|'reject'|'needs-human'}
  */
 export function parseAcceptanceVerdict(text) {
   const acc = String(text || '')
-  const accLine = (acc.split('\n').find((l) => /验收结论|整体结论|Acceptance verdict|Overall verdict/i.test(l)) || '').replace(/\|.*/, '').trim()
+  const lines = acc.split('\n')
+  // ① 字面量模板行（**唯一**结论行来源）：`## 验收结论：✅ 通过` / `- 验收结论：通过` /
+  //    `Acceptance verdict: ✅ Pass`。只允许 `##`/列表符前缀 + 冒号连写；`**验收结论：**` 这类
+  //    加粗破坏连写的**不认**（宁严勿松：不知道结论就 needs-human，不猜）。
+  //    有多个时取**最后一个**（报告末尾的“结论”章才是终判，前面可能是“摘要/小结”章节）。
+  const literal = /^\s*(?:#{1,6}\s*|[-*+]\s*)?(?:验收结论|整体结论|Acceptance verdict|Overall verdict)\s*[:：]/i
+  const literalHits = lines.filter((l) => literal.test(l))
+  const accLine = literalHits.length ? literalHits[literalHits.length - 1].replace(/\|.*/, '').trim() : ''
   // M3 架构门禁：明确的架构打回信号 → rework（无论结论行写没写「通过」）。
   // 修正误杀（tf-mt1pulkw）：验收正文「架构一致性核验 — PASS，无返工项」被朴素正则
   // 当成打回信号 → 误判 rework。现在改为「独立断言词 + 否定保护」：

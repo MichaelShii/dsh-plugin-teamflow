@@ -33,6 +33,34 @@ expect(parseAcceptanceVerdict(passWithChg), 'accepted', '结论行含「通过�
 const noConclusion = `主体内容未按格式写结论行。需求无效这类词出现在正文讨论里，不应判拒绝。`
 expect(parseAcceptanceVerdict(noConclusion), 'needs-human', '无结论行 → needs-human（不再默认 accepted——防漏报，需人工确认）')
 
+console.log('── 章节标题蒙蔽结论行（2026-09-17 实测 bug，tf-mu4bve7t-duux2k）──')
+// 真实产物结构：`## 1. 验收结论摘要`（含"验收结论"四字）排在真正的结论行之前
+const withSummaryHeading = [
+  '# 站立活动督促时钟 DSH 插件 · 产品验收报告（ACCEPTANCE）',
+  '## 1. 验收结论摘要',
+  '本轮验收结论摘要：AC-1~AC-8 逐条满足，3 个阻断缺陷已修复并复验通过。',
+  '## 2. 逐条 AC 核对表',
+  '| AC | 结论 |',
+  '## 3. 架构一致性检查（M3 质量门 · 必查）',
+  '架构一致性核验 — PASS，无返工项。',
+  '## 4. 缺陷与风险',
+  '## 5. 人工补测清单（环境限制，非交付缺陷）',
+  '## 6. 验收结论',
+  '验收结论：✅ 通过',
+  '',
+].join('\n')
+expect(parseAcceptanceVerdict(withSummaryHeading), 'accepted', '「## 1. 验收结论摘要」不得蒙住真正的结论行（回归核心）')
+expect(parseAcceptanceVerdict(withSummaryHeading.replace('验收结论：✅ 通过', '验收结论：❌ 不通过')), 'rework', '同结构下结论行写 ❌ → rework（不被标题带偏）')
+expect(parseAcceptanceVerdict(withSummaryHeading.replace('验收结论：✅ 通过', '## 6. 验收结论\n（本行未写结论）')), 'needs-human', '只有「验收结论」标题行、无字面量结论行 → needs-human（不猜）')
+// 英文同构（AC-6 只增不改）
+const enSummary = ['# Acceptance', '## 1. Acceptance verdict summary', 'All ACs satisfied.', '## 6. Acceptance verdict', 'Acceptance verdict: ✅ Pass'].join('\n')
+expect(parseAcceptanceVerdict(enSummary), 'accepted', 'en：summary 标题行不得蒙住 `Acceptance verdict: ✅ Pass`')
+expect(parseAcceptanceVerdict(enSummary.replace('✅ Pass', '❌ Fail')), 'rework', 'en：同结构 ❌ Fail → rework')
+// 结论行带 ## 前缀/列表符也要认
+expect(parseAcceptanceVerdict('## 验收结论：✅ 通过'), 'accepted', '结论行带 `## ` 前缀 → 仍识别')
+expect(parseAcceptanceVerdict('- 验收结论：通过'), 'accepted', '结论行为列表项 → 仍识别')
+expect(parseAcceptanceVerdict('**验收结论：** ✅ 通过'), 'needs-human', '加粗破坏 `验收结论：` 连写 → needs-human（宁严勿松，不猜）')
+
 console.log('── 漏报护栏（2026-09-03）：模型写 ❌ 但漏写「验收结论：」前缀 → 不得判 accepted ──')
 expect(parseAcceptanceVerdict('逐条核对后，❌ 不通过，存在 P0 缺陷。'), 'needs-human', '正文写 ❌ 但无结论行 → needs-human（旧实现漏报为 accepted）')
 expect(parseAcceptanceVerdict('## 验收结论：❌ 不通过\n存在 P0 缺陷。'), 'rework', '结论行 ❌ 不通过（有前缀）→ rework（正常路径不受影响）')
