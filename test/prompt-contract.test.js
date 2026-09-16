@@ -158,6 +158,11 @@ const prdWithContract = prdPrompt('做一个 dsh 插件', ROOT, RUN_ID, ST_ARTIF
 const prdWithContractEn = prdPrompt('build a dsh plugin', ROOT, RUN_ID, { ...ST_EN, __runCtx: { ...ST_EN.__runCtx, artifact: 'plugin-full', installable: true, artifactContracts: artifactContractsFor('plugin-full', true) } })
 const prdNoContract = out.prdPrompt
 assertContract({
+  id: 'TRIAGE-INSTALL-BLOCKER', level: 'policy', targets: 'triagePrompt',
+  intent: '新交付物但需求没写「交付/安装形态」时，必须作为 must-know blocker 问用户（形态不同 → 契约集与 AC 不同）',
+  include: [/One gap is must-ask whenever it applies/, /installed\/published/, /source in the repo/, /source-only, no packaging/],
+})
+assertContract({
   id: 'PRD-ARTIFACT-CONTRACTS', level: 'policy', targets: 'prdPrompt',
   intent: '形态契约必须落成 PRD 必填 AC（清单由 host 数据表下发；字段名要求读同仓样本核实）',
   include: [/\[交付形态契约 · 必填 AC\]/, /必须落成 PRD 里可测的 AC/, /禁止凭记忆写/, /plugins\/dsh-plugin-teamflow/],

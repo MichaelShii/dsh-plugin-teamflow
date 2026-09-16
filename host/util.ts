@@ -408,7 +408,16 @@ export function parseAcceptanceVerdict(text) {
   const archNegated =
     /无返工|无.*返工|不返工|无架构打回|无.*打回|非漂移|无.*重复|无.*偏离|无.*抽象.*问题|无.*蓝图.*问题|架构一致性.*(PASS|良好|达标|通过|无问题)|M3.*(PASS|通过|达标)|架构.*(达标|无问题|良好)/.test(acc)
   if (hasArchRedFlag && !archNegated) return 'rework'
-  if (/📝\s*需求不适用|📝\s*(?:Not applicable|N\/A)/i.test(acc)) return 'reject'
+  // 「📝 需求不适用」= 验收负责人专用强结论词，**但只认"行首为结论"的写法**（2026-09-17 实测修 bug
+  // `tf-mu4i779p-kze5kl`）：真实报告会在标题/正文里**引用并论证它不适用**——「### 5.3 为什么不判
+  // 「📝 需求不适用」」+「dev 结果并非「无需改动」」——旧的全文匹配据此把一份 `⚠️ 有条件通过` 的报告
+  // 判成 reject（run 落 failed + 需人工）。现改为**行首锚定**：剥掉 markdown/列表/表格前缀与结论标签后
+  // 该行必须**以 📝 + 需求不适用 开头**才算（`## 📝 需求不适用` / `验收结论：📝 需求不适用` /
+  // `| 📝 需求不适用 | … |` 都算；`5.3 为什么不判「📝 …」` 不算）。
+  const naLead = acc.split('\n').map((l) => String(l)
+    .replace(/^[\s#*\-+>|]+/, '')
+    .replace(/^(?:验收结论|整体结论|结论|判定|Acceptance verdict|Overall verdict|Conclusion|Verdict)\s*[:：]\s*/i, ''))
+  if (naLead.some((l) => /^📝\s*(?:需求不适用|Not applicable|N\/A)/i.test(l))) return 'reject'
   // 结论行显式否定 → rework；✅ 通过同现时通过词优先；双重否定保护（无不通过/未发现不通过=通过）
   // en 新增（AC-6）：`fail/failed/not pass/not passed` 进否定词表；**明确不把裸 `rework` 当否定词**
   // ——en 模板 `⚠️ Conditional pass (rework items listed)` 含 `rework`，混入即误判打回。

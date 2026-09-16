@@ -961,6 +961,10 @@ export async function executePipeline(
         const store = storeFor(scopeKey)
         const req = store.find('req', journal.reqId)
         if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', t(locale, 'event.reqMismatchHuman')) }
+        // run 级也要置位（2026-09-17 实测 `tf-mu4i779p-kze5kl`：这条路径原先只置 backlog 卡片，
+        // journal.humanIntervention 仍为 false → 汇报/工作台的「需人工」状态线与 error 文案自相矛盾；
+        // rework 分支一直是两边都置的，这里对齐）
+        journal.humanIntervention = true
         journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.accReject') })
         persistJournal(journal)
         throw new Error(t(locale, 'err.accReject'))

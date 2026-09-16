@@ -65,7 +65,15 @@ console.log('── 漏报护栏（2026-09-03）：模型写 ❌ 但漏写「验
 expect(parseAcceptanceVerdict('逐条核对后，❌ 不通过，存在 P0 缺陷。'), 'needs-human', '正文写 ❌ 但无结论行 → needs-human（旧实现漏报为 accepted）')
 expect(parseAcceptanceVerdict('## 验收结论：❌ 不通过\n存在 P0 缺陷。'), 'rework', '结论行 ❌ 不通过（有前缀）→ rework（正常路径不受影响）')
 expect(parseAcceptanceVerdict('## 验收结论：✅ 通过\n全部 AC 绿。'), 'accepted', '结论行 ✅ 通过 → accepted（正常路径不受影响）')
-expect(parseAcceptanceVerdict('逐条核对后 📝 需求不适用，现状已满足。'), 'reject', '无结论行但全文「📝 需求不适用」→ reject（强结论词优先于 needs-human）')
+// 2026-09-17 收紧：📝 只在**行首**算结论（旧的全文字面量匹配会被"引用/论证它不适用"的报告骗到，
+// 实锤 tf-mu4i779p-kze5kl：一份 `⚠️ 有条件通过` 的报告因标题「为什么不判「📝 需求不适用」」被判 reject）
+expect(parseAcceptanceVerdict('逐条核对后 📝 需求不适用，现状已满足。'), 'needs-human', '📝 出现在句中（非行首）→ needs-human（旧实现全文命中判 reject；宁严勿松，人工看一眼）')
+
+console.log('── 📝 需求不适用：只认「行首结论」写法（2026-09-17 实测修 bug tf-mu4i779p-kze5kl）──')
+expect(parseAcceptanceVerdict('## 📝 需求不适用\n现状已满足，无有效变更。'), 'reject', '`## 📝 需求不适用`（行首）→ reject')
+expect(parseAcceptanceVerdict('| 📝 需求不适用 | 现状已满足 |'), 'reject', '表格形态（行首单元格）→ reject')
+expect(parseAcceptanceVerdict('逐条 AC 核对表全绿。\n\n### 5.3 为什么不判「📝 需求不适用」\n\nL122: dev 结果并非「无需改动」——本轮确有两个文件的实质改动，需求真实存在。\n\n验收结论：⚠️ 有条件通过'), 'accepted', '**引用/论证**该词（标题 + 正文否定）→ 不得判 reject（回归核心，复刻真实报告结构）')
+expect(parseAcceptanceVerdict('## 5. 结论\n\n本次交付满足现状，📝 需求不适用。'), 'needs-human', '📝 在正文句尾（非行首）→ needs-human（不再全文命中）')
 
 console.log('── 空结论行 / 裸否定词（2026-09-03）：四档词校验只覆盖 reject 分支的漏报变体 ──')
 expect(parseAcceptanceVerdict('## 验收结论：\n全部 AC 绿。'), 'needs-human', '空结论行（前缀残留非空，旧实现漏回 accepted）→ needs-human')

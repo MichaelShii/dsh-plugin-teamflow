@@ -584,6 +584,11 @@ ok(/literalHits\.length \? literalHits\[literalHits\.length - 1\]/.test(utilSrc)
 ok(parseAcceptanceVerdict('## 1. 验收结论摘要\n摘要文本\n## 6. 验收结论\n验收结论：✅ 通过') === 'accepted', 'util：真实结构（摘要章在前）→ accepted（回归核心，行为断言）')
 ok(smokeSelf.includes('验收结论摘要'), 'verdict.test.js 内保留该真实结构样本（防回归样本被悄悄删掉）')
 ok(parseAcceptanceVerdict('## 1. 验收结论摘要\n## 6. 验收结论\n（未写结论）') === 'needs-human', 'util：只有标题、无字面量结论行 → needs-human（不猜）')
+// 📝 判定改为行首锚定（2026-09-17 实测 bug tf-mu4i779p-kze5kl：报告标题「为什么不判「📝 需求不适用」」
+// 被旧全文匹配当成结论 → 一份 ⚠️ 有条件通过 的报告被判 reject → run failed）
+ok(/const naLead = acc\.split\('\\n'\)\.map/.test(utilSrc) && /if \(naLead\.some\(\(l\) => \/\^📝/.test(utilSrc), 'util：📝 需求不适用改为**行首锚定**（剥 markdown/表格前缀与结论标签后必须以 📝 开头）')
+ok(/parseAcceptanceVerdict\('## 📝 需求不适用\\n现状已满足，无有效变更。'\) === 'reject'/.test(smokeSelf) || smokeSelf.includes('📝 需求不适用：只认「行首结论」写法'), 'verdict.test.js 保留行首/引用两组样本（防回归样本被删）')
+ok(/journal\.humanIntervention = true\s*\n\s*journal\.logs\.push\(\{ t: Date\.now\(\), level: 'error', message: t\(locale, 'log\.accReject'\)/.test(pipelineSrc), 'pipeline：reject 分支置 journal.humanIntervention（原先只置 backlog 卡片 → 汇报「需人工」与状态线矛盾）')
 // 续跑不重跑分诊（2026-09-17 dddd 续跑实测：多出一次 `自动分诊 … source=fallback`，档位早已定稿）
 ok(/\} else if \(resume\) \{/.test(pipelineSrc) && /log\.triageResumed/.test(pipelineSrc) && /source: 'resume'/.test(pipelineSrc), 'pipeline：断点续跑跳过分诊（沿用 journal.options.mode + 补 shadow 记录）')
 ok(/if \(!journal\.triage\) \{/.test(pipelineSrc), 'pipeline：续跑只在 triage 缺失时补记录（首轮真实裁决优先保留）')
