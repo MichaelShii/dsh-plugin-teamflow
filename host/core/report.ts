@@ -119,9 +119,14 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
     const assumptionsLine = (journal.assumptions && String(journal.assumptions).trim())
       ? t(locale, 'report.assumptions', { list: clip(String(journal.assumptions), 900) })
       : ''
+    // 外部供应商故障可见化（2026-09-17）：把"限流/无额度/上游故障"与"交付有缺陷"分开讲清楚——
+    // dddd 实测那批失败 16 分钟后同请求即成功，属外部窗口问题；旧文案只给「失败 + 需人工」，
+    // 会让人误判成交付质量。此处显式说明「非交付缺陷 + 可续跑只补这一段」。
+    const externalLine = journal.externalFailure === true ? t(locale, 'report.externalFailure') : ''
     const text = [
       t(locale, 'report.header', { id: journal.id }),
       t(locale, 'report.statusLine', { status: statusLine, error: journal.error ? t(locale, 'report.error', { error: clip(journal.error, 300) }) : '' }),
+      externalLine,
       cancelSourceLine,
       assumptionsLine,
       t(locale, 'report.stagesLine', { stages: stagesLine }),

@@ -5,7 +5,7 @@
 import { runtime, providerName, trackInFlight, untrackInFlight } from './context.ts'
 import { accumulateSessionUsage, freshTokensOf } from './metering.ts'
 import { startStageGuard } from './guard.ts'
-import { clip, extractText, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic } from '../util.ts'
+import { clip, extractText, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs } from '../util.ts'
 import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../constants.ts'
 import { t, type HostLocale } from '../locales.ts'
 import { runLocaleOf } from './locale.ts'
@@ -239,6 +239,29 @@ export async function runAgent(
 }
 
 /**
+ * 该阶段失败是否「外部供应商不可用」（限流/无额度/上游 5xx/超时…）。
+ * 判据 = `classifyExternalFailure(错误细节, stage.summary)`（纯函数，单测覆盖真值表）。
+ * ⚠️ 启发式：宿主只给 `stopReason=error` + 错误文本，无结构化错误码；命中原文进日志便于日后核对。
+ */
+function isExternalFailure(stage: { summary?: string | null; outcome?: string | null; output?: string | null }): boolean {
+  if (stage.outcome === 'insubstantial' || stage.outcome === 'degenerated' || stage.outcome === 'stalled' || stage.outcome === 'aborted') return false
+  return classifyExternalFailure(String(stage.summary || ''), String(stage.output || '').slice(-500)) === 'external'
+}
+
+/** 可取消等待：等待期间被取消/中断则立刻返回 false（不把 sleep 变成不可打断的挂起）。 */
+async function sleepUnlessCancelled(ms: number, isCancelled: () => boolean): Promise<boolean> {
+  const step = 1000
+  let waited = 0
+  while (waited < ms) {
+    if (isCancelled()) return false
+    const slice = Math.min(step, ms - waited)
+    await new Promise((r) => setTimeout(r, slice))
+    waited += slice
+  }
+  return !isCancelled()
+}
+
+/**
  * 单阶段重试 + token 熔断（**新增口径**：input+cacheWrite+output，排除 cacheRead——见
  * `FRESH_TOKEN_BUDGET` 与 metering.freshTokensOf；汇报仍走官方 totalTokensOf 口径）。
  * 顺序：不可重试/外部中止/护栏中止 → 预算门 → 自动重试（预算合理时重试优先于熔断，2026-09-11 修正）。
@@ -249,6 +272,9 @@ export async function withRetry(
   let attempts = 0
   let freshTokens = 0
   let lastStage: JournalStage | null | undefined = null
+  // 外部供应商故障的独立计数（不受 RETRY_LIMIT 约束：那是"换做法重试"的次数，
+  // 外部故障是"等窗口过去"，两件事不能共用一个计数器）
+  let externalAttempts = 0
   // 重试诊断包与重试日志同样随 run 语言（诊断包是喂回子代理的注入文本）
   const locale = runLocaleOf(journal)
   for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
@@ -273,6 +299,31 @@ export async function withRetry(
     // 不可重试失败（上下文耗尽等）：重试同一 prompt 大概率复现 → 直接需人工
     if (lastStage && isUnretryable(lastStage.outcome, lastStage.outcome)) {
       journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'diag.unretryable', { label, outcome: lastStage.outcome }) })
+      journal.humanIntervention = true
+      return { text: null, attempts, freshTokens, stage: lastStage }
+    }
+    // **外部供应商不可用**（限流 / 无额度 / 上游 5xx / 超时…；2026-09-17 dddd 实测：同请求 16 分钟后成功）
+    // ——这不是内容失败，重试同样的请求只是"等窗口过去"。处置：**长退避重试**（30s→60s→120s→240s），
+    // 而不是像内容失败那样快速失败两次就转人工。退避**不计入熔断预算**（等待不烧 token）。
+    if (lastStage && isExternalFailure(lastStage)) {
+      const wait = externalBackoffMs(externalAttempts + 1)
+      if (wait !== null) {
+        externalAttempts++
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.externalBackoff', { label, n: externalAttempts, sec: Math.round(wait / 1000), detail: clip(String(lastStage.summary || ''), 200) }) })
+        if (!(await sleepUnlessCancelled(wait, () => journal.cancelled))) {
+          return { text: null, attempts, freshTokens, stage: lastStage } // 等待期间被取消 → 按取消收尾（不重试）
+        }
+        // 退避后重试同一阶段（attempt 计数不推进 RETRY_LIMIT：这是"等窗口"而非"换做法重试"）
+        attempt--
+        continue
+      }
+      // 退避用尽：仍失败 → **可续跑的外部中断态**（不是内容失败，也不要求改需求）：
+      // run 落 interrupted、阶段标 interrupted，汇报明写"疑似限流/额度，窗口恢复后 resume 只补这一段"。
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'diag.externalExhausted', { label, n: externalAttempts }) })
+      if (lastStage) { lastStage.status = 'interrupted'; lastStage.outcome = 'external' }
+      journal.interrupted = true
+      journal.interruptedAt = Date.now()
+      journal.externalFailure = true
       journal.humanIntervention = true
       return { text: null, attempts, freshTokens, stage: lastStage }
     }

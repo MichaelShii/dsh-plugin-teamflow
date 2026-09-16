@@ -306,6 +306,39 @@ export function refusalHit(text: string | null | undefined): { phrase: string; c
   return { phrase: m[0], context: s.slice(start, end).replace(/\s+/g, ' ').trim() }
 }
 
+/**
+ * 外部供应商不可用 vs 内容性失败（2026-09-17，实测驱动）。
+ *
+ * 背景：dddd 那条 run 在第一轮 01:37 连续 6 个 dev 阶段 `stopReason=error` → 快速重试两次 → 转人工；
+ * 而**16 分钟后（01:53）同样的请求就成功了**——即那批失败是「供应商在一段时间窗内不可用」（限流/无额度/
+ * 上游 5xx/超时），**与阶段内容无关**。旧行为把它当内容失败：快速失败、落 `failed + human`、让人误以为
+ * 交付有问题。现在按错误文本分类（⚠️ **启发式**：宿主只给 `stopReason=error` + 错误文本，没有结构化错误码，
+ * 故命中原文必须记日志以便日后核对）：
+ *  - `external`：限流/额度/余额/上游不可用/超时/过载 → 走**长退避重试**；用尽仍失败 → 落可续跑中断态；
+ *  - `content`：上下文耗尽/护栏/产出无效等 → 维持现状（不自动重试或按既有策略）；
+ *  - `unknown`：未命中任何词 → 维持现状（按内容类处置，宁严勿松）。
+ * `hint` 为可选的 outcome/summary 文本，一并参与匹配（错误细节可能在 stage.summary 里）。
+ */
+export function classifyExternalFailure(text: string | null | undefined, hint?: string | null): 'external' | 'content' | 'unknown' {
+  const s = `${String(text || '')} ${String(hint || '')}`
+  if (!s.trim()) return 'unknown'
+  const external = /(?:\b429\b|\b402\b|rate[ _-]?limit|too many requests|insufficient[ _-]?(?:balance|quota|funds)|quota|exceeded[ _-]?(?:your[ _-]?)?(?:quota|limit|rate)|no[ _-]?(?:available[ _-]?)?(?:quota|balance|credit)|out of credit|billing|payment required|overload|temporarily unavailable|service unavailable|\b50[234]\b|upstream|gateway timeout|\b52[0-9]\b|timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|fetch failed|network error|限流|限速|频率限制|请求过于频繁|额度|配额|余额不足|欠费|无额度|暂时不可用|服务不可用|上游不可用|超时|网络错误|连接被重置|过载|供应商)/i.test(s)
+  if (external) return 'external'
+  const content = /context[ _-]?(?:window|length)|too many tokens|maximum context|prompt is too long|上下文(?:长度|超限|耗尽)|护栏|degenerated|stalled|insufficient output|too short|产出过短/i.test(s)
+  if (content) return 'content'
+  return 'unknown'
+}
+
+/** 外部故障退避序列（毫秒）：30s → 60s → 120s → 240s（总等待上限 ≈ 7.5 分钟）。
+ * 取值依据：dddd 实测窗口 ≈16 分钟（01:37 挂 → 01:53 恢复），故退避要能跨过几分钟的短窗口，
+ * 又不至于让一条 run 无限期挂着（用尽后落**可续跑中断态**，窗口恢复后 resume 只补这一段）。 */
+export const EXTERNAL_BACKOFF_MS = [30000, 60000, 120000, 240000]
+
+/** 取第 n 次外部故障退避时长（n 从 1 起；超出序列 → null 表示退避用尽）。 */
+export function externalBackoffMs(n: number): number | null {
+  return EXTERNAL_BACKOFF_MS[n - 1] ?? null
+}
+
 /** 重试诊断包：上一轮失败详情回灌进重试 prompt（盲试 → 带因重试）。
  * 失败分类/详情/护栏原因取自 stage；产出尾部截断 1000 字符供自查修正。
  * `locale` 为**尾参可选**（缺省/`zh` → 现状中文**逐字不变**；`en` → 新增英文文案，AC-3④）。

@@ -4,7 +4,7 @@
  * 被旧正则「无需改动」子串命中 → 误判 reject → 整条流水线置 failed。
  * 修复原则：只以显式「验收结论 / 整体结论」行为准，正文散文不做朴素子串匹配。
  */
-import { parseAcceptanceVerdict, extractBlueprint, defectFingerprint, qaRoundEntry } from '../host/util.ts'
+import { parseAcceptanceVerdict, extractBlueprint, defectFingerprint, qaRoundEntry, classifyExternalFailure, externalBackoffMs, EXTERNAL_BACKOFF_MS } from '../host/util.ts'
 import { parseDefects, parseDefectRows } from '../host/core/backlog.ts'
 
 let failed = 0
@@ -235,6 +235,28 @@ eqJson([r2.newFps, r2.repeats, r2.resolved], [1, 1, 1], '与历史轮对比：�
 const r3 = qaRoundEntry(3, 10, [{ id: 'R3-1', severity: 'P3', module: 'logging' }], [r1, r2], 109, 2)
 eqJson([r3.blocking, r3.outcome, r3.resolved], [0, 'pass', 2], '第 3 轮干净：outcome=pass，上一轮 2 条全部消解')
 expect(qaRoundEntry(3, 10, [{ id: 'R3-1', severity: 'P1', module: 'x' }], [r1, r2], 109, 2).outcome, 'limit', '超出上限时 outcome=limit（与 pass/rework 区分，供后续判据取数）')
+
+console.log('── 外部供应商故障分类（2026-09-17 dddd 实测：同请求 16 分钟后成功 → 属外部窗口，不是内容失败）──')
+expect(classifyExternalFailure('429 Too Many Requests'), 'external', '429 → external')
+expect(classifyExternalFailure('{"error":{"code":"rate_limit_exceeded"}}'), 'external', 'rate_limit_exceeded → external')
+expect(classifyExternalFailure('insufficient_balance: 账户余额不足'), 'external', 'insufficient_balance → external')
+expect(classifyExternalFailure('Error 402: Payment Required'), 'external', '402 → external')
+expect(classifyExternalFailure('503 Service Unavailable'), 'external', '503 → external')
+expect(classifyExternalFailure('upstream connect error or disconnect/reset'), 'external', 'upstream 断连 → external')
+expect(classifyExternalFailure('request timed out after 120s'), 'external', 'timeout → external')
+expect(classifyExternalFailure('fetch failed: ECONNRESET'), 'external', 'ECONNRESET/fetch failed → external')
+expect(classifyExternalFailure('接口限流，请求过于频繁'), 'external', '中文「限流/请求过于频繁」→ external')
+expect(classifyExternalFailure('当前无额度，请充值后重试'), 'external', '中文「无额度」→ external')
+expect(classifyExternalFailure('maximum context length exceeded'), 'content', '上下文超限 → content（不是外部故障）')
+expect(classifyExternalFailure('产出过短，未达阶段下限'), 'content', '产出过短 → content')
+expect(classifyExternalFailure('some completely unrelated text'), 'unknown', '未命中 → unknown（按内容类处置，宁严勿松）')
+expect(classifyExternalFailure(''), 'unknown', '空输入 → unknown')
+expect(classifyExternalFailure(null, '429 rate limit'), 'external', '错误细节在 hint 里也能命中')
+expect(classifyExternalFailure('ok', 'degenerated'), 'content', 'hint 命中护栏 → content（外部故障不得盖住护栏中止）')
+eqJson(EXTERNAL_BACKOFF_MS, [30000, 60000, 120000, 240000], '退避序列 30s→60s→120s→240s（总等待 ≈7.5 分钟）')
+expect(externalBackoffMs(1), 30000, '第 1 次退避 = 30s')
+expect(externalBackoffMs(4), 240000, '第 4 次退避 = 240s')
+expect(externalBackoffMs(5), null, '超出序列 → null（退避用尽 → 落可续跑中断态）')
 
 console.log(failed === 0 ? '\n✅ verdict 测试全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

@@ -587,6 +587,13 @@ ok(parseAcceptanceVerdict('## 1. 验收结论摘要\n## 6. 验收结论\n（未�
 // 续跑不重跑分诊（2026-09-17 dddd 续跑实测：多出一次 `自动分诊 … source=fallback`，档位早已定稿）
 ok(/\} else if \(resume\) \{/.test(pipelineSrc) && /log\.triageResumed/.test(pipelineSrc) && /source: 'resume'/.test(pipelineSrc), 'pipeline：断点续跑跳过分诊（沿用 journal.options.mode + 补 shadow 记录）')
 ok(/if \(!journal\.triage\) \{/.test(pipelineSrc), 'pipeline：续跑只在 triage 缺失时补记录（首轮真实裁决优先保留）')
+// 外部供应商故障处置（2026-09-17：429/无额度/上游故障 ≠ 交付缺陷；实测同请求 16 分钟后成功）
+ok(/export function classifyExternalFailure/.test(utilSrc) && /export const EXTERNAL_BACKOFF_MS/.test(utilSrc) && /export function externalBackoffMs/.test(utilSrc), 'util：外部故障分类 + 退避序列（纯函数，可单测）')
+ok(/isExternalFailure\(lastStage\)/.test(runnerSrc) && /externalBackoffMs\(externalAttempts \+ 1\)/.test(runnerSrc), 'runner：外部故障走长退避重试（不受 RETRY_LIMIT 约束）')
+ok(/sleepUnlessCancelled\(wait, \(\) => journal\.cancelled\)/.test(runnerSrc) && /attempt--/.test(runnerSrc), 'runner：退避可被取消打断；退避后重试同一阶段（不推进 RETRY_LIMIT）')
+ok(/journal\.externalFailure = true/.test(runnerSrc) && /lastStage\.status = 'interrupted'/.test(runnerSrc), 'runner：退避用尽 → 落可续跑中断态（非 failed）')
+ok(/report\.externalFailure/.test(reportSrc) && /externalFailure: journal\.externalFailure === true/.test(storeSrc), 'report/store：外部故障标记落盘 + 汇报讲清「非交付缺陷、resume 只补这一段」')
+ok(/diag\.externalBackoff/.test(hostSrc) && /diag\.externalExhausted/.test(hostSrc), 'locales：退避与用尽都有可见文案（zh/en 同形由 locale 测试守门）')
 ok(/\[Clarify first, do not jump the gun\]/.test(hostSrc) && /\[After clarifying, come back to the pipeline\]/.test(hostSrc), '注入（en）：同上（语言跟随会话，双语同形门禁另有 locale 测试）')
 ok(/若 teamflow_start 返回 needs-clarification，按它列出的 blockers 继续问用户/.test(hostSrc) && /If teamflow_start returns needs-clarification, keep asking the user about the blockers/.test(hostSrc), '注入：needs-clarification 的处理指引（按 blockers 问 → 带 supplement 重调，禁止替用户假设）')
 

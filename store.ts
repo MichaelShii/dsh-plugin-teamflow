@@ -236,6 +236,8 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     triage: journal.triage || null,
     assumptions: journal.assumptions || null,
     requirementSupplement: journal.requirementSupplement || null,
+    /** 外部供应商故障标记（限流/无额度/上游故障/超时）：run 落可续跑中断态时置位，汇报据此讲清「非交付缺陷」。 */
+    externalFailure: journal.externalFailure === true,
     interrupted: journal.interrupted === true,
     interruptedAt: journal.interruptedAt || null,
     supersededBy: journal.supersededBy || null,
