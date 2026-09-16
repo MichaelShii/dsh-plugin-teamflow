@@ -280,11 +280,14 @@ export async function executePipeline(
   // 日志生命周期（B 方案 2026-09-15）：先把上次崩溃/中断残留在工作区的暂存日志归档走（自愈），
   // 再淘汰超额归档。清扫尽力而为，绝不阻断起跑。
   try { sweepWorkspaceLogs(journal, locale) } catch (e) { /* 清扫失败不影响起跑 */ }
-  // 自动分诊（对调用方透明）：除 `patch` 外**一律跑一次**——含显式 `lite`/`mode`。判据来自实测：
+  // 自动分诊（对调用方透明）：除 `patch` 与**断点续跑**外一律跑一次——含显式 `lite`/`mode`。判据来自实测：
   // ① 模型系统性自选档位（33 次启动 14 次显式传入、0 次先预览 `teamflow_triage`），若跳过 triage，
   //    澄清闸门与 ADR-0006 架构护栏会在 42% 的启动上静默失效；
   // ② tool 侧预检只是**快路径**，它在工具调用内跑、会失败（实测 `tf-mu35oza7-wmuckz`：漏传 signal →
   //    0.4s 退 fallback）→ **权威判定放这里**，预检透传只用于省一次模型调用。
+  // ⚠️ **续跑必须跳过分诊**（2026-09-17 `dddd` 续跑实测：日志多出一行 `自动分诊 … source=fallback`）：
+  //    档位在首次启动就已定稿并落 `journal.options.mode`，续跑再跑一次既白花一次模型调用、又可能让
+  //    档位在续跑时漂移（护栏强升本就不该在续跑路径上二次触发）。改为用已有档位补一条 shadow 记录。
   // 使用者无需了解/选择 mode；mode 是内部路由 + 可选显式覆盖（审计可见）。
   let triageSlug = ''
   const preTriage = normalizeTriagePassthrough((options as { __triage?: unknown }).__triage)
@@ -297,6 +300,13 @@ export async function executePipeline(
     const upFrom = (preTriage as { upgradedFrom?: string | null }).upgradedFrom
     if (upFrom) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.modeUpgraded', { from: upFrom, to: preTriage.mode }) })
     if (preTriage.blockersDropped > 0) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageBlockersDropped', { n: preTriage.blockersDropped }) })
+  } else if (resume) {
+    // 断点续跑：档位已定稿（首次启动时定的），**不再跑分诊**；只补一条 shadow 记录保住样本连续性
+    // （`journal.triage` 在续跑前若已存在则原样保留——首轮的真实裁决比这里补的更有价值）。
+    if (!journal.triage) {
+      journal.triage = { mode: options.mode || 'full', kind: 'resume', complexity: 'medium', confidence: 'medium', source: 'resume', intent: 'requirement', blockers: [], blockersDropped: 0, upgradedFrom: null }
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.triageResumed', { mode: options.mode || 'full' }) })
+    }
   } else if (options.mode !== 'patch') {
     // 预检失败不静默（实测过：漏传 signal → 工具内分诊 0.4s 退 fallback，没人知道）
     if (preTriageError) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triagePreflightFail', { msg: clip(preTriageError, 200) }) })

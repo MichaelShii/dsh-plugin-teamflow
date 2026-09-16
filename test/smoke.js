@@ -584,6 +584,9 @@ ok(/literalHits\.length \? literalHits\[literalHits\.length - 1\]/.test(utilSrc)
 ok(parseAcceptanceVerdict('## 1. 验收结论摘要\n摘要文本\n## 6. 验收结论\n验收结论：✅ 通过') === 'accepted', 'util：真实结构（摘要章在前）→ accepted（回归核心，行为断言）')
 ok(smokeSelf.includes('验收结论摘要'), 'verdict.test.js 内保留该真实结构样本（防回归样本被悄悄删掉）')
 ok(parseAcceptanceVerdict('## 1. 验收结论摘要\n## 6. 验收结论\n（未写结论）') === 'needs-human', 'util：只有标题、无字面量结论行 → needs-human（不猜）')
+// 续跑不重跑分诊（2026-09-17 dddd 续跑实测：多出一次 `自动分诊 … source=fallback`，档位早已定稿）
+ok(/\} else if \(resume\) \{/.test(pipelineSrc) && /log\.triageResumed/.test(pipelineSrc) && /source: 'resume'/.test(pipelineSrc), 'pipeline：断点续跑跳过分诊（沿用 journal.options.mode + 补 shadow 记录）')
+ok(/if \(!journal\.triage\) \{/.test(pipelineSrc), 'pipeline：续跑只在 triage 缺失时补记录（首轮真实裁决优先保留）')
 ok(/\[Clarify first, do not jump the gun\]/.test(hostSrc) && /\[After clarifying, come back to the pipeline\]/.test(hostSrc), '注入（en）：同上（语言跟随会话，双语同形门禁另有 locale 测试）')
 ok(/若 teamflow_start 返回 needs-clarification，按它列出的 blockers 继续问用户/.test(hostSrc) && /If teamflow_start returns needs-clarification, keep asking the user about the blockers/.test(hostSrc), '注入：needs-clarification 的处理指引（按 blockers 问 → 带 supplement 重调，禁止替用户假设）')
 
