@@ -69,18 +69,28 @@ async function clarificationPreflight(
   locale: ReturnType<typeof ambientLocale>,
 ): Promise<{ needsClarification: { intent: string; blockers: TriageVerdict['blockers'] } } | { verdict: TriageVerdict | null; error?: string }> {
   if (options.mode === 'patch') return { verdict: null }
+  // 分诊输入 = 需求原文 + 澄清答复（`[CLARIFIED]`）：否则答复不会被分诊看到 —— 实测 dddd：用户已逐项答复
+  // （supplement 涨到 1012 字符），分诊却只看到那句「我想开发一个 dsh 插件」，同一个问题反复问了 6 轮、零 run。
+  const triageInput = options.requirementSupplement
+    ? `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-ask]\n${String(options.requirementSupplement)}`
+    : requirement
   let verdict: TriageVerdict | null = null
   let error = ''
   try {
-    verdict = await runTriage(requirement, { needDesign: options.needDesign === true }, parent, signal, locale)
+    verdict = await runTriage(triageInput, { needDesign: options.needDesign === true }, parent, signal, locale)
   } catch (e) {
     error = String((e && (e as { message?: string }).message) || e)
     verdict = null
   }
   if (!verdict) return { verdict: null, error }
-  if (verdict.intent !== 'requirement' || verdict.blockers.length > 0) {
+  // **收敛规则**（2026-09-16 dddd 实测）：调用方**还没给过**澄清答复时才拦；已给过（说明用户已澄清一轮）
+  // → 不再拦，残余 blocker 当作假设开工（PRD 写进「假设与待澄清」段、完成汇报高亮）。否则同一个问题会被
+  // 反复问、永不收敛（实测 6 轮、零 run）。
+  const alreadyClarified = !!String(options.requirementSupplement || '').trim()
+  if ((verdict.intent !== 'requirement' || verdict.blockers.length > 0) && !alreadyClarified) {
     return { needsClarification: { intent: verdict.intent, blockers: verdict.blockers } }
   }
+  if (alreadyClarified && verdict.blockers.length > 0) (verdict as unknown as Record<string, unknown>).__clarifyProceeded = verdict.blockers.length
   return { verdict }
 }
 

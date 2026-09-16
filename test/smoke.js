@@ -570,6 +570,10 @@ ok(/verdict: TriageVerdict \| null; error\?: string/.test(hostSrc) && /__triageE
 ok(/\} else if \(options\.mode !== 'patch'\) \{/.test(pipelineSrc), 'pipeline：除 patch 外一律跑分诊（含显式 lite/mode —— 权威判定在 pipeline）')
 ok(/function abortForClarification/.test(pipelineSrc) && /return abortForClarification\(journal, locale, verdict\)/.test(pipelineSrc), 'pipeline：闸门兜底 abortForClarification（非明确需求/must-know → 不开工，落可续跑中断态）')
 ok(/log\.triagePreflightFail/.test(pipelineSrc) && /log\.clarifyAbort/.test(pipelineSrc) && /run\.needsClarification/.test(hostSrc), 'pipeline：预检失败与闸门兜底都有可见日志（locale 键齐备）')
+// 收敛规则（2026-09-16 dddd 实测：答复没进分诊 → 同一个问题问了 6 轮、零 run）
+ok(/do NOT re-ask/.test(hostSrc) && /do NOT re-ask/.test(pipelineSrc), '分诊输入必须带上 requirementSupplement（[CLARIFIED]），否则已答复的问题会被反复问')
+ok(/const alreadyClarified = !!String\(options\.requirementSupplement \|\| ''\)\.trim\(\)/.test(hostSrc) && /&& !alreadyClarified/.test(hostSrc), '收敛规则：调用方还没给过澄清答复时才拦（给过就不再拦，防不收敛）')
+ok(/log\.clarifyProceedWithAssumptions/.test(pipelineSrc) && /const clarified = !!String\(journal\.requirementSupplement/.test(pipelineSrc), 'pipeline 同收敛规则：已澄清 → 残余 blocker 作假设开工（可见 warn）')
 ok(/\[Clarify first, do not jump the gun\]/.test(hostSrc) && /\[After clarifying, come back to the pipeline\]/.test(hostSrc), '注入（en）：同上（语言跟随会话，双语同形门禁另有 locale 测试）')
 ok(/若 teamflow_start 返回 needs-clarification，按它列出的 blockers 继续问用户/.test(hostSrc) && /If teamflow_start returns needs-clarification, keep asking the user about the blockers/.test(hostSrc), '注入：needs-clarification 的处理指引（按 blockers 问 → 带 supplement 重调，禁止替用户假设）')
 

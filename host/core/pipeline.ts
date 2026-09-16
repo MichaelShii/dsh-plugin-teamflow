@@ -302,7 +302,11 @@ export async function executePipeline(
     if (preTriageError) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triagePreflightFail', { msg: clip(preTriageError, 200) }) })
     try {
       const callerMode = options.mode
-      const verdict = await runTriage(requirement, { needDesign: options.needDesign }, parent, signal, locale)
+      // 分诊输入带上澄清答复（与 tool 侧预检同一口径）：否则已答复的问题会被反复问、闸门不收敛（dddd 实测）
+      const triageInput = journal.requirementSupplement
+        ? `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-ask]\n${String(journal.requirementSupplement)}`
+        : requirement
+      const verdict = await runTriage(triageInput, { needDesign: options.needDesign }, parent, signal, locale)
       // 档位：调用方给了更轻的而分诊判 ≥medium → 护栏强升；否则保持调用方选择（或走分诊结果）
       const up = guardrailUpgrade(callerMode, !!options.lite, verdict.mode)
       if (up) {
@@ -318,10 +322,13 @@ export async function executePipeline(
       const upFrom2 = (verdict as { upgradedFrom?: string | null }).upgradedFrom
       if (upFrom2) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.modeUpgraded', { from: upFrom2, to: verdict.mode }) })
       if (verdict.blockersDropped > 0) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageBlockersDropped', { n: verdict.blockersDropped }) })
-      // 闸门兜底（pipeline 侧权威）：分诊判「还不是明确需求」或存在合格 must-know 缺口 → **不开工**，
-      // run 落可续跑的中断态（不建阶段），由完成汇报把问题交给主线程去问用户。只有 tool 侧快路径
-      // 没拦住时才会走到这里（显式档位 / 预检失败 / 程序化调用）。
-      if (verdict.intent !== 'requirement' || verdict.blockers.length > 0) return abortForClarification(journal, locale, verdict)
+      // 收敛规则（与 tool 侧一致）：**没给过澄清答复**才拦；已给过 → 残余 blocker 当作假设开工（PRD 的
+      // 「假设与待澄清」段 + 完成汇报高亮），不再无限追问（dddd 实测 6 轮零 run）。
+      const clarified = !!String(journal.requirementSupplement || '').trim()
+      if (verdict.intent !== 'requirement' || verdict.blockers.length > 0) {
+        if (!clarified) return abortForClarification(journal, locale, verdict)
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyProceedWithAssumptions', { n: verdict.blockers.length }) })
+      }
     } catch (e) {
       journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageFail', { msg: String((e && e.message) || e) }) })
     }
