@@ -124,6 +124,87 @@ export interface TriageVerdict {
   blockersDropped: number
   /** host 侧填：档位被**架构护栏**从哪个档位升上来（ADR-0006）；仅审计/日志用，不参与路由。 */
   upgradedFrom?: PipelineMode | null
+  /** **交付物形态**（2026-09-17 新增维度）：决定「该满足哪些客观交付契约」——见 ARTIFACT_CONTRACTS。
+   *  用**一个维度**覆盖所有交付物类型，避免"每来一类插件加一条正则"（无界增长 + 词表交叉）。 */
+  artifact: ArtifactKind
+  /** 是否要求「可安装/可被宿主加载」（形态语义的一部分：源码目录里的插件 ≠ 能装进 profile 的插件）。 */
+  installable: boolean
+}
+
+/** 交付物形态（单选，与 ARTIFACT_CONTRACTS 一一对应）。 */
+export type ArtifactKind = 'app' | 'plugin-host' | 'plugin-client' | 'plugin-full' | 'cli' | 'lib' | 'docs' | 'data' | 'other'
+
+export const ARTIFACT_KINDS: ArtifactKind[] = ['app', 'plugin-host', 'plugin-client', 'plugin-full', 'cli', 'lib', 'docs', 'data', 'other']
+
+/** 形态归一：非法/缺失一律 `other`（绝不因模型没给字段就套用某类契约）。 */
+export const normalizeArtifact = (raw: unknown): ArtifactKind =>
+  (ARTIFACT_KINDS.indexOf(raw as ArtifactKind) !== -1 ? (raw as ArtifactKind) : 'other')
+
+/** 本仓已有正确样本（写进 prompt 让 PM 去读，而不是把字段名硬编码——防宿主版本漂移）。 */
+export const ARTIFACT_REFERENCE_SAMPLES: Record<ArtifactKind, string[]> = {
+  app: [], 'plugin-host': ['plugins/dsh-plugin-teamflow'], 'plugin-client': ['plugins/dsh-plugin-teamflow'],
+  'plugin-full': ['plugins/dsh-plugin-teamflow'], cli: ['plugins/assetd'], lib: ['plugins/assetd'],
+  docs: [], data: [], other: [],
+}
+
+/**
+ * **交付形态契约表**（数据驱动；新增一类交付物 = 加一行数据，**不加判定逻辑、不加正则**）。
+ *
+ * 由来（2026-09-17 实测）：`dddd` 那条 run 交付了一个"看着完整"的 dsh 插件（host/src/client/lib 都有），
+ * 但**装不进 dsh web profile**——缺 `cordis.patch.yml`（profile 层入口）+ `package.json` 的
+ * `dsh.bundle.patch` 声明 + `files` 白名单 + 依赖用了 `workspace:` 协议。它却验收通过了：因为**AC 里
+ * 从来没有"宿主可加载/可安装"这一条**——PRD 把"我想开发一个 dsh 插件"展开成了功能 AC（时钟/提醒/持久化/UI），
+ * 漏掉了形态本身隐含的客观契约。形态不是"要不要做"的问题，而是"做成什么才算数"。
+ *
+ * 语义：`required` 是**契约项**（每项给"要求 + 判据形态"），**不是**字段名清单——具体字段名必须由 PM
+ * 读同仓既有样本/宿主文档核实（宿主版本会演进，硬编码字段名会过期）。
+ */
+export interface ArtifactContractItem {
+  /** 契约要求（写给 PM 的一句话）。 */
+  requirement: string
+  /** 判据形态（怎么写进 AC 才算可测）。 */
+  criteria: string
+  /** 是否仅在 `installable=true` 时要求（形态内部再分档：源码目录 vs 可安装）。 */
+  onlyWhenInstallable?: boolean
+}
+
+export const ARTIFACT_CONTRACTS: Record<ArtifactKind, ArtifactContractItem[]> = {
+  app: [],
+  'plugin-host': [
+    { requirement: '宿主半必须有 profile 层加载入口声明（参照同仓既有插件，不凭记忆写字段名）', criteria: '存在该声明文件/字段，且其 `name` 用**包根名**（子路径会被 loader 判为"无 client 声明"而跳过）' },
+    { requirement: '该入口声明文件必须进包分发白名单（`files` 等）', criteria: '读 package.json 的 files 数组，确认包含该声明文件' },
+    { requirement: '依赖协议必须是 profile 可解析的形态（不得用 `workspace:` 等本地协议）', criteria: '`node -e "const s=require(\'fs\').readFileSync(\'package.json\',\'utf8\');process.exit(/workspace:/.test(s)?1:0)"` 退出码 0' },
+    { requirement: '宿主运行期依赖要按宿主模块表声明（peer/可选 peer，而非真实下载依赖）', criteria: 'package.json 的 peerDependencies/peerDependenciesMeta 覆盖宿主提供的 @deepseek-ai/* 包' },
+    { requirement: '能被 profile 真实装入', criteria: 'profile 内执行安装命令退出码 0，且 profile 的依赖与插件清单出现该包', onlyWhenInstallable: true },
+    { requirement: '装载后宿主真实加载该插件（端到端判据）', criteria: '重启宿主后启动日志/插件列表出现该插件；仅有源码文件不算', onlyWhenInstallable: true },
+  ],
+  'plugin-client': [
+    { requirement: 'client 半必须有 bundle 声明与被扫描的 id/name（参照同仓既有插件）', criteria: 'package.json 的 client 声明块字段名与同仓样本一致，且构建会产出非空 client 产物' },
+    { requirement: '构建产物必须进包分发白名单', criteria: '读 files 数组确认包含构建产物目录/文件' },
+  ],
+  'plugin-full': [
+    { requirement: '宿主半必须有 profile 层加载入口声明（参照同仓既有插件，不凭记忆写字段名）', criteria: '存在该声明文件/字段，`name` 用包根名' },
+    { requirement: 'client 半必须有 bundle 声明与被扫描的 id/name', criteria: 'client 声明块字段名与同仓样本一致，构建产出非空 client 产物' },
+    { requirement: '入口声明与构建产物都必须进包分发白名单', criteria: '读 package.json 的 files 数组确认包含二者' },
+    { requirement: '依赖协议必须是 profile 可解析的形态（不得用 `workspace:` 等本地协议）', criteria: '读 package.json 全文不得命中 `workspace:`' },
+    { requirement: '宿主运行期依赖按宿主模块表声明（peer/可选 peer）', criteria: 'peerDependencies/peerDependenciesMeta 覆盖宿主提供的 @deepseek-ai/* 包' },
+    { requirement: '能被 profile 真实装入且被宿主加载（端到端）', criteria: 'profile 安装命令退出码 0 + 重启宿主后启动日志出现该插件', onlyWhenInstallable: true },
+  ],
+  cli: [
+    { requirement: '必须有可执行入口声明', criteria: 'package.json 有 bin 字段且指向真实存在的文件' },
+    { requirement: '入口文件可被执行', criteria: '直接运行该入口（或 `--help`）退出码 0' },
+  ],
+  lib: [
+    { requirement: '必须声明模块入口且导出可用', criteria: 'package.json 的 main/exports 指向真实文件，且能被 import 成功' },
+  ],
+  docs: [],
+  data: [],
+  other: [],
+}
+
+/** 取某形态的契约项（`installable=false` 时过滤掉安装类项）。 */
+export function artifactContractsFor(kind: ArtifactKind, installable: boolean): ArtifactContractItem[] {
+  return (ARTIFACT_CONTRACTS[kind] || []).filter((it) => !it.onlyWhenInstallable || installable)
 }
 
 /** 需求意图。 */
@@ -225,6 +306,8 @@ function parseVerdictText(text: string): TriageVerdict | null {
       slug: /^[a-z0-9][a-z0-9-]{2,23}$/.test(String(raw.slug || '')) ? String(raw.slug) : '',
       source: 'model',
       intent: normalizeIntent(raw.intent),
+      artifact: normalizeArtifact(raw.artifact),
+      installable: raw.installable === true,
       blockers: qb.blockers,
       blockersDropped: qb.dropped,
     }
@@ -239,6 +322,8 @@ function fallbackVerdict(requirement: string, opts?: { needDesign?: boolean }, l
     rationale: [...pre.rationale, t(locale, 'triage.fallback')], confidence: pre.confidence, slug: '', source: 'fallback',
     // 兜底路径**永不拦启动**（intent 默认 requirement、无 blocker）——分诊不可用时退回现状行为，零回归。
     intent: 'requirement', blockers: [], blockersDropped: 0,
+    // 兜底路径不猜形态（一律 other = 不套用任何形态契约）：宁可不加，也不要给错形态的契约
+    artifact: 'other', installable: false,
   }
 }
 

@@ -15,7 +15,7 @@ import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext, PipelineMode } from '../types.ts'
-import { normalizeMode, runTriage, normalizeIntent, qualifyBlockers, guardrailUpgrade, type TriageVerdict } from './triage.ts'
+import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, artifactContractsFor, type TriageVerdict } from './triage.ts'
 import { loadTeams, findTeam, getActiveStages, teamNameOf } from './teams.ts'
 import { loadState, extractStateBlock, mergeStateBlock, noteRun } from './state.ts'
 import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddArgs, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR } from './sanity.ts'
@@ -135,6 +135,8 @@ function normalizeTriagePassthrough(raw: unknown): TriageVerdict | null {
     slug: /^[a-z0-9][a-z0-9-]{2,23}$/.test(String(o.slug || '')) ? String(o.slug) : '',
     source: o.source === 'fallback' ? 'fallback' : 'model',
     intent: normalizeIntent(o.intent),
+    artifact: normalizeArtifact(o.artifact),
+    installable: o.installable === true,
     blockers: qb.blockers,
     blockersDropped: qb.dropped,
     // host 侧填：档位被架构护栏从 X 升上来（ADR-0006）——仅用于日志与审计，不参与路由
@@ -464,6 +466,22 @@ export async function executePipeline(
     if (journal.runDocs) state.__runCtx.runDocs = journal.runDocs
     // 注入块语言（AC-3⑤）：快照经既有 __runCtx 通道下发（不改任何 prompt 工厂签名）
     state.__runCtx.locale = locale
+    // 交付形态契约（2026-09-17 实测）：形态由分诊给（triage.artifact + installable），契约清单由 host 数据表
+    // 展开（ARTIFACT_CONTRACTS）→ PRD 必须把它们写成可测 AC。缺这一环的实锤：dddd 的插件"看着完整"却装不进
+    // profile（缺 profile 层入口声明 + bundle 声明 + files 白名单 + workspace: 协议），而功能 AC 全绿 → 验收通过。
+    // `other` 形态不注入（避免给既有产品内的普通改动套错契约）。
+    try {
+      const tj = journal.triage as { artifact?: string; installable?: boolean } | null | undefined
+      const art = normalizeArtifact(tj?.artifact)
+      const inst = tj?.installable === true
+      const items = artifactContractsFor(art, inst)
+      if (items.length) {
+        state.__runCtx.artifact = art
+        state.__runCtx.installable = inst
+        state.__runCtx.artifactContracts = items.map((it) => ({ requirement: it.requirement, criteria: it.criteria }))
+        journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.artifactContract', { kind: art, n: items.length }) })
+      }
+    } catch (e) { /* 形态契约注入失败不阻断（policy 级） */ }
     // M0 状态核对：核对代码库真实状态（多人/场外提交/非流水线改动），注入后续所有阶段。
     // 核心原则：认知可复用"减量"，但不替代"对现状的核对"。
     try {

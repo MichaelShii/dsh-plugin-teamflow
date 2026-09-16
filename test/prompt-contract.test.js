@@ -19,6 +19,8 @@ import {
   devPrompt, qaPrompt, qaFixPrompt, acceptancePrompt, TRIAGE_PROMPT,
   techChangePrompt, patchConfirmPrompt, VISUAL_POLICY,
 } from '../host/prompts/index.ts'
+// 形态契约夹具需要 host 数据表（纯数据；core/triage.ts 不依赖 prompts → 无循环）
+import { artifactContractsFor } from '../host/core/triage.ts'
 
 let failed = 0
 const fail = (msg) => { console.error(`    ✗ ${msg}`); failed++ }
@@ -90,12 +92,14 @@ const STAGE_ALL = [
 
 /** 断言：targets 为 key 数组（'ALL'=STAGE_ALL）；include 须全命中、exclude 须全不命中。
  *  en=true → 断言取自 outEn（`state.__runCtx.locale='en'` 的真实工厂产出）。 */
-function assertContract({ id, level, intent, targets, include = [], exclude = [], en = false }) {
+function assertContract({ id, level, intent, targets, include = [], exclude = [], en = false, fixture }) {
   const tNames = targets === 'ALL' ? STAGE_ALL : (typeof targets === 'string' ? [targets] : targets)
   const src = en ? outEn : out
   let ok = true
   for (const name of tNames) {
-    const text = src[name]
+    // `fixture`：调用方直接给工厂产出文本（用于「同一工厂 + 不同 state 上下文」的契约，
+    // 例如形态契约段只在 __runCtx 带 artifactContracts 时才注入）。
+    const text = fixture !== undefined ? fixture : src[name]
     if (text === undefined) { fail(`${id} [${name}] 工厂产出缺失（夹具未构建？）`); ok = false; continue }
     for (const anchor of include) {
       const hit = anchor instanceof RegExp ? anchor.test(text) : text.includes(anchor)
@@ -139,6 +143,38 @@ assertContract({
   id: 'TECH-PATCH-ASSUMPTIONS', level: 'policy', targets: ['techChangePrompt', 'patchConfirmPrompt'],
   intent: '非 PRD 档位（tech 变更单 / patch 确认单）也要一句话假设，避免覆盖缺口',
   include: [/假设与待澄清/],
+})
+
+// 交付形态契约（2026-09-17 实测：dddd 的插件"看着完整"却装不进 profile——"能被宿主加载"从未进过 AC）
+assertContract({
+  id: 'TRIAGE-ARTIFACT-SHAPE', level: 'policy', targets: 'triagePrompt',
+  intent: '分诊必须判「交付物形态 + 是否要求可安装」（形态决定该满足哪些客观契约）',
+  include: [/"artifact": "app\|plugin-host\|plugin-client\|plugin-full\|cli\|lib\|docs\|data\|other"/, /"installable": true\|false/, /\[ARTIFACT — what kind of deliverable/],
+})
+/** 形态契约段的夹具：`state.__runCtx` 带 artifact/installable/artifactContracts（由 pipeline 从 host 数据表展开）。
+ *  缺此上下文时 prdPrompt 不注入该段——这正是设计（形态=other 的普通改动不该被套契约）。 */
+const ST_ARTIFACT = { ...ST, __runCtx: { ...ST.__runCtx, artifact: 'plugin-full', installable: true, artifactContracts: artifactContractsFor('plugin-full', true) } }
+const prdWithContract = prdPrompt('做一个 dsh 插件', ROOT, RUN_ID, ST_ARTIFACT)
+const prdWithContractEn = prdPrompt('build a dsh plugin', ROOT, RUN_ID, { ...ST_EN, __runCtx: { ...ST_EN.__runCtx, artifact: 'plugin-full', installable: true, artifactContracts: artifactContractsFor('plugin-full', true) } })
+const prdNoContract = out.prdPrompt
+assertContract({
+  id: 'PRD-ARTIFACT-CONTRACTS', level: 'policy', targets: 'prdPrompt',
+  intent: '形态契约必须落成 PRD 必填 AC（清单由 host 数据表下发；字段名要求读同仓样本核实）',
+  include: [/\[交付形态契约 · 必填 AC\]/, /必须落成 PRD 里可测的 AC/, /禁止凭记忆写/, /plugins\/dsh-plugin-teamflow/],
+  fixture: prdWithContract,
+})
+assertContract({
+  id: 'PRD-ARTIFACT-CONTRACTS-EN', level: 'policy', targets: 'prdPrompt', en: true,
+  intent: 'en run 同契约（语言跟随 run 快照）',
+  include: [/\[DELIVERABLE SHAPE · mandatory ACs\]/, /do NOT write them from memory/],
+  fixture: prdWithContractEn,
+})
+assertContract({
+  id: 'PRD-NO-CONTRACT-WHEN-OTHER', level: 'policy', targets: 'prdPrompt',
+  intent: '未判形态（other/缺上下文）时**不得**注入形态契约段（防给普通改动套错契约）',
+  include: [],
+  exclude: [/\[交付形态契约 · 必填 AC\]/],
+  fixture: prdNoContract,
 })
 
 // ── HOST-ENFORCED：验收结论契约（parseAcceptanceVerdict 只认显式结论行）──

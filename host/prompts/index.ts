@@ -32,6 +32,9 @@
  */
 import { clip } from '../util.ts'
 import { stateSliceFor, STATE_BLOCK_INSTRUCTION } from '../core/state.ts'
+// 形态契约的**参考样本**表（纯数据；core/triage.ts 不 import prompts → 无循环依赖）。
+// 只取样本路径给 PM 去读，**不引入任何判定逻辑**：字段名随宿主版本演进，必须读样本核实。
+import { ARTIFACT_REFERENCE_SAMPLES } from '../core/triage.ts'
 import { langDirective, t, type HostLocale } from '../locales.ts'
 
 /** 产品层文档根（memory.md 等跨任务资产；任务产物在其中的任务夹内）。 */
@@ -346,11 +349,26 @@ export const prdPrompt = (requirement, root, runId, state) => {
   const hdrSupersede = en
     ? '`Supersedes: <task folder>#<AC number>: <one sentence>` (only when this requirement explicitly changes existing behavior; omit otherwise).'
     : '`取代：<task folder>#<AC number>：<one sentence>` (only when this requirement explicitly changes existing behavior; omit otherwise).'
+  // 交付形态契约（2026-09-17 实测：dddd 的插件"看着完整"却装不进 profile，因为"能被宿主加载"从未进过 AC）：
+  // 形态与契约清单由 host 的数据表给出（triage.artifact + ARTIFACT_CONTRACTS），**不靠正则识别、不硬编码字段名**。
+  const contract = (() => {
+    try {
+      const rc = (state && state.__runCtx) || {}
+      const items = Array.isArray(rc.artifactContracts) ? rc.artifactContracts : []
+      if (!items.length) return ''
+      const kind = String(rc.artifact || 'other')
+      const inst = rc.installable === true
+      const lines = items.map((it, i) => `   ${i + 1}. ${it.requirement} — ${it.criteria}`).join('\n')
+      return en
+        ? `\n[DELIVERABLE SHAPE · mandatory ACs] Triage judged this deliverable as \`${kind}\`${inst ? ' and it must be **installable/loadable by its host**' : ''}. The following are **objective delivery contracts of that shape** — every item MUST become a testable AC in this PRD (not prose, not a "notes" section), because downstream QA/acceptance only verify what is in the AC table:\n${lines}\n   Field names / file names vary with the host version: **read the existing sibling plugin samples in this repo** (${(ARTIFACT_REFERENCE_SAMPLES[kind] || []).join(', ') || 'see repo'}) or the host docs to confirm them — do NOT write them from memory.`
+        : `\n[交付形态契约 · 必填 AC] 分诊判定本次交付物形态为 \`${kind}\`${inst ? '，且**必须可被宿主安装/加载**' : ''}。以下是该形态的**客观交付契约**——每一条都**必须落成 PRD 里可测的 AC**（不是正文说明、不是"备注"小节），因为下游 QA/验收只验 AC 表里的东西：\n${lines}\n   字段名/文件名随宿主版本演进：**必须去读本仓已有的同类插件样本**（${(ARTIFACT_REFERENCE_SAMPLES[kind] || []).join('、') || '见仓库'}）或宿主文档核实 —— **禁止凭记忆写**。`
+    } catch (e) { return '' }
+  })()
   return `You are a senior Product Manager. The current workspace IS the target project (empty = project not yet created).
 ${productCtx(root, LOCALE(state))}${stateSliceFor(state, 'pm')}
 ${ONCE_DISCIPLINE}[REQUIREMENT]
 ${requirement}
-[ARTIFACT LOCATION] ${RUN(state)}/PRD.md (write once; create dirs if missing).
+[ARTIFACT LOCATION] ${RUN(state)}/PRD.md (write once; create dirs if missing).${contract}
 [REQUIREMENTS]
 1. First look at the state index above and the AGENTS.md doc index to decide whether this is an iterative requirement and which prior task folders relate (folder names carry date+theme; reverse date order = evolution). Do not full-read historical docs.
 2. [AC numbering] Number ACs from AC-1 within THIS folder only — ACs belong to this requirement, no global numbering.
@@ -632,9 +650,10 @@ ${langNote}
 5. [M1 ARCHITECTURE CRITERION (important)] **Architecture-level changes** — persistence/localStorage/database/standalone module/abstraction/cross-many-files without an existing reusable wrapper (like a localStorage wrapper, storage layer, state management) — even if they look like "small features", go **at least medium** (must pass the architecture stage and produce a blueprint, avoiding scattered local implementations by dev); such changes collapse under a light "micro feature" tier. Tech-driven rework (refactor/optimize/arch upgrade) is itself tech (tech also runs the lightweight blueprint now).${enExamples}
 6. [INTENT — decide before mode] \`intent\` = \`"requirement"\` **only** when this is a settled development ask. Use \`"exploration"\` for still-thinking-out-loud phrasing ("I've been wondering about adding X", "test this out", "I want to build some kind of plugin") and \`"feedback"\` for opinions/questions about existing behavior — **neither may start a pipeline**; the caller will ask the user first. When unsure between requirement and exploration, prefer \`"exploration"\` (a wasted prompt is cheaper than a wasted pipeline).
 7. [BLOCKERS — must-know gaps only] \`blockers\` = what you **cannot** settle yourself from the repo/state index **and** whose wrong guess causes rework. Each entry needs all four fields: \`question\` (one sentence to ask the user), \`readings\` (≥2 concrete **competing** interpretations), \`changes\` (which artifact / AC / scope it changes), \`rework\` (what gets redone if guessed wrong). Anything you can self-check, or whose wrong guess costs nothing, or that has only one sensible reading → **do not list**. No such gap → \`[]\`. Never invent questions to look thorough: unqualified entries are dropped by the caller and counted against you.
+8. [ARTIFACT — what kind of deliverable, and does it have to install] \`artifact\` describes the **deliverable's shape**, which decides which hard contracts the PRD must turn into ACs: \`"app"\` (end-user application) / \`"plugin-host"\` (host-side plugin: service/tools/events) / \`"plugin-client"\` (browser-side UI plugin) / \`"plugin-full"\` (both halves) / \`"cli"\` / \`"lib"\` (library/module) / \`"docs"\` / \`"data"\` / \`"other"\` (a change inside an existing product rather than a new deliverable). \`installable\` = does "done" mean the artifact must be **installable/loadable by its host** (e.g. a plugin that must actually load in a profile) rather than merely "source in a directory"? Judge from the requirement's own words ("做插件""能装上""发布") plus the repo's conventions — do NOT guess \`true\` for ordinary in-repo changes. Wrong shape is expensive: a plugin that "looks complete" but cannot be loaded fails at the very end (real case: a plugin shipped without its profile-load entry file and bundle declaration passed every functional AC because "can it be loaded" was never an AC).
 
 [OUTPUT] JSON object ONLY — no commentary, no preface, no closing text. The FIRST character of your reply must be '{'. Do NOT say anything like "here is the JSON" or "Let me output the JSON" — output the object itself:
-{ "mode": "patch|lite|tech|medium|full", "slug": "<topic words> (3-24 lowercase letters/digits/hyphens, e.g. wallkick-toggle, 7bag-random; used to name the task folder)", "kind": "one-word nature", "needDesign": true|false, "complexity": "small|medium|large", "rationale": ["key argument 1","key argument 2"], "confidence": "high|medium|low", "intent": "requirement|exploration|feedback", "blockers": [{ "question": "...", "readings": ["competing reading A","competing reading B"], "changes": "which artifact/AC/scope it changes", "rework": "what gets redone if guessed wrong" }] }`
+{ "mode": "patch|lite|tech|medium|full", "slug": "<topic words> (3-24 lowercase letters/digits/hyphens, e.g. wallkick-toggle, 7bag-random; used to name the task folder)", "kind": "one-word nature", "needDesign": true|false, "complexity": "small|medium|large", "rationale": ["key argument 1","key argument 2"], "confidence": "high|medium|low", "intent": "requirement|exploration|feedback", "artifact": "app|plugin-host|plugin-client|plugin-full|cli|lib|docs|data|other", "installable": true|false, "blockers": [{ "question": "...", "readings": ["competing reading A","competing reading B"], "changes": "which artifact/AC/scope it changes", "rework": "what gets redone if guessed wrong" }] }`
 }
 
 /** tech 档 PRD：技术变更单（无功能 AC，重范围/目标/改动面/回归）。 */

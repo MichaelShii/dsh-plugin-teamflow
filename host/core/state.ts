@@ -77,6 +77,11 @@ export interface TeamflowState {
     /** 验收是否「已知问题」只读模式（E 方案 2026-09-15）：QA 打回超限时 pipeline 写入，
      *  acceptancePrompt 据此产出交付级视图 + 未闭环清单（结论由 host 强制为需人工裁定）。 */
     knownIssues?: boolean
+    /** **交付形态契约**（2026-09-17）：分诊判定形态 → host 数据表展开的必填 AC 清单，
+     *  prdPrompt 据此要求 PM 把形态契约写成可测 AC（防"看着完整却装不上"）。 */
+    artifact?: string
+    installable?: boolean
+    artifactContracts?: Array<{ requirement: string; criteria: string }>
   } | null
 }
 

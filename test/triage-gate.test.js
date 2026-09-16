@@ -12,7 +12,7 @@
  *     实测模型系统性自选 `lite:true`（33 次启动 14 次显式传档位、0 次先预览），故放宽为「只有 patch 豁免」。
  * 另外锁住意图归一（非法值一律 requirement，绝不因字段缺失拦启动）。
  */
-import { qualifyBlockers, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK } from '../host/core/triage.ts'
+import { qualifyBlockers, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES } from '../host/core/triage.ts'
 import { extractAssumptionsSection } from '../host/util.ts'
 
 let failed = 0
@@ -99,6 +99,21 @@ ok(guardrailUpgrade('medium', false, 'medium') === null, '显式 medium + 分诊
 ok(guardrailUpgrade('medium', false, 'full') === null, '显式 medium + 分诊 full → 保持调用方选择（不无谓放大 token）')
 ok(guardrailUpgrade('full', false, 'lite') === null, '显式 full + 分诊 lite → 不降档（尊重调用方）')
 ok(guardrailUpgrade('tech', false, 'medium') === 'medium', '显式 tech + 分诊 medium → 升档（tech 与 lite 同级，架构型需求仍要蓝图）')
+
+console.log('\n[6] 交付形态契约（2026-09-17 实测：dddd 的插件"看着完整"却装不进 profile——"能被宿主加载"从未进过 AC）')
+ok(normalizeArtifact('plugin-full') === 'plugin-full', '合法形态直通')
+ok(normalizeArtifact('nonsense') === 'other' && normalizeArtifact(undefined) === 'other' && normalizeArtifact(null) === 'other', '非法/缺失 → other（绝不套用某类契约）')
+ok(ARTIFACT_CONTRACTS.other.length === 0 && ARTIFACT_CONTRACTS.app.length === 0, 'other/app 无形态契约（既有产品内的普通改动不套额外契约）')
+const pfItems = artifactContractsFor('plugin-full', false)
+const pfInst = artifactContractsFor('plugin-full', true)
+ok(pfItems.length >= 4 && pfInst.length > pfItems.length, 'plugin-full：installable=true 追加安装类契约（源码目录 vs 可安装分档）')
+ok(pfItems.every((it) => it.requirement && it.criteria), '每条契约都带「要求 + 判据形态」（否则 PM 写不出可测 AC）')
+ok(!/manifestVersion|bundle\.patch|dsh\.client/.test(JSON.stringify(ARTIFACT_CONTRACTS)), '契约表**不硬编码宿主字段名**（字段名随宿主版本演进，必须让 PM 读同仓样本核实）')
+ok(ARTIFACT_REFERENCE_SAMPLES['plugin-full'].includes('plugins/dsh-plugin-teamflow'), 'plugin-full 指向同仓正确样本供 PM 核对')
+ok(artifactContractsFor('cli', false).some((it) => /bin|可执行/.test(it.requirement + it.criteria)), 'cli：契约含可执行入口')
+ok(artifactContractsFor('lib', false).some((it) => /入口|main|exports/.test(it.requirement + it.criteria)), 'lib：契约含模块入口')
+ok(artifactContractsFor('plugin-host', false).some((it) => /workspace:/.test(it.criteria)), 'plugin-host：含"依赖不得用 workspace: 协议"（本次实锤缺口之一）')
+ok(artifactContractsFor('plugin-full', false).some((it) => /files|白名单/.test(it.requirement)), 'plugin-full：含分发白名单（本次实锤缺口之一）')
 
 console.log(failed ? `\n✗ triage-gate：${failed} 条失败\n` : '\n✓ triage-gate：全部通过\n')
 process.exit(failed ? 1 : 0)
