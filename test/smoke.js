@@ -610,6 +610,14 @@ ok(/args\.preAction === 'stash' \|\| args\.preAction === 'commit' \|\| args\.pre
   ok(!items.includes('.idea'), 'pipeline：L1 止血清单**不得**收录 .idea 等"该忽略什么"定义项（固定清单只防超时，规划归 L2/L3）')
   ok(/Version-control hygiene · mandatory when the workspace is versioned/.test(promptsSrc) && /Commit-surface hygiene probe/.test(promptsSrc), 'prompts：L2 PM .gitignore 规划必查项 + L3 QA 收口探针（模型按项目技术栈规划，非固定清单）')
 }
+// 分诊超时 90s→240s + fallback 原因可见化（2026-09-18 probe-clock 截图实锤：分诊子代理推理中被
+// 90s dispose（UI「已停止」），journal 只剩一条 fallback info——没人知道为什么）
+{
+  const triageSrc = readFileSync(join(here, '../host/core/triage.ts'), 'utf8')
+  ok(/TRIAGE_TIMEOUT_MS = 240000/.test(triageSrc), 'triage：分诊超时常量 240s（90s 时代分诊职责已翻倍，深思考模型答不完）')
+  ok(/fallbackReason/.test(triageSrc) || /fallbackReason/.test(pipelineSrc), 'triage：fallback 必须带退化原因（fallbackReason → warn 可见化，不再黑盒）')
+  ok(/log\.triageFallbackReason/.test(pipelineSrc), 'pipeline：分诊退化原因记 warn（含原因摘要）')
+}
 // execOptions 白名单完整性（B1 同型 bug 第三次现身：2026-09-17 probe-clock 实锤——branchPolicy/preAction
 // 不在白名单 → 用户选了"开启存档"但 executePipeline 收到 undefined → git init 静默没执行）。
 // 门禁：内部字段必须逐个出现在 execOptions；以后再加内部字段漏一个就红。

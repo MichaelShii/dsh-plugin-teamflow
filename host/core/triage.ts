@@ -321,8 +321,10 @@ function parseVerdictText(text: string): TriageVerdict | null {
   } catch (e) { return null }
 }
 
-/** 兜底：正则预筛 → fallback verdict（模型分诊不可用/超时/解析失败时）。 */
-function fallbackVerdict(requirement: string, opts?: { needDesign?: boolean }, locale: HostLocale = 'zh'): TriageVerdict {
+/** 兜底：正则预筛 → fallback verdict（模型分诊不可用/超时/解析失败时）。`reason` = 退化原因（可见化：
+ *  2026-09-18 probe-clock 实锤——分诊子代理**推理中被 90s 超时 dispose**（截图「已停止」），journal 只记
+ *  一条 fallback info，没人知道为什么；现在把原因带回给调用方落 warn）。 */
+function fallbackVerdict(requirement: string, opts?: { needDesign?: boolean }, locale: HostLocale = 'zh', reason?: string): TriageVerdict {
   const pre = suggestMode(requirement, opts, locale)
   return {
     mode: pre.mode, kind: pre.kind, needDesign: !!(opts && opts.needDesign), complexity: 'medium',
@@ -331,12 +333,18 @@ function fallbackVerdict(requirement: string, opts?: { needDesign?: boolean }, l
     intent: 'requirement', blockers: [], blockersDropped: 0,
     // 兜底路径不猜形态（一律 other = 不套用任何形态契约）：宁可不加，也不要给错形态的契约
     artifact: 'other', installable: false,
-  }
+    ...(reason ? { fallbackReason: String(reason).slice(0, 300) } : {}),
+  } as TriageVerdict
 }
 
 /** 模型驱动分诊：spawn「分诊分析师」子代理思考一轮；子代理不可用/超时/解析失败 → 正则兜底。
  * 解析失败先带纠错提示重试一次（实锤 run tf-mtfo8exi：模型输出「Let me output the JSON.」开场白
- * 后无 JSON——首轮输出预算被思考耗尽/模型停早；重试提示直接输出 JSON 对象本身）。 */
+ * 后无 JSON——首轮输出预算被思考耗尽/模型停早；重试提示直接输出 JSON 对象本身）。
+ * **超时 240s**（2026-09-18 实锤修正，勿回退 90s）：分诊职责今天已含 intent/blockers/artifact/installable
+ * 判定（输出字段翻倍），深思考模型 90s 内经常答不完 → 被 dispose（UI 显示「已停止」）→ 两次尝试全废 →
+ * fallback。probe-clock 截图实证：模型推理到 artifact 判别处被掐，推理质量很高、不是卡死。 */
+export const TRIAGE_TIMEOUT_MS = 240000
+
 export async function runTriage(
   requirement: string,
   opts?: { needDesign?: boolean },
@@ -345,8 +353,9 @@ export async function runTriage(
   locale: HostLocale = 'zh',
 ): Promise<TriageVerdict> {
   const subagents = runtime.subagents as { start?: (provider: string, init: unknown) => Promise<{ result: Promise<{ output?: unknown; stopReason?: string }>; dispose?: () => Promise<void> | void }> } | undefined
-  if (!subagents || typeof subagents.start !== 'function') return fallbackVerdict(requirement, opts, locale)
+  if (!subagents || typeof subagents.start !== 'function') return fallbackVerdict(requirement, opts, locale, 'subagents service unavailable')
   const pre = suggestMode(requirement, opts, locale)
+  let lastReason = ''
   for (let attempt = 1; attempt <= 2; attempt++) {
     let run: { result: Promise<{ output?: unknown; stopReason?: string }>; dispose?: () => Promise<void> | void } | null = null
     try {
@@ -361,15 +370,17 @@ export async function runTriage(
       })
       const result = await Promise.race([
         run.result,
-        new Promise<never>((_, rej) => setTimeout(() => rej(new Error(t(locale, 'err.triageTimeout'))), 90000)),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error(t(locale, 'err.triageTimeout') + ` (${Math.round(TRIAGE_TIMEOUT_MS / 1000)}s)`)), TRIAGE_TIMEOUT_MS)),
       ]) as { output?: unknown; stopReason?: string }
       const parsed = parseVerdictText(extractText(result && result.output))
       if (parsed) return parsed
+      lastReason = `empty/unparseable verdict (stopReason=${result && result.stopReason || 'unknown'})`
     } catch (e) {
-      if (attempt === 2) { /* 超时/失败 → 走兜底 */ }
+      lastReason = String((e && e.message) || e)
+      if (attempt === 2) { /* 超时/失败 → 走兜底（原因已在 lastReason） */ }
     } finally {
       if (run && run.dispose) { try { await run.dispose() } catch (e) { /* ignore */ } }
     }
   }
-  return fallbackVerdict(requirement, opts, locale)
+  return fallbackVerdict(requirement, opts, locale, lastReason)
 }

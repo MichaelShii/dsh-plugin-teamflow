@@ -349,6 +349,11 @@ export async function executePipeline(
       journal.options = Object.assign({}, options) as Record<string, unknown>
       journal.triage = triageRecordOf(verdict)
       journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.triage', { kind: verdict.kind, mode: verdict.mode, source: verdict.source }) })
+      // 分诊退化原因可见化（2026-09-18 probe-clock 截图实锤：分诊子代理推理中被超时 dispose，UI「已停止」，
+      // journal 只剩一条 fallback info → 没人知道为什么）。现在 fallbackReason（provider 错误/超时/解析失败
+      // 原文）记 warn——下次再出现 fallback，一眼可见"是 90s 掐的还是 JSON 坏了"。
+      const fbReason = (verdict as { fallbackReason?: string }).fallbackReason
+      if (verdict.source === 'fallback' && fbReason) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageFallbackReason', { msg: clip(fbReason, 200) }) })
       const upFrom2 = (verdict as { upgradedFrom?: string | null }).upgradedFrom
       if (upFrom2) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.modeUpgraded', { from: upFrom2, to: verdict.mode }) })
       if (verdict.blockersDropped > 0) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageBlockersDropped', { n: verdict.blockersDropped }) })
