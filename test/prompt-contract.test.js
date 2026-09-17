@@ -186,6 +186,16 @@ assertContract({
   intent: 'QA 必须把形态契约逐条当探针跑（构建产物新鲜度/装载安全/安装回滚纪律——dddd 实锤：旧 lib 装上后宿主启动即炸，靠另开 agent 手术卸载才救回）',
   include: [/Deliverable-shape verification · mandatory when injected/, /roll back FIRST/, /Never silently skip/],
 })
+assertContract({
+  id: 'PRD-GITIGNORE-PLAN', level: 'policy', targets: 'prdPrompt',
+  intent: '版本化工作区：PM 必须按本项目技术栈审计/规划 .gitignore（收口提交整树 add，噪音进历史=永久）——模型规划，非固定清单',
+  include: [/Version-control hygiene · mandatory when the workspace is versioned/, /read the project, don't guess from a generic list/],
+})
+assertContract({
+  id: 'QA-COMMIT-SURFACE-PROBE', level: 'policy', targets: 'qaPrompt',
+  intent: 'QA 收口探针：git status --porcelain 不得含依赖/构建产物/工具缓存/IDE/密钥；缺失 → P1 缺陷（模块=版本控制）',
+  include: [/Commit-surface hygiene probe · when the workspace is versioned/, /git status --porcelain/],
+})
 
 // ── HOST-ENFORCED：验收结论契约（parseAcceptanceVerdict 只认显式结论行）──
 assertContract({

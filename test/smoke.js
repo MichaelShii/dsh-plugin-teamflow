@@ -601,6 +601,15 @@ ok(/report\.vcsArchived/.test(reportSrc) && /loadState\(journal\.workspacePath\)
 // 正确回传的 preAction='init' 丢成 null → git init 静默没执行；主线程回传/决策/pipeline 三环全对，
 // 唯独入口这一行把参数弄丢）
 ok(/args\.preAction === 'stash' \|\| args\.preAction === 'commit' \|\| args\.preAction === 'init' \|\| args\.preAction === 'keep-nogit'/.test(hostSrc), 'host：preAction 入口整形放行全部四值（stash/commit/init/keep-nogit——漏 init 会静默丢掉存档决策）')
+// .gitignore 三层分工（2026-09-18 设计修正，勿回退）：L1 止血清单**只防超时**（.pnpm-store/node_modules
+// 两项，不得再长回 .idea 之类"该忽略什么"的定义——那是 L2 PM 规划与 L3 QA 探针的职责）
+{
+  const m = pipelineSrc.match(/mergeGitignore\(before, \[([^\]]*)\], 'zh'\)/)
+  const items = m ? m[1] : ''
+  ok(items.includes('.pnpm-store/') && items.includes('node_modules/'), 'pipeline：L1 止血清单含 .pnpm-store/node_modules（防冷启动 add 超时）')
+  ok(!items.includes('.idea'), 'pipeline：L1 止血清单**不得**收录 .idea 等"该忽略什么"定义项（固定清单只防超时，规划归 L2/L3）')
+  ok(/Version-control hygiene · mandatory when the workspace is versioned/.test(promptsSrc) && /Commit-surface hygiene probe/.test(promptsSrc), 'prompts：L2 PM .gitignore 规划必查项 + L3 QA 收口探针（模型按项目技术栈规划，非固定清单）')
+}
 // execOptions 白名单完整性（B1 同型 bug 第三次现身：2026-09-17 probe-clock 实锤——branchPolicy/preAction
 // 不在白名单 → 用户选了"开启存档"但 executePipeline 收到 undefined → git init 静默没执行）。
 // 门禁：内部字段必须逐个出现在 execOptions；以后再加内部字段漏一个就红。

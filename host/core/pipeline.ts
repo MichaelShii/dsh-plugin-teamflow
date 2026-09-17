@@ -106,16 +106,17 @@ function ensureLogGitignore(cwd: string | null | undefined, journal: Journal, lo
 }
 
 /**
- * 基线提交前的**惯例噪音排除**（2026-09-18 probe-clock 实锤）：
- * 非用户项目的目录里常见 `.pnpm-store/`（数万硬链接）、`.idea/` 等——它们不是交付物，
- * 但会把冷启动 `git add -A` 拖到超时（8s 默认 → 被杀 → gitFailDetail 把残留 warning 拼成假错误，
- * 基线提交失败）。在 init 基线路径幂等补写这批惯例项（只影响基线提交，不动用户已有规则语义）。
+ * 基线提交前的**止血排除**（2026-09-18 probe-clock 实锤 + 设计修正）：
+ * 冷启动 `git add -A` 可能被海量噪音拖过超时（.pnpm-store 数万硬链接），基线提交被杀。
+ * 这里只放**极少数公认无争议、且与我们生态直接相关**的止血项（防超时爆炸），**不是**"该忽略什么"的定义——
+ * 那是 L2（PRD 阶段 PM 按项目技术栈规划 .gitignore，见 prdPrompt 的 gitignore 必查项）与
+ * L3（QA 收口探针：`git status --porcelain` 不得含依赖/构建产物）的职责。
  */
 function ensureCommonNoiseIgnores(cwd: string): void {
   try {
     const file = `${cwd}/.gitignore`
     const before = existsSync(file) ? readFileSync(file, 'utf8') : null
-    const merged = mergeGitignore(before, ['.pnpm-store/', '.idea/', 'node_modules/'], 'zh')
+    const merged = mergeGitignore(before, ['.pnpm-store/', 'node_modules/'], 'zh')
     if (merged.changed) writeFileSync(file, merged.text, 'utf8')
   } catch (e) { /* 尽力而为：写不进去由 add 超时兜底（120s） */ }
 }
