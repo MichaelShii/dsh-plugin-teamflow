@@ -1211,13 +1211,22 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
     if (firstKey !== undefined) runs.delete(firstKey)
   }
   persistJournal(journal) // 首次 checkpoint（断点续跑基座）
-  // ⚠️ 必须把**调用方的 options 里那两个内部字段**显式带到 executePipeline：`journal.options` 是**白名单字面量**
+  // ⚠️ 必须把**调用方的 options 里那几个内部字段**显式带到 executePipeline：`journal.options` 是**白名单字面量**
   // （审计面只留档位/团队/并发等），当初直接传它导致 `requirementSupplement` 与 `__triage` 被静默丢弃——
   // 澄清结论进不了 PRD（`[CLARIFIED]` 空转）、`journal.triage` 永远为空（shadow 埋点失效）。
   // 实锤：2026-09-16 run tf-mu34afd2-wcjaw1（模型传了 1144 字符澄清结论，落盘 options 里却完全没有该键）。
+  // **同型第三次**（2026-09-17 probe-clock 实锤）：分支策略字段 `branchPolicy/branchName/preAction/commitMessage`
+  // 也没在白名单里 → 用户选了"开启改动存档"（preAction='init'）但 executePipeline 收到 undefined →
+  // git init 静默没执行（journal 里只有 sanity 那条 warn，没有任何 init 日志）。门禁：smoke「内部字段必须
+  // 出现在 execOptions」断言（这类字段再加时漏一个就会红）。
   const execOptions = Object.assign({}, journal.options, {
     requirementSupplement: options.requirementSupplement || null,
     __triage: (options as { __triage?: unknown }).__triage,
+    __triageError: (options as { __triageError?: unknown }).__triageError,
+    branchPolicy: (options as PipelineOptions).branchPolicy,
+    branchName: (options as PipelineOptions).branchName,
+    preAction: (options as PipelineOptions).preAction,
+    commitMessage: (options as PipelineOptions).commitMessage,
   })
   executePipeline(journal, agent, journal.requirement, execOptions, signal)
   return journal.id

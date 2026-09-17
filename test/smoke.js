@@ -597,6 +597,17 @@ ok(/options\.preAction === 'init'/.test(pipelineSrc) && /isDangerousVcsRoot\(jou
 ok(/baselineSkip = dirTooLargeForBaseline/.test(pipelineSrc) && /commit\.baseline/.test(hostSrc), 'pipeline：init 时目录过大 → 只 init 不基线提交（git add -A 防全盘扫描）')
 ok(/vcsState === 'none'/.test(pipelineSrc) && /log\.noVcsByChoice/.test(pipelineSrc) && /log\.noVcsDangerous/.test(pipelineSrc), 'pipeline：出口遵从——none/危险路径**不尝试提交**（不再出现「提交失败（忽略）」的含糊措辞）')
 ok(/report\.vcsArchived/.test(reportSrc) && /loadState\(journal\.workspacePath\)/.test(reportSrc), 'report：汇报带「已存档/未存档」行（非程序员的安全网要看得见）')
+// execOptions 白名单完整性（B1 同型 bug 第三次现身：2026-09-17 probe-clock 实锤——branchPolicy/preAction
+// 不在白名单 → 用户选了"开启存档"但 executePipeline 收到 undefined → git init 静默没执行）。
+// 门禁：内部字段必须逐个出现在 execOptions；以后再加内部字段漏一个就红。
+{
+  const lines = pipelineSrc.split('\n')
+  const start = lines.findIndex((l) => l.includes('const execOptions = Object.assign'))
+  const body = start >= 0 ? lines.slice(start, start + 10).join('\n') : ''
+  for (const f of ['requirementSupplement', '__triage', 'branchPolicy', 'branchName', 'preAction', 'commitMessage']) {
+    ok(body.includes(f + ':'), `pipeline：execOptions 显式携带内部字段 ${f}（journal.options 白名单不承载内部字段——B1 同型防回退）`)
+  }
+}
 // 输出 schema 严格性（2026-09-17 实锤 probe-clock：git-init 决策返回带 kind 未声明 → additionalProperties:false
 // 拒收 → start 当场失败、零 run；全套测试因没覆盖"返回形状 vs schema"而全绿漏过）
 ok(/kind: \{ type: 'string' \}/.test(hostSrc), 'host：start 的 output schema 声明 kind（git-init 决策字段）')
