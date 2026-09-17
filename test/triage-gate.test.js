@@ -12,7 +12,7 @@
  *     实测模型系统性自选 `lite:true`（33 次启动 14 次显式传档位、0 次先预览），故放宽为「只有 patch 豁免」。
  * 另外锁住意图归一（非法值一律 requirement，绝不因字段缺失拦启动）。
  */
-import { qualifyBlockers, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES } from '../host/core/triage.ts'
+import { qualifyBlockers, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, TRIAGE_CACHE_MAX } from '../host/core/triage.ts'
 import { extractAssumptionsSection } from '../host/util.ts'
 
 let failed = 0
@@ -122,6 +122,44 @@ ok(/装载安全|顶层/.test(pfAll) && /require/.test(pfAll), 'plugin-full：�
 ok(/回滚|卸载/.test(pfAll), 'plugin-full：含「安装必须带回滚」（装上后宿主起不来 → 另开 agent 手术实锤）')
 ok(artifactContractsFor('plugin-host', false).some((it) => /装载安全|顶层/.test(it.requirement)), 'plugin-host：装载安全为**非 installable 也要求**（源码目录阶段就该可加载）')
 ok(artifactContractsFor('plugin-host', true).some((it) => /回滚|卸载/.test(it.requirement) && it.onlyWhenInstallable === true), 'plugin-host：回滚纪律是 installable 档要求')
+
+console.log('\n[8] 分诊缓存（2026-09-18 实锤：决策返回路径让同一条需求被分诊两次——probe-clock tf-mu5wcm2j-kxk14y 两次 model 分诊 16.6K+16.5K tok、结果一致、纯白花）')
+triageCacheClear()
+ok(triageCacheSize() === 0, '可直接清空（测试隔离）')
+const V = (over = {}) => ({
+  mode: 'lite', kind: 'feature', needDesign: false, complexity: 'small', rationale: ['x'], confidence: 'high',
+  slug: 's', source: 'model', intent: 'requirement', blockers: [], blockersDropped: 0, artifact: 'other', installable: false, ...over,
+})
+// —— 键的构成：必须含「需求 + 澄清答复」，且**不得**含决策字段 ——
+ok(triageCacheKey('A', '') === triageCacheKey('A', undefined), '键：缺省 supplement 与空串同键')
+ok(triageCacheKey('A', '') !== triageCacheKey('B', ''), '键：需求不同 → 不同键（不串味）')
+ok(triageCacheKey('A', 'x') !== triageCacheKey('A', ''), '**键：澄清答复改变 → 不同键**（若漏了它，澄清前的裁决会被当成澄清后复用 = 闸门失效）')
+ok(triageCacheKey('A', ' x ') === triageCacheKey('A', 'x'), '键：supplement 两端空白归一')
+const k = triageCacheKey('req-1', '')
+// —— 命中 / 未命中 ——
+ok(triageCacheGet(k) === null, '未写入时未命中')
+triageCachePut(k, V())
+ok(triageCacheGet(k) !== null, '写入后命中')
+ok(triageCacheGet(k).mode === 'lite', '命中返回原裁决（档位不漂移）')
+ok(triageCacheGet(triageCacheKey('req-2', '')) === null, '别的需求不命中')
+ok(triageCacheGet(triageCacheKey('req-1', 'new-supplement')) === null, '同一需求但澄清答复不同 → 不命中（必须重跑分诊）')
+// —— 只缓存 model 裁决（fallback 是"分诊不可用"的降级产物，缓存它会把偶发故障固化 10 分钟）——
+triageCacheClear()
+triageCachePut(triageCacheKey('fb', ''), V({ source: 'fallback' }))
+ok(triageCacheGet(triageCacheKey('fb', '')) === null, '**fallback 裁决不入缓存**（否则一次偶发故障被固化 10 分钟）')
+triageCachePut(triageCacheKey('md', ''), V({ source: 'model' }))
+ok(triageCacheGet(triageCacheKey('md', '')) !== null, 'model 裁决入缓存')
+// —— 容量上限（防长会话内存增长）——
+triageCacheClear()
+for (let i = 0; i < TRIAGE_CACHE_MAX + 8; i++) triageCachePut(triageCacheKey('bulk-' + i, ''), V())
+ok(triageCacheSize() <= TRIAGE_CACHE_MAX, `容量上限生效（写入 ${TRIAGE_CACHE_MAX + 8} 条后仅存 ${triageCacheSize()} ≤ ${TRIAGE_CACHE_MAX}）`)
+ok(triageCacheGet(triageCacheKey('bulk-0', '')) === null, '超限淘汰最旧（bulk-0 已出局）')
+ok(triageCacheGet(triageCacheKey('bulk-' + (TRIAGE_CACHE_MAX + 7), '')) !== null, '最新一条仍在（淘汰的是最旧，不是最新）')
+// —— 一个 key 只占一条（重复 put 不膨胀）——
+triageCacheClear()
+for (let i = 0; i < 10; i++) triageCachePut(k, V())
+ok(triageCacheSize() === 1, '同一 key 重复写入只占 1 条（幂等）')
+triageCacheClear()
 
 console.log(failed ? `\n✗ triage-gate：${failed} 条失败\n` : '\n✓ triage-gate：全部通过\n')
 process.exit(failed ? 1 : 0)

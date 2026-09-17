@@ -345,6 +345,65 @@ function fallbackVerdict(requirement: string, opts?: { needDesign?: boolean }, l
  * fallback。probe-clock 截图实证：模型推理到 artifact 判别处被掐，推理质量很高、不是卡死。 */
 export const TRIAGE_TIMEOUT_MS = 240000
 
+/**
+ * 分诊结果短期缓存（2026-09-18 实锤新增，勿回退）。
+ *
+ * **为什么必须有**：`teamflow_start` 的**决策返回路径会让同一条需求被分诊两次**。实测 probe-clock
+ * `tf-mu5wcm2j-kxk14y`：主线程 03:01:54 首次调用 → 工具内 preflight 跑一次分诊（子代理 16.6K tok）
+ * → 继续走到分支决策 → 返回 `needs-decision kind=git-init`（**不建 run**）→ 用户点选后主线程
+ * **03:02:24 重调** → 又跑一次分诊（子代理 16.5K tok）。两次都 `source=model`、都成功，**结果也一致**
+ * ——纯粹白花一次子代理调用（~16.5K tok + 2–4s），且第一次的裁决被丢弃。
+ * 此前几轮分诊都走 `source=fallback`（90s 超时那个 bug）→ fallback 不建子代理 → 重复执行不可见；
+ * 超时修到 240s 后分诊真跑起来，重复才暴露。
+ * **不止救 git-init**：任何 `needs-decision`（分支决策四情形 / 危险路径 / 澄清闸门）都会让工具被重调。
+ *
+ * **缓存键必须包含 requirement + requirementSupplement**：`[CLARIFIED]` 补充说明**改变分诊输入**
+ * （收敛规则据此判定"已澄清过"），键里漏了它会把「澄清前」的裁决当成「澄清后」的复用——
+ * 那就等于闸门失效。键里**不得**包含 `preAction`/`branchPolicy`/`branchName`/`commitMessage`：
+ * 它们是**决策答案**，不改变需求语义（正是它们导致重调，进了键就永远命不中）。
+ *
+ * **TTL 与容量**：TTL 10 分钟（决策往返是秒级/分钟级，10 分钟足够覆盖；更久说明用户走神了，
+ * 重跑一次是应该的）。容量上限 32 条、超出按插入序淘汰最旧（Map 保持插入序）——防长会话内存增长。
+ * **只缓存 model 裁决**：fallback 是"分诊不可用"的降级产物，缓存它会把一次偶发故障固化 10 分钟。
+ */
+const TRIAGE_CACHE_TTL_MS = 10 * 60 * 1000
+/** 容量上限（导出供测试断言，避免测试里硬编码重复数字——改了上限只改这一处）。 */
+export const TRIAGE_CACHE_MAX = 32
+const triageCache = new Map<string, { verdict: TriageVerdict; at: number }>()
+
+/** 缓存键 = 需求 + 澄清答复（**不含任何决策字段**；见上方注释）。 */
+export function triageCacheKey(requirement: string, supplement?: unknown): string {
+  const sup = typeof supplement === 'string' ? supplement.trim() : ''
+  return `${String(requirement || '').trim()}\u0000${sup}`
+}
+
+/** 读缓存（过期即删并返回 null）。返回的是**原对象**——调用方会补 `__upgradedFrom`/`needDesign`，
+ *  这些是 host 侧审计字段、且同键同产物，复用无碍。 */
+export function triageCacheGet(key: string): TriageVerdict | null {
+  const hit = triageCache.get(key)
+  if (!hit) return null
+  if (Date.now() - hit.at > TRIAGE_CACHE_TTL_MS) { triageCache.delete(key); return null }
+  return hit.verdict
+}
+
+/** 写缓存（**仅 model 裁决**；容量超限淘汰最旧）。 */
+export function triageCachePut(key: string, verdict: TriageVerdict): void {
+  if (!verdict || verdict.source !== 'model') return
+  triageCache.delete(key) // 重新插入以刷新插入序（LRU-ish：命中过的排到最后）
+  triageCache.set(key, { verdict, at: Date.now() })
+  while (triageCache.size > TRIAGE_CACHE_MAX) {
+    const oldest = triageCache.keys().next()
+    if (oldest.done) break
+    triageCache.delete(oldest.value)
+  }
+}
+
+/** 测试/诊断用：清空缓存（生产路径不调用）。 */
+export function triageCacheClear(): void { triageCache.clear() }
+
+/** 测试/诊断用：当前缓存条数。 */
+export function triageCacheSize(): number { return triageCache.size }
+
 export async function runTriage(
   requirement: string,
   opts?: { needDesign?: boolean },

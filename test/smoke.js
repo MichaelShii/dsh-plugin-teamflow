@@ -598,6 +598,19 @@ ok(/journal\.humanIntervention = true\s*\n\s*journal\.logs\.push\(\{ t: Date\.no
 ok(/export function isDangerousVcsRoot/.test(utilSrc) && /export function dirTooLargeForBaseline/.test(utilSrc), 'util：危险路径判定 + 有界规模采样（纯函数，可单测）')
 ok(/if \(!s\.inRepo\) \{/.test(hostSrc) && /git\.q\.noRepo/.test(hostSrc) && /kind: 'git-init'/.test(hostSrc), 'host：非 git 工作区不再静默跳过——进入「改动存档」决策（init/keep，危险路径只给 keep）')
 ok(/st\.gitMode === 'none' \|\| options\.preAction === 'keep-nogit'/.test(hostSrc), 'host：记住答案（state.gitMode）——已选"不开启"的后续 run 不再问')
+// 分诊缓存（2026-09-18 实测：决策返回路径让同一条需求被分诊两次——probe-clock tf-mu5wcm2j-kxk14y：
+// 首次 start 跑分诊(16.6K tok) → 返回 needs-decision(git-init)、不建 run → 用户点选后主线程重调 →
+// 又跑一次(16.5K tok)，两次 model 裁决一致。此前分诊都走 fallback（90s 超时 bug）→ 不建子代理 → 不可见）
+{
+  const triageSrc2 = readFileSync(join(here, '../host/core/triage.ts'), 'utf8')
+  ok(/export function triageCacheKey/.test(triageSrc2) && /export function triageCacheGet/.test(triageSrc2) && /export function triageCachePut/.test(triageSrc2), 'triage：缓存三件套（key/get/put 纯函数，可单测）')
+  ok(/supplement/.test(triageSrc2.match(/export function triageCacheKey[^}]*\}/s)?.[0] || ''), 'triage：**缓存键含澄清答复**（漏了它会把"澄清前"的裁决当"澄清后"复用 = 闸门失效）')
+  ok(/verdict\.source !== 'model'/.test(triageSrc2), 'triage：**只缓存 model 裁决**（fallback 是"分诊不可用"的降级产物，缓存它会把偶发故障固化）')
+  ok(/TRIAGE_CACHE_MAX/.test(triageSrc2) && /TRIAGE_CACHE_TTL_MS/.test(triageSrc2), 'triage：缓存有容量上限 + TTL（防长会话内存增长 / 陈年裁决复活）')
+  ok(/triageCacheGet\(cacheKey\)/.test(hostSrc) && /triageCachePut\(cacheKey/.test(hostSrc), 'host：preflight **先查缓存再跑分诊**，跑完写缓存（否则两次分诊白花 ~16.5K tok/次）')
+  ok(/triageCacheKey\(requirement, options\.requirementSupplement\)/.test(hostSrc), 'host：缓存键 = 需求 + 澄清答复（**不得**含 preAction/branchPolicy——正是它们导致重调，进键就永远命不中）')
+  ok(/diag\.triageCacheHit/.test(hostSrc), 'host：缓存命中留痕（否则"为什么这次没跑分诊"会变成新的黑盒）')
+}
 ok(/options\.preAction === 'init'/.test(pipelineSrc) && /isDangerousVcsRoot\(journal\.workspacePath, homedir\(\)\)/.test(pipelineSrc), 'pipeline：preAction=init 执行期**二次校验**危险路径（不信任决策时刻的判断）→ 命中则降级为不初始化并继续')
 ok(/baselineSkip = dirTooLargeForBaseline/.test(pipelineSrc) && /commit\.baseline/.test(hostSrc), 'pipeline：init 时目录过大 → 只 init 不基线提交（git add -A 防全盘扫描）')
 ok(/vcsState === 'none'/.test(pipelineSrc) && /log\.noVcsByChoice/.test(pipelineSrc) && /log\.noVcsDangerous/.test(pipelineSrc), 'pipeline：出口遵从——none/危险路径**不尝试提交**（不再出现「提交失败（忽略）」的含糊措辞）')

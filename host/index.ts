@@ -57,7 +57,7 @@ function countFilesBounded(dir: string, cap = 1000): number {
 }
 import { executePipeline, summarizeTimeline, startPipeline, resumeRun } from './core/pipeline.ts'
 import { cancelRun } from './core/context.ts'
-import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, normalizeMode, runTriage, guardrailUpgrade, type TriageVerdict } from './core/triage.ts'
+import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, normalizeMode, runTriage, guardrailUpgrade, triageCacheKey, triageCacheGet, triageCachePut, type TriageVerdict } from './core/triage.ts'
 import { t, modeDesc } from './locales.ts'
 import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.ts'
 
@@ -94,13 +94,26 @@ async function clarificationPreflight(
   const triageInput = options.requirementSupplement
     ? `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-ask]\n${String(options.requirementSupplement)}`
     : requirement
-  let verdict: TriageVerdict | null = null
+  // **分诊结果缓存**（2026-09-18 实锤新增）：决策返回路径会让同一条需求被分诊两次——实测 probe-clock
+  // tf-mu5wcm2j-kxk14y：首次 start 跑一次分诊（16.6K tok）→ 返回 needs-decision(git-init)、**不建 run** →
+  // 用户点选后主线程重调 → 又跑一次（16.5K tok）。两次结果一致，纯白花。键只含「需求 + 澄清答复」，
+  // **不含任何决策字段**（preAction/branchPolicy 正是导致重调的原因，进键就永远命不中）。
+  const cacheKey = triageCacheKey(requirement, options.requirementSupplement)
+  const cached = triageCacheGet(cacheKey)
+  let verdict: TriageVerdict | null = cached
   let error = ''
-  try {
-    verdict = await runTriage(triageInput, { needDesign: options.needDesign === true }, parent, signal, locale)
-  } catch (e) {
-    error = String((e && (e as { message?: string }).message) || e)
-    verdict = null
+  if (verdict) {
+    // 命中留痕：否则"为什么这次没跑分诊"又会变成黑盒（同 `log.triageFallbackReason` 的教训）。
+    // 此处 run 尚未建立（工具预检阶段），故记为**进程级诊断**（stderr），pipeline 侧另有权威判定与日志。
+    try { console.error(`[teamflow] ${t(locale, 'diag.triageCacheHit')}`) } catch (e) { /* 诊断失败不影响功能 */ }
+  } else {
+    try {
+      verdict = await runTriage(triageInput, { needDesign: options.needDesign === true }, parent, signal, locale)
+      triageCachePut(cacheKey, verdict) // 仅 model 裁决入缓存（fallback 不缓存，见 triage.ts）
+    } catch (e) {
+      error = String((e && (e as { message?: string }).message) || e)
+      verdict = null
+    }
   }
   if (!verdict) return { verdict: null, error }
   // **收敛规则**（2026-09-16 dddd 实测）：调用方**还没给过**澄清答复时才拦；已给过（说明用户已澄清一轮）
