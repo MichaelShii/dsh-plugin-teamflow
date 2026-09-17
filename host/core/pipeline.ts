@@ -20,7 +20,7 @@ import { loadTeams, findTeam, getActiveStages, teamNameOf } from './teams.ts'
 import { loadState, saveState, extractStateBlock, mergeStateBlock, noteRun } from './state.ts'
 import { isDangerousVcsRoot, dirTooLargeForBaseline } from '../util.ts'
 import { homedir } from 'node:os'
-import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddArgs, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR } from './sanity.ts'
+import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddArgs, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from './sanity.ts'
 import type { GitResult } from './sanity.ts'
 import { archiveRunLogs, sweepWorkspaceLogs } from './runlogs.ts'
 import { currentModelSupportsVision } from './context.ts'
@@ -106,20 +106,16 @@ function ensureLogGitignore(cwd: string | null | undefined, journal: Journal, lo
 }
 
 /**
- * 基线提交前的**止血排除**（2026-09-18 probe-clock 实锤 + 设计修正）：
- * 冷启动 `git add -A` 可能被海量噪音拖过超时（.pnpm-store 数万硬链接），基线提交被杀。
- * 这里只放**极少数公认无争议、且与我们生态直接相关**的止血项（防超时爆炸），**不是**"该忽略什么"的定义——
- * 那是 L2（PRD 阶段 PM 按项目技术栈规划 .gitignore，见 prdPrompt 的 gitignore 必查项）与
- * L3（QA 收口探针：`git status --porcelain` 不得含依赖/构建产物）的职责。
+ * 基线提交前的**索引层排除**（2026-09-18 方案 B 根治，勿回退）：
+ * 冷启动 `git add -A` 可能被海量噪音拖过超时（.pnpm-store 数万硬链接，probe-clock 实测 549 文件/51MB），
+ * 基线提交被杀。排除项走 `tfAddArgs(BASELINE_NOISE_EXCLUDES)` 的 **magic pathspec**——
+ * **只影响这一次 git 调用，绝不写用户的 `.gitignore`**。
+ *
+ * **旧实现为什么必须删**（用户实锤截图）：`ensureCommonNoiseIgnores()` 把 `.pnpm-store/` 写进用户
+ * `.gitignore`，且因 `mergeGitignore` 的注释是**整批一条**，它顶着「TeamFlow 运行日志（插件自有产物…）」
+ * 的文案落盘——注释张冠李戴只是表象，真问题是**越界**：`.gitignore` 是用户的项目资产，"该忽略什么"
+ * 归 L2（PRD 阶段 PM 按技术栈规划，见 prdPrompt 必查项）与 L3（QA 收口探针）以及用户本人。
  */
-function ensureCommonNoiseIgnores(cwd: string): void {
-  try {
-    const file = `${cwd}/.gitignore`
-    const before = existsSync(file) ? readFileSync(file, 'utf8') : null
-    const merged = mergeGitignore(before, ['.pnpm-store/', 'node_modules/'], 'zh')
-    if (merged.changed) writeFileSync(file, merged.text, 'utf8')
-  } catch (e) { /* 尽力而为：写不进去由 add 超时兜底（120s） */ }
-}
 
 /** 任务夹产物读取（单轨契约：文件即产物——QA/验收 host 只读文件，回复仅摘要）。
  * 缺失/空/读取异常返回 null（调用方决定硬失败或 journal 兜底）。 */
@@ -442,10 +438,10 @@ export async function executePipeline(
                 ensureLogGitignore(journal.workspacePath, journal, locale)
                 // 基线提交是**冷启动整树 add**（node_modules/.pnpm-store 未忽略时可达数万文件），
                 // 默认 8s 超时会被杀（probe-clock 实锤：超时后 stdout/stderr 残留被 gitFailDetail 拼成
-                // "add: warning: LF/CRLF…" 假错误）→ add/commit 各给 120s；目录级噪音先补进 .gitignore
-                // （.pnpm-store/.idea 等惯例项），能救回基线提交就救。
-                ensureCommonNoiseIgnores(journal.workspacePath)
-                const aR = gitRun(journal.workspacePath, tfAddArgs(), 120000)
+                // "add: warning: LF/CRLF…" 假错误）→ add/commit 各给 120s。
+                // 噪音排除走 **索引层 pathspec**（baseline_add_exclude_log），不写用户 .gitignore。
+                const aR = gitRun(journal.workspacePath, tfAddArgs(BASELINE_NOISE_EXCLUDES, journal.workspacePath), 120000)
+                journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.baselineExcludes', { list: BASELINE_NOISE_EXCLUDES.join(', ') }) })
                 const cR = gitRun(journal.workspacePath, ['commit', '-m', t(locale, 'commit.baseline')], 120000)
                 journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.gitInitDone', { baseline: cR && cR.ok ? t(locale, 'log.gitBaselineDone') : t(locale, 'log.gitBaselineSkip', { msg: gitFailDetail(aR, cR) }) }) })
               } else {

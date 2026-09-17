@@ -16,7 +16,11 @@
  * 真 git 行为矩阵在 `test/commit-path.test.js`（这里只锁参数形状）。
  */
 import { mergeGitignore } from '../host/util.ts'
-import { tfAddArgs, tfUnstageArgs, tfDocAddArgs, TF_DOCS_DIR, TF_LOG_DIR } from '../host/core/sanity.ts'
+import { tfAddArgs, tfUnstageArgs, tfDocAddArgs, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from '../host/core/sanity.ts'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { gitRun as gitRunForTest } from '../host/core/sanity.ts'
 
 let failed = 0
 const expect = (actual, expected, msg) => {
@@ -40,6 +44,38 @@ expect(args[3], '.', '提交面收敛到工作区（workspace = 项目根）')
 expect(args.length, 4, '无第五个参数（负 pathspec 已移除）')
 ok(!args.some((a) => a.includes(':(')), '零回退：不再有魔数负 pathspec 点名 logs/teamflow（2026-09-15 实锤：点名被 .gitignore 忽略的路径 → git add 退出 1 → 收口提交被静默短路 4 天）')
 ok(!args.includes(TF_LOG_DIR), '不存在把 logs/teamflow 当普通路径加进来的写法')
+
+console.log('── 基线排除（方案 B：索引层排除，绝不写用户 .gitignore）──')
+// 2026-09-18：旧实现把 .pnpm-store/node_modules 写进**用户** .gitignore（且因 mergeGitignore 的注释是整批一条，
+// 顶着「TeamFlow 运行日志…」的文案落盘 —— 用户截图实锤）。方案 B：只在**自己那一次 git 调用**上收敛范围。
+expect(BASELINE_NOISE_EXCLUDES.length, 2, '排除清单只有 2 项（防超时的最小集，不是"该忽略什么"的定义）')
+ok(BASELINE_NOISE_EXCLUDES.includes('.pnpm-store') && BASELINE_NOISE_EXCLUDES.includes('node_modules'), '两项 = pnpm 本地 store + node_modules（冷启动 add 超时的实测来源）')
+ok(!BASELINE_NOISE_EXCLUDES.includes('.idea'), '**不含** .idea——"该忽略什么"归 L2（PM 按技术栈规划）与 L3（QA 探针），host 不替项目决定')
+// 注意：`tfExcludePathspecs` 用 `git check-ignore` **以目标仓库为根**做自检——被忽略的项不下发（点名被忽略
+// 路径 → git exit 1，见 2026-09-11→09-15 那个 4 天不提交的坑）。本目录不是 git 仓库（或该项未被忽略）时的
+// 行为分两种，两种都安全，故断言「不出现危险组合」而非具体结果。
+const baseArgs = tfAddArgs(BASELINE_NOISE_EXCLUDES)
+expect(baseArgs.slice(0, 4).join(' '), 'add -A -- .', '前缀与收口提交完全一致（同一函数，行为不分叉）')
+ok(baseArgs.length <= 4 + BASELINE_NOISE_EXCLUDES.length, '排除项数量不放大（最多每项一个 pathspec）')
+ok(baseArgs.every((a, i) => i < 4 || a.startsWith(':(exclude)')), '第 5 项起只可能是 :(exclude) 形式')
+expect(tfAddArgs([]).length, 4, '空清单 → 退回 4 参数（收口提交路径逐字不变）')
+expect(tfAddArgs().length, 4, '省略参数 → 同空清单（向后兼容，存量调用点零改动）')
+ok(!tfAddArgs().some((a) => a.includes(':(')), '收口提交**不带**任何排除（自有日志靠 .gitignore + 索引兜底，见下）')
+// 正向验证（真 git 仓库、噪音未被忽略 → 必须下发；已忽略 → 必须不下发）。两个方向都锁，杜绝"读了别人 cwd"。
+{
+  const tmp = mkdtempSync(join(tmpdir(), 'tf-gi-'))
+  gitRunForTest(tmp, ['init', '-q'])
+  mkdirSync(join(tmp, '.pnpm-store'), { recursive: true })
+  writeFileSync(join(tmp, '.pnpm-store', 'b.bin'), 'x', 'utf8')
+  mkdirSync(join(tmp, '.ignored-dir'), { recursive: true })
+  writeFileSync(join(tmp, '.ignored-dir', 'b.bin'), 'x', 'utf8')
+  writeFileSync(join(tmp, '.gitignore'), '.ignored-dir/\n', 'utf8')
+  const sent = tfAddArgs(['.pnpm-store', '.ignored-dir'], tmp)
+  ok(sent.includes(':(exclude).pnpm-store'), '未被忽略的噪音 → 下发 :(exclude)（排除生效）')
+  ok(!sent.includes(':(exclude).ignored-dir'), '**已被忽略**的项 → **不**下发（点名被忽略路径会让 add exit 1）')
+  ok(tfAddArgs(['node_modules'], tmp).includes(':(exclude)node_modules'), '同一仓内逐项独立判定（不是一刀切）')
+  rmSync(tmp, { recursive: true, force: true })
+}
 
 console.log('── 索引兜底（tfUnstageArgs：自有日志永不入提交）──')
 const un = tfUnstageArgs()

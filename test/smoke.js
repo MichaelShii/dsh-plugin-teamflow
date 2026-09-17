@@ -457,11 +457,16 @@ ok(/options\.mode === 'patch' \? MECHANICAL_STAGE_EFFORT : null/.test(pipelineSr
 console.log('── 3t) 收口提交面：插件自有日志不进提交（2026-09-11 实锤 assetd 92% 噪音）──')
 const sanitySrc = readFileSync(join(here, '../host/core/sanity.ts'), 'utf8')
 ok(/TF_LOG_DIR = 'logs\/teamflow'/.test(constantsSrc) && /export \{ TF_LOG_DIR \}/.test(sanitySrc), 'sanity/constants：自有日志命名空间常量（与 prompts 的 Log discipline 同址；常量归 constants，sanity 转出）')
-ok(/export function tfAddArgs/.test(sanitySrc) && /return \['add', '-A', '--', '\.'\]/.test(sanitySrc), 'sanity：tfAddArgs = 工作区整树 add（-- . 收敛提交面）')
+ok(/export function tfAddArgs/.test(sanitySrc) && /return \['add', '-A', '--', '\.'/.test(sanitySrc), 'sanity：tfAddArgs = 工作区整树 add（-- . 收敛提交面；前缀不变）')
 // 只看代码行：sanity.ts 的**注释**里必须保留 `:(exclude)logs/teamflow` 这个坑的说明（历史证据），
 // 但代码里出现即回退。
 const sanityCode = sanitySrc.split('\n').filter((l) => { const s = l.trim(); return !s.startsWith('*') && !s.startsWith('/*') && !s.startsWith('//') }).join('\n')
-ok(!/:\(exclude\)/.test(sanityCode), 'sanity：零回退——代码里不再用负 pathspec 点名自有日志（2026-09-15 实锤：点名被 .gitignore 忽略的路径 → git add 退出 1 → 收口提交被静默短路 4 天）')
+// 精确化（2026-09-18 方案 B）：`:(exclude)` 语法本身被正当用于**基线噪音排除**（选项 B：索引层排除，不写用户
+// .gitignore）。真正禁止的是**点名自有日志**——那是「点名 + 被忽略 → exit 1」那个坑。
+ok(!/:\(exclude\)\$\{?TF_LOG_DIR/.test(sanityCode) && !/exclude[^\n]*logs\/teamflow/.test(sanityCode), 'sanity：零回退——**不得**用负 pathspec 点名自有日志 TF_LOG_DIR（2026-09-15 实锤：点名被 .gitignore 忽略的路径 → git add 退出 1 → 收口提交被静默短路 4 天）')
+ok(!/BASELINE_NOISE_EXCLUDES[^\n]*TF_LOG_DIR/.test(sanityCode) && !/TF_LOG_DIR[^\n]*BASELINE_NOISE_EXCLUDES/.test(sanityCode), 'sanity：基线噪音清单**不得**含自有日志（它已被 .gitignore + tfUnstageArgs 覆盖；塞进来会造成"点名被忽略路径"）')
+// 自检必须以**目标仓库**为根（2026-09-18 实测：自读 .gitignore 读到的是宿主 cwd → 两个方向同时错）
+ok(/check-ignore/.test(sanityCode), 'sanity：忽略判定走 `git check-ignore`（以目标仓库为根，权威规则引擎）')
 ok(/export function tfUnstageArgs/.test(sanitySrc) && /'--cached', '--ignore-unmatch'/.test(sanitySrc), 'sanity：tfUnstageArgs 索引兜底（只动索引 + 未命中不报错 = 幂等 exit 0）')
 ok(/export function gitRun/.test(sanitySrc) && /error: string \| null/.test(sanitySrc), 'sanity：gitRun 保留失败原因（旧的 null-only 版本让故障不可见）')
 ok(!/\['add', '-A'\]/.test(pipelineSrc), 'pipeline：已无裸 add -A（旧写法把 208 个日志文件卷进提交）')
@@ -601,13 +606,25 @@ ok(/report\.vcsArchived/.test(reportSrc) && /loadState\(journal\.workspacePath\)
 // 正确回传的 preAction='init' 丢成 null → git init 静默没执行；主线程回传/决策/pipeline 三环全对，
 // 唯独入口这一行把参数弄丢）
 ok(/args\.preAction === 'stash' \|\| args\.preAction === 'commit' \|\| args\.preAction === 'init' \|\| args\.preAction === 'keep-nogit'/.test(hostSrc), 'host：preAction 入口整形放行全部四值（stash/commit/init/keep-nogit——漏 init 会静默丢掉存档决策）')
-// .gitignore 三层分工（2026-09-18 设计修正，勿回退）：L1 止血清单**只防超时**（.pnpm-store/node_modules
-// 两项，不得再长回 .idea 之类"该忽略什么"的定义——那是 L2 PM 规划与 L3 QA 探针的职责）
+// .gitignore 三层分工（2026-09-18 **方案 B 根治**，勿回退）：**L1 只做索引层排除，绝不写用户 .gitignore**。
+// 旧实现（`ensureCommonNoiseIgnores` 把 .pnpm-store/node_modules 写进用户 .gitignore）的实锤：mergeGitignore
+// 的注释是**整批一条** → `.pnpm-store/` 顶着「TeamFlow 运行日志（插件自有产物…）」写进用户文件（用户截图）；
+// 更根本的是**越界**——"该忽略什么"归 L2（PRD 阶段 PM 按技术栈规划）与 L3（QA 收口探针）及用户本人，
+// host 只该在**自己那一次 git 调用**上收敛范围。故断言反向：**pipeline 不得再出现写 .gitignore 的噪音排除**。
 {
-  const m = pipelineSrc.match(/mergeGitignore\(before, \[([^\]]*)\], 'zh'\)/)
-  const items = m ? m[1] : ''
-  ok(items.includes('.pnpm-store/') && items.includes('node_modules/'), 'pipeline：L1 止血清单含 .pnpm-store/node_modules（防冷启动 add 超时）')
-  ok(!items.includes('.idea'), 'pipeline：L1 止血清单**不得**收录 .idea 等"该忽略什么"定义项（固定清单只防超时，规划归 L2/L3）')
+  const m = pipelineSrc.match(/tfAddArgs\(([A-Z_]+), journal\.workspacePath\)/)
+  ok(!!m && m[1] === 'BASELINE_NOISE_EXCLUDES', 'pipeline：基线提交的噪音排除走 tfAddArgs(BASELINE_NOISE_EXCLUDES, 仓库路径)——**必须传仓库路径**，自检要针对目标仓库而非宿主 cwd')
+  // 只看代码行（注释里要保留旧实现的历史说明 = 证据，见 pipeline.ts 顶部注释）
+  const pipeCode = pipelineSrc.split('\n').filter((l) => { const s = l.trim(); return !s.startsWith('*') && !s.startsWith('/*') && !s.startsWith('//') }).join('\n')
+  ok(!/ensureCommonNoiseIgnores/.test(pipeCode), 'pipeline：**不得**回退为写用户 .gitignore 的噪音排除（ensureCommonNoiseIgnores 已从代码删除）')
+  ok(!/mergeGitignore\([^)]*'\.pnpm-store'/.test(pipeCode) && !/mergeGitignore\([^)]*node_modules/.test(pipeCode), 'pipeline：噪音项**不得**经由 mergeGitignore 落进用户 .gitignore（只允许 logs/teamflow 那条自有日志规则）')
+  ok((pipeCode.match(/writeFileSync\(/g) || []).length <= 2, 'pipeline：写文件处收敛（仅 .gitignore 自有日志规则 + 任务夹/产物写入，不得新增"替用户写文件"的点）')
+  const sanitySrc = readFileSync(join(here, '../host/core/sanity.ts'), 'utf8')
+  ok(/export const BASELINE_NOISE_EXCLUDES[^=]*=\s*\[/.test(sanitySrc), 'sanity：BASELINE_NOISE_EXCLUDES 常量（排除清单数据化，一处可改）')
+  ok(/check-ignore/.test(sanitySrc), 'sanity：用 `git check-ignore` 判"是否已被忽略"（以目标仓库为根；自读 .gitignore 会读成宿主 cwd → 两个方向同时错，2026-09-18 实测）')
+  ok(!/readFileSync\('\.gitignore'\)/.test(sanitySrc), 'sanity：**不得**再用相对路径读 .gitignore 做忽略判定（那是宿主 cwd，不是目标仓库）')
+  ok(/export function tfAddArgs\(excludes[^)]*cwd\?/.test(sanitySrc), 'sanity：tfAddArgs 接受可选 excludes + cwd（默认空 → 收口提交行为逐字不变）')
+  ok(/log\.baselineExcludes/.test(pipelineSrc), 'pipeline：索引层排除记一条 info（用户能看到"排除了什么、且没动你的 .gitignore"）')
   ok(/Version-control hygiene · mandatory when the workspace is versioned/.test(promptsSrc) && /Commit-surface hygiene probe/.test(promptsSrc), 'prompts：L2 PM .gitignore 规划必查项 + L3 QA 收口探针（模型按项目技术栈规划，非固定清单）')
 }
 // 分诊超时 90s→240s + fallback 原因可见化（2026-09-18 probe-clock 截图实锤：分诊子代理推理中被
