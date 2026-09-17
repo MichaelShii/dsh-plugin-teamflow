@@ -105,6 +105,21 @@ function ensureLogGitignore(cwd: string | null | undefined, journal: Journal, lo
   }
 }
 
+/**
+ * 基线提交前的**惯例噪音排除**（2026-09-18 probe-clock 实锤）：
+ * 非用户项目的目录里常见 `.pnpm-store/`（数万硬链接）、`.idea/` 等——它们不是交付物，
+ * 但会把冷启动 `git add -A` 拖到超时（8s 默认 → 被杀 → gitFailDetail 把残留 warning 拼成假错误，
+ * 基线提交失败）。在 init 基线路径幂等补写这批惯例项（只影响基线提交，不动用户已有规则语义）。
+ */
+function ensureCommonNoiseIgnores(cwd: string): void {
+  try {
+    const file = `${cwd}/.gitignore`
+    const before = existsSync(file) ? readFileSync(file, 'utf8') : null
+    const merged = mergeGitignore(before, ['.pnpm-store/', '.idea/', 'node_modules/'], 'zh')
+    if (merged.changed) writeFileSync(file, merged.text, 'utf8')
+  } catch (e) { /* 尽力而为：写不进去由 add 超时兜底（120s） */ }
+}
+
 /** 任务夹产物读取（单轨契约：文件即产物——QA/验收 host 只读文件，回复仅摘要）。
  * 缺失/空/读取异常返回 null（调用方决定硬失败或 journal 兜底）。 */
 function artifactText(journal: { workspacePath?: string | null; runDocs?: string | null }, fileName: string): string | null {
@@ -419,8 +434,13 @@ export async function executePipeline(
             if (iR !== null) {
               if (!baselineSkip) {
                 ensureLogGitignore(journal.workspacePath, journal, locale)
-                const aR = gitRun(journal.workspacePath, tfAddArgs())
-                const cR = gitRun(journal.workspacePath, ['commit', '-m', t(locale, 'commit.baseline')])
+                // 基线提交是**冷启动整树 add**（node_modules/.pnpm-store 未忽略时可达数万文件），
+                // 默认 8s 超时会被杀（probe-clock 实锤：超时后 stdout/stderr 残留被 gitFailDetail 拼成
+                // "add: warning: LF/CRLF…" 假错误）→ add/commit 各给 120s；目录级噪音先补进 .gitignore
+                // （.pnpm-store/.idea 等惯例项），能救回基线提交就救。
+                ensureCommonNoiseIgnores(journal.workspacePath)
+                const aR = gitRun(journal.workspacePath, tfAddArgs(), 120000)
+                const cR = gitRun(journal.workspacePath, ['commit', '-m', t(locale, 'commit.baseline')], 120000)
                 journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.gitInitDone', { baseline: cR && cR.ok ? t(locale, 'log.gitBaselineDone') : t(locale, 'log.gitBaselineSkip', { msg: gitFailDetail(aR, cR) }) }) })
               } else {
                 journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.gitInitDone', { baseline: t(locale, 'log.gitBaselineLarge') }) })
