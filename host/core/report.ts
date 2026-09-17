@@ -6,6 +6,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { clip } from '../util.ts'
 import { MODE_REGISTRY } from './triage.ts'
 import { gitCmd } from './sanity.ts'
+import { loadState } from './state.ts'
 import { modeLabel, t } from '../locales.ts'
 import { phaseKeyOf } from '../constants.ts'
 import { runLocaleOf } from './locale.ts'
@@ -123,10 +124,22 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
     // dddd 实测那批失败 16 分钟后同请求即成功，属外部窗口问题；旧文案只给「失败 + 需人工」，
     // 会让人误判成交付质量。此处显式说明「非交付缺陷 + 可续跑只补这一段」。
     const externalLine = journal.externalFailure === true ? t(locale, 'report.externalFailure') : ''
+    // 改动存档可见化（2026-09-17 方案 A）：非程序员的安全网必须有"看得见"的回执——
+    // repo → 「已存档，可整体撤销」；none → 「未存档（用户选择），无法一键撤销」。
+    const vcsLine = (() => {
+      try {
+        if (!journal.workspacePath) return ''
+        const st = loadState(journal.workspacePath)
+        if (st.gitMode === 'none') return t(locale, 'log.noVcsByChoice')
+        if (journal.status === 'completed') return t(locale, 'report.vcsArchived')
+        return ''
+      } catch (e) { return '' }
+    })()
     const text = [
       t(locale, 'report.header', { id: journal.id }),
       t(locale, 'report.statusLine', { status: statusLine, error: journal.error ? t(locale, 'report.error', { error: clip(journal.error, 300) }) : '' }),
       externalLine,
+      vcsLine,
       cancelSourceLine,
       assumptionsLine,
       t(locale, 'report.stagesLine', { stages: stagesLine }),

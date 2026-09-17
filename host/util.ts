@@ -2,6 +2,7 @@
  * dsh-plugin-teamflow — 通用纯工具（底座；依赖 constants.ts，无其他依赖）。
  */
 import { REFUSAL_PATTERN, STAGE_MIN_LENGTH, DELIVERY_EVIDENCE_PATTERN } from './constants.ts'
+import { readdirSync, statSync, existsSync } from 'node:fs'
 import { t } from './locales.ts'
 import type { HostLocale } from './locales.ts'
 
@@ -578,4 +579,60 @@ export function extractAssumptionsSection(doc: string | null | undefined): strin
     return body || null
   }
   return null
+}
+
+/* ── 版本控制安全（2026-09-17）：「改动存档」两态模型的防线 ─────────────────────────
+ * 背景：dddd 两条 run 的产物因「工作区不是 git 仓库」而从未进入任何版本库（入口静默跳过决策、
+ * 出口把提交失败记成"忽略"）。方案 A：入口问一次（人话问句 + 推荐），答案记住（state.gitMode），
+ * 出口遵从。但「git init + 基线提交」在盘根/家目录/系统目录是灾难动作（git add -A 扫全盘），
+ * 故有两层防线（L1 硬拒绝 / L2 大目录不基线提交），且**执行期二次校验**（不信任决策时刻的判断，
+ * 程序化调用可能绕过决策直接传 preAction:'init'）。 */
+
+/** L1：硬拒绝初始化的路径（只做廉价字符串/路径判定，不扫盘）。 */
+export function isDangerousVcsRoot(dir: string, home: string | null | undefined): boolean {
+  const p = String(dir || '').replace(/\//g, '\\').replace(/[\\/]+$/, '')
+  if (!p) return true
+  // ① 驱动器根：`C:` / `C:\`
+  if (/^[A-Za-z]:$/.test(p)) return true
+  // ② 家目录本身或其祖先（`C:\Users\me`、`C:\Users`——按路径段前缀判，防 `C:\Users\me2` 误伤）
+  const seg = (x) => String(x || '').replace(/\//g, '\\').replace(/[\\/]+$/, '').split('\\').filter(Boolean)
+  const ps = seg(p)
+  if (home) {
+    const hs = seg(home)
+    if (hs.length && ps.length <= hs.length && hs.slice(0, ps.length).join('\\').toLowerCase() === ps.join('\\').toLowerCase()) return true
+  }
+  // ③ 系统目录（Windows 约定；非 Windows 下按同名段匹配，无害）
+  const sys = ['windows', 'program files', 'program files (x86)', 'programdata', 'system volume information', '$recycle.bin']
+  if (ps.some((s) => sys.indexOf(s.toLowerCase()) !== -1)) return true
+  // ④ 深度 ≤ 1（`C:\tmp` / `C:\Users` 这类太靠根）
+  const drive = ps[0] && /^[A-Za-z]:$/.test(ps[0])
+  if (drive && ps.length <= 2) return true
+  return false
+}
+
+/** L2：有界采样统计目录规模（防"基线提交扫全盘"）。超过任一阈值即提前返回 true（不再继续数）。
+ *  `maxFiles`/`maxBytes` 阈值由调用方传（默认 1000 个文件 / 100 MB）；`budgetMs` 限制采样时长（默认 1s）。 */
+export function dirTooLargeForBaseline(dir: string, maxFiles = 1000, maxBytes = 100 * 1024 * 1024, budgetMs = 1000): boolean {
+  let files = 0, bytes = 0
+  const start = Date.now()
+  const walk = (d, depth) => {
+    if (depth > 12 || Date.now() - start > budgetMs) return files > maxFiles || bytes > maxBytes
+    let es
+    try { es = readdirSync(d, { withFileTypes: true }) } catch (e) { return false }
+    for (const e of es) {
+      if (e.name === '.git' || e.name === 'node_modules') continue // 惯例排除：不影响"目录是否适合基线提交"的判断
+      const p = d + '\\' + e.name
+      if (e.isDirectory()) { if (walk(p, depth + 1)) return true }
+      else {
+        files++
+        try { bytes += statSync(p).size } catch (e2) { /* 竞态：忽略 */ }
+        if (files > maxFiles || bytes > maxBytes) return true
+      }
+    }
+    return false
+  }
+  try {
+    if (!existsSync(dir)) return true // 目录不存在/不可达 → 按过大处理（宁严勿松）
+    return walk(dir, 0)
+  } catch (e) { return true } // 采样失败（权限等）→ 按过大处理（宁严勿松）
 }

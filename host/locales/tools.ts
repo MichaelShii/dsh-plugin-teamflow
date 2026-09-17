@@ -19,6 +19,8 @@ export const TOOLS_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'tool.replyLang': '【回复语言】用中文回复用户（本会话的界面语言是中文）。',
     /* ── 分支决策（teamflow_start 的 needs-decision） ──────────── */
     'tool.start.decision': '【分支决策】{question}\n{options}\n（也可自定义输入）——请询问用户选择，确认后把所选选项的 value 作为 branchPolicy 重新调用 teamflow_start（如 \'new\'/\'keep\'；脏工作区选项可拆为 branchPolicy + preAction 组合），自定义分支名则传 branchName。',
+    'tool.start.gitDecision': '【改动存档决策】{question}\n{options}\n——请用自然的语言询问用户（把选项翻译成人话：开启=这次运行的改动会单独存档、可撤销、能看清改了什么；不开启=改动直接写入文件夹，之后无法一键撤销），确认后把所选 value 重新调用 teamflow_start（init → branchPolicy="new" + preAction="init"；keep → branchPolicy="keep" + preAction="keep-nogit"）。',
+    'tool.start.gitDecisionDanger': '【改动存档决策】{question}\n{options}\n——请向用户说明原因（这个位置太靠根/太特殊，开启存档会波及大量无关文件，已被系统禁止），并建议把项目放进一个单独的文件夹后重新运行。确认后把所选 value（keep → branchPolicy="keep" + preAction="keep-nogit"）重新调用 teamflow_start。',
     'tool.start.needsConfirm': '【需求确认】{question}\n{note}——请按此询问用户后再决定。',
     'tool.start.needsClarification': '【需求澄清】这条消息还不足以开工（意图：{intent}）——**没有启动流水线**，也没有创建任何 run。请在你自己的对话里用自然语言跟用户把需求聊清楚{blockers}，然后**保留原始 requirement 不变**、把用户的答复放进 requirementSupplement 重新调用 teamflow_start。不要自行替用户假设后直接重调（这正是要拦的行为）。',
     'tool.start.blockerReadings': '两种读法',
@@ -47,6 +49,15 @@ export const TOOLS_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'branch.opt.stashNewChild': 'stash 现有改动后新建子分支开发',
     'branch.opt.commitNewChild': '提交现有改动后新建子分支开发',
     'branch.decisionNote': '选项之外可自定义输入（如指定分支名）。确认选择后，请以 teamflow_start 的 branchPolicy（回传所选选项 value，如 new/keep）与 branchName/preAction/commitMessage 参数重新调用本工具。',
+
+    /* ── 改动存档决策（非 git 工作区，2026-09-17；方案 A：问一次、记住、人话） ── */
+    'git.q.noRepo': '这个文件夹（{path}）还没有开启「改动存档」。开启后：本次运行的改动会单独存成一档，随时可以整体撤销，也能清楚看到这次改了什么；不开启：改动会直接写入文件夹，之后无法一键撤销。要开启吗？',
+    'git.opt.init': '开启改动存档（推荐）——将初始化版本档案{baseline}，然后开始运行',
+    'git.opt.initBaseline': '，并把文件夹里现有的 {n} 个文件记录为初始状态',
+    'git.opt.initNoBaseline': '（该文件夹内容较多，只开启存档、不记录现有内容为初始状态）',
+    'git.opt.keep': '不开启，直接修改（本次运行的改动将无法一键撤销，也不会记录改了什么）',
+    'git.q.danger': '这个位置（{path}）不适合开启「改动存档」——它太靠近磁盘根目录或系统目录，开启会波及大量与本项目无关的文件，已被系统禁止。',
+    'git.opt.keepOnly': '不开启，直接修改（建议：把项目放进一个单独的文件夹后重新运行，即可开启存档）',
 
     /* ── 工具返回（其余工具） ──────────────────────────────── */
     'tool.status.reminder': '流水线仍在后台执行：不要自行改代码实现该需求或重复跑验证，等待完成汇报。',
@@ -115,6 +126,8 @@ export const TOOLS_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'tool.replyLang': '[Reply language] Reply to the user in English (this session is running with the English UI language).',
     /* ── 分支决策 ─────────────────────────────────────────── */
     'tool.start.decision': '[Branch decision] {question}\n{options}\n(custom input is allowed too) — ask the user to choose, then call teamflow_start again passing the chosen option value as branchPolicy (e.g. \'new\'/\'keep\'; dirty-workspace options can be split into branchPolicy + preAction), or pass branchName for a custom branch name.',
+    'tool.start.gitDecision': '[Change-archiving decision] {question}\n{options}\n— ask the user in plain words (translate the options: enabling = this run\'s changes are archived separately, can be undone as a whole, and you can see exactly what changed; not enabling = changes are written straight into the folder and cannot be undone in one step later), then RE-CALL teamflow_start with the chosen value (init → branchPolicy="new" + preAction="init"; keep → branchPolicy="keep" + preAction="keep-nogit").',
+    'tool.start.gitDecisionDanger': '[Change-archiving decision] {question}\n{options}\n— explain the reason to the user (this location is too close to the disk root / a special directory; archiving here would sweep in many unrelated files and has been disallowed) and suggest putting the project in its own folder. Then RE-CALL teamflow_start with the chosen value (keep → branchPolicy="keep" + preAction="keep-nogit").',
     'tool.start.needsConfirm': '[Requirement confirmation] {question}\n{note} — ask the user accordingly before deciding.',
     'tool.start.needsClarification': '[Requirement clarification] This message is not settled enough to start (intent: {intent}) — **no pipeline was started and no run was created**. Talk it through with the user in your own words{blockers}, then RE-CALL teamflow_start keeping the original requirement unchanged and putting the user\'s answers into requirementSupplement. Do not just assume on the user\'s behalf and re-call — that is exactly what this gate blocks.',
     'tool.start.blockerReadings': 'Competing readings',
@@ -141,6 +154,15 @@ export const TOOLS_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'branch.opt.stashNewChild': 'Stash the current changes and create a child branch',
     'branch.opt.commitNewChild': 'Commit the current changes and create a child branch',
     'branch.decisionNote': 'Custom input beyond these options is allowed (e.g. a specific branch name). After the user confirms, call this tool again with teamflow_start\'s branchPolicy (pass back the chosen option value, e.g. new/keep) plus branchName/preAction/commitMessage.',
+
+    /* ── Change-archiving decision (non-git workspace, 2026-09-17; plan A: ask once, remember, plain words) ── */
+    'git.q.noRepo': 'This folder ({path}) does not have change archiving enabled yet. With it on: this run\'s changes are archived separately, can be undone as a whole at any time, and you can see exactly what changed. Without it: changes are written straight into the folder and cannot be undone in one step later. Enable it?',
+    'git.opt.init': 'Enable change archiving (recommended) — the version archive will be initialized{baseline}, then the run starts',
+    'git.opt.initBaseline': ', with the {n} existing files recorded as the initial state',
+    'git.opt.initNoBaseline': ' (this folder has many files: archiving is enabled but existing content is NOT recorded as the initial state)',
+    'git.opt.keep': 'Do not enable — modify directly (this run\'s changes cannot be undone in one step and will not be recorded)',
+    'git.q.danger': 'This location ({path}) is not suitable for change archiving — it is too close to the disk root or a system directory; enabling it would sweep in many unrelated files and has been disallowed.',
+    'git.opt.keepOnly': 'Do not enable — modify directly (suggestion: put the project in its own folder and run again, then archiving can be enabled)',
 
     /* ── 工具返回（其余工具） ──────────────────────────────── */
     'tool.status.reminder': 'The pipeline is still running in the background: do not modify code for this requirement or rerun verification yourself; wait for the completion report.',

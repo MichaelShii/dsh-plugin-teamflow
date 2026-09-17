@@ -17,7 +17,9 @@ import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext, PipelineMode } from '../types.ts'
 import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, artifactContractsFor, type TriageVerdict } from './triage.ts'
 import { loadTeams, findTeam, getActiveStages, teamNameOf } from './teams.ts'
-import { loadState, extractStateBlock, mergeStateBlock, noteRun } from './state.ts'
+import { loadState, saveState, extractStateBlock, mergeStateBlock, noteRun } from './state.ts'
+import { isDangerousVcsRoot, dirTooLargeForBaseline } from '../util.ts'
+import { homedir } from 'node:os'
 import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddArgs, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR } from './sanity.ts'
 import type { GitResult } from './sanity.ts'
 import { archiveRunLogs, sweepWorkspaceLogs } from './runlogs.ts'
@@ -389,6 +391,52 @@ export async function executePipeline(
       // 分支策略 A 落地（ADR-2026-08-27，基调=启动前用户决策，见 index.ts needs-decision 检查）：
       // auto → 建特性分支 feat/<slug>（从当前 HEAD 派生，main 或 feature 上都建）；keep → 沿用当前分支。
       // 位置：initBacklog 之后（reqId 已生成——slug fallback 链依赖它；实锤 feat/feature：分支检查早于 reqId → fallback 'feature'）。
+      // **preAction='init'（2026-09-17 改动存档）**：非 git 工作区用户选了"开启存档" → git init +
+      // （目录不大时）把现有内容作为**基线提交**（本 run 的改动因此是一份干净 diff）→ 再建特性分支。
+      // **执行期二次校验**：程序化调用可能绕过决策直接传 init；危险路径/大目录在执行时重判
+      // （isDangerousVcsRoot / dirTooLargeForBaseline）——命中则**降级为不初始化并继续**（run 不因此打断）。
+      // **preAction='keep-nogit'**：用户明确选"不用版本控制" → 写 gitMode='none'，出口不尝试提交。
+      if (options.preAction === 'keep-nogit') {
+        try { const st = loadState(scopeKey); st.gitMode = 'none'; saveState(scopeKey, st) } catch (e) { /* 记忆失败不影响运行 */ }
+      }
+      if (options.preAction === 'init' && journal.workspacePath) {
+        try {
+          const st = loadState(scopeKey)
+          const s0 = runSanityCheck(journal.workspacePath, locale)
+          if (s0.inRepo) {
+            // 已是仓库（决策后被人先 init 了 / 决策与执行之间状态变化）→ 直接按仓库走
+            st.gitMode = 'repo'
+            saveState(scopeKey, st)
+          } else if (isDangerousVcsRoot(journal.workspacePath, homedir())) {
+            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.gitInitRefused', { path: journal.workspacePath }) })
+            ;(options as Record<string, unknown>).preAction = 'keep-nogit'
+            options.branchPolicy = 'keep'
+            st.gitMode = 'none'
+            saveState(scopeKey, st)
+          } else {
+            const iR = gitCmd(journal.workspacePath, ['init'])
+            const baselineSkip = dirTooLargeForBaseline(journal.workspacePath)
+            if (iR !== null) {
+              if (!baselineSkip) {
+                ensureLogGitignore(journal.workspacePath, journal, locale)
+                const aR = gitRun(journal.workspacePath, tfAddArgs())
+                const cR = gitRun(journal.workspacePath, ['commit', '-m', t(locale, 'commit.baseline')])
+                journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.gitInitDone', { baseline: cR && cR.ok ? t(locale, 'log.gitBaselineDone') : t(locale, 'log.gitBaselineSkip', { msg: gitFailDetail(aR, cR) }) }) })
+              } else {
+                journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.gitInitDone', { baseline: t(locale, 'log.gitBaselineLarge') }) })
+              }
+              st.gitMode = 'repo'
+              saveState(scopeKey, st)
+            } else {
+              journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.gitInitFail', { path: journal.workspacePath }) })
+              ;(options as Record<string, unknown>).preAction = 'keep-nogit'
+              options.branchPolicy = 'keep'
+              st.gitMode = 'none'
+              saveState(scopeKey, st)
+            }
+          }
+        } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.gitInitFail', { path: journal.workspacePath }) }) }
+      }
       if (options.branchPolicy !== 'keep' && journal.workspacePath) {
         try {
           const s = runSanityCheck(journal.workspacePath, locale)
@@ -1018,7 +1066,17 @@ export async function executePipeline(
     // 提交面 = 工作区整树**减去插件自有日志** `logs/teamflow/`：`.gitignore` 幂等补写（卫生 + 整树 add 的
     // 唯一依赖）+ `tfUnstageArgs()` 索引兜底（保证）——**不再用负 pathspec 点名自有日志**
     // （2026-09-15 实锤：点名被忽略路径 → `git add` 退出 1 → 收口提交被静默短路 4 天，见 sanity.tfAddArgs）。
-    if (journal.workspacePath && journal.status === 'completed' && !journal.humanIntervention) {
+    // **出口遵从入口决策**（2026-09-17 改动存档两态模型）：gitMode='none'（用户明确选择不用版本控制）
+    // → **根本不尝试提交**，汇报/日志写"未存档（用户选择）"——消除旧行为"提交失败（忽略）"的含糊措辞
+    // （实测 dddd r1：run completed 但产物从未进版本库，用户全程不知道）。危险路径同样跳过
+    // （防用户自己曾在盘根/家目录 init 过仓库 → git add -A 全盘扫描）。
+    const vcsState = (() => { try { return loadState(scopeKey).gitMode } catch (e) { return undefined } })()
+    const dangerousWs = journal.workspacePath && isDangerousVcsRoot(journal.workspacePath, homedir())
+    if (journal.workspacePath && vcsState === 'none') {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.noVcsByChoice') })
+    } else if (journal.workspacePath && dangerousWs) {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.noVcsDangerous', { path: journal.workspacePath }) })
+    } else if (journal.workspacePath && journal.status === 'completed' && !journal.humanIntervention) {
       try {
         const reqHead = String(journal.requirement || '').replace(/\s+/g, ' ').trim().slice(0, 80)
         ensureLogGitignore(journal.workspacePath, journal, locale) // 自有日志先写进 .gitignore（幂等）
@@ -1046,6 +1104,8 @@ export async function executePipeline(
           }
         }
       } catch (e) { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.commitFail', { msg: String((e && e.message) || e) }) }) }
+    } else if (journal.workspacePath && (vcsState === 'none' || dangerousWs) && journal.status === 'completed') {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.notCommitted', { docs: journal.runDocs || '' }) })
     } else if (journal.workspacePath && journal.runDocs && (journal.status === 'failed' || journal.status === 'cancelled' || journal.status === 'interrupted')) {
       journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.notCommitted', { docs: journal.runDocs }) })
     }

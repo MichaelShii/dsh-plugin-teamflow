@@ -43,8 +43,8 @@ export interface PipelineOptions {
   branchPolicy?: 'auto' | 'keep'
   /** 自定义分支名（branchPolicy=auto 时生效；缺省用 triage slug；仅 [a-z0-9-_]，host 校验）。 */
   branchName?: string | null
-  /** 脏工作区的启动前处理（配合 needs-decision 选择）：'stash'（推荐，改动暂存，完成后 git stash pop）；'commit'（提交现有改动，commitMessage 缺省用默认信息）；缺省不处理（改动混入开发）。 */
-  preAction?: 'stash' | 'commit' | null
+  /** 脏工作区的启动前处理（配合 needs-decision 选择）：'stash'（推荐，改动暂存，完成后 git stash pop）；'commit'（提交现有改动，commitMessage 缺省用默认信息）；'init'（2026-09-17 改动存档：非 git 工作区用户选"开启存档" → git init +（目录不大时）基线提交，执行期二次校验危险路径/大目录）；'keep-nogit'（用户明确选"不用版本控制" → gitMode='none'，出口不尝试提交）；缺省不处理（改动混入开发）。 */
+  preAction?: 'stash' | 'commit' | 'init' | 'keep-nogit' | null
   /** preAction=commit 时的提交信息。 */
   commitMessage?: string | null
   /** 需求澄清答复（2026-09-16 需求澄清闸门）：用户在澄清轮补充的说明——与原始 requirement 分开存，

@@ -33,8 +33,28 @@ import { loadTeams, findTeam, teamNameOf, teamDescOf, type TeamConfig } from './
 import { runAgent, withRetry } from './core/runner.ts'
 import { deliverCompletion } from './core/report.ts'
 import { runSanityCheck, gitCmd } from './core/sanity.ts'
+import { loadState } from './core/state.ts'
+import { isDangerousVcsRoot, dirTooLargeForBaseline } from './util.ts'
 import { join } from 'node:path'
-import { mkdirSync, readdirSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { mkdirSync, readdirSync, statSync } from 'node:fs'
+
+/** 有界计数（决策问句里的"现有 N 个文件"；不精确——只采样，超阈值即停）。 */
+function countFilesBounded(dir: string, cap = 1000): number {
+  let n = 0
+  const walk = (d, depth) => {
+    if (depth > 12 || n > cap) return
+    let es = []
+    try { es = readdirSync(d, { withFileTypes: true }) } catch (e) { return }
+    for (const e of es) {
+      if (e.name === '.git' || e.name === 'node_modules') continue
+      if (e.isDirectory()) walk(d + '\\' + e.name, depth + 1)
+      else { n++; if (n > cap) return }
+    }
+  }
+  walk(dir, 0)
+  return n
+}
 import { executePipeline, summarizeTimeline, startPipeline, resumeRun } from './core/pipeline.ts'
 import { cancelRun } from './core/context.ts'
 import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, normalizeMode, runTriage, guardrailUpgrade, type TriageVerdict } from './core/triage.ts'
@@ -279,7 +299,40 @@ function registerTools(ctx) {
           if (sc.path) {
             try {
               const s = runSanityCheck(sc.path)
-              if (s.ok && s.inRepo) {
+              if (!s.inRepo) {
+                // **改动存档决策**（2026-09-17，方案 A：问一次、记住、人话）：非 git 工作区原先**静默跳过**
+                // 全部分支决策（实锤 dddd 两条 run 的产物从未进任何版本库，用户全程不知道）。现在：
+                // 探测"不是仓库"→ 问一次（init=git init +（内容少时）基线提交；keep=不用版本控制），
+                // 答案写进该工作区 state.json 的 gitMode，后续 run 不再打扰。
+                // 危险路径（盘根/家目录祖先/系统目录/浅层目录）**不给 init 选项**（git add -A 会扫全盘）。
+                const st = loadState(sc.path)
+                if (st.gitMode === 'none' || options.preAction === 'keep-nogit') {
+                  // 用户此前已选"不用版本控制" → 不再问，按 keep 走（出口也不尝试提交）
+                  ;(options as Record<string, unknown>).preAction = 'keep-nogit'
+                  options.branchPolicy = 'keep'
+                } else {
+                  const home = homedir()
+                  const danger = isDangerousVcsRoot(sc.path, home)
+                  const tooLarge = danger ? false : dirTooLargeForBaseline(sc.path)
+                  const baseline = danger
+                    ? ''
+                    : t(ambientLocale(), tooLarge ? 'git.opt.initNoBaseline' : 'git.opt.initBaseline', { n: countFilesBounded(sc.path) })
+                  const q = danger ? t(ambientLocale(), 'git.q.danger', { path: sc.path }) : t(ambientLocale(), 'git.q.noRepo', { path: sc.path })
+                  const optsList = danger
+                    ? [{ label: t(ambientLocale(), 'git.opt.keepOnly'), value: 'keep' }]
+                    : [
+                      { label: t(ambientLocale(), 'git.opt.init', { baseline }), value: 'init' },
+                      { label: t(ambientLocale(), 'git.opt.keep'), value: 'keep' },
+                    ]
+                  return {
+                    status: 'needs-decision',
+                    kind: 'git-init',
+                    question: q,
+                    options: optsList,
+                    note: t(ambientLocale(), danger ? 'tool.start.gitDecisionDanger' : 'tool.start.gitDecision'),
+                  }
+                }
+              } else if (s.ok && s.inRepo) {
                 const onMain = !!s.branch && s.branch.trim().toLowerCase() === 'main'
                 const dirty = s.hasDirty
                 const dirtyN = s.dirty.split(/\r?\n/).filter((l) => l.trim()).length

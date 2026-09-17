@@ -4,7 +4,7 @@
  * 被旧正则「无需改动」子串命中 → 误判 reject → 整条流水线置 failed。
  * 修复原则：只以显式「验收结论 / 整体结论」行为准，正文散文不做朴素子串匹配。
  */
-import { parseAcceptanceVerdict, extractBlueprint, defectFingerprint, qaRoundEntry, classifyExternalFailure, externalBackoffMs, EXTERNAL_BACKOFF_MS } from '../host/util.ts'
+import { parseAcceptanceVerdict, extractBlueprint, defectFingerprint, qaRoundEntry, classifyExternalFailure, externalBackoffMs, EXTERNAL_BACKOFF_MS, isDangerousVcsRoot, dirTooLargeForBaseline } from '../host/util.ts'
 import { parseDefects, parseDefectRows } from '../host/core/backlog.ts'
 
 let failed = 0
@@ -265,6 +265,20 @@ eqJson(EXTERNAL_BACKOFF_MS, [30000, 60000, 120000, 240000], '退避序列 30s→
 expect(externalBackoffMs(1), 30000, '第 1 次退避 = 30s')
 expect(externalBackoffMs(4), 240000, '第 4 次退避 = 240s')
 expect(externalBackoffMs(5), null, '超出序列 → null（退避用尽 → 落可续跑中断态）')
+
+console.log('\n── 改动存档防线（2026-09-17：盘根/家目录 init + 基线提交 = 灾难动作，两层防线）──')
+expect(isDangerousVcsRoot('C:\\', null), true, '驱动器根 C:\\ → 拒绝 init')
+expect(isDangerousVcsRoot('C:', null), true, 'C:（无反斜杠）→ 拒绝 init')
+expect(isDangerousVcsRoot('C:\\Users', null), true, '深度 ≤1（C:\\Users）→ 拒绝 init')
+expect(isDangerousVcsRoot('C:\\Users\\gyech', 'C:\\Users\\gyech'), true, '家目录本身 → 拒绝 init')
+expect(isDangerousVcsRoot('C:\\Users', 'C:\\Users\\gyech'), true, '家目录的祖先 → 拒绝 init')
+expect(isDangerousVcsRoot('C:\\Windows', null), true, '系统目录 → 拒绝 init')
+expect(isDangerousVcsRoot('C:\\Program Files', null), true, 'Program Files → 拒绝 init')
+expect(isDangerousVcsRoot('C:\\Users\\gyech\\proj', 'C:\\Users\\gyech'), false, '家目录**下面**的项目目录 → 允许 init')
+expect(isDangerousVcsRoot('D:\\src\\my-plugin', null), false, '普通深度（D:\\src\\my-plugin）→ 允许 init')
+expect(isDangerousVcsRoot('', null), true, '空路径 → 拒绝（宁严勿松）')
+expect(dirTooLargeForBaseline('C:\\Windows\\System32', 3, 1024, 300), true, '大目录（有界采样，阈值 3 个文件即超）→ 不做基线提交')
+expect(dirTooLargeForBaseline('Z:\\__definitely_missing__', 1000, 104857600, 200), true, '目录不可读（采样失败）→ 按过大处理（宁严勿松）')
 
 console.log(failed === 0 ? '\n✅ verdict 测试全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)
