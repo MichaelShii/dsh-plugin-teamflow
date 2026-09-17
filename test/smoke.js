@@ -597,6 +597,10 @@ ok(/options\.preAction === 'init'/.test(pipelineSrc) && /isDangerousVcsRoot\(jou
 ok(/baselineSkip = dirTooLargeForBaseline/.test(pipelineSrc) && /commit\.baseline/.test(hostSrc), 'pipeline：init 时目录过大 → 只 init 不基线提交（git add -A 防全盘扫描）')
 ok(/vcsState === 'none'/.test(pipelineSrc) && /log\.noVcsByChoice/.test(pipelineSrc) && /log\.noVcsDangerous/.test(pipelineSrc), 'pipeline：出口遵从——none/危险路径**不尝试提交**（不再出现「提交失败（忽略）」的含糊措辞）')
 ok(/report\.vcsArchived/.test(reportSrc) && /loadState\(journal\.workspacePath\)/.test(reportSrc), 'report：汇报带「已存档/未存档」行（非程序员的安全网要看得见）')
+// preAction 四值放行（2026-09-18 probe-clock 实测：工具入口整形只认 stash/commit，把改动存档决策
+// 正确回传的 preAction='init' 丢成 null → git init 静默没执行；主线程回传/决策/pipeline 三环全对，
+// 唯独入口这一行把参数弄丢）
+ok(/args\.preAction === 'stash' \|\| args\.preAction === 'commit' \|\| args\.preAction === 'init' \|\| args\.preAction === 'keep-nogit'/.test(hostSrc), 'host：preAction 入口整形放行全部四值（stash/commit/init/keep-nogit——漏 init 会静默丢掉存档决策）')
 // execOptions 白名单完整性（B1 同型 bug 第三次现身：2026-09-17 probe-clock 实锤——branchPolicy/preAction
 // 不在白名单 → 用户选了"开启存档"但 executePipeline 收到 undefined → git init 静默没执行）。
 // 门禁：内部字段必须逐个出现在 execOptions；以后再加内部字段漏一个就红。

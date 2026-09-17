@@ -275,7 +275,10 @@ function registerTools(ctx) {
           maxConcurrency: args.maxConcurrency,
           branchPolicy: (args.branchPolicy === 'keep' ? 'keep' : 'auto') as 'auto' | 'keep',
           branchName: typeof args.branchName === 'string' && args.branchName.trim() ? args.branchName.trim() : null,
-          preAction: (args.preAction === 'stash' || args.preAction === 'commit') ? args.preAction : null,
+          // ⚠️ 四个合法值都要放行（2026-09-17 probe-clock 实锤：这里只认 stash/commit，把改动存档决策
+          // 正确回传的 preAction='init' 丢成 null → git init 静默没执行）。'new' 是 branchPolicy 的已确认
+          // 信号（needs-decision 回传值），在下方 branchConfirmed 处消费，此处只透传不篡改。
+          preAction: (args.preAction === 'stash' || args.preAction === 'commit' || args.preAction === 'init' || args.preAction === 'keep-nogit') ? args.preAction : null,
           commitMessage: typeof args.commitMessage === 'string' && args.commitMessage.trim() ? args.commitMessage.trim() : null,
           requirementSupplement: typeof args.requirementSupplement === 'string' && args.requirementSupplement.trim() ? args.requirementSupplement.trim() : null,
         }
