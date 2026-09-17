@@ -225,6 +225,16 @@ export function stateSliceFor(state: TeamflowState, role: RoleKey): string {
   if (state.verifyScripts.length && (role === 'qa' || role === 'tech' || role === 'dev')) {
     lines.push(t(locale, 'state.verifyScripts', { list: state.verifyScripts.join(t(locale, 'state.commaSep')) }))
   }
+  // 交付形态契约 → QA/验收（2026-09-17）：形态契约在 PRD 已落成 AC，但 QA/验收需要**可执行判据**——
+  // 每条契约的 criteria 就是探针清单（装得上/被加载/构建产物新鲜/卸载回滚），缺它 QA 只能凭自觉。
+  if (state.__runCtx && Array.isArray(state.__runCtx.artifactContracts) && state.__runCtx.artifactContracts.length && (role === 'qa' || role === 'acceptance')) {
+    const kind = state.__runCtx.artifact || 'other'
+    lines.push(t(locale, 'state.artifactContracts', {
+      kind,
+      n: state.__runCtx.artifactContracts.length,
+      list: state.__runCtx.artifactContracts.map((it, i) => `${i + 1}. ${it.requirement} — ${it.criteria}`).join('\n'),
+    }))
+  }
   // 各阶段结论：本角色只需要前后几段
   if (role === 'pm' || role === 'acceptance') {
     if (state.stages.prd) lines.push(t(locale, 'state.prdSummary', { summary: state.stages.prd }))

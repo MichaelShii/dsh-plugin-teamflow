@@ -181,6 +181,11 @@ assertContract({
   exclude: [/\[交付形态契约 · 必填 AC\]/],
   fixture: prdNoContract,
 })
+assertContract({
+  id: 'QA-SHAPE-PROBES', level: 'policy', targets: 'qaPrompt',
+  intent: 'QA 必须把形态契约逐条当探针跑（构建产物新鲜度/装载安全/安装回滚纪律——dddd 实锤：旧 lib 装上后宿主启动即炸，靠另开 agent 手术卸载才救回）',
+  include: [/Deliverable-shape verification · mandatory when injected/, /roll back FIRST/, /Never silently skip/],
+})
 
 // ── HOST-ENFORCED：验收结论契约（parseAcceptanceVerdict 只认显式结论行）──
 assertContract({

@@ -175,12 +175,16 @@ export const ARTIFACT_CONTRACTS: Record<ArtifactKind, ArtifactContractItem[]> = 
     { requirement: '该入口声明文件必须进包分发白名单（`files` 等）', criteria: '读 package.json 的 files 数组，确认包含该声明文件' },
     { requirement: '依赖协议必须是 profile 可解析的形态（不得用 `workspace:` 等本地协议）', criteria: '`node -e "const s=require(\'fs\').readFileSync(\'package.json\',\'utf8\');process.exit(/workspace:/.test(s)?1:0)"` 退出码 0' },
     { requirement: '宿主运行期依赖要按宿主模块表声明（peer/可选 peer，而非真实下载依赖）', criteria: 'package.json 的 peerDependencies/peerDependenciesMeta 覆盖宿主提供的 @deepseek-ai/* 包' },
+    { requirement: '**构建产物与源码同步**（实锤 dddd：`lib` 是旧产物 → 装上后宿主启动即炸）', criteria: '提交/安装前重新构建；产物里能找到只存在于当前源码的特征字符串（或产物 mtime 晚于全部 src 文件）' },
+    { requirement: '**装载安全**：模块顶层不得抛错（实锤 dddd：顶层访问未注入的 `ctx.settings` → 宿主起不来）', criteria: '`node -e "require(\'<构建产物入口>\')"` 退出码 0（能 require = 顶层无未捕获异常）' },
     { requirement: '能被 profile 真实装入', criteria: 'profile 内执行安装命令退出码 0，且 profile 的依赖与插件清单出现该包', onlyWhenInstallable: true },
     { requirement: '装载后宿主真实加载该插件（端到端判据）', criteria: '重启宿主后启动日志/插件列表出现该插件；仅有源码文件不算', onlyWhenInstallable: true },
+    { requirement: '**安装必须带回滚**（实锤 dddd：装上后宿主起不来，只能另开 agent 手术卸载）', criteria: '安装前先写明卸载命令（如 `dsh plugin remove <name>` / 从 profile 依赖与 bundles 同时摘除），装后验证失败 → 立即执行卸载恢复', onlyWhenInstallable: true },
   ],
   'plugin-client': [
     { requirement: 'client 半必须有 bundle 声明与被扫描的 id/name（参照同仓既有插件）', criteria: 'package.json 的 client 声明块字段名与同仓样本一致，且构建会产出非空 client 产物' },
     { requirement: '构建产物必须进包分发白名单', criteria: '读 files 数组确认包含构建产物目录/文件' },
+    { requirement: '**构建产物与源码同步**（实锤 dddd：旧 `lib/client.js` 让浏览器端行为与源码不符）', criteria: '提交/安装前重新构建；产物含当前源码特征字符串或 mtime 晚于全部 src' },
   ],
   'plugin-full': [
     { requirement: '宿主半必须有 profile 层加载入口声明（参照同仓既有插件，不凭记忆写字段名）', criteria: '存在该声明文件/字段，`name` 用包根名' },
@@ -188,7 +192,10 @@ export const ARTIFACT_CONTRACTS: Record<ArtifactKind, ArtifactContractItem[]> = 
     { requirement: '入口声明与构建产物都必须进包分发白名单', criteria: '读 package.json 的 files 数组确认包含二者' },
     { requirement: '依赖协议必须是 profile 可解析的形态（不得用 `workspace:` 等本地协议）', criteria: '读 package.json 全文不得命中 `workspace:`' },
     { requirement: '宿主运行期依赖按宿主模块表声明（peer/可选 peer）', criteria: 'peerDependencies/peerDependenciesMeta 覆盖宿主提供的 @deepseek-ai/* 包' },
+    { requirement: '**构建产物与源码同步**（实锤 dddd：旧 `lib/index.js` → 装上后宿主启动即炸）', criteria: '提交/安装前重新构建；宿主与 client 产物均含当前源码特征字符串（或 mtime 晚于全部 src）' },
+    { requirement: '**装载安全**：两个产物的模块顶层都不得抛错（实锤 dddd：顶层访问未注入服务 → 宿主起不来，P0）', criteria: '`node -e "require(\'<宿主产物入口>\')"` 与 client 产物同样检查，退出码 0' },
     { requirement: '能被 profile 真实装入且被宿主加载（端到端）', criteria: 'profile 安装命令退出码 0 + 重启宿主后启动日志出现该插件', onlyWhenInstallable: true },
+    { requirement: '**安装必须带回滚**（实锤 dddd：装上后宿主起不来，只能另开 agent 手术卸载才能救回宿主）', criteria: '安装前先写明卸载命令（如 `dsh plugin remove <name>` / 从 profile 依赖与 bundles 同时摘除），装后验证失败 → 立即执行卸载恢复', onlyWhenInstallable: true },
   ],
   cli: [
     { requirement: '必须有可执行入口声明', criteria: 'package.json 有 bin 字段且指向真实存在的文件' },

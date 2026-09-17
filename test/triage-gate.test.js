@@ -115,5 +115,13 @@ ok(artifactContractsFor('lib', false).some((it) => /入口|main|exports/.test(it
 ok(artifactContractsFor('plugin-host', false).some((it) => /workspace:/.test(it.criteria)), 'plugin-host：含"依赖不得用 workspace: 协议"（本次实锤缺口之一）')
 ok(artifactContractsFor('plugin-full', false).some((it) => /files|白名单/.test(it.requirement)), 'plugin-full：含分发白名单（本次实锤缺口之一）')
 
+console.log('\n[7] 安装/装载安全契约（2026-09-17 dddd 事故实锤：旧 lib 产物装上后宿主启动即炸，靠另开 agent 手术卸载才救回）')
+const pfAll = JSON.stringify(artifactContractsFor('plugin-full', true))
+ok(/源码同步|产物.*同步/.test(pfAll), 'plugin-full：含「构建产物与源码同步」（旧 lib 产物实锤）')
+ok(/装载安全|顶层/.test(pfAll) && /require/.test(pfAll), 'plugin-full：含「装载安全：模块顶层不得抛错」（顶层访问未注入服务实锤）')
+ok(/回滚|卸载/.test(pfAll), 'plugin-full：含「安装必须带回滚」（装上后宿主起不来 → 另开 agent 手术实锤）')
+ok(artifactContractsFor('plugin-host', false).some((it) => /装载安全|顶层/.test(it.requirement)), 'plugin-host：装载安全为**非 installable 也要求**（源码目录阶段就该可加载）')
+ok(artifactContractsFor('plugin-host', true).some((it) => /回滚|卸载/.test(it.requirement) && it.onlyWhenInstallable === true), 'plugin-host：回滚纪律是 installable 档要求')
+
 console.log(failed ? `\n✗ triage-gate：${failed} 条失败\n` : '\n✓ triage-gate：全部通过\n')
 process.exit(failed ? 1 : 0)
