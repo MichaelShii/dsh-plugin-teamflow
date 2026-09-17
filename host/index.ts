@@ -205,10 +205,16 @@ function registerTools(ctx) {
       },
     },
     output: {
-      schema: { type: 'object', additionalProperties: false, required: ['status'], properties: { runId: { type: 'string' }, status: { type: 'string' }, question: { type: 'string' }, options: { type: 'array' }, note: { type: 'string' }, intent: { type: 'string' }, blockers: { type: 'array' } } },
+      // ⚠️ execute 的**每一条**返回路径都必须在这里有声明（additionalProperties: false → 多余字段会让
+      // 宿主输出校验直接拒绝、run 都建不了——实锤 probe-clock：git-init 决策带 `kind` 未声明 → 两次
+      // start 全部失败、零 run，而全套测试因为没覆盖"返回形状 vs schema"照样全绿）。
+      schema: { type: 'object', additionalProperties: false, required: ['status'], properties: { runId: { type: 'string' }, status: { type: 'string' }, kind: { type: 'string' }, question: { type: 'string' }, options: { type: 'array' }, note: { type: 'string' }, intent: { type: 'string' }, blockers: { type: 'array' }, message: { type: 'string' } } },
       render: (args, value) => {
         if (value && value.status === 'needs-decision') {
           const opts = Array.isArray(value.options) ? value.options.map((o, i) => `${i + 1}. ${o.label}`).join('\n') : ''
+          // git-init 决策复用同一渲染骨架（问句/选项措辞不同），但必须用**它自己的**注入键——
+          // 否则主线程会按分支决策的 branchPolicy 语义去回传（init 要带 preAction='init'）。
+          if (value.kind === 'git-init') return [{ type: 'text', text: t(ambientLocale(), 'tool.start.gitDecisionNote', { question: value.question, options: opts, note: value.note || '' }) }]
           return [{ type: 'text', text: t(ambientLocale(), 'tool.start.decision', { question: value.question, options: opts }) }]
         }
         if (value && value.status === 'needs-confirmation') {
@@ -220,6 +226,11 @@ function registerTools(ctx) {
             ? value.blockers.map((b, i) => `${i + 1}. ${b.question}\n   · ${t(ambientLocale(), 'tool.start.blockerReadings')}: ${(b.readings || []).join(' / ')}\n   · ${t(ambientLocale(), 'tool.start.blockerChanges')}: ${b.changes}\n   · ${t(ambientLocale(), 'tool.start.blockerRework')}: ${b.rework}`).join('\n')
             : ''
           return [{ type: 'text', text: t(ambientLocale(), 'tool.start.needsClarification', { intent: String(value.intent || 'requirement'), blockers: list }) }]
+        }
+        // paused / no-team：带 message 的拒绝路径（schema 已声明 message）——之前 schema 没这字段，
+        // 这两条分支的返回会被宿主校验整条拒掉（实锤抽取发现），render 也从未覆盖 → 主线程只见裸错误。
+        if (value && value.message && !value.runId) {
+          return [{ type: 'text', text: String(value.message) }]
         }
         return [{ type: 'text', text: t(ambientLocale(), 'tool.start.started', { runId: value.runId, status: value.status }) }]
       },

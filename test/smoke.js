@@ -597,6 +597,24 @@ ok(/options\.preAction === 'init'/.test(pipelineSrc) && /isDangerousVcsRoot\(jou
 ok(/baselineSkip = dirTooLargeForBaseline/.test(pipelineSrc) && /commit\.baseline/.test(hostSrc), 'pipeline：init 时目录过大 → 只 init 不基线提交（git add -A 防全盘扫描）')
 ok(/vcsState === 'none'/.test(pipelineSrc) && /log\.noVcsByChoice/.test(pipelineSrc) && /log\.noVcsDangerous/.test(pipelineSrc), 'pipeline：出口遵从——none/危险路径**不尝试提交**（不再出现「提交失败（忽略）」的含糊措辞）')
 ok(/report\.vcsArchived/.test(reportSrc) && /loadState\(journal\.workspacePath\)/.test(reportSrc), 'report：汇报带「已存档/未存档」行（非程序员的安全网要看得见）')
+// 输出 schema 严格性（2026-09-17 实锤 probe-clock：git-init 决策返回带 kind 未声明 → additionalProperties:false
+// 拒收 → start 当场失败、零 run；全套测试因没覆盖"返回形状 vs schema"而全绿漏过）
+ok(/kind: \{ type: 'string' \}/.test(hostSrc), 'host：start 的 output schema 声明 kind（git-init 决策字段）')
+{
+  // 静态抽取 execute 里所有 return { … } 的顶层键，逐一核对已在 schema properties 中声明
+  const startIdx = hostSrc.indexOf("name: 'teamflow_start'")
+  const mergeIdx = hostSrc.indexOf("name: 'teamflow_merge'")
+  const seg = hostSrc.slice(startIdx, mergeIdx === -1 ? undefined : mergeIdx)
+  const schemaLine = (hostSrc.split('\n').find((l) => l.includes("required: ['status']") && l.includes('runId')) || '')
+  ok(schemaLine.includes('kind:'), 'host：schema 抽取自检（kind 已声明）')
+  const declared = new Set((schemaLine.match(/([a-zA-Z]+): \{ type/g) || []).map((m) => m.replace(/: \{ type/, '')))
+  const returned = new Set()
+  for (const m of seg.matchAll(/return\s*\{([^{}]*)\}/g)) {
+    for (const kv of m[1].matchAll(/([a-zA-Z_]+)\s*:/g)) returned.add(kv[1])
+  }
+  const bad = [...returned].filter((k) => k !== 'status' && !declared.has(k))
+  ok(bad.length === 0, `start：execute 各返回路径的键都在 output schema 内（未声明：${bad.join(',') || '无'}）`)
+}
 // 续跑不重跑分诊（2026-09-17 dddd 续跑实测：多出一次 `自动分诊 … source=fallback`，档位早已定稿）
 ok(/\} else if \(resume\) \{/.test(pipelineSrc) && /log\.triageResumed/.test(pipelineSrc) && /source: 'resume'/.test(pipelineSrc), 'pipeline：断点续跑跳过分诊（沿用 journal.options.mode + 补 shadow 记录）')
 ok(/if \(!journal\.triage\) \{/.test(pipelineSrc), 'pipeline：续跑只在 triage 缺失时补记录（首轮真实裁决优先保留）')
