@@ -12,7 +12,7 @@
  *     实测模型系统性自选 `lite:true`（33 次启动 14 次显式传档位、0 次先预览），故放宽为「只有 patch 豁免」。
  * 另外锁住意图归一（非法值一律 requirement，绝不因字段缺失拦启动）。
  */
-import { qualifyBlockers, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, TRIAGE_CACHE_MAX } from '../host/core/triage.ts'
+import { qualifyBlockers, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, triageCacheIsPending, triageCacheMarkPending, triageCacheSettle, TRIAGE_CACHE_MAX } from '../host/core/triage.ts'
 import { extractAssumptionsSection } from '../host/util.ts'
 
 let failed = 0
@@ -159,6 +159,45 @@ ok(triageCacheGet(triageCacheKey('bulk-' + (TRIAGE_CACHE_MAX + 7), '')) !== null
 triageCacheClear()
 for (let i = 0; i < 10; i++) triageCachePut(k, V())
 ok(triageCacheSize() === 1, '同一 key 重复写入只占 1 条（幂等）')
+triageCacheClear()
+
+console.log('\n[9] 待决策状态机（2026-09-18 二次修正：有效性看「是否仍在等用户回答」，**不看时间**）')
+console.log('     实测 probe-cache tf-mu6tb281-4n43oc：17:29:30 首次 start → 17:30:46 弹存档问句 →')
+console.log('     用户 18:24:30 才点选（隔 55 分钟）→ 初版 10 分钟 TTL 早已过期 → 又白跑一次分诊')
+const pk = triageCacheKey('pending-req', '')
+triageCachePut(pk, V(), true) // 工具返回 needs-decision → 标待决策
+ok(triageCacheIsPending(pk), '写入时可标「待决策」')
+ok(triageCacheGet(pk) !== null, '待决策条目可命中')
+// 把时钟拨到 55 分钟后（远超 TTL）——待决策条目必须**无视 TTL**
+{
+  const realNow = Date.now
+  Date.now = () => realNow() + 55 * 60 * 1000
+  ok(triageCacheGet(pk) !== null, '**待决策条目隔 55 分钟仍命中**（TTL 不参与正确性——这正是那次失手的场景）')
+  Date.now = realNow
+}
+// 决策落地 → settle → 降级为普通短期缓存（此刻起 TTL 才生效）
+triageCacheSettle(pk)
+ok(!triageCacheIsPending(pk), 'settle 后不再是待决策')
+ok(triageCacheGet(pk) !== null, 'settle 只摘标记，裁决本身仍在（建 run 后的快速重试仍可命中）')
+{
+  const realNow = Date.now
+  Date.now = () => realNow() + 3 * 60 * 60 * 1000
+  ok(triageCacheGet(pk) === null, 'settle 之后超过 TTL → 回收（防"用户永远没回来点"的悬挂条目泄漏）')
+  Date.now = realNow
+}
+// 不改裁决内容
+triageCacheClear()
+triageCachePut(pk, V({ mode: 'medium' }), true)
+triageCacheSettle(pk)
+ok(triageCacheGet(pk).mode === 'medium', 'markPending/settle 不改裁决内容（档位不漂移）')
+// 边界
+triageCacheClear()
+ok(!triageCacheIsPending(triageCacheKey('never-written', '')), '未写过的键：isPending=false（不误报）')
+triageCacheMarkPending(triageCacheKey('never-written', ''))
+ok(triageCacheSize() === 0, 'markPending 对不存在的键是安全无操作，且**不会凭空造条目**（fallback 没入缓存时走这条）')
+// fallback 仍不入缓存 → markPending 也无从标记 → 下次老实重跑分诊（符合预期，不静默放行）
+triageCachePut(triageCacheKey('fb2', ''), V({ source: 'fallback' }), true)
+ok(!triageCacheIsPending(triageCacheKey('fb2', '')), 'fallback 裁决仍不入缓存（markPending 也没得标）')
 triageCacheClear()
 
 console.log(failed ? `\n✗ triage-gate：${failed} 条失败\n` : '\n✓ triage-gate：全部通过\n')

@@ -362,14 +362,23 @@ export const TRIAGE_TIMEOUT_MS = 240000
  * 那就等于闸门失效。键里**不得**包含 `preAction`/`branchPolicy`/`branchName`/`commitMessage`：
  * 它们是**决策答案**，不改变需求语义（正是它们导致重调，进了键就永远命不中）。
  *
- * **TTL 与容量**：TTL 10 分钟（决策往返是秒级/分钟级，10 分钟足够覆盖；更久说明用户走神了，
- * 重跑一次是应该的）。容量上限 32 条、超出按插入序淘汰最旧（Map 保持插入序）——防长会话内存增长。
- * **只缓存 model 裁决**：fallback 是"分诊不可用"的降级产物，缓存它会把一次偶发故障固化 10 分钟。
+ * **有效性不看时间，看「是否仍在等待用户决策」（2026-09-18 二次修正，勿回退）**：
+ * 初版用 TTL 10 分钟，注释里写「决策往返是秒级/分钟级，更久说明用户走神了」——**这个前提是错的**。
+ * probe-cache 实测 `tf-mu6tb281-4n43oc`：17:29:30 首次 start（分诊子代理 `a612dc69`）→ 17:30:46 弹存档问句
+ * → 用户 **18:24:30 才点选**（隔 55 分钟，期间还重启过宿主）→ 缓存早已过期 → 又跑一次分诊（`7e73839e`）。
+ * 而「改动存档」「分支策略」这类**启动前的非紧急决策**，用户去处理别的事、过一小时再回来点，完全正常——
+ * 按时间赌必然失手。故改为**显式状态机**：
+ *  - 首次预检返回 `needs-decision`（工具没建 run）→ 该条目标记 `pendingDecision`（**待决策**）；
+ *  - 只要还标着待决策 → **无论隔多久都复用**（这正是"用户还没回答同一个问题"的精确语义）；
+ *  - 建 run 成功 / 需求变了 → 标记清除（不再待决策）。
+ * TTL 降级为**纯粹的防泄漏兜底**（默认 2 小时，见 `triageCachePending` 的实现）：只用来回收
+ * 「用户永远没回来点」的悬挂条目，不再承担正确性职责。容量上限 32 条、超出按插入序淘汰最旧。
+ * **只缓存 model 裁决**：fallback 是"分诊不可用"的降级产物，缓存它会把一次偶发故障固化。
  */
-const TRIAGE_CACHE_TTL_MS = 10 * 60 * 1000
+export const TRIAGE_CACHE_TTL_MS = 2 * 60 * 60 * 1000
 /** 容量上限（导出供测试断言，避免测试里硬编码重复数字——改了上限只改这一处）。 */
 export const TRIAGE_CACHE_MAX = 32
-const triageCache = new Map<string, { verdict: TriageVerdict; at: number }>()
+const triageCache = new Map<string, { verdict: TriageVerdict; at: number; pendingDecision: boolean }>()
 
 /** 缓存键 = 需求 + 澄清答复（**不含任何决策字段**；见上方注释）。 */
 export function triageCacheKey(requirement: string, supplement?: unknown): string {
@@ -377,25 +386,56 @@ export function triageCacheKey(requirement: string, supplement?: unknown): strin
   return `${String(requirement || '').trim()}\u0000${sup}`
 }
 
-/** 读缓存（过期即删并返回 null）。返回的是**原对象**——调用方会补 `__upgradedFrom`/`needDesign`，
- *  这些是 host 侧审计字段、且同键同产物，复用无碍。 */
+/** 读缓存。**待决策条目无视 TTL**（见上方注释）；非待决策条目按 TTL 兜底回收。 */
 export function triageCacheGet(key: string): TriageVerdict | null {
   const hit = triageCache.get(key)
   if (!hit) return null
-  if (Date.now() - hit.at > TRIAGE_CACHE_TTL_MS) { triageCache.delete(key); return null }
+  if (!hit.pendingDecision && Date.now() - hit.at > TRIAGE_CACHE_TTL_MS) { triageCache.delete(key); return null }
   return hit.verdict
 }
 
-/** 写缓存（**仅 model 裁决**；容量超限淘汰最旧）。 */
-export function triageCachePut(key: string, verdict: TriageVerdict): void {
+/**
+ * 写缓存（**仅 model 裁决**；容量超限淘汰最旧）。
+ * @param pendingDecision 该裁决是否**仍未被消费**（= 本次调用会返回 needs-decision、不建 run）。
+ *   工具侧两次调用共享同一 key，故：首次预检返回 needs-decision 时置 true（下次复用，隔多久都行）；
+ *   建 run 成功时置 false（这条需求的决策已落地，缓存降级为普通短期缓存）。
+ */
+export function triageCachePut(key: string, verdict: TriageVerdict, pendingDecision = false): void {
   if (!verdict || verdict.source !== 'model') return
   triageCache.delete(key) // 重新插入以刷新插入序（LRU-ish：命中过的排到最后）
-  triageCache.set(key, { verdict, at: Date.now() })
+  triageCache.set(key, { verdict, at: Date.now(), pendingDecision })
   while (triageCache.size > TRIAGE_CACHE_MAX) {
     const oldest = triageCache.keys().next()
     if (oldest.done) break
     triageCache.delete(oldest.value)
   }
+}
+
+/** 该键是否仍标着「待用户决策」（诊断/测试用）。 */
+export function triageCacheIsPending(key: string): boolean {
+  const hit = triageCache.get(key)
+  return !!hit && hit.pendingDecision
+}
+
+/**
+ * 标记「仍在等用户决策」（工具返回 needs-decision / needs-clarification 时调用）。
+ *
+ * **为什么不重新 put 一次**：`put` 会被 `source !== 'model'` 拦掉，而这里要处理的情况是
+ * 「缓存里**已有**裁决、现在要把它标成待决策」——只能就地改状态。若缓存里没有该键（例如裁决来自
+ * fallback、根本没入缓存），这里是**无操作**（下次调用老老实实重跑分诊，符合预期）。
+ */
+export function triageCacheMarkPending(key: string): void {
+  const hit = key ? triageCache.get(key) : undefined
+  if (hit) hit.pendingDecision = true
+}
+
+/**
+ * 决策已落地 → 清除「待决策」标记（**保留裁决本身**，降级为普通短期缓存）。
+ * 调用点：`teamflow_start` 在建 run 成功之后（此时这条需求的启动决策已用完）。
+ */
+export function triageCacheSettle(key: string): void {
+  const hit = triageCache.get(key)
+  if (hit) { hit.pendingDecision = false; hit.at = Date.now() }
 }
 
 /** 测试/诊断用：清空缓存（生产路径不调用）。 */

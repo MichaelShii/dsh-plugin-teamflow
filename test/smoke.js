@@ -158,7 +158,7 @@ ok(/stages: j\.stages\.map\(\(s\) => \(\{ seq: s\.seq, label: s\.label, phase: s
 // 需求澄清闸门（2026-09-16 Phase 1）：① 启动前「探索态不建 run」② 假设可见化。
 // 相位性约束（勿回退）：闸门只在分诊给出非 requirement 意图或合格 blocker 时拦；分发不可用时放行。
 ok(/async function clarificationPreflight/.test(hostSrc), 'host：启动前澄清预检存在（clarificationPreflight）')
-ok(/if \(options\.mode === 'patch'\) return \{ verdict: null \}/.test(hostSrc), 'host：预检只豁免 patch（lite/显式 mode 一律跑分诊——2026-09-16 放宽，旧「显式档位全豁免」会让闸门与架构护栏在 42% 启动上失效）')
+ok(/if \(options\.mode === 'patch'\) return \{ verdict: null/.test(hostSrc), 'host：预检只豁免 patch（lite/显式 mode 一律跑分诊——2026-09-16 放宽，旧「显式档位全豁免」会让闸门与架构护栏在 42% 启动上失效）')
 ok(/verdict\.intent !== 'requirement' \|\| verdict\.blockers\.length > 0/.test(hostSrc), 'host：闸门判据 = 意图非明确需求 或 存在合格 blocker')
 ok(/status: 'needs-clarification'/.test(hostSrc) && /needs-clarification[\s\S]{0,400}requirementSupplement/.test(hostSrc), 'host：needs-clarification 返回 + 指引带 requirementSupplement 重调')
 ok(/\(options as unknown as Record<string, unknown>\)\.__triage = pre\.verdict/.test(hostSrc), 'host：分诊裁决透传 pipeline（避免重复一次模型调用）')
@@ -566,7 +566,7 @@ ok(!/\^#\{1,6\}\[ \\t\]\*\(假设\|待澄清/.test(pipelineSrc), 'pipeline：不
 ok(!/Lightweight mode for small changes \(recommended\)/.test(hostSrc), 'host：lite 参数描述不再写 "(recommended)"（那正是模型自选 lite 的依据）')
 ok(/Do NOT pick the tier yourself by default/.test(hostSrc) && /let auto-triage decide/.test(hostSrc), 'host：lite/mode 描述明确「默认不要自选档位，交给自动分诊」')
 ok(/omit `mode`\/`lite` and let auto-triage decide the tier/.test(hostSrc), 'host：工具描述同步该口径（Routing 段）')
-ok(/if \(options\.mode === 'patch'\) return \{ verdict: null \}/.test(hostSrc), 'host：预检只豁免 patch（lite/显式 mode 一律跑分诊，否则 42% 启动绕过闸门与架构护栏）')
+ok(/if \(options\.mode === 'patch'\) return \{ verdict: null/.test(hostSrc), 'host：预检只豁免 patch（lite/显式 mode 一律跑分诊，否则 42% 启动绕过闸门与架构护栏）')
 ok(/guardrailUpgrade\(explicit, !!options\.lite, pre\.verdict\.mode\)/.test(hostSrc) && /guardrailUpgrade\(explicit, !!\(opts as Record<string, unknown>\)\.lite/.test(hostSrc), 'host：工具路径与 Remote 路径都过架构护栏强升')
 ok(/log\.modeUpgraded/.test(pipelineSrc) && /__upgradedFrom/.test(hostSrc) && /__upgradedFrom/.test(pipelineSrc), 'pipeline：升档落日志（调用方自选轻档位被护栏纠正时可见）')
 // 注入文案闭环（2026-09-16 实测补充）：实测会话 session-518e9188 里团队注入已下发、用户说「我想开发一个
@@ -610,6 +610,13 @@ ok(/st\.gitMode === 'none' \|\| options\.preAction === 'keep-nogit'/.test(hostSr
   ok(/triageCacheGet\(cacheKey\)/.test(hostSrc) && /triageCachePut\(cacheKey/.test(hostSrc), 'host：preflight **先查缓存再跑分诊**，跑完写缓存（否则两次分诊白花 ~16.5K tok/次）')
   ok(/triageCacheKey\(requirement, options\.requirementSupplement\)/.test(hostSrc), 'host：缓存键 = 需求 + 澄清答复（**不得**含 preAction/branchPolicy——正是它们导致重调，进键就永远命不中）')
   ok(/diag\.triageCacheHit/.test(hostSrc), 'host：缓存命中留痕（否则"为什么这次没跑分诊"会变成新的黑盒）')
+  // 待决策状态机（2026-09-18 二次修正：TTL 10 分钟失手——probe-cache 实测用户隔 55 分钟才点选；
+  // 有效性改为「仍在等用户回答」，TTL 降级为防泄漏兜底）
+  ok(/pendingDecision/.test(triageSrc2), 'triage：缓存条目带 pendingDecision（**有效性看"仍在等用户回答"，不看时间**）')
+  ok(/!hit\.pendingDecision && Date\.now\(\) - hit\.at > TRIAGE_CACHE_TTL_MS/.test(triageSrc2), 'triage：**待决策条目无视 TTL**（TTL 只做防泄漏兜底，不承担正确性）')
+  ok(/export function triageCacheMarkPending/.test(triageSrc2) && /export function triageCacheSettle/.test(triageSrc2), 'triage：待决策标记 / 落定 两个状态迁移函数（纯函数可单测）')
+  ok((hostSrc.match(/triageCacheMarkPending\(/g) || []).length >= 3, 'host：**每个"不建 run"的返回都标待决策**（needs-clarification / git-init / 分支决策 三处）')
+  ok(/triageCacheSettle\(triageKey\)/.test(hostSrc) && /triageCacheSettle\(pre\.cacheKey\)/.test(hostSrc), 'host：两条 start 路径（tool + Remote）在建 run 成功后都 settle')
 }
 ok(/options\.preAction === 'init'/.test(pipelineSrc) && /isDangerousVcsRoot\(journal\.workspacePath, homedir\(\)\)/.test(pipelineSrc), 'pipeline：preAction=init 执行期**二次校验**危险路径（不信任决策时刻的判断）→ 命中则降级为不初始化并继续')
 ok(/baselineSkip = dirTooLargeForBaseline/.test(pipelineSrc) && /commit\.baseline/.test(hostSrc), 'pipeline：init 时目录过大 → 只 init 不基线提交（git add -A 防全盘扫描）')

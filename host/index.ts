@@ -57,7 +57,7 @@ function countFilesBounded(dir: string, cap = 1000): number {
 }
 import { executePipeline, summarizeTimeline, startPipeline, resumeRun } from './core/pipeline.ts'
 import { cancelRun } from './core/context.ts'
-import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, normalizeMode, runTriage, guardrailUpgrade, triageCacheKey, triageCacheGet, triageCachePut, type TriageVerdict } from './core/triage.ts'
+import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, normalizeMode, runTriage, guardrailUpgrade, triageCacheKey, triageCacheGet, triageCachePut, triageCacheMarkPending, triageCacheSettle, type TriageVerdict } from './core/triage.ts'
 import { t, modeDesc } from './locales.ts'
 import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.ts'
 
@@ -87,17 +87,20 @@ async function clarificationPreflight(
   parent: unknown,
   signal: unknown,
   locale: ReturnType<typeof ambientLocale>,
-): Promise<{ needsClarification: { intent: string; blockers: TriageVerdict['blockers'] } } | { verdict: TriageVerdict | null; error?: string }> {
-  if (options.mode === 'patch') return { verdict: null }
+): Promise<
+  | { needsClarification: { intent: string; blockers: TriageVerdict['blockers'] }; cacheKey: string }
+  | { verdict: TriageVerdict | null; error?: string; cacheKey: string }
+> {
+  if (options.mode === 'patch') return { verdict: null, cacheKey: '' }
   // 分诊输入 = 需求原文 + 澄清答复（`[CLARIFIED]`）：否则答复不会被分诊看到 —— 实测 dddd：用户已逐项答复
   // （supplement 涨到 1012 字符），分诊却只看到那句「我想开发一个 dsh 插件」，同一个问题反复问了 6 轮、零 run。
   const triageInput = options.requirementSupplement
     ? `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-ask]\n${String(options.requirementSupplement)}`
     : requirement
-  // **分诊结果缓存**（2026-09-18 实锤新增）：决策返回路径会让同一条需求被分诊两次——实测 probe-clock
-  // tf-mu5wcm2j-kxk14y：首次 start 跑一次分诊（16.6K tok）→ 返回 needs-decision(git-init)、**不建 run** →
-  // 用户点选后主线程重调 → 又跑一次（16.5K tok）。两次结果一致，纯白花。键只含「需求 + 澄清答复」，
-  // **不含任何决策字段**（preAction/branchPolicy 正是导致重调的原因，进键就永远命不中）。
+  // **分诊结果缓存**（2026-09-18 实锤新增，二次修正见 triage.ts）：决策返回路径会让同一条需求被分诊两次。
+  // 键只含「需求 + 澄清答复」，**不含任何决策字段**（preAction/branchPolicy 正是导致重调的原因，进键就永远命不中）。
+  // 有效性由 `pendingDecision` 状态决定（"还在等用户回答同一个问题"），**不看时间**——实测用户隔 55 分钟才点选。
+  // 调用方在返回 needs-decision/needs-clarification 时置"待决策"、在建 run 成功后 `triageCacheSettle`。
   const cacheKey = triageCacheKey(requirement, options.requirementSupplement)
   const cached = triageCacheGet(cacheKey)
   let verdict: TriageVerdict | null = cached
@@ -115,16 +118,16 @@ async function clarificationPreflight(
       verdict = null
     }
   }
-  if (!verdict) return { verdict: null, error }
+  if (!verdict) return { verdict: null, error, cacheKey }
   // **收敛规则**（2026-09-16 dddd 实测）：调用方**还没给过**澄清答复时才拦；已给过（说明用户已澄清一轮）
   // → 不再拦，残余 blocker 当作假设开工（PRD 写进「假设与待澄清」段、完成汇报高亮）。否则同一个问题会被
   // 反复问、永不收敛（实测 6 轮、零 run）。
   const alreadyClarified = !!String(options.requirementSupplement || '').trim()
   if ((verdict.intent !== 'requirement' || verdict.blockers.length > 0) && !alreadyClarified) {
-    return { needsClarification: { intent: verdict.intent, blockers: verdict.blockers } }
+    return { needsClarification: { intent: verdict.intent, blockers: verdict.blockers }, cacheKey }
   }
   if (alreadyClarified && verdict.blockers.length > 0) (verdict as unknown as Record<string, unknown>).__clarifyProceeded = verdict.blockers.length
-  return { verdict }
+  return { verdict, cacheKey }
 }
 
 /* 阶段/模板提示词见 prompts/（AGENTS_TEMPLATE / MEMORY_TEMPLATE / productCtx / TOKEN_HYGIENE / *Prompt）。 */
@@ -298,7 +301,11 @@ function registerTools(ctx) {
         // 需求澄清闸门（快路径）：分支决策之前先过闸门/护栏。**权威判定在 pipeline 内**——这里失败不致命，
         // 原因记进 `__triageError` 由 pipeline 记 warn（实测：漏传 signal 会让工具内分诊秒退 fallback）。
         const pre = await clarificationPreflight(requirement, options as unknown as Record<string, unknown>, parent, exec && exec.signal, ambientLocale())
+        // 缓存键在**两条返回分支**上都有（pendingDecision 状态机要用；见 core/triage.ts 的缓存注释）
+        const triageKey = pre.cacheKey
         if ('needsClarification' in pre) {
+          // 返回 needs-clarification = 仍在等用户回答 → 标「待决策」（下次同键调用直接复用，隔多久都行）
+          triageCacheMarkPending(triageKey)
           return { status: 'needs-clarification', intent: pre.needsClarification.intent, blockers: pre.needsClarification.blockers }
         }
         if (pre.verdict) {
@@ -351,6 +358,9 @@ function registerTools(ctx) {
                       { label: t(ambientLocale(), 'git.opt.init', { baseline }), value: 'init' },
                       { label: t(ambientLocale(), 'git.opt.keep'), value: 'keep' },
                     ]
+                  // 仍在等用户决策 → 标「待决策」：下次同键调用（用户点选后重调）直接复用分诊裁决，
+                  // **不看间隔多久**（实测用户隔 55 分钟才点选，TTL 方案必然失手）
+                  triageCacheMarkPending(triageKey)
                   return {
                     status: 'needs-decision',
                     kind: 'git-init',
@@ -393,6 +403,8 @@ function registerTools(ctx) {
                     { label: t(ambientLocale(), 'branch.opt.commitNewChild'), value: 'commit+auto' },
                   ]
                 }
+                // 同上：分支决策也是「仍在等用户回答」→ 标待决策，点选后重调时复用分诊裁决
+                triageCacheMarkPending(triageKey)
                 return {
                   status: 'needs-decision',
                   question,
@@ -403,6 +415,9 @@ function registerTools(ctx) {
             } catch (e) { /* 分支检查失败：放行，由 sanity 注入 git 现状 */ }
           }
         }
+        // 走到这里 = 所有启动前决策都已用完 → 清除「待决策」（裁决本身降级为普通短期缓存，仍可被
+        // 快速重试命中，但不再无限期复用）
+        triageCacheSettle(triageKey)
         const runId = startPipeline(parent, requirement, options, exec && exec.signal)
         return { runId, status: 'running' }
       } catch (e) {
@@ -951,6 +966,8 @@ export class TeamflowService extends TypertRemoteService {
       // 需求澄清闸门（与 tool 路径同一条；权威判定在 pipeline 内）
       const pre = await clarificationPreflight(req, opts as Record<string, unknown>, agent, undefined, ambientLocale())
       if ('needsClarification' in pre) {
+        // 仍在等用户回答 → 标「待决策」（Remote 路径没有 git/分支决策，这是它唯一会"不建 run"的出口）
+        triageCacheMarkPending(pre.cacheKey)
         return { ok: false, status: 'needs-clarification', intent: pre.needsClarification.intent, blockers: pre.needsClarification.blockers }
       }
       if (pre.verdict) {
@@ -966,6 +983,7 @@ export class TeamflowService extends TypertRemoteService {
       } else if (pre.error) {
         ;(opts as Record<string, unknown>).__triageError = pre.error
       }
+      triageCacheSettle(pre.cacheKey) // 决策已用完 → 清除「待决策」
       const runId = startPipeline(agent, req, opts, undefined)
       const sc = workspaceScopeOf(agent)
       return { ok: true, runId, workspace: sc, product: opts.productRoot ? normalizeRoot(opts.productRoot) : null }
