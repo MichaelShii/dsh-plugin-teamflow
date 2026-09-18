@@ -363,17 +363,24 @@ export function noteTaskAssign(journal, role: string, assignee) {
 /* ── Dev 子卡（每个并行 dev agent 一张） ───────────────────────────── */
 
 /** 创建 dev 子卡：流水线 dev 阶段开始时，为每个 devTaskDef 建一张子卡。 */
-export function createSubtask(journal, title, spec) {
+export function createSubtask(journal, title, spec, dtId?: string | null) {
   const store = storeFor(journal.workspace || 'default')
   const mainTask = journal.taskId ? store.find('task', journal.taskId) : null
   if (!mainTask) return null
   const fullTitle = t(runLocaleOf(journal), 'backlog.devTitle', { title })
-  // 同名复用（2026-09-06，实锤 json-parse r1）：子卡 = 业务任务实体（同名一张，状态流转），
+  // 同任务复用（2026-09-06，实锤 json-parse r1）：子卡 = 业务任务实体（同任务一张，状态流转），
   // 执行历史在 journal stages（每次尝试独立记录）——不因重试/补跑新建卡导致看板膨胀。
   // retries 语义 = 本任务已被执行的次数 - 1（复用即递增）。
-  // 匹配键 = taskKey（2026-09-06 英文化：title 仅展示，代码匹配走 taskKey；存量卡无 taskKey 时 title 兜底）。
+  // **匹配键 = dtId（host 生成的任务身份，2026-09-18 修正，勿回退）**：旧实现按 `taskKey`（title）匹配，
+  // 而 title 会因「合并执行」被拼接（`T0 + T6 + T7`），resume 时补跑的单个任务 title 与之不等 →
+  // **同一任务建出第二张卡**（probe-cache 实锤 `tf-mu6tb281`：`dev-1` 与 `dev-7` 同为 T0、`dev-8` 同为 T6，
+  // 重复卡让看板与判定双双失真）。`dtId` 由 host 按蓝图顺序稳定生成，合并/补跑/重试下都不变。
+  // 存量兼容：老卡无 `dtId` → 回退 `taskKey`/`title` 匹配（只增不改）。
+  const key = dtId ? String(dtId) : null
   const existing = store.tasks.find((t) => t.reqId === journal.reqId && t.parentId === journal.taskId
-    && ((t.taskKey && t.taskKey === title) || (!t.taskKey && t.title === fullTitle)))
+    && (key
+      ? (t.dtId ? t.dtId === key : false)
+      : ((t.taskKey && t.taskKey === title) || (!t.taskKey && !t.dtId && t.title === fullTitle))))
   if (existing) {
     existing.status = 'pending'
     existing.failed = false
@@ -381,6 +388,7 @@ export function createSubtask(journal, title, spec) {
     existing.endedAt = null
     existing.retries = (existing.retries || 0) + 1
     existing.taskKey = existing.taskKey || title
+    if (key) existing.dtId = key
     existing.updatedAt = Date.now()
     store.persist()
     persistJournal(journal)
@@ -389,7 +397,7 @@ export function createSubtask(journal, title, spec) {
   const id = store.nextId('dev')
   const sub = {
     id, reqId: journal.reqId, parentId: journal.taskId, product: journal.workspace || 'default',
-    type: 'subtask', title: fullTitle, taskKey: title, spec: spec || '',
+    type: 'subtask', title: fullTitle, taskKey: title, dtId: key, spec: spec || '',
     status: 'pending', devAssign: (mainTask && mainTask.devAssign) || null, owner: null,
     retries: 0, humanIntervention: false, createdAt: Date.now(), updatedAt: Date.now(),
     events: [], bugIds: [], usage: null, byRole: {},

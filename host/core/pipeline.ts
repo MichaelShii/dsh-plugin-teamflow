@@ -9,7 +9,7 @@ import { initPipelineBacklog, advanceTask, storeFor, parseDefectRows, syncQaDefe
 import { withRetry, resolveChildRoute } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
-import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool, extractAssumptionsSection } from '../util.ts'
+import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool, extractAssumptionsSection, devTaskStatuses, devTaskIdAt } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, FIX_GATE_PATTERN } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
@@ -235,33 +235,39 @@ export function interruptedPhaseOf(journal) {
   return 'acceptance'
 }
 
-/** 任务级聚合（journal 驱动，2026-09-06 状态机化）：按 stage.taskKey（旧数据 label 兜底）分组——
- * 有 done stage = 任务已成功（历史失败尝试不算失败）。
- * resume 补跑判定/阶段完成判定共用；不读 backlog（两块业务线解耦——残留失败卡污染判定实锤 json-parse r1）。 */
-function devTaskStatuses(stages: Array<{ taskKey?: string | null; label?: string; seq?: number; status?: string }>): Map<string, { done: boolean; lastStatus: string | null; lastSeq: number }> {
-  const m = new Map<string, { done: boolean; lastStatus: string | null; lastSeq: number }>()
-  for (const s of stages || []) {
-    const title = String(s.taskKey || String(s.label || '').replace(DEV_TITLE_PREFIX, '').replace(RETRY_SUFFIX, '').trim())
-    if (!title) continue
-    const cur = m.get(title) || { done: false, lastStatus: null, lastSeq: -1 }
-    if ((s.seq || 0) > cur.lastSeq) { cur.lastSeq = s.seq || 0; cur.lastStatus = s.status || null }
-    if (s.status === 'done') cur.done = true
-    m.set(title, cur)
-  }
-  return m
-}
+/** 任务级聚合见 `util.devTaskStatuses`（纯函数，放 util 以便行为级测试直接 import——
+ *  pipeline 链到宿主私有 peer `@deepseek-ai/dsh-llm`，测试取不到，同 `cancelRun` 的处置）。
+ *  任务身份与 resume 判定的完整论证见该函数注释。 */
+
 
 /** 开发任务定义（单一来源）：架构蓝图自动拆 > 调用方显式 tasks > 整体开发兜底。
- * resume 补跑与正常执行共用（defByTitle 按 title 匹配失败子卡）。 */
-function buildDevTaskDefs(journal, tasks, locale: HostLocale = 'zh'): Array<{ title: string; spec: string; files: string[] }> {
+ *  resume 补跑与正常执行共用。
+ *
+ *  **`id` 是任务的身份（2026-09-18 新增，勿回退）**：由 **host 按定义顺序生成**（`dt-1`…`dt-N`），
+ *  与 `title` 彻底解耦。为什么必须这样——probe-cache 实锤 `tf-mu6tb281-4n43oc`：
+ *  ① 冲突检测（下方 mergedDefs）会把 files 有交集的任务**合并**，合并时 `title` 被拼成
+ *     `"T0 … + T6 … + T7 …"`（**host 自己拼的**，不是模型发挥），而 `taskKey` 当时只存 title；
+ *  ② resume 时 `buildDevTaskDefs` 重新从蓝图取回**未合并**的 `T0 …`/`T6 …`/`T7 …`；
+ *  ③ 判定按 title 全文精确匹配 → 三个都查不到 → 判定「未完成」→ **重复执行已成功的工作**
+ *     （backlog 里 `dev-1` 与 `dev-7` 同是 T0、`dev-8` 同是 T6，肉眼可见的重复卡）。
+ *  `id` 在**合并前**分配、合并时以数组累加，故"一个子代理干了三个任务"能被准确记账为
+ *  `taskIds=['dt-1','dt-7','dt-8']`，resume 时三个 id 各自命中「已做」。
+ *  **禁止回退为「按 title 匹配」或「按分隔符切分 title」**——那是拿文本长相当身份，同型的错已犯过两次
+ *  （per-plugin 正则、固定 .gitignore 词表）。 */
+export interface DevTaskDef { id: string; title: string; spec: string; files: string[] }
+
+function buildDevTaskDefs(journal, tasks, locale: HostLocale = 'zh'): DevTaskDef[] {
   const blueprintTasks = (journal.blueprint && Array.isArray(journal.blueprint.tasks) && journal.blueprint.tasks.length)
     ? journal.blueprint.tasks.map((t) => ({ title: t.title || t(locale, 'dev.blueprintTask'), files: Array.isArray(t.files) ? t.files : [], spec: t.spec || '' }))
     : []
-  return blueprintTasks.length
+  const base = blueprintTasks.length
     ? blueprintTasks
     : tasks.length > 0
-      ? tasks.map((t) => ({ title: t.title, spec: t.spec, files: [] }))
-      : [{ title: t(locale, 'dev.overall'), spec: t(locale, 'dev.overallSpec'), files: [] }]
+      ? tasks.map((t) => ({ title: t.title, spec: t.spec, files: [] as string[] }))
+      : [{ title: t(locale, 'dev.overall'), spec: t(locale, 'dev.overallSpec'), files: [] as string[] }]
+  // id 按定义顺序生成 —— 同一份蓝图（journal.blueprint 落盘后不变）必然产生同一组 id，
+  // 故 resume 重新调用本函数时 id 稳定可对齐（这正是 title 做不到的）。
+  return base.map((d, i) => ({ id: devTaskIdAt(i), title: d.title, spec: d.spec, files: d.files || [] }))
 }
 /**
  * 执行流水线。resume = null 全新运行；resume = { phase, products } 从断点续跑：
@@ -717,8 +723,9 @@ export async function executePipeline(
       // 判定完全基于 journal stages（devTaskStatuses），不读 backlog 子卡。
       devResults = resume.products.dev || []
       const taskStatuses = devTaskStatuses(journal.stages || [])
+      // 判定只认 id（2026-09-18）：合并执行过的任务在 taskIds 里逐个记账，故这里按 id 查即可命中
       const todo = buildDevTaskDefs(journal, tasks, locale).filter((d) => {
-        const st = taskStatuses.get(String(d.title || '').trim())
+        const st = taskStatuses.get(d.id)
         return !st || !st.done
       })
       if (todo.length === 0) {
@@ -729,19 +736,23 @@ export async function executePipeline(
         journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.resumeDev', { reused: reused.length, todo: todo.length }) })
         const rerun = await runPool(todo, maxConcurrency, async (task) => {          // resume 补跑诊断（缺口修复 2026-09-04）：resume 是全新子代理会话，不拼诊断=盲试
           // （与 withRetry 自动重试同构的问题——模型不知道上次为何失败，会重复踩同一坑）。
-          // 找该任务上次失败 stage（同 title 的最近失败），附 buildRetryDiagnostic（outcome/summary/产出尾部）。
-          const prevStage = [...journal.stages].reverse().find((s) => phaseKeyOf(s.phase) === 'dev' && s.status !== 'done' && ((s.taskKey && s.taskKey === String(task.title || '')) || (!s.taskKey && (s.label || '').includes(String(task.title || '')))))
+          // 找该任务上次失败 stage（**按 taskIds 含本任务 id** 的最近失败；存量无 taskIds 时回退 title 匹配），
+          // 附 buildRetryDiagnostic（outcome/summary/产出尾部）。
+          const prevStage = [...journal.stages].reverse().find((s) => phaseKeyOf(s.phase) === 'dev' && s.status !== 'done'
+            && (Array.isArray(s.taskIds) && s.taskIds.length
+              ? s.taskIds.includes(task.id)
+              : ((s.taskKey && s.taskKey === String(task.title || '')) || (!s.taskKey && (s.label || '').includes(String(task.title || ''))))))
           const resumePrompt = devPrompt(task, tech, prd, root, journal.id, state) + (prevStage ? buildRetryDiagnostic(2, prevStage) : '')
-          const devR = await withRetry(journal, parent, t(locale, 'dev.taskRerun', { title: task.title }), 'dev', resumePrompt, signal, task.title)
+          const devR = await withRetry(journal, parent, t(locale, 'dev.taskRerun', { title: task.title }), 'dev', resumePrompt, signal, task.title, null, [task.id])
           const rerunText = stageTextOf(devR)
           noteVerifyEvidence(devR.stage, rerunText)
           const ok = !!devR.text
-          return { title: task.title, failed: !ok, output: rerunText || t(locale, 'dev.failedPlaceholder') }
+          return { title: task.title, dtId: task.id, failed: !ok, output: rerunText || t(locale, 'dev.failedPlaceholder') }
         }, () => journal.cancelled)
         for (const t of rerun) {
           if (!t) continue // 取消后并发池不再取新任务 → 未启动的条目是 undefined（时间线里留空位）
-          // 子卡同步：createSubtask 同名复用（业务任务实体一张卡）+ completeSubtask 更新状态
-          const sub = createSubtask(journal, t.title, t.spec || '')
+          // 子卡同步：createSubtask 同任务复用（业务任务实体一张卡）+ completeSubtask 更新状态
+          const sub = createSubtask(journal, t.title, t.spec || '', t.dtId)
           if (sub) completeSubtask(journal, sub.id, t.failed, t.output ? snippet(t.output, 1000) : null, null)
         }
         devResults = [...reused, ...rerun]
@@ -754,23 +765,27 @@ export async function executePipeline(
       // dev 继承蓝图在既有架构上实现；无蓝图时退化为整体开发或调用方 tasks。
       const devTaskDefs = buildDevTaskDefs(journal, tasks, locale)
       // 冲突检测：蓝图任务文件有交集 → 合并（保证并发不写同一文件）；无交集才可并行
-      const mergedDefs: Array<{ title: string; files: string[]; spec: string }> = []
+      // **合并时 ids 一并累加**（2026-09-18）：title 拼接是给人看的，id 数组才是身份——
+      // 少了这一步，"一个子代理干了三个任务"就无法被 resume 正确识别（probe-cache 实锤）。
+      const mergedDefs: Array<{ ids: string[]; title: string; files: string[]; spec: string }> = []
       for (const t of devTaskDefs) {
         const hit = t.files && t.files.length
           ? mergedDefs.find((m) => m.files.some((f) => t.files.includes(f)))
           : undefined
         if (hit) {
+          hit.ids.push(t.id)
           hit.title = `${hit.title} + ${t.title}`
           hit.spec = `${hit.spec}${t.spec ? `；${t.spec}` : ''}`
           for (const f of (t.files || [])) if (!hit.files.includes(f)) hit.files.push(f)
         } else {
-          mergedDefs.push({ title: t.title, files: t.files || [], spec: t.spec || '' })
+          mergedDefs.push({ ids: [t.id], title: t.title, files: t.files || [], spec: t.spec || '' })
         }
       }
       journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devStart', { n: mergedDefs.length, concurrency: maxConcurrency, fromBlueprint: journal.blueprint && Array.isArray(journal.blueprint.tasks) && journal.blueprint.tasks.length ? t(locale, 'log.devFromBlueprint') : '' }) })
       advanceTask(journal, 'running', null, t(locale, 'event.devStart'), { by: 'dev' })
       // 为每个 dev 子任务建一张子卡（并行 agent 各自独立跟踪）
-      const subCards = mergedDefs.map((dt) => createSubtask(journal, dt.title, dt.spec))
+      // 传 ids[0] 作 dtId：合并任务的子卡归属其**首个**任务 id（保底唯一、稳定；合并语义在 stage.taskIds 里完整保留）
+      const subCards = mergedDefs.map((dt) => createSubtask(journal, dt.title, dt.spec, dt.ids[0]))
       devResults = await runPool(mergedDefs, maxConcurrency, async (task, idx) => {
         const sub = subCards[idx]
         if (sub) {
@@ -779,7 +794,7 @@ export async function executePipeline(
           const subLive = store.find('task', sub.id)
           if (subLive) { subLive.status = 'running'; subLive.startedAt = Date.now(); store.persist(); persistJournal(journal) }
         }
-        const devR = await withRetry(journal, parent, t(locale, 'dev.task', { title: task.title }), 'dev', devPrompt(task, tech, prd, root, journal.id, state), signal, task.title)
+        const devR = await withRetry(journal, parent, t(locale, 'dev.task', { title: task.title }), 'dev', devPrompt(task, tech, prd, root, journal.id, state), signal, task.title, null, task.ids)
         const devText = stageTextOf(devR)
         noteVerifyEvidence(devR.stage, devText)
         const ok = !!devR.text

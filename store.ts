@@ -20,8 +20,14 @@ export interface JournalStage {
   label: string
   /** 阶段英文键（2026-09-06 英文化：prd/design/scaffold/tech/dev/qa/acceptance；存量中文经迁移脚本映射）。 */
   phase: string
-  /** 任务键（dev 子任务聚合用：任务 title 数据值；非任务型阶段为 null）。 */
+  /** 任务键（dev 子任务聚合用：任务 title 数据值；非任务型阶段为 null）。
+   *  ⚠️ **仅作展示/子卡命名**——判定请看 `taskIds`（title 会因任务合并而被拼接，不是稳定身份）。 */
   taskKey?: string | null
+  /** **开发任务身份**（host 按蓝图定义顺序生成的 `dt-N`；2026-09-18 新增）。
+   *  合并任务（files 有交集被并成一个子代理）时是**数组**，如 `['dt-1','dt-7','dt-8']`。
+   *  resume 的「哪些任务已完成」判定**只认它**，不认 title（见 pipeline.devTaskStatuses）。
+   *  存量 stage 无此字段 → 判定回退 taskKey/label（只增不改，不影响历史 run）。 */
+  taskIds?: string[] | null
   status: string
   outcome?: string | null
   childId?: string | null
@@ -249,6 +255,7 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
       label: s.label,
       phase: s.phase,
       taskKey: s.taskKey || null,
+      taskIds: (Array.isArray(s.taskIds) && s.taskIds.length) ? s.taskIds : null,
       status: s.status,
       outcome: s.outcome || null,
       childId: s.childId || null,

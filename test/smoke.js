@@ -339,10 +339,27 @@ ok(/const beforeLen = journal\.stages\.length/.test(runnerSrc) && /lastStage = j
 ok(/stage: JournalStage \| null/.test(runnerSrc), 'runner：withRetry 返回携带 stage 引用')
 ok(/resumePrompt = devPrompt\(task, tech, prd, root, journal\.id, state\) \+ \(prevStage \? buildRetryDiagnostic\(2, prevStage\) : ''\)/.test(pipelineSrc), 'pipeline：resume 补跑附上次失败诊断（全新会话不再盲试——r37 实证 PowerShell 坑第三次踩）')
 ok(/throwIfAborted: \(\) => \{\}/.test(utilSrc) && /typeof s\.throwIfAborted === 'function'/.test(utilSrc), 'util：SAFE_SIGNAL 补 throwIfAborted + 真 AbortSignal 判定（宿主 09-04+ 硬依赖——r1 json 树图 3 任务 3 轮 resume 全失败 root cause）')
-ok(/function devTaskStatuses/.test(pipelineSrc) && /有 done stage = 任务已成功/.test(pipelineSrc), 'pipeline：任务级聚合 devTaskStatuses（journal 驱动——有 done stage 即任务成功，历史失败尝试不算失败）')
+ok(/export function devTaskStatuses/.test(utilSrc) && /有 done stage = 该任务已成功/.test(utilSrc), 'util：任务级聚合 devTaskStatuses（放 util 以便行为级测试直接 import——pipeline 链宿主私有 peer 取不到）')
+// 任务身份 = host 生成的 dt-N（2026-09-18 实锤 probe-cache tf-mu6tb281：合并执行把 title 拼成
+// "T0 + T6 + T7"，resume 拿未合并的 title 去查必然落空 → 重复执行已成功的 T0/T6/T7）
+ok(/return `dt-\$\{index \+ 1\}`/.test(utilSrc), 'util：dev 任务 id 由 **host 按定义顺序生成**（dt-N，与 title 彻底解耦——禁止拿文本长相当身份）')
+ok(/export interface DevTaskDef \{ id: string/.test(pipelineSrc), 'pipeline：DevTaskDef 带 id（任务身份的结构化载体）')
+ok(/hit\.ids\.push\(t\.id\)/.test(pipelineSrc), 'pipeline：**合并任务时 ids 数组累加**（title 拼接只给人看，id 数组才是身份——少了这步合并过的任务无法被 resume 识别）')
+ok(/taskIds: \(Array\.isArray\(taskIds\) && taskIds\.length\) \? \[\.\.\.taskIds\] : null/.test(runnerSrc), 'runner：stage 落 taskIds（数组，合并任务时为多项）')
+ok(/taskIds\?: string\[\] \| null/.test(storeSrc) && /taskIds: \(Array\.isArray\(s\.taskIds\)/.test(storeSrc), 'store：serializeJournal 序列化 taskIds')
+ok(/const fromIds = Array\.isArray\(s\.taskIds\)/.test(utilSrc), 'util：devTaskStatuses **按 taskIds 归并**（逐 id 记账：合并执行过的任务各自命中已做）')
+ok(/const st = taskStatuses\.get\(d\.id\)/.test(pipelineSrc), 'pipeline：resume 判定按 **id** 查（不再用 title——这正是那次重复补跑的根因）')
+ok(!/taskStatuses\.get\(String\(d\.title \|\| ''\)\.trim\(\)\)/.test(pipelineSrc), 'pipeline：**不得回退**为按 title 查任务状态')
+ok(/存量兼容/.test(utilSrc), 'util：存量 stage 无 taskIds → 回退 taskKey/label（只增不改，历史 run 判定不受影响）')
 ok(/const todo = buildDevTaskDefs\(journal, tasks, locale\)\.filter/.test(pipelineSrc) && /!st \|\| !st\.done/.test(pipelineSrc), 'pipeline：resume 开发分支统一补跑「未成功任务」+ 复用已完成产物（json-parse r1 实锤根治——不再读 backlog 子卡）')
 ok(/if \(phase === 'dev'\)/.test(pipelineSrc) && /\[\.\.\.statuses\.values\(\)\]\.some\(\(st\) => !st\.done\)/.test(pipelineSrc), 'pipeline：interruptedPhaseOf 任务级聚合——任务全 done = 阶段完成（部分成功阶段 resume 起点回开发补跑）')
-ok(/同名复用（2026-09-06/.test(backlogSrc) && /store\.tasks\.find\(\(t\) => t\.reqId === journal\.reqId/.test(backlogSrc), 'backlog：createSubtask 同名复用（业务任务实体一张卡 + retries 计数；执行历史在 journal）')
+ok(/同任务复用（2026-09-06/.test(backlogSrc) && /store\.tasks\.find\(\(t\) => t\.reqId === journal\.reqId/.test(backlogSrc), 'backlog：createSubtask 同任务复用（业务任务实体一张卡 + retries 计数；执行历史在 journal）')
+// 子卡匹配键 = dtId（2026-09-18）：旧实现按 title 匹配，合并任务把 title 拼接后，resume 补跑的单任务
+// title 与之不等 → 同一任务建出第二张卡（probe-cache 实锤：dev-1 与 dev-7 同为 T0、dev-8 同为 T6）
+ok(/export function createSubtask\(journal, title, spec, dtId\?/.test(backlogSrc), 'backlog：createSubtask 接受 dtId（任务身份）')
+ok(/dtId: key/.test(backlogSrc) && /t\.dtId \? t\.dtId === key : false/.test(backlogSrc), 'backlog：子卡匹配优先 dtId（存量卡无 dtId 才回退 title 匹配——只增不改）')
+ok(/createSubtask\(journal, dt\.title, dt\.spec, dt\.ids\[0\]\)/.test(pipelineSrc), 'pipeline：新开发建子卡传 dtId（合并任务取首个 id，保底唯一稳定）')
+ok(/createSubtask\(journal, t\.title, t\.spec \|\| '', t\.dtId\)/.test(pipelineSrc), 'pipeline：resume 补跑建子卡传 dtId（同一任务复用原卡，不再建重复卡）')
 // 开发收口（2026-09-16 实测：resume 后中断，dev 全「已中止」却径直起了 QA 子代理）：取消检查与提测门禁
 // 原先只写在「新开发」分支里，resume 补跑分支没有 → 必须落在两个分支的**汇合点**，且顺序是**先取消后门禁**
 // （取消时 dev 任务的 failed 只是「没跑完」，不该被记成提测失败转人工）。
@@ -361,7 +378,7 @@ ok(/PHASE_ORDER = \['prd', 'design'/.test(constantsSrc), 'constants：PHASE_ORDE
 ok(/export function phaseKeyOf/.test(constantsSrc), 'constants：phaseKeyOf 归一（中文存量兼容防御）')
 ok(/taskKey: taskKey \|\| null/.test(runnerSrc) && /taskKey\?: string \| null/.test(runnerSrc), 'runner：withRetry/runAgent 携带 taskKey（结构化任务键，不解析 label）')
 ok(/taskKey: s\.taskKey \|\| null/.test(storeSrc), 'store：serializeJournal 序列化 taskKey')
-ok(/s\.taskKey \|\| String\(s\.label/.test(pipelineSrc), 'pipeline：devTaskStatuses 按 taskKey 聚合（label 仅旧数据兜底）')
+ok(/s\.taskKey \|\| String\(s\.label/.test(utilSrc), 'util：存量回退路径——taskKey 优先、label 仅旧数据兜底（只增不改）')
 ok(/scripts\/migrate-phase-en\.mjs/.test(readFileSync(join(here, '../package.json'), 'utf8') || '') || true, '迁移脚本存在（scripts/migrate-phase-en.mjs）')
 ok(/多源回退（实锤 json-parse r1/.test(guardSrc) && /snapshotEvents/.test(guardSrc) && /ownEvents/.test(guardSrc), 'guard：eventsOf 多源回退（events→snapshotEvents→ownEvents 取最长——r1 QA 误杀 root cause 修复）')
 ok(/isAgentBusy\(run\)/.test(guardSrc) && /busyWarned/.test(guardSrc), 'guard：挂死守卫（agent 非 idle + 已动手 → 视图失明不误杀，记诊断继续观察）')
@@ -451,7 +468,7 @@ ok(/function supportedEfforts/.test(runnerSrc) && /resolveModelInfo/.test(runner
 ok(/async function resolveStageEffort/.test(runnerSrc) && /attempt > 1 \? 'high' : base/.test(runnerSrc), 'runner：重试回升 high（质量优先，ADR-0006）')
 ok(/\(e as \{ id\?: unknown \}\)\.id === 'string'/.test(runnerSrc), 'runner：efforts 取对象数组的 id（宿主 LlmReasoningEffortInfo 是 {id,name}，非字符串数组——2026-09-11 实锤静默失效）')
 ok(/推理强度未降档/.test(hostSrc), 'runner：探测失败/档位不支持时记 warn（静默失败可见化）')
-ok(/reasoningEffort: effort/.test(runnerSrc) && /effortHint/.test(runnerSrc) && /attempt, effortHint\)/.test(runnerSrc), 'runner：agentOptions 带 reasoningEffort（effortHint 参数链穿透到 runAgent）')
+ok(/reasoningEffort: effort/.test(runnerSrc) && /effortHint/.test(runnerSrc) && /attempt, effortHint, taskIds\)/.test(runnerSrc), 'runner：agentOptions 带 reasoningEffort（effortHint/taskIds 参数链穿透到 runAgent）')
 ok(/options\.mode === 'patch' \? MECHANICAL_STAGE_EFFORT : null/.test(pipelineSrc) && /'scaffold', scaffoldPrompt\([\s\S]{0,140}MECHANICAL_STAGE_EFFORT\)/.test(pipelineSrc), 'pipeline：仅 patch 单点确认 + scaffold 两处降档（判据类阶段保持宿主默认 high）')
 
 console.log('── 3t) 收口提交面：插件自有日志不进提交（2026-09-11 实锤 assetd 92% 噪音）──')

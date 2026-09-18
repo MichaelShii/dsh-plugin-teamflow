@@ -113,10 +113,12 @@ export function resolveChildRoute(parent: ParentAgentLike): { provider?: string;
   return out
 }
 
-/** 运行单个阶段子代理：执行 + 产出实质校验 + token 双口径计量 + stage 状态流转。 */
+/** 运行单个阶段子代理：执行 + 产出实质校验 + token 双口径计量 + stage 状态流转。
+ *  `taskIds`：本阶段承载的**开发任务身份**（host 生成的 `dt-N`；合并任务时是数组）。
+ *  与 `taskKey`（人读标题）分家——判定只认 id，title 只作展示（见 pipeline.buildDevTaskDefs 注释）。 */
 export async function runAgent(
   journal: Journal, parent: ParentAgentLike, label: string, phase: string, prompt: string, signal: unknown, taskKey?: string | null,
-  attempt = 1, effortHint?: string | null,
+  attempt = 1, effortHint?: string | null, taskIds?: string[] | null,
 ): Promise<string | null> {
   const maxSeq = journal.stages.length ? Math.max(...journal.stages.map((s) => s.seq)) : 0
   // run 语言快照（AC-2）：诊断/日志/失败摘要一律随 run，不受界面当前语言影响
@@ -125,6 +127,7 @@ export async function runAgent(
   const stage: JournalStage = {
     seq: maxSeq + 1, label, phase, status: 'running', outcome: null,
     taskKey: taskKey || null,
+    taskIds: (Array.isArray(taskIds) && taskIds.length) ? [...taskIds] : null,
     childId: null, startedAt: Date.now(), endedAt: null, summary: null,
     usage: null, handoff: null, output: null,
   }
@@ -268,6 +271,7 @@ async function sleepUnlessCancelled(ms: number, isCancelled: () => boolean): Pro
  * `effortHint`：机械阶段的推理强度降档提示（第 1 次尝试生效，重试自动回升 high，见 resolveStageEffort）。 */
 export async function withRetry(
   journal: Journal, parent: unknown, label: string, phase: string, prompt: string, signal: unknown, taskKey?: string | null, effortHint?: string | null,
+  taskIds?: string[] | null,
 ): Promise<{ text: string | null; attempts: number; freshTokens: number; stage: JournalStage | null }> {
   let attempts = 0
   let freshTokens = 0
@@ -287,7 +291,7 @@ export async function withRetry(
     // runAgent 同步 push 本次尝试的 stage（第一个 await 前），期间其他任务的 runAgent
     // 可能已 push 新 stage；用 length-1 取 stage 会错位（证据块/重试诊断/usage 累计全串）。
     const beforeLen = journal.stages.length
-    const result = await runAgent(journal, parent, labelNow, phase, promptNow, signal, taskKey, attempt, effortHint)
+    const result = await runAgent(journal, parent, labelNow, phase, promptNow, signal, taskKey, attempt, effortHint, taskIds)
     lastStage = journal.stages[beforeLen] || null
     // 累计本次调用各次尝试的**新增**消耗（input+cacheWrite+output；cacheRead 是廉价重放，
     // 不计入熔断——旧口径含 cacheRead 导致「一次失败必熔断」，见 FRESH_TOKEN_BUDGET 注释）

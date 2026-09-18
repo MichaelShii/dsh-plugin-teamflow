@@ -581,6 +581,57 @@ export function extractAssumptionsSection(doc: string | null | undefined): strin
   return null
 }
 
+/* ── dev 任务身份与 resume 判定（2026-09-18 实锤修复，勿回退）─────────────────────────
+ * 背景（probe-cache `tf-mu6tb281-4n43oc`，用户实测「T0 被触发两次，第一次明面成功了」）：
+ *  ① 冲突检测把 files 有交集的任务**合并**成一个子代理执行，合并时 title 被**拼接**成
+ *     `"T0 … + T6 … + T7 …"`（host 自己拼的，不是模型发挥）；旧实现只把 title 存进 `taskKey`；
+ *  ② resume 时任务定义重新从蓝图取回**未合并**的 `T0 …`/`T6 …`/`T7 …`；
+ *  ③ 判定按 title 全文精确匹配 → 三个都查不到 → 判「未完成」→ **重复执行已成功的工作**
+ *     （backlog 里 `dev-1` 与 `dev-7` 同为 T0、`dev-8` 同为 T6，肉眼可见的重复卡）。
+ * 修法：host 按定义顺序生成稳定 `dt-N` 作任务身份，合并时 `taskIds` 数组累加，判定只认 id。
+ *
+ * **为什么放在 util 而不是 pipeline**：判定必须可被行为级测试直接 import，而 pipeline 链到宿主私有
+ * peer `@deepseek-ai/dsh-llm`（仓库内无 node_modules，测试取不到）——与 `cancelRun` 住 context.ts 同因。
+ *
+ * **禁止回退为「按 title 匹配」或「按分隔符切分 title」**：那是拿文本长相当身份，同型的错已犯过两次
+ * （per-plugin 正则、固定 .gitignore 词表）。回归门禁 = `test/dev-task-id.test.js`（实锤形状复刻）。
+ */
+
+/** dev 阶段 label 的「开发 · 」前缀（zh 存量兼容 + en）。 */
+const DEV_TITLE_PREFIX_LOCAL = /^(?:开发|Dev) · /
+/** 重试/补跑后缀（zh + en：en 侧必须覆盖词典 `dev.taskRetry` 的实际产出 `(attempt N)`）。 */
+const RETRY_SUFFIX_LOCAL = /(?:（(?:第 \d+ 次重试|补跑)）| \((?:retry \d+|attempt \d+|follow-up run)\))$/
+
+/**
+ * 任务级聚合（journal 驱动）：有 done stage = 该任务已成功（历史失败尝试不翻案）。
+ *
+ * 按 **`stage.taskIds`** 归并——一个 stage 可能同时承载多个任务（合并执行），此时逐 id 记账，
+ * 故合并执行过的任务在 resume 时**各自命中已做**，不会被重复补跑。
+ * **存量兼容**：升级前的 stage 无 `taskIds` → 回退 `taskKey`/`label` 作 key（只增不改，不影响历史 run）。
+ */
+export function devTaskStatuses(stages: Array<{ taskKey?: string | null; taskIds?: string[] | null; label?: string; seq?: number; status?: string }>): Map<string, { done: boolean; lastStatus: string | null; lastSeq: number }> {
+  const m = new Map<string, { done: boolean; lastStatus: string | null; lastSeq: number }>()
+  for (const s of stages || []) {
+    const fromIds = Array.isArray(s.taskIds)
+      ? s.taskIds.filter((x): x is string => typeof x === 'string' && !!x.trim())
+      : []
+    const ids = fromIds.length
+      ? fromIds
+      : [String(s.taskKey || String(s.label || '').replace(DEV_TITLE_PREFIX_LOCAL, '').replace(RETRY_SUFFIX_LOCAL, '').trim())].filter(Boolean)
+    for (const key of ids) {
+      const cur = m.get(key) || { done: false, lastStatus: null, lastSeq: -1 }
+      if ((s.seq || 0) > cur.lastSeq) { cur.lastSeq = s.seq || 0; cur.lastStatus = s.status || null }
+      if (s.status === 'done') cur.done = true
+      m.set(key, cur)
+    }
+  }
+  return m
+}
+
+/** dev 任务身份生成（host 侧，按定义顺序）：同一份蓝图必然产生同一组 id，故 resume 可稳定对齐。
+ *  蓝图落盘后不变 → id 稳定；title 会因合并/措辞变化 → 故不可作身份（见上方注释）。 */
+export function devTaskIdAt(index: number): string { return `dt-${index + 1}` }
+
 /* ── 版本控制安全（2026-09-17）：「改动存档」两态模型的防线 ─────────────────────────
  * 背景：dddd 两条 run 的产物因「工作区不是 git 仓库」而从未进入任何版本库（入口静默跳过决策、
  * 出口把提交失败记成"忽略"）。方案 A：入口问一次（人话问句 + 推荐），答案记住（state.gitMode），
