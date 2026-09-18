@@ -12,7 +12,7 @@
  *     实测模型系统性自选 `lite:true`（33 次启动 14 次显式传档位、0 次先预览），故放宽为「只有 patch 豁免」。
  * 另外锁住意图归一（非法值一律 requirement，绝不因字段缺失拦启动）。
  */
-import { qualifyBlockers, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, triageCacheIsPending, triageCacheMarkPending, triageCacheSettle, TRIAGE_CACHE_MAX } from '../host/core/triage.ts'
+import { qualifyBlockers, normalizeSettle, TRIAGE_SETTLES, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, triageCacheIsPending, triageCacheMarkPending, triageCacheSettle, TRIAGE_CACHE_MAX } from '../host/core/triage.ts'
 import { extractAssumptionsSection } from '../host/util.ts'
 
 let failed = 0
@@ -54,6 +54,21 @@ ok(capped.dropped === 2, '超额部分计入 dropped')
 ok(qualifyBlockers([{ ...full, question: 'q'.repeat(999) }]).blockers[0].question.length <= 300, '问题文本截断 ≤300 字符')
 const longReadings = qualifyBlockers([{ ...full, readings: ['r'.repeat(999), 'r2'] }]).blockers[0].readings
 ok(longReadings.length === 2 && longReadings[0].length <= 200, '读法截断 ≤200 字符、条数 ≤4')
+
+console.log('\n[2b] 自洽门禁：已判定的字段不得再被当成未知来问（2026-09-18 probe-v2 实锤）')
+console.log('     实测：需求结尾写着「装进我的 dsh web profile 里真实可用」、分诊自己已输出 installable=true，')
+console.log('     却仍抛出「要不要真能装」的 blocker（prompt 里"Do not ask it…"就在同一份 prompt 里）→')
+console.log('     凭空一轮澄清（用户答 3 个问题）→ 输入变了 → 缓存必然不命中 → 同一需求被分诊两次')
+const formGap = { settles: 'installable', question: 'must it be installable?', readings: ['installable into profile', 'source-only'], changes: 'AC set', rework: 'packaging' }
+ok(qualifyBlockers([formGap], { installable: true }).blockers.length === 0, '**installable=true + settles=installable → 丢弃**（自相矛盾）')
+ok(qualifyBlockers([formGap], { installable: true }).dropped === 1, '丢弃计入 dropped（诊断可见，不静默）')
+ok(qualifyBlockers([formGap], { installable: false }).blockers.length === 1, 'installable=false 时保留（false 是"模型没给"的默认值，可能是真未知）')
+ok(qualifyBlockers([formGap]).blockers.length === 1, '不给 ctx（旧调用方）→ 保留（不误丢真缺口）')
+ok(qualifyBlockers([{ ...formGap, settles: 'scope' }], { installable: true }).blockers.length === 1, 'settles=scope 的 blocker 不受该门禁影响（只对形态类生效）')
+ok(qualifyBlockers([{ ...formGap, settles: 'ui' }], { installable: true }).blockers.length === 1, 'settles=ui 同样不受影响')
+ok(qualifyBlockers([full], { installable: true }).blockers[0].settles === 'other', '未声明的 settles → 归一为 other（旧裁决不退化成形态类）')
+ok(normalizeSettle('installable') === 'installable' && normalizeSettle('nonsense') === 'other' && normalizeSettle(undefined) === 'other', 'settles 归一：非法/缺失 → other')
+ok(TRIAGE_SETTLES.length === 6 && TRIAGE_SETTLES.indexOf('installable') !== -1, 'settles 枚举固定六档')
 
 console.log('\n[3] 兜底路径绝不拦启动（无 subagents → fallbackVerdict）')
 const fx = await runTriage('给登录页加个记住我勾选框', { needDesign: false }, undefined, undefined, 'zh')
@@ -99,6 +114,19 @@ ok(guardrailUpgrade('medium', false, 'medium') === null, '显式 medium + 分诊
 ok(guardrailUpgrade('medium', false, 'full') === null, '显式 medium + 分诊 full → 保持调用方选择（不无谓放大 token）')
 ok(guardrailUpgrade('full', false, 'lite') === null, '显式 full + 分诊 lite → 不降档（尊重调用方）')
 ok(guardrailUpgrade('tech', false, 'medium') === 'medium', '显式 tech + 分诊 medium → 升档（tech 与 lite 同级，架构型需求仍要蓝图）')
+
+console.log('\n[5b] needDesign 档位下限（2026-09-18 probe-v2 实锤：调用方传 needDesign=true、分诊回 lite，')
+console.log('     而 lite 的档位定义就是「no UI design」——语义冲突，旧实现让 lite 直接落地；prompt 里那句')
+console.log('     "needDesign=true → 强升 medium" 只是 regex 预筛提示，模型可无视（实测就被无视了）')
+ok(guardrailUpgrade(undefined, false, 'lite', { needDesign: true }) === 'medium', '**未给档位 + needDesign=true + 分诊 lite → 抬到 medium**（本次实锤路径）')
+ok(guardrailUpgrade(undefined, false, 'patch', { needDesign: true }) === 'medium', '同上（patch 也抬到 medium）')
+ok(guardrailUpgrade(undefined, false, 'tech', { needDesign: true }) === 'medium', '同上（tech 与 lite 同级，同样抬到 medium）')
+ok(guardrailUpgrade(undefined, false, 'medium', { needDesign: true }) === 'medium', '分诊已是 medium → 维持（不无谓放大）')
+ok(guardrailUpgrade(undefined, false, 'full', { needDesign: true }) === 'full', '分诊判 full → 维持 full（不降档）')
+ok(guardrailUpgrade(undefined, false, 'lite') === 'lite', '没有 needDesign → 照用分诊的 lite（下限只在显式要求设计阶段时生效）')
+ok(guardrailUpgrade(undefined, false, 'lite', { needDesign: false }) === 'lite', 'needDesign=false → 同上（不生效）')
+ok(guardrailUpgrade('lite', true, 'lite', { needDesign: true }) === null, '**调用方显式 lite=true 时以调用方为准**（设计阶段由 resolveStages 按 flag 追加，不改档位标签）')
+ok(guardrailUpgrade('medium', false, 'medium', { needDesign: true }) === null, '调用方显式 medium → 不改动')
 
 console.log('\n[6] 交付形态契约（2026-09-17 实测：dddd 的插件"看着完整"却装不进 profile——"能被宿主加载"从未进过 AC）')
 ok(normalizeArtifact('plugin-full') === 'plugin-full', '合法形态直通')

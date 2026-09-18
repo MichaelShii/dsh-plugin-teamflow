@@ -202,6 +202,7 @@ const backlogSrc = readFileSync(join(here, '../host/core/backlog.ts'), 'utf8')
 const pipelineSrc = readFileSync(join(here, '../host/core/pipeline.ts'), 'utf8')
 const runnerSrc = readFileSync(join(here, '../host/core/runner.ts'), 'utf8')
 const promptsSrc = readFileSync(join(here, '../host/prompts/index.ts'), 'utf8')
+const triageSrc = readFileSync(join(here, '../host/core/triage.ts'), 'utf8')
 // 1) workspace 级团队工作台（workspace = 项目根 = 会话 cwd，无需额外声明）
 ok(/workspaceScopeOf/.test(contextSrc) && /session\.header\.cwd/.test(contextSrc), 'workspace 由会话 cwd 推导（项目根即工作区）')
 ok(/function sessionScope/.test(hostSrc) && /function runsFor\(/.test(hostSrc), 'service 按 sessionId→workspace 过滤运行/backlog')
@@ -595,7 +596,15 @@ ok(!/Lightweight mode for small changes \(recommended\)/.test(hostSrc), 'host：
 ok(/Do NOT pick the tier yourself by default/.test(hostSrc) && /let auto-triage decide/.test(hostSrc), 'host：lite/mode 描述明确「默认不要自选档位，交给自动分诊」')
 ok(/omit `mode`\/`lite` and let auto-triage decide the tier/.test(hostSrc), 'host：工具描述同步该口径（Routing 段）')
 ok(/if \(options\.mode === 'patch'\) return \{ verdict: null/.test(hostSrc), 'host：预检只豁免 patch（lite/显式 mode 一律跑分诊，否则 42% 启动绕过闸门与架构护栏）')
-ok(/guardrailUpgrade\(explicit, !!options\.lite, pre\.verdict\.mode\)/.test(hostSrc) && /guardrailUpgrade\(explicit, !!\(opts as Record<string, unknown>\)\.lite/.test(hostSrc), 'host：工具路径与 Remote 路径都过架构护栏强升')
+ok(/guardrailUpgrade\(explicit, !!options\.lite, pre\.verdict\.mode, \{ needDesign: options\.needDesign === true \}\)/.test(hostSrc) && /guardrailUpgrade\(explicit, !!\(opts as Record<string, unknown>\)\.lite, pre\.verdict\.mode, \{ needDesign/.test(hostSrc), 'host：工具路径与 Remote 路径都过架构护栏强升（并带上 needDesign 档位下限）')
+// needDesign 档位下限（2026-09-18 probe-v2 实锤：调用方传 needDesign=true、分诊回 lite，而 lite 的档位定义
+// 就是「no UI design」；prompt 里那句「needDesign=true → 强升 medium」只是 regex 预筛提示，实测被模型无视）
+ok(/if \(opts && opts\.needDesign === true && want < MODE_RANK\.medium\) return 'medium'/.test(triageSrc), 'triage：**未给档位 + 显式 needDesign=true + 分诊判轻档位 → 抬到 medium**（把预筛提示变成宿主判定）')
+// 形态类 blocker 自洽门禁（2026-09-18 probe-v2 实锤：需求已写「装进我的 dsh web profile」、分诊自己已判
+// installable=true，却仍抛出「要不要真能装」→ 凭空一轮澄清 → 输入变了 → 缓存必然不命中 → 同一需求分诊两次）
+ok(/settles === 'installable' && ctx && ctx\.installable === true/.test(triageSrc), 'triage：**形态类 blocker 自洽门禁**（已判 installable=true 却仍问「要不要能装」→ 丢弃并计数）')
+ok(/qualifyBlockers\(raw\.blockers, \{ installable: raw\.installable === true \}\)/.test(triageSrc) && /qualifyBlockers\(o\.blockers, \{ installable: o\.installable === true \}\)/.test(pipelineSrc), 'triage/pipeline：两条解析路径都把 installable 传给合格线（漏传 = 门禁失效）')
+ok(/"settles": "installable\|artifact\|scope\|ui\|data\|other"/.test(promptsSrc) && /settles: TriageSettle/.test(triageSrc), 'prompt/triage：blocker 带机器可读的 settles 字段（宿主只做一致性检查，**不解析问句文本**）')
 ok(/log\.modeUpgraded/.test(pipelineSrc) && /__upgradedFrom/.test(hostSrc) && /__upgradedFrom/.test(pipelineSrc), 'pipeline：升档落日志（调用方自选轻档位被护栏纠正时可见）')
 // 注入文案闭环（2026-09-16 实测补充）：实测会话 session-518e9188 里团队注入已下发、用户说「我想开发一个
 // dsh 插件」，但**模型根本没调用 teamflow_start**（0 次调用、该产品线 runs=0）——不复现「抢跑」，可闸门也
@@ -686,7 +695,6 @@ ok(/args\.preAction === 'stash' \|\| args\.preAction === 'commit' \|\| args\.pre
 // 分诊超时 90s→240s + fallback 原因可见化（2026-09-18 probe-clock 截图实锤：分诊子代理推理中被
 // 90s dispose（UI「已停止」），journal 只剩一条 fallback info——没人知道为什么）
 {
-  const triageSrc = readFileSync(join(here, '../host/core/triage.ts'), 'utf8')
   ok(/TRIAGE_TIMEOUT_MS = 240000/.test(triageSrc), 'triage：分诊超时常量 240s（90s 时代分诊职责已翻倍，深思考模型答不完）')
   ok(/fallbackReason/.test(triageSrc) || /fallbackReason/.test(pipelineSrc), 'triage：fallback 必须带退化原因（fallbackReason → warn 可见化，不再黑盒）')
   ok(/log\.triageFallbackReason/.test(pipelineSrc), 'pipeline：分诊退化原因记 warn（含原因摘要）')

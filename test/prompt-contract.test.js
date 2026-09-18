@@ -126,8 +126,8 @@ console.log('── L1 prompt 行为级契约（工厂真实产出断言）─�
 // 这两条是闸门的数据源：分诊不输出 intent/blockers → 探索态需求直接开跑；PRD 不写假设段 → 假设继续不可见。
 assertContract({
   id: 'TRIAGE-INTENT-BLOCKERS', level: 'policy', targets: 'triagePrompt',
-  intent: '分诊输出 intent（需求/探索/反馈）+ 合格 blocker 四字段（question/readings≥2/changes/rework）',
-  include: [/"intent": "requirement\|exploration\|feedback"/, /"blockers": \[\{ "question"/, /\[INTENT — decide before mode\]/, /\[BLOCKERS — must-know gaps only\]/, /readings/, /rework/],
+  intent: '分诊输出 intent（需求/探索/反馈）+ 合格 blocker 五字段（settles + question/readings≥2/changes/rework）',
+  include: [/"intent": "requirement\|exploration\|feedback"/, /"blockers": \[\{ "settles": "installable\|artifact\|scope\|ui\|data\|other", "question"/, /\[INTENT — decide before mode\]/, /\[BLOCKERS — must-know gaps only\]/, /readings/, /rework/],
 })
 assertContract({
   id: 'PRD-ASSUMPTIONS-SECTION', level: 'policy', targets: 'prdPrompt',

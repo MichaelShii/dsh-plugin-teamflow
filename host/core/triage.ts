@@ -217,8 +217,27 @@ export function artifactContractsFor(kind: ArtifactKind, installable: boolean): 
 /** 需求意图。 */
 export type TriageIntent = 'requirement' | 'exploration' | 'feedback'
 
+/**
+ * blocker **要定的是哪个裁决字段**（机器可读，供宿主做「自洽门禁」）。
+ *
+ * 存在的理由（2026-09-18 probe-v2 实锤）：同一次裁决里模型已经判了 `installable: true`，却**同时**把
+ * 「要不要真能装进 profile」当成未知来问 —— prompt 里那句 "Do not ask it when the requirement already
+ * states the form" 就在同一份 prompt 里，照样被违反。宿主无法从问句文本判断一条 blocker 在问什么
+ * （拿文本长相当判据是本项目已两次踩过的坑），所以让模型**显式声明**它要定哪个字段，宿主只做一致性
+ * 检查：**已判定的字段不得再被当成未知来问**。
+ */
+export type TriageSettle = 'installable' | 'artifact' | 'scope' | 'ui' | 'data' | 'other'
+
+export const TRIAGE_SETTLES: TriageSettle[] = ['installable', 'artifact', 'scope', 'ui', 'data', 'other']
+
+/** 归一：非法/缺失一律 `other`（= 不参与自洽门禁，绝不因字段缺失误丢一条真缺口）。 */
+export const normalizeSettle = (raw: unknown): TriageSettle =>
+  (TRIAGE_SETTLES.indexOf(raw as TriageSettle) !== -1 ? (raw as TriageSettle) : 'other')
+
 /** 动工前 must-know 缺口（三条证据齐全才成立，见 qualifyBlockers）。 */
 export interface TriageBlocker {
+  /** 这条要定的是哪个裁决字段（见 TriageSettle；`other` = 不定字段，只作澄清）。 */
+  settles: TriageSettle
   /** 要问用户的那一句。 */
   question: string
   /** ≥2 个具体且互斥的读法（缺它就不值得打断用户）。 */
@@ -247,11 +266,21 @@ export const MODE_RANK: Record<PipelineMode, number> = { patch: 0, lite: 1, tech
  * 规则：调用方**没给**档位 → 用分诊的；给了更轻的档位而分诊判 ≥medium → 升到分诊档位（架构型需求不得
  * 走轻档位）；调用方给的是 medium/full（或已 ≥ 分诊档位）→ **保持调用方选择**（避免无谓 token 放大）。
  * 返回 null 表示不改动。
+ *
+ * **`needDesign` 档位下限**（2026-09-18 probe-v2 实锤新增）：调用方**没给档位**却显式传了
+ * `needDesign=true`（= 明确要求设计阶段），而分诊回了 `lite` —— 两件事语义冲突（`lite` 的档位定义就是
+ * 「no UI design」，见 MODE 表 / `resolveStages`），旧实现让分诊的 lite 直接落地。当时 prompt 里
+ * `needDesign=true → 强升 medium` 只是 regex **预筛提示**（模型可无视，实测就被无视了），这里把它变成
+ * 宿主判定：**未给档位时显式 needDesign 拖到 ≥medium**。调用方显式给了 `mode`/`lite` 时依旧以调用方为准
+ * （`lite` + `needDesign` 由 `resolveStages` 按 flag 追加设计阶段，不吞显式请求，也不改档位标签）。
  */
-export function guardrailUpgrade(explicit: PipelineMode | undefined, lite: boolean, triaged: PipelineMode): PipelineMode | null {
+export function guardrailUpgrade(explicit: PipelineMode | undefined, lite: boolean, triaged: PipelineMode, opts?: { needDesign?: boolean }): PipelineMode | null {
   const want = MODE_RANK[triaged] || 0
-  // 调用方没给档位 → 直接用分诊的
-  if (!explicit && !lite) return triaged
+  // 调用方没给档位 → 直接用分诊的（但显式 needDesign 与轻档位的「无设计阶段」定义冲突时抬到 medium）
+  if (!explicit && !lite) {
+    if (opts && opts.needDesign === true && want < MODE_RANK.medium) return 'medium'
+    return triaged
+  }
   const have = explicit ? (MODE_RANK[explicit] || 0) : MODE_RANK.lite
   // 只在「调用方选了轻档位（patch/lite/tech）」且「分诊判 ≥medium」时强升；
   // 调用方已选 medium/full 时**保持其选择**（那已满足护栏，再升只是无谓 token 放大）。
@@ -268,8 +297,15 @@ export const normalizeIntent = (raw: unknown): TriageIntent =>
  * 三条证据必须齐全：① ≥2 个互斥读法 ② 改变哪个产物/AC/范围 ③ 猜错返工什么。
  * 缺一即丢弃并计数——模型几乎总能为任何需求凑出"问题"，不合格线就会退化成每次都打断。
  * 上限 3 条（超过的部分按丢弃计）。
+ *
+ * **自洽门禁**（2026-09-18 probe-v2 实锤新增）：`ctx.installable === true` 表示同一次裁决已经**明确判定**
+ * 「必须可安装/可被宿主加载」；此时任何 `settles === 'installable'` 的 blocker 都是**自我矛盾**——它问的
+ * 那件事已经被自己答了。实测代价：这条 blocker 凭空造出一轮澄清（用户答了 3 个问题）→ 输入变了 →
+ * 缓存必然不命中 → **同一条需求被分诊两次**（lite 15.8k + medium 15.6k），用户看到两张「需求分诊」卡。
+ * 注意只按 `true` 判：`false` 是"模型没给这个字段"的默认值，既可能是「不需要装」也可能是「还不知道」——
+ * 后者正是 must-ask 缺口的合法形态，丢了它就会重演 dddd「插件装不进 profile」。
  */
-export function qualifyBlockers(raw: unknown): { blockers: TriageBlocker[]; dropped: number } {
+export function qualifyBlockers(raw: unknown, ctx?: { installable?: boolean }): { blockers: TriageBlocker[]; dropped: number } {
   const arr = Array.isArray(raw) ? raw : []
   const good: TriageBlocker[] = []
   let dropped = 0
@@ -282,7 +318,11 @@ export function qualifyBlockers(raw: unknown): { blockers: TriageBlocker[]; drop
     const changes = String((o && o.changes) || '').trim()
     const rework = String((o && o.rework) || '').trim()
     if (question && readings.length >= 2 && changes && rework) {
+      const settles = normalizeSettle(o && o.settles)
+      // 自洽门禁：已明确判定可安装 → 不得再问「要不要能装」
+      if (settles === 'installable' && ctx && ctx.installable === true) { dropped++; continue }
       good.push({
+        settles,
         question: question.slice(0, 300),
         readings: readings.slice(0, 4).map((r) => r.slice(0, 200)),
         changes: changes.slice(0, 300),
@@ -302,7 +342,7 @@ function parseVerdictText(text: string): TriageVerdict | null {
     const raw = JSON.parse(m[0])
     const mode = normalizeMode(raw.mode)
     if (!mode) return null
-    const qb = qualifyBlockers(raw.blockers)
+    const qb = qualifyBlockers(raw.blockers, { installable: raw.installable === true })
     return {
       mode,
       kind: typeof raw.kind === 'string' ? raw.kind : '',

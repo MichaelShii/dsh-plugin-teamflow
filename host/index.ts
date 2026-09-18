@@ -57,7 +57,7 @@ function countFilesBounded(dir: string, cap = 1000): number {
 }
 import { executePipeline, summarizeTimeline, startPipeline, resumeRun } from './core/pipeline.ts'
 import { cancelRun } from './core/context.ts'
-import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, normalizeMode, runTriage, guardrailUpgrade, triageCacheKey, triageCacheGet, triageCachePut, triageCacheMarkPending, triageCacheSettle, type TriageVerdict } from './core/triage.ts'
+import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, MODE_RANK, normalizeMode, runTriage, guardrailUpgrade, triageCacheKey, triageCacheGet, triageCachePut, triageCacheMarkPending, triageCacheSettle, type TriageVerdict } from './core/triage.ts'
 import { t, modeDesc } from './locales.ts'
 import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.ts'
 
@@ -312,10 +312,12 @@ function registerTools(ctx) {
         }
         if (pre.verdict) {
           const explicit = options.mode as typeof options.mode
-          const up = guardrailUpgrade(explicit, !!options.lite, pre.verdict.mode)
+          const up = guardrailUpgrade(explicit, !!options.lite, pre.verdict.mode, { needDesign: options.needDesign === true })
           if (up) {
-            // 只在调用方**真的选过档位**时才算「护栏强升」（自动路径没有"被升"一说，别记成 from=full）
-            if (explicit !== undefined || options.lite) (pre.verdict as unknown as Record<string, unknown>).__upgradedFrom = explicit || 'lite'
+            // 「原本是谁提的档位」：调用方给过档位就用调用方的，否则记分诊自己的裁决（needDesign 下限路径）；
+            // 只在真的从更轻的档位升上来时记（自动路径没有"被升"一说，别记成 from=full）。
+            const fromMode = (explicit !== undefined || options.lite) ? (explicit || 'lite') : pre.verdict.mode
+            if (MODE_RANK[fromMode] < MODE_RANK[up]) (pre.verdict as unknown as Record<string, unknown>).__upgradedFrom = fromMode
             options.mode = up
             options.lite = up === 'lite' || up === 'tech' || up === 'patch' ? !!options.lite : false
           }
@@ -974,9 +976,10 @@ export class TeamflowService extends TypertRemoteService {
       }
       if (pre.verdict) {
         const explicit = opts.mode as typeof opts.mode
-        const up = guardrailUpgrade(explicit, !!(opts as Record<string, unknown>).lite, pre.verdict.mode)
+        const up = guardrailUpgrade(explicit, !!(opts as Record<string, unknown>).lite, pre.verdict.mode, { needDesign: (opts as Record<string, unknown>).needDesign === true })
         if (up) {
-          if (explicit !== undefined || (opts as Record<string, unknown>).lite) (pre.verdict as unknown as Record<string, unknown>).__upgradedFrom = explicit || 'lite'
+          const fromMode = (explicit !== undefined || (opts as Record<string, unknown>).lite) ? (explicit || 'lite') : pre.verdict.mode
+          if (MODE_RANK[fromMode] < MODE_RANK[up]) (pre.verdict as unknown as Record<string, unknown>).__upgradedFrom = fromMode
           opts.mode = up
           if (up !== 'lite' && up !== 'tech' && up !== 'patch') (opts as Record<string, unknown>).lite = false
         }

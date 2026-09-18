@@ -15,7 +15,7 @@ import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext, PipelineMode } from '../types.ts'
-import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, artifactContractsFor, type TriageVerdict } from './triage.ts'
+import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, MODE_RANK, artifactContractsFor, type TriageVerdict } from './triage.ts'
 import { loadTeams, findTeam, getActiveStages, teamNameOf } from './teams.ts'
 import { loadState, saveState, extractStateBlock, mergeStateBlock, noteRun } from './state.ts'
 import { isDangerousVcsRoot, dirTooLargeForBaseline } from '../util.ts'
@@ -138,7 +138,7 @@ function normalizeTriagePassthrough(raw: unknown): TriageVerdict | null {
   if (!o) return null
   const mode = normalizeMode(o.mode)
   if (!mode) return null
-  const qb = qualifyBlockers(o.blockers)
+  const qb = qualifyBlockers(o.blockers, { installable: o.installable === true })
   return {
     mode,
     kind: typeof o.kind === 'string' ? o.kind : '',
@@ -360,10 +360,14 @@ export async function executePipeline(
         ? `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-ask]\n${String(journal.requirementSupplement)}`
         : requirement
       const verdict = await runTriage(triageInput, { needDesign: options.needDesign }, parent, signal, locale)
-      // 档位：调用方给了更轻的而分诊判 ≥medium → 护栏强升；否则保持调用方选择（或走分诊结果）
-      const up = guardrailUpgrade(callerMode, !!options.lite, verdict.mode)
+      // 档位：调用方给了更轻的而分诊判 ≥medium → 护栏强升；显式 needDesign 而调用方没给档位 → 抬到 ≥medium；
+      // 否则保持调用方选择（或走分诊结果）
+      const up = guardrailUpgrade(callerMode, !!options.lite, verdict.mode, { needDesign: options.needDesign === true })
       if (up) {
-        if (callerMode !== undefined || options.lite) (verdict as unknown as Record<string, unknown>).__upgradedFrom = callerMode || 'lite'
+        // 留痕「原本是谁提的档位」：调用方给过档位就用调用方的，否则记分诊自己的裁决（needDesign 下限路径）。
+        // 只在**真的从更轻的档位升上来**时记，避免 needDesign 未生效时刷出「medium → medium」这种噪音日志。
+        const fromMode = (callerMode !== undefined || options.lite) ? (callerMode || 'lite') : verdict.mode
+        if (MODE_RANK[fromMode] < MODE_RANK[up]) (verdict as unknown as Record<string, unknown>).__upgradedFrom = fromMode
         options.mode = up
         options.lite = up === 'lite' || up === 'tech' || up === 'patch' ? !!options.lite : false
       }
