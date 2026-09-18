@@ -135,6 +135,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'report.vcsArchived': '📦 本次改动**已存档**（1 次提交）：不满意可整体撤销，也能随时查看这次改了什么。',
     'log.logsUnstaged': '自有日志曾被扫进索引，已摘出 {n} 个（说明工作区 .gitignore 规则失效：被删掉或写不进去）——{list}',
     'log.logsUnstageFail': '自有日志的索引兜底失败（提交面可能被污染）：{msg}',
+    'log.devIdsBackfilled': '已为 {n} 个历史开发阶段补算任务编号（dt-N）——升级前的产物按标题回溯到任务，避免把它们当成"没做过"重新补跑',
 
     /* ── 断点续跑 ─────────────────────────────────────────── */
     'run.resumeBacklog': '断点续跑：复用 backlog（req={reqId}），从「{phase}」继续',
@@ -484,6 +485,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'report.vcsArchived': '📦 This run\'s changes are **archived** (1 commit): you can undo them as a whole and see exactly what changed at any time.',
     'log.logsUnstaged': 'Own log files had been staged and were unstaged: {n} ({list}) — the workspace .gitignore rule is not effective (removed or unwritable)',
     'log.logsUnstageFail': 'Unstaging own log files from the index failed (the commit surface may be polluted): {msg}',
+    'log.devIdsBackfilled': 'Backfilled task ids (dt-N) for {n} historical dev stage(s) — pre-upgrade output is traced back to its task by title, so it is not treated as "never done" and re-run',
 
     /* ── 断点续跑 ─────────────────────────────────────────── */
     'run.resumeBacklog': 'Resuming: reusing backlog (req={reqId}), continuing from "{phase}"',

@@ -605,19 +605,20 @@ const RETRY_SUFFIX_LOCAL = /(?:（(?:第 \d+ 次重试|补跑)）| \((?:retry \d
 /**
  * 任务级聚合（journal 驱动）：有 done stage = 该任务已成功（历史失败尝试不翻案）。
  *
- * 按 **`stage.taskIds`** 归并——一个 stage 可能同时承载多个任务（合并执行），此时逐 id 记账，
- * 故合并执行过的任务在 resume 时**各自命中已做**，不会被重复补跑。
- * **存量兼容**：升级前的 stage 无 `taskIds` → 回退 `taskKey`/`label` 作 key（只增不改，不影响历史 run）。
+ * **只认 `taskIds`，不认 title**（2026-09-18 二次修正）：
+ * 一个 stage 可能同时承载多个任务（合并执行），逐 id 记账 → 合并执行过的任务**各自**命中已做。
+ *
+ * 关于存量（升级前只写了 title 的 stage）：**不在本函数里做 title 回退**——那会形成
+ * 「id / title 两套命名空间」，实测必然全 Miss（补跑 8 个而非 2 个）。正确做法是调用方先跑
+ * `backfillDevTaskIds` 给存量 stage 补算 id（用蓝图 title 结构化匹配），之后本函数只看到 id。
+ * **判定逻辑因此始终只有一个键空间**，不做"双键匹配"、不切分 title。
  */
 export function devTaskStatuses(stages: Array<{ taskKey?: string | null; taskIds?: string[] | null; label?: string; seq?: number; status?: string }>): Map<string, { done: boolean; lastStatus: string | null; lastSeq: number }> {
   const m = new Map<string, { done: boolean; lastStatus: string | null; lastSeq: number }>()
   for (const s of stages || []) {
-    const fromIds = Array.isArray(s.taskIds)
+    const ids = Array.isArray(s.taskIds)
       ? s.taskIds.filter((x): x is string => typeof x === 'string' && !!x.trim())
       : []
-    const ids = fromIds.length
-      ? fromIds
-      : [String(s.taskKey || String(s.label || '').replace(DEV_TITLE_PREFIX_LOCAL, '').replace(RETRY_SUFFIX_LOCAL, '').trim())].filter(Boolean)
     for (const key of ids) {
       const cur = m.get(key) || { done: false, lastStatus: null, lastSeq: -1 }
       if ((s.seq || 0) > cur.lastSeq) { cur.lastSeq = s.seq || 0; cur.lastStatus = s.status || null }
@@ -631,6 +632,45 @@ export function devTaskStatuses(stages: Array<{ taskKey?: string | null; taskIds
 /** dev 任务身份生成（host 侧，按定义顺序）：同一份蓝图必然产生同一组 id，故 resume 可稳定对齐。
  *  蓝图落盘后不变 → id 稳定；title 会因合并/措辞变化 → 故不可作身份（见上方注释）。 */
 export function devTaskIdAt(index: number): string { return `dt-${index + 1}` }
+
+/**
+ * **存量 stage 的 id 补算**（2026-09-18 二次修正，勿回退）。
+ *
+ * 为什么必须有：升级前的 stage 只写了 `taskKey`（title），没有 `taskIds`。若判定只认 id，
+ * 这些 stage 就成了"看不见的历史"——实测 probe-cache `tf-mu6tb281`：纯 title 判定补跑 2 个（正确），
+ * 而"只认 id + 让存量回退 title"两头不靠 → **补跑 8 个**（灾难：T0/T1/T2 明明 done 却全重跑）。
+ *
+ * 做法：**用蓝图自己的 title 去匹配 stage 的 taskKey**，命中即该 stage 承载了这个任务。
+ * 这是**结构化 → 文本**的比对（拿确定性数据去匹配），不是"按分隔符切分 title"那种反解——
+ * 后者是拿文本长相当身份，同型错误已犯过两次（per-plugin 正则、固定 .gitignore 词表），明确禁止。
+ *
+ * 合并执行的 stage（`taskKey = "T0 … + T6 … + T7 …"`）会命中**多个**任务 title → 补算出多个 id，
+ * 与"合并时 taskIds 数组累加"的新逻辑完全同构：这一类 stage 承载的几个任务**各自**记已做。
+ *
+ * 补算结果写回 stage（`taskIds`），下次直接读——**存量自愈一次**，不是每次都重算。
+ *
+ * @param stages 待补算的 dev stage（会被就地修改：补上 `taskIds`）
+ * @param defs   任务定义（含 id + title，来自 `buildDevTaskDefs`，与本次 run 同源）
+ * @returns 补算到的 stage 数（诊断/测试用）
+ */
+export function backfillDevTaskIds(
+  stages: Array<{ taskKey?: string | null; taskIds?: string[] | null; label?: string; seq?: number; status?: string }>,
+  defs: Array<{ id: string; title: string }>,
+): number {
+  if (!Array.isArray(stages) || !Array.isArray(defs) || !defs.length) return 0
+  let patched = 0
+  for (const s of stages) {
+    if (Array.isArray(s.taskIds) && s.taskIds.length) continue // 新 stage：已有 id，不碰
+    const key = String(s.taskKey || String(s.label || '').replace(DEV_TITLE_PREFIX_LOCAL, '').replace(RETRY_SUFFIX_LOCAL, '').trim())
+    if (!key) continue
+    // 用**蓝图 title** 去 stage 文本里找：命中即该 stage 承载此任务（方向：结构化 → 文本）
+    const ids = defs.filter((d) => String(d.title || '').trim() && key.includes(String(d.title).trim())).map((d) => d.id)
+    if (!ids.length) continue
+    s.taskIds = ids
+    patched++
+  }
+  return patched
+}
 
 /* ── 版本控制安全（2026-09-17）：「改动存档」两态模型的防线 ─────────────────────────
  * 背景：dddd 两条 run 的产物因「工作区不是 git 仓库」而从未进入任何版本库（入口静默跳过决策、

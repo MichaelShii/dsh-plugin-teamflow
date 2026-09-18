@@ -347,11 +347,22 @@ ok(/export interface DevTaskDef \{ id: string/.test(pipelineSrc), 'pipeline：De
 ok(/hit\.ids\.push\(t\.id\)/.test(pipelineSrc), 'pipeline：**合并任务时 ids 数组累加**（title 拼接只给人看，id 数组才是身份——少了这步合并过的任务无法被 resume 识别）')
 ok(/taskIds: \(Array\.isArray\(taskIds\) && taskIds\.length\) \? \[\.\.\.taskIds\] : null/.test(runnerSrc), 'runner：stage 落 taskIds（数组，合并任务时为多项）')
 ok(/taskIds\?: string\[\] \| null/.test(storeSrc) && /taskIds: \(Array\.isArray\(s\.taskIds\)/.test(storeSrc), 'store：serializeJournal 序列化 taskIds')
-ok(/const fromIds = Array\.isArray\(s\.taskIds\)/.test(utilSrc), 'util：devTaskStatuses **按 taskIds 归并**（逐 id 记账：合并执行过的任务各自命中已做）')
-ok(/const st = taskStatuses\.get\(d\.id\)/.test(pipelineSrc), 'pipeline：resume 判定按 **id** 查（不再用 title——这正是那次重复补跑的根因）')
-ok(!/taskStatuses\.get\(String\(d\.title \|\| ''\)\.trim\(\)\)/.test(pipelineSrc), 'pipeline：**不得回退**为按 title 查任务状态')
-ok(/存量兼容/.test(utilSrc), 'util：存量 stage 无 taskIds → 回退 taskKey/label（只增不改，历史 run 判定不受影响）')
-ok(/const todo = buildDevTaskDefs\(journal, tasks, locale\)\.filter/.test(pipelineSrc) && /!st \|\| !st\.done/.test(pipelineSrc), 'pipeline：resume 开发分支统一补跑「未成功任务」+ 复用已完成产物（json-parse r1 实锤根治——不再读 backlog 子卡）')
+ok(/存量兼容/.test(utilSrc), 'util：存量 stage 无 taskIds → 由 backfillDevTaskIds 补算（只增不改，历史 run 判定不受影响）')
+{
+  // 只看 devTaskStatuses 函数体（util.ts 里从声明到下一个 export）
+  const fnBody = (utilSrc.match(/export function devTaskStatuses[\s\S]*?(?=\n\/\*\*|\nexport )/) || [''])[0]
+  ok(/const ids = Array\.isArray\(s\.taskIds\)/.test(fnBody), 'util：devTaskStatuses **按 taskIds 归并**（逐 id 记账：合并执行过的任务各自命中已做）')
+  ok(!/s\.taskKey/.test(fnBody), 'util：**判定函数体内不出现 taskKey**（不做 title 双键/回退——否则 id/title 两套命名空间 → 存量全 Miss，实测补跑 8 个而非 1 个）')
+  ok(/const ids = defs\.filter/.test(utilSrc) && /key\.includes/.test(utilSrc), 'util：补算用 **defs（蓝图 title）** 去匹配 stage 文本（结构化→文本）')
+  const noSplit = /split\(/.test((utilSrc.match(/export function backfillDevTaskIds[\s\S]*?(?=\n\/\*\*|\nexport )/) || [''])[0]) === false
+  ok(noSplit, 'util：**不得按分隔符切分 title**（拿文本长相当身份，明确禁止——合并 title 由蓝图 title 包含匹配识别）')
+}
+ok(/export function backfillDevTaskIds/.test(utilSrc), 'util：存量 stage 由 backfillDevTaskIds 补算 id（判定只有一个键空间，不是给脏数据打补丁）')
+ok(/String\(d\.title \|\| ''\)\.trim\(\) && key\.includes\(/.test(utilSrc), 'util：补算用**蓝图 title 匹配**（结构化→文本），**不是**切分拼接 title（后者是拿文本长相当身份，已明确禁止）')
+ok(/if \(Array\.isArray\(s\.taskIds\) && s\.taskIds\.length\) continue/.test(utilSrc), 'util：已有 taskIds 的 stage 不重复补算（幂等，补算结果写回后下次直接读）')
+ok(/log\.devIdsBackfilled/.test(pipelineSrc), 'pipeline：补算留痕（日志可见「已为 N 个历史阶段补算编号」）')
+ok(/backfillDevTaskIds\(journal\.stages \|\| \[\], defs\)/.test(pipelineSrc), 'pipeline：resume 判定**前**先补算存量 id（否则历史 title stage 被当成没做过 → 全量补跑）')
+ok(/const todo = devDefs\.filter/.test(pipelineSrc) && /!st \|\| !st\.done/.test(pipelineSrc), 'pipeline：resume 开发分支统一补跑「未成功任务」+ 复用已完成产物（json-parse r1 实锤根治——不再读 backlog 子卡）')
 ok(/if \(phase === 'dev'\)/.test(pipelineSrc) && /\[\.\.\.statuses\.values\(\)\]\.some\(\(st\) => !st\.done\)/.test(pipelineSrc), 'pipeline：interruptedPhaseOf 任务级聚合——任务全 done = 阶段完成（部分成功阶段 resume 起点回开发补跑）')
 ok(/同任务复用（2026-09-06/.test(backlogSrc) && /store\.tasks\.find\(\(t\) => t\.reqId === journal\.reqId/.test(backlogSrc), 'backlog：createSubtask 同任务复用（业务任务实体一张卡 + retries 计数；执行历史在 journal）')
 // 子卡匹配键 = dtId（2026-09-18）：旧实现按 title 匹配，合并任务把 title 拼接后，resume 补跑的单任务

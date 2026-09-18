@@ -9,7 +9,7 @@ import { initPipelineBacklog, advanceTask, storeFor, parseDefectRows, syncQaDefe
 import { withRetry, resolveChildRoute } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
-import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool, extractAssumptionsSection, devTaskStatuses, devTaskIdAt } from '../util.ts'
+import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool, extractAssumptionsSection, devTaskStatuses, devTaskIdAt, backfillDevTaskIds } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, FIX_GATE_PATTERN } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
@@ -226,6 +226,8 @@ export function interruptedPhaseOf(journal) {
     if (phase === 'dev') {
       // 任务级聚合（状态机 2026-09-06）：任务有 done stage = 成功；存在未成功任务 → 阶段未完成。
       // 历史失败尝试不算失败（同名任务已有 done stage）——dev 部分完成时 resume 起点 = 开发（补跑未完成）。
+      // 判定前先补算存量 stage 的 id（否则升级前的 title stage 被当成"没做过" → 全量补跑）
+      backfillDevTaskIds(phaseStages, buildDevTaskDefs(journal, [], runLocaleOf(journal)))
       const statuses = devTaskStatuses(phaseStages)
       if ([...statuses.values()].some((st) => !st.done)) return phase
     } else {
@@ -238,6 +240,25 @@ export function interruptedPhaseOf(journal) {
 /** 任务级聚合见 `util.devTaskStatuses`（纯函数，放 util 以便行为级测试直接 import——
  *  pipeline 链到宿主私有 peer `@deepseek-ai/dsh-llm`，测试取不到，同 `cancelRun` 的处置）。
  *  任务身份与 resume 判定的完整论证见该函数注释。 */
+
+/**
+ * 读 journal 后**先补算存量 stage 的 id** 再判定（2026-09-18 二次修正，勿回退）。
+ *
+ * 为什么：升级前的 stage 只写了 `taskKey`（title）。若直接判定（只认 id），历史成果会被
+ * 当成"没做过"——实测 probe-cache `tf-mu6tb281`：纯 title 判定补跑 2 个，而"只认 id +
+ * 存量回退 title"两头不靠 → **补跑 8 个**。补算后**只有一个键空间**（id），存量自愈并写回 journal。
+ * 补算用**蓝图 title 匹配**（结构化 → 文本），不切分 title；合并执行的 stage 会补出多个 id。
+ *
+ * @returns 含 id 的任务定义（供后续 filter/completed 判定用）
+ */
+function devTaskDefsWithBackfill(journal, tasks, locale: HostLocale): DevTaskDef[] {
+  const defs = buildDevTaskDefs(journal, tasks, locale)
+  const patched = backfillDevTaskIds(journal.stages || [], defs)
+  if (patched > 0) {
+    journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devIdsBackfilled', { n: patched }) })
+  }
+  return defs
+}
 
 
 /** 开发任务定义（单一来源）：架构蓝图自动拆 > 调用方显式 tasks > 整体开发兜底。
@@ -722,9 +743,11 @@ export async function executePipeline(
       // 开发 = 复用已完成产物 + 仅补跑「任务级聚合后未成功」的任务；全完成 → 跳过。
       // 判定完全基于 journal stages（devTaskStatuses），不读 backlog 子卡。
       devResults = resume.products.dev || []
+      // **先补算存量 id 再判定**（2026-09-18 二次修正）：升级前的 stage 只有 title，直接按 id 查
+      // 会全部 Miss → 补跑 8 个（实测）。补算后判定只在一个键空间（id）内进行。
+      const devDefs = devTaskDefsWithBackfill(journal, tasks, locale)
       const taskStatuses = devTaskStatuses(journal.stages || [])
-      // 判定只认 id（2026-09-18）：合并执行过的任务在 taskIds 里逐个记账，故这里按 id 查即可命中
-      const todo = buildDevTaskDefs(journal, tasks, locale).filter((d) => {
+      const todo = devDefs.filter((d) => {
         const st = taskStatuses.get(d.id)
         return !st || !st.done
       })
