@@ -288,6 +288,16 @@ export async function executePipeline(
   // 不得按当前界面语言补写，QA-1）；新 run 用环境语言。
   if (!parseLocale(journal.locale)) journal.locale = localeForMissingSnapshot(!!resume)
   const locale = runLocaleOf(journal)
+  // **引擎留痕（2026-09-18）**：run 起始的模型路由快照（provider/model）落 journal + run.log。
+  // 只在缺失时写（resume 保留首轮快照）；逐阶段的真实路由另见 `stage.provider/model`（子代理可改道）。
+  if (!journal.engine) {
+    try {
+      const r = resolveChildRoute(parent)
+      const engine = { provider: r.provider || providerName() || null, model: r.model || null }
+      journal.engine = engine
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.engine', { provider: engine.provider || '?', model: engine.model || '?' }) })
+    } catch (e) { /* 留痕失败不阻断起跑（policy 级） */ }
+  }
   if (!resume) journal.startedAt = Date.now()
   const root = options.productRoot || null
   journal.product = root

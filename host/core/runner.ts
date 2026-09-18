@@ -138,6 +138,11 @@ export async function runAgent(
   try {
     // 显式传当前生效路由，避免继承过期的 parent.options 快照（主线程已切换代理的情况）
     const route = resolveChildRoute(parent)
+    // **引擎留痕（2026-09-18）**：逐阶段记下实际生效的 provider/model —— 子代理路由跟随主线程/团队配置，
+    // 与 run 起始默认可能不同；一次真实排查里为了回答「是不是模型的锅」（不缓存的 provider 每轮调用
+    // 要多付 ~15.5k，见 FRESH_TOKEN_BUDGET），只能去解压会话文件翻 request/header。
+    stage.provider = route.provider || providerName() || null
+    stage.model = route.model || null
     // 机械阶段降档（可选）：只在宿主声明支持时下发；重试自动回升 high（见 resolveStageEffort）
     const eff = await resolveStageEffort(route, attempt, effortHint, locale)
     const effort = eff.effort

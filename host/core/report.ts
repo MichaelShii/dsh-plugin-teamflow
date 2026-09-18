@@ -153,6 +153,10 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
           ? t(locale, 'report.mode', { mode: modeLabel(locale, m, MODE_REGISTRY[m as keyof typeof MODE_REGISTRY] ? MODE_REGISTRY[m as keyof typeof MODE_REGISTRY].label : m) })
           : ''
       })(),
+      // 引擎留痕（2026-09-18）：汇报里直接给出模型路由——排查「是不是模型的锅」不必再翻会话文件
+      journal.engine && (journal.engine.provider || journal.engine.model)
+        ? t(locale, 'report.engine', { engine: `${journal.engine.provider || '?'}/${journal.engine.model || '?'}` })
+        : '',
       t(locale, 'report.backlog', { reqId: journal.reqId || '—' }),
       needsHumanNotice,
       mergeHint,

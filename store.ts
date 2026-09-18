@@ -43,6 +43,10 @@ export interface JournalStage {
   guardOutcome?: 'degenerated' | 'stalled' | null
   /** dev/qaFix 回复中的「验证证据」块原文（提取自 [Verification evidence] 块；审计用，可对照 logs/ 命令输出）。 */
   verifyEvidence?: string | null
+  /** 该阶段**实际生效的模型路由**（2026-09-18 新增）：子代理路由跟随主线程/团队配置，
+   *  可能与 run 起始默认不同（见 runner.resolveChildRoute）。回答「是不是模型的锅」靠它。 */
+  provider?: string | null
+  model?: string | null
 }
 
 /** 运行日志（journal）——运行时对象与磁盘可持久化形态的公共形状。 */
@@ -52,6 +56,12 @@ export interface JournalRecord {
   status: string
   requirement?: string
   options?: Record<string, unknown>
+  /** **run 起始的引擎快照**（2026-09-18 新增）：`{ provider, model }`，由 pipeline 在起跑时用
+   *  `runner.resolveChildRoute(parent)` 解析（= 主线程当前生效的模型路由）。逐阶段的真实路由见
+   *  `JournalStage.provider/model`（子代理可被团队配置改道）。**留痕的理由**：一次失败排查里为了回答
+   *  「是不是模型的锅」（不同 provider 的 prompt 缓存能力差 10 倍，见 FRESH_TOKEN_BUDGET），
+   *  只能去解压会话文件翻 `request/header` —— run 记录里查不到。 */
+  engine?: { provider?: string | null; model?: string | null } | null
   /** 工作区作用域：安全槽位（用作 $DSH_HOME/teamflow/<workspace>/ 目录键，backlog 按此隔离）。 */
   workspace?: string | null
   /** 工作区绝对路径（发起会话 cwd；docs/logs 落点与看板展示用）。 */
@@ -217,6 +227,8 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     status: journal.status,
     requirement: journal.requirement,
     options: journal.options,
+    // 引擎留痕（2026-09-18）：run 起始模型路由（provider/model）——排查「是不是模型的锅」的第一手依据
+    engine: journal.engine || null,
     workspace: journal.workspace || null,
     workspacePath: journal.workspacePath || null,
     ownerSession: journal.ownerSession || null,
@@ -226,6 +238,9 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     blueprint: journal.blueprint || null,
     reqId: journal.reqId || null,
     runDocs: journal.runDocs || null,
+    // 分支与合回决策留痕（结构性门禁发现：这两个字段也曾**只写不落盘**）
+    branch: journal.branch || null,
+    mergeStatus: journal.mergeStatus || null,
     taskId: journal.taskId || null,
     taskMap: journal.taskMap || {},
     agentsStarted: journal.agentsStarted || 0,
@@ -256,6 +271,9 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
       phase: s.phase,
       taskKey: s.taskKey || null,
       taskIds: (Array.isArray(s.taskIds) && s.taskIds.length) ? s.taskIds : null,
+      // 该阶段**实际生效**的模型路由（子代理可被改道，故逐阶段记）
+      provider: s.provider || null,
+      model: s.model || null,
       status: s.status,
       outcome: s.outcome || null,
       childId: s.childId || null,
@@ -264,6 +282,9 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
       usage: s.usage || null,
       handoff: clip(s.handoff || '', 2000),
       summary: clip(s.summary || '', 3000),
+      // 护栏中止留痕（结构性门禁发现：这两个字段曾**只写不落盘**——内存里写了、serialize 丢了）
+      guardReason: s.guardReason || null,
+      guardOutcome: s.guardOutcome || null,
       output: clip(s.output || s.summary || '', STAGE_OUTPUT_CLIP),
       verifyEvidence: s.verifyEvidence ? clip(s.verifyEvidence, 8000) : null,
     })),
