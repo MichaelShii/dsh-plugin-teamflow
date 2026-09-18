@@ -4,8 +4,11 @@
  * 被旧正则「无需改动」子串命中 → 误判 reject → 整条流水线置 failed。
  * 修复原则：只以显式「验收结论 / 整体结论」行为准，正文散文不做朴素子串匹配。
  */
-import { parseAcceptanceVerdict, extractBlueprint, defectFingerprint, qaRoundEntry, classifyExternalFailure, externalBackoffMs, EXTERNAL_BACKOFF_MS, isDangerousVcsRoot, dirTooLargeForBaseline } from '../host/util.ts'
+import { parseAcceptanceVerdict, extractBlueprint, defectFingerprint, qaRoundEntry, classifyExternalFailure, externalBackoffMs, EXTERNAL_BACKOFF_MS, isDangerousVcsRoot, dirTooLargeForBaseline, judgeDeliverable, DOC_STAGE_FILES, stageDocText, artifactText } from '../host/util.ts'
 import { parseDefects, parseDefectRows } from '../host/core/backlog.ts'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 let failed = 0
 const expect = (actual, expected, msg) => {
@@ -279,6 +282,35 @@ expect(isDangerousVcsRoot('D:\\src\\my-plugin', null), false, '普通深度（D:
 expect(isDangerousVcsRoot('', null), true, '空路径 → 拒绝（宁严勿松）')
 expect(dirTooLargeForBaseline('C:\\Windows\\System32', 3, 1024, 300), true, '大目录（有界采样，阈值 3 个文件即超）→ 不做基线提交')
 expect(dirTooLargeForBaseline('Z:\\__definitely_missing__', 1000, 104857600, 200), true, '目录不可读（采样失败）→ 按过大处理（宁严勿松）')
+
+console.log('── doc 类阶段的产物兜底（2026-09-18 probe-v2 实锤：PRD.md 4894 字节已落盘、还调了 present，')
+console.log('   却因回复只有 284 字符的 state 块被判「未交付」→ 阶段失败 → 熔断转人工）──')
+{
+  const ws = mkdtempSync(join(tmpdir(), 'tf-docfallback-'))
+  const runDocs = 'docs/teamflow/20260918-r1-x'
+  mkdirSync(join(ws, runDocs), { recursive: true })
+  const journal = { workspacePath: ws, runDocs }
+  // 真实形状：文件 4894 字节（这里用同等量级的正文），回复只有一个 state 块
+  const longBody = '# PRD\n' + '这是 PRD 正文。'.repeat(400)
+  writeFileSync(join(ws, runDocs, 'PRD.md'), longBody)
+  const shortReply = '<!-- state -->{"phase":"prd","summary":"PRD 完成"}<!-- /state -->'
+  const verdict = judgeDeliverable('prd', shortReply)
+  expect(verdict.ok, false, '回复 284 字符 → 单看回复仍判未交付（判据不放宽）')
+  const doc = stageDocText(journal, 'prd')
+  expect(!!doc && doc.name === 'PRD.md', true, 'stageDocText 摘到 PRD.md')
+  expect(doc.length >= verdict.min, true, `文件长度 ${doc.length} ≥ 下限 ${verdict.min} → 兜底成立（runner 据此判交付）`)
+  expect(artifactText(journal, 'PRD.md') === longBody.trim(), true, 'artifactText 读回全文（trim 后）')
+  // 边界：文件缺失 / 文件过短 / 非 doc 阶段 / 空 journal
+  expect(stageDocText({ workspacePath: ws, runDocs: 'docs/teamflow/nope' }, 'prd'), null, '文件缺失 → null（仍按未交付处理）')
+  writeFileSync(join(ws, runDocs, 'DESIGN.md'), '太短')
+  expect(stageDocText(journal, 'design').length < judgeDeliverable('design', '').min, true, '文件存在但过短 → 长度不足以下限（runner 不会据此判交付）')
+  expect(stageDocText(journal, 'dev'), null, 'dev 不在表内（交付在代码 + 证据块，不靠文件兜底）')
+  expect(stageDocText(journal, 'scaffold'), null, 'scaffold 不在表内（产物是代码/蓝图）')
+  expect(stageDocText(null, 'prd'), null, '空 journal → null（绝不抛）')
+  expect(DOC_STAGE_FILES.prd.indexOf('TECH-CHANGE.md') !== -1, true, 'tech 档的 PRD 走 TECH-CHANGE.md（同阶段多形态）')
+  expect(DOC_STAGE_FILES.scaffold === undefined && DOC_STAGE_FILES.dev === undefined, true, '表里只有「产物就是任务夹文件」的阶段')
+  rmSync(ws, { recursive: true, force: true })
+}
 
 console.log(failed === 0 ? '\n✅ verdict 测试全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

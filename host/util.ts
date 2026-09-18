@@ -2,7 +2,7 @@
  * dsh-plugin-teamflow — 通用纯工具（底座；依赖 constants.ts，无其他依赖）。
  */
 import { REFUSAL_PATTERN, STAGE_MIN_LENGTH, DELIVERY_EVIDENCE_PATTERN } from './constants.ts'
-import { readdirSync, statSync, existsSync } from 'node:fs'
+import { readdirSync, statSync, existsSync, readFileSync } from 'node:fs'
 import { t } from './locales.ts'
 import type { HostLocale } from './locales.ts'
 
@@ -197,6 +197,57 @@ export function judgeDeliverable(phase: string, text: string | null | undefined)
   if (!refusal) return { ok: true, reason: 'ok', refusal: null, min, length }
   if (DELIVERY_EVIDENCE_PATTERN.test(s)) return { ok: true, reason: 'ok', refusal, min, length }
   return { ok: false, reason: 'refusal', refusal, min, length }
+}
+
+/* ── doc 类阶段的**单轨产物 = 任务夹文件**（回复只是摘要；2026-09-18 probe-v2 实锤） ──────────
+ * 实锤：`tf-mu71waxg-4iws10` 的 PRD 子代理**写了 4894 字节 `PRD.md`、还调 `present` 声明交付物**，
+ * 但它的回复只有一个 state 块（284 字符）→ `judgeDeliverable` 按「回复过短」判 `insubstantial`
+ * 「视为未交付」→ 阶段失败 → 紧接着撞熔断 → 整条 run 落 failed + 需人工。
+ * 判据只看回复是**把"摘要写少了"这种形式违规升级成"没干活"**——而该阶段的产物本来就不在回复里。
+ * 故：回复不合格时，**回读任务夹产物文件**，文件在且达该阶段长度下限 → 仍判交付（并留痕）。
+ * 只列「产物就是任务夹文件」的阶段：dev/qaFix 的交付是代码 + 证据块（另有 `[Verification evidence]` 信号），
+ * scaffold/architecture 的产物是代码与蓝图对象（host 另有解析与文件 fallback），都不入此表。
+ * patch 档的 PRD 阶段**刻意不产文件**（确认单只在回复里）→ 没有候选文件时本机制自然不生效。
+ * ⚠️ 兜底**不豁免非空回复**：pipeline 还要用回复文本合并 state 块（`mergeStageState`），
+ * 空回复仍旧失败（那是真的没交付）。 */
+export const DOC_STAGE_FILES: Record<string, string[]> = {
+  prd: ['PRD.md', 'TECH-CHANGE.md'],
+  design: ['DESIGN.md'],
+  tech: ['TECHNICAL.md', 'TECH-CHANGE.md'],
+  qa: ['QA-REPORT.md'],
+  acceptance: ['ACCEPTANCE.md'],
+}
+
+/** 任务夹产物读取（单轨契约：文件即产物——QA/验收 host 只读文件，回复仅摘要）。
+ * 缺失/空/读取异常返回 null（调用方决定硬失败或 journal 兜底）。`pipeline` 与 `runner` 共用。 */
+export function artifactText(journal: { workspacePath?: string | null; runDocs?: string | null } | null | undefined, fileName: string): string | null {
+  const path = journal && journal.workspacePath && journal.runDocs ? `${journal.workspacePath}/${journal.runDocs}/${fileName}` : null
+  if (!path) return null
+  try {
+    if (!existsSync(path)) return null
+    const t = readFileSync(path, 'utf8').trim()
+    return t ? t : null
+  } catch (e) { return null }
+}
+
+/**
+ * doc 类阶段的产物兜底：按 `DOC_STAGE_FILES` 取**最长**的一个候选文件（同一阶段可能有多种产物形态，
+ * 如 tech 档 PRD 写 `TECH-CHANGE.md`）；无候选/文件缺失/未达下限 → null（绝不抛）。
+ */
+export function stageDocText(
+  journal: { workspacePath?: string | null; runDocs?: string | null } | null | undefined,
+  phase: string,
+): { name: string; text: string; length: number } | null {
+  const names = DOC_STAGE_FILES[phase]
+  if (!names || !names.length) return null
+  let best: { name: string; text: string; length: number } | null = null
+  for (const name of names) {
+    const text = artifactText(journal, name)
+    if (!text) continue
+    const length = text.trim().length
+    if (!best || length > best.length) best = { name, text, length }
+  }
+  return best
 }
 
 /* ── QA 轮次收敛的**埋点**（D 方案 2026-09-15：先测量，再决定要不要动状态机语义） ──────────

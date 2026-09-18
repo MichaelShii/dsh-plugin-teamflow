@@ -3,9 +3,9 @@
  * 依赖：util/constants/types + core(context/metering)。
  */
 import { runtime, providerName, trackInFlight, untrackInFlight } from './context.ts'
-import { accumulateSessionUsage, freshTokensOf } from './metering.ts'
+import { accumulateSessionUsage, freshTokensOf, effectiveFreshBudget } from './metering.ts'
 import { startStageGuard } from './guard.ts'
-import { clip, extractText, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs } from '../util.ts'
+import { clip, extractText, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs, stageDocText } from '../util.ts'
 import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../constants.ts'
 import { t, type HostLocale } from '../locales.ts'
 import { runLocaleOf } from './locale.ts'
@@ -177,13 +177,26 @@ export async function runAgent(
     stageText = text
     // 交付判定（信号分级：客观形态 → 证据块 → 措辞兜底，见 util.judgeDeliverable）
     const verdict = judgeDeliverable(phase, text)
+    // **doc 类阶段的产物兜底**（2026-09-18 probe-v2 实锤，见 util.DOC_STAGE_FILES）：这些阶段的产物
+    // 是任务夹文件，回复只是摘要 —— 回复过短不等于没干活（实锤：PRD.md 4894 字节已落盘、还调了
+    // `present` 声明交付物，却因回复只有 284 字符的 state 块被判「未交付」）。回读文件，达下限即判交付。
+    // 前提仍是**回复非空**：pipeline 要用回复合并 state 块，空回复是真的没交付。
+    let docFallback: { name: string; length: number } | null = null
+    if (!verdict.ok && text && stop === 'completed') {
+      const doc = stageDocText(journal, phase)
+      if (doc && doc.length >= verdict.min) docFallback = { name: doc.name, length: doc.length }
+    }
     if (journal.cancelled) {
       stage.status = 'cancelled'; stage.outcome = 'cancelled'
       return null
     }
-    if (stop === 'completed' && text && verdict.ok) {
+    if (stop === 'completed' && text && (verdict.ok || docFallback)) {
       stage.status = 'done'; stage.outcome = 'completed'
       stage.output = clip(text, 50000) // 阶段产物全文（断点续跑重建上下文）
+      if (docFallback) {
+        // 留痕（visible）：判交付的依据是文件而不是回复 —— 否则"为什么这次没重试"又成黑盒
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.docDelivered', { label, length: verdict.length, min: verdict.min, name: docFallback.name, docLen: docFallback.length }) })
+      }
       // 措辞只作诊断：命中拒绝词但已带验证证据块 → 仍判交付（2026-09-11 信号换轨）。
       // 留一条 warn 是为了审计可见（「为什么这句『无法执行』没判失败」有据可查），不改变结论。
       if (verdict.refusal) {
@@ -275,6 +288,8 @@ export async function withRetry(
 ): Promise<{ text: string | null; attempts: number; freshTokens: number; stage: JournalStage | null }> {
   let attempts = 0
   let freshTokens = 0
+  // 熔断预算的缓存能力判据：累计本次调用各次尝试的 usage（只看本阶段，见 metering.effectiveFreshBudget）
+  let usageAcc: { input: number; cacheRead: number; cacheWrite: number; output: number; calls: number } = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 }
   let lastStage: JournalStage | null | undefined = null
   // 外部供应商故障的独立计数（不受 RETRY_LIMIT 约束：那是"换做法重试"的次数，
   // 外部故障是"等窗口过去"，两件事不能共用一个计数器）
@@ -297,6 +312,14 @@ export async function withRetry(
     // 不计入熔断——旧口径含 cacheRead 导致「一次失败必熔断」，见 FRESH_TOKEN_BUDGET 注释）
     if (lastStage && lastStage.phase === phase) {
       freshTokens += freshTokensOf(lastStage.usage)
+      const u = (lastStage.usage || {}) as { input?: number; cacheRead?: number; cacheWrite?: number; output?: number; calls?: number }
+      usageAcc = {
+        input: usageAcc.input + (u.input || 0),
+        cacheRead: usageAcc.cacheRead + (u.cacheRead || 0),
+        cacheWrite: usageAcc.cacheWrite + (u.cacheWrite || 0),
+        output: usageAcc.output + (u.output || 0),
+        calls: usageAcc.calls + (u.calls || 0),
+      }
     }
     if (result) return { text: result, attempts, freshTokens, stage: lastStage }
     if (journal.cancelled) return { text: null, attempts, freshTokens, stage: lastStage }
@@ -357,8 +380,15 @@ export async function withRetry(
     // token 熔断（新增口径）：本次调用累计新增消耗超预算 → 停止重试转人工。
     // 位置在「自动重试」之前是刻意的：预算合理（≈2 轮尝试量级）时，首次失败走下方重试；
     // 只有该量级数倍的真跑飞才熔断——旧口径把 cacheRead 算进来，等于取消了自动重试（2026-09-11 修）。
-    if (freshTokens >= FRESH_TOKEN_BUDGET) {
-      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'diag.breaker', { label, fresh: Math.round(freshTokens / 1000), budget: Math.round(FRESH_TOKEN_BUDGET / 1000) }) })
+    // **预算随缓存能力自适应**（2026-09-18 probe-v2 实锤）：不缓存的 provider 上每轮调用都要重付
+    // system+tools（实测 ~15.5k/次），200k 会退化成「约 13 次调用上限」→ 按倍数放宽（见 metering）。
+    const eff = effectiveFreshBudget(usageAcc, FRESH_TOKEN_BUDGET)
+    if (freshTokens >= eff.budget) {
+      const params = {
+        label, fresh: Math.round(freshTokens / 1000), budget: Math.round(eff.budget / 1000),
+        calls: eff.calls, ratio: Math.round(eff.ratio * 100),
+      }
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, eff.uncached ? 'diag.breakerUncached' : 'diag.breaker', params) })
       journal.humanIntervention = true
       return { text: null, attempts, freshTokens, stage: lastStage }
     }

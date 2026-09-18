@@ -9,7 +9,7 @@ import { initPipelineBacklog, advanceTask, storeFor, parseDefectRows, syncQaDefe
 import { withRetry, resolveChildRoute } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
-import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool, extractAssumptionsSection, devTaskStatuses, devTaskIdAt, backfillDevTaskIds } from '../util.ts'
+import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool, extractAssumptionsSection, devTaskStatuses, devTaskIdAt, backfillDevTaskIds, artifactText } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, FIX_GATE_PATTERN } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
@@ -117,17 +117,7 @@ function ensureLogGitignore(cwd: string | null | undefined, journal: Journal, lo
  * 归 L2（PRD 阶段 PM 按技术栈规划，见 prdPrompt 必查项）与 L3（QA 收口探针）以及用户本人。
  */
 
-/** 任务夹产物读取（单轨契约：文件即产物——QA/验收 host 只读文件，回复仅摘要）。
- * 缺失/空/读取异常返回 null（调用方决定硬失败或 journal 兜底）。 */
-function artifactText(journal: { workspacePath?: string | null; runDocs?: string | null }, fileName: string): string | null {
-  const path = journal && journal.workspacePath && journal.runDocs ? `${journal.workspacePath}/${journal.runDocs}/${fileName}` : null
-  if (!path) return null
-  try {
-    if (!existsSync(path)) return null
-    const t = readFileSync(path, 'utf8').trim()
-    return t ? t : null
-  } catch (e) { return null }
-}
+/** 任务夹产物读取助手 `artifactText` 见 util.ts（pipeline/runner 共用：doc 类阶段的产物兜底要用它）。 */
 
 /**
  * tool 侧预检透传的分诊裁决（2026-09-16 需求澄清闸门）：只接受形状正确的对象；
