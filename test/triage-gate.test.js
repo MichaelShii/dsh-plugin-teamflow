@@ -14,6 +14,7 @@
  */
 import { qualifyBlockers, normalizeSettle, TRIAGE_SETTLES, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, triageRecordOf, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, triageCacheIsPending, triageCacheMarkPending, triageCacheSettle, TRIAGE_CACHE_MAX } from '../host/core/triage.ts'
 import { extractAssumptionsSection } from '../host/util.ts'
+import { prdPrompt } from '../host/prompts/index.ts'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -276,6 +277,22 @@ console.log('     （全部 64/64 个 run 的 triage 不带 artifact；log.artif
   ok(/const tj = journal\.triage as \{ artifact\?: string; installable\?: boolean \}/.test(pipeSrc), 'pipeline：形态契约的注入源是 **journal.triage**（落盘面，resume 也在）')
   ok(/artifactContractsFor\(art, inst\)/.test(pipeSrc) && /state\.__runCtx\.artifactContracts = items\.map/.test(pipeSrc), 'pipeline：命中形态后展开契约并写进 __runCtx（供 prdPrompt/qaPrompt 消费）')
   ok(/if \(items\.length\)/.test(pipeSrc) && /log\.artifactContract/.test(pipeSrc), 'pipeline：有契约才注入 + 落 log.artifactContract（**这条日志就是"防线活着"的判据**）')
+  // ── 端到端接线（缺的正是这一段）：verdict → journal.triage → __runCtx → prdPrompt 真的出现形态契约 ──
+  const full = { mode: 'medium', kind: 'feature', needDesign: true, complexity: 'medium', rationale: [], confidence: 'high', slug: 'x', source: 'model', intent: 'requirement', blockers: [], blockersDropped: 0, artifact: 'plugin-full', installable: true }
+  const recFull = triageRecordOf(full)
+  const art = normalizeArtifact(recFull.artifact)
+  const inst = recFull.installable === true
+  const items = artifactContractsFor(art, inst)
+  ok(items.length > 0, `形态契约展开 ${items.length} 条（plugin-full + installable）`)
+  const stBase = { version: 1, projectName: 'p', updatedAt: null, product: { summary: null, techStack: null }, modules: {}, verifyScripts: [], acIndex: {}, stages: {}, lastRun: null }
+  const stateFix = { ...stBase, __runCtx: { runDocs: 'docs/teamflow/x', artifact: art, installable: inst, artifactContracts: items.map((it) => ({ requirement: it.requirement, criteria: it.criteria })) } }
+  const promptFix = prdPrompt('做一个 dsh 插件', 'E:/x', 'tf-x', stateFix)
+  ok(/\[交付形态契约/.test(promptFix), '**端到端：prdPrompt 真的注入了「交付形态契约 · 必填 AC」**（修复前恒为空）')
+  ok(/必须可被宿主安装\/加载/.test(promptFix), '端到端：installable=true 的措辞在位')
+  // 反向：修复前的记录形状（没有这两个字段）确实什么都不注入 —— 证明这就是那个断点
+  const itemsOld = artifactContractsFor(normalizeArtifact(undefined), false)
+  const promptOld = prdPrompt('做一个 dsh 插件', 'E:/x', 'tf-x', { ...stBase, __runCtx: { runDocs: 'docs/teamflow/x' } })
+  ok(itemsOld.length === 0 && !/交付形态契约/.test(promptOld), '反向：无形态字段 → 0 条契约、prompt 无注入（即修复前的生产状态）')
 }
 
 console.log(failed ? `\n✗ triage-gate：${failed} 条失败\n` : '\n✓ triage-gate：全部通过\n')
