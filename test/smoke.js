@@ -626,6 +626,14 @@ ok(/journal\.humanIntervention = true\s*\n\s*journal\.logs\.push\(\{ t: Date\.no
 ok(/export function isDangerousVcsRoot/.test(utilSrc) && /export function dirTooLargeForBaseline/.test(utilSrc), 'util：危险路径判定 + 有界规模采样（纯函数，可单测）')
 ok(/if \(!s\.inRepo\) \{/.test(hostSrc) && /git\.q\.noRepo/.test(hostSrc) && /kind: 'git-init'/.test(hostSrc), 'host：非 git 工作区不再静默跳过——进入「改动存档」决策（init/keep，危险路径只给 keep）')
 ok(/st\.gitMode === 'none' \|\| options\.preAction === 'keep-nogit'/.test(hostSrc), 'host：记住答案（state.gitMode）——已选"不开启"的后续 run 不再问')
+// 「记住答案」的**存储侧**门禁（2026-09-18 实锤：loadState 是逐字段白名单重建，漏了 gitMode →
+// pipeline 写了也被下一次 state 块合并抹掉 → 每次 run 重复问存档。`test/state.test.js` 静态断言
+// 「TeamflowState 每个持久化字段都被 loadState 搬运」+ 行为往返 + 合并后仍在；此处只做指针性守门）
+{
+  const stateSrc2 = readFileSync(join(here, '../host/core/state.ts'), 'utf8')
+  ok(/raw\.gitMode === 'repo' \|\| raw\.gitMode === 'none'/.test(stateSrc2), 'state：loadState 显式搬运 gitMode（逐字段重建漏一个 = 该字段永远存不住——白名单漏字段已第四次）')
+  ok(existsSync(join(here, 'state.test.js')), 'state.test.js 存在（字段完整性门禁：静态解析接口顶层键逐个断言被搬运 + 往返 + 合并后仍在）')
+}
 // 分诊缓存（2026-09-18 实测：决策返回路径让同一条需求被分诊两次——probe-clock tf-mu5wcm2j-kxk14y：
 // 首次 start 跑分诊(16.6K tok) → 返回 needs-decision(git-init)、不建 run → 用户点选后主线程重调 →
 // 又跑一次(16.5K tok)，两次 model 裁决一致。此前分诊都走 fallback（90s 超时 bug）→ 不建子代理 → 不可见）

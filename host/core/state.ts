@@ -126,6 +126,13 @@ export function loadState(projectKey: string): TeamflowState {
         base.acIndex = raw.acIndex || {}
         base.stages = raw.stages || {}
         base.lastRun = raw.lastRun ?? null
+        // **gitMode 必须显式搬运**（2026-09-18 实锤修复）：本函数是**逐字段白名单重建**（不是整体读取），
+        // 漏一个字段 = 该字段永远存不住。实测 `tf-mu6tb281`：pipeline 明写 `st.gitMode='repo'; saveState(...)`
+        // （日志也有「改动存档已开启」），但**任何一次阶段 state 块合并**（`mergeStateBlock` 走 load→save）
+        // 都会把它丢掉 → 下次 run 又从头问一遍「要不要开启改动存档」——用户当初要的「答案记住、后续不再问」
+        // 整条失效。这类"白名单漏字段"已第四次（B1 同型：execOptions/journal.options/loadState）。
+        // **门禁**：`test/state.test.js` 静态解析本接口的顶层键，逐个断言在本函数里被搬运（新增字段漏了就红）。
+        if (raw.gitMode === 'repo' || raw.gitMode === 'none') base.gitMode = raw.gitMode
         return base
       }
     }
