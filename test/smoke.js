@@ -585,7 +585,12 @@ ok(/从 \.bak 恢复/.test(storeSrc), '主文件损坏自动从 .bak 恢复')
 // 放在文件末尾：pipelineSrc / storeSrc / reportSrc 在中段才初始化（早期断言用它们会 TDZ 崩）。
 ok(/normalizeTriagePassthrough/.test(pipelineSrc) && /if \(preTriage\) \{/.test(pipelineSrc), 'pipeline：复用透传裁决（不再重复跑分诊）')
 ok(/journal\.triage = triageRecordOf\(/.test(pipelineSrc), 'pipeline：分诊裁决落盘 journal.triage（shadow 埋点，Phase 2 定闸门强度的数据源）')
-ok(/function triageRecordOf/.test(pipelineSrc) && /function notePrdAssumptions/.test(pipelineSrc), 'pipeline：triageRecordOf / notePrdAssumptions 存在')
+// triageRecordOf 住 core/triage.ts（纯函数，门禁可直接测）——第五次「白名单漏字段」的现场：
+// 旧版漏搬 artifact/installable → 形态契约注入读 journal.triage.artifact 永远 undefined → 整条防线死掉。
+ok(/export function triageRecordOf/.test(triageSrc) && /triageRecordOf/.test(pipelineSrc) && !/function triageRecordOf/.test(pipelineSrc), 'triage/pipeline：triageRecordOf 住 triage.ts 并被 pipeline 引用（不再住 pipeline —— 那里门禁够不着）')
+ok(/artifact: normalizeArtifact\(v\.artifact\), installable: v\.installable === true/.test(triageSrc), 'triage：**triageRecordOf 必须搬运 artifact/installable**（形态契约注入的唯一来源；漏了 = dddd 事故防线再次静默失效）')
+ok(/__upgradedFrom/.test((triageSrc.match(/export function triageRecordOf[\s\S]*?\n\}/) || [''])[0]), 'triage：升档标记读的是 __upgradedFrom（读错一个下划线 = log.modeUpgraded 静默消失）')
+ok(/function notePrdAssumptions/.test(pipelineSrc), 'pipeline：notePrdAssumptions 存在')
 ok(/notePrdAssumptions\(journal, locale\)/.test(pipelineSrc), 'pipeline：PRD 收口读假设段（假设可见化的落点）')
 ok(/journal\.assumptions = clip\(body, 2000\)/.test(pipelineSrc), 'pipeline：假设段落 journal.assumptions（截断 2000）')
 ok(/log\.prdAssumptionsMissing/.test(pipelineSrc), 'pipeline：PRD 未给假设段 → 记 warn（policy 级，不硬失败）')

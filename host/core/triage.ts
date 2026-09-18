@@ -361,6 +361,32 @@ function parseVerdictText(text: string): TriageVerdict | null {
   } catch (e) { return null }
 }
 
+/**
+ * `journal.triage` 的落盘记录（shadow 埋点 **+ 下游消费面**）。
+ *
+ * ⚠️ **这里是「白名单漏字段」的第五次现场（2026-09-18 实锤，勿回退）**：旧版只搬 9 个字段，
+ * **漏了 `artifact` / `installable`** → `pipeline` 的形态契约注入读 `journal.triage.artifact`
+ * 永远拿到 `undefined` → `normalizeArtifact(undefined)` = `'other'` → `artifactContractsFor('other')`
+ * 恒为 `[]` → **`[交付形态契约]` 从未注入过任何 PRD**。实测：全部 **64/64** 个 run 的 `triage` 都
+ * 不带 `artifact`，`log.artifactContract` **一次都没落过**。即 2026-09-17 为 `dddd`（插件"看着完整"
+ * 却装不进 profile、功能 AC 全绿 → 验收照样通过）建的那道防线**一直没生效**。
+ *
+ * 教训：这个函数不是"挑几个有价值的字段记一记"，而是**接口字段的完整搬运** —— 每个 `TriageVerdict`
+ * 顶层键要么在这里被搬、要么有明确归属（见 `test/triage-gate.test.js` 的豁免表与结构化门禁，
+ * 它会把「新加字段忘了搬」变成红灯）。
+ */
+export function triageRecordOf(v: TriageVerdict) {
+  return {
+    mode: v.mode, kind: v.kind, complexity: v.complexity, confidence: v.confidence, source: v.source,
+    intent: v.intent, blockers: v.blockers, blockersDropped: v.blockersDropped,
+    // 交付形态 = 下游「形态契约注入」的**唯一来源**（漏一个字段 = 整条防线静默失效）
+    artifact: normalizeArtifact(v.artifact), installable: v.installable === true,
+    // 内部标记 `__upgradedFrom` 才是被写入的那个（护栏强升的三处调用点都写它）——接口上的
+    // `upgradedFrom` 只是记录形态声明：**读错一个下划线 = 升档日志静默消失**（同型，门禁含此断言）。
+    upgradedFrom: (v as { __upgradedFrom?: PipelineMode | null }).__upgradedFrom || null,
+  }
+}
+
 /** 兜底：正则预筛 → fallback verdict（模型分诊不可用/超时/解析失败时）。`reason` = 退化原因（可见化：
  *  2026-09-18 probe-clock 实锤——分诊子代理**推理中被 90s 超时 dispose**（截图「已停止」），journal 只记
  *  一条 fallback info，没人知道为什么；现在把原因带回给调用方落 warn）。 */

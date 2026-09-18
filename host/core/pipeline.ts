@@ -15,7 +15,7 @@ import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext, PipelineMode } from '../types.ts'
-import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, MODE_RANK, artifactContractsFor, type TriageVerdict } from './triage.ts'
+import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, MODE_RANK, artifactContractsFor, triageRecordOf, type TriageVerdict } from './triage.ts'
 import { loadTeams, findTeam, getActiveStages, teamNameOf } from './teams.ts'
 import { loadState, saveState, extractStateBlock, mergeStateBlock, noteRun } from './state.ts'
 import { isDangerousVcsRoot, dirTooLargeForBaseline } from '../util.ts'
@@ -148,14 +148,8 @@ function normalizeTriagePassthrough(raw: unknown): TriageVerdict | null {
   }
 }
 
-/** journal 里的分诊记录（shadow 埋点：Phase 2 据此决定闸门强度，而不是凭感觉）。 */
-function triageRecordOf(v: TriageVerdict) {
-  return {
-    mode: v.mode, kind: v.kind, complexity: v.complexity, confidence: v.confidence, source: v.source,
-    intent: v.intent, blockers: v.blockers, blockersDropped: v.blockersDropped,
-    upgradedFrom: (v as { upgradedFrom?: string | null }).upgradedFrom || null,
-  }
-}
+/* `triageRecordOf`（journal.triage 的落盘记录）见 core/triage.ts —— 它是**纯函数**且是「白名单漏字段」
+ * 的第五次现场（漏 artifact/installable → 形态契约注入整条链失效），故住 triage.ts 便于门禁直接测。 */
 
 /**
  * PRD 收口：把「假设 / 待澄清」段摘出来落 `journal.assumptions`（2026-09-16，需求澄清闸门 Phase 1）。

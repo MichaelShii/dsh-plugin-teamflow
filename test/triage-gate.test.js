@@ -12,8 +12,13 @@
  *     实测模型系统性自选 `lite:true`（33 次启动 14 次显式传档位、0 次先预览），故放宽为「只有 patch 豁免」。
  * 另外锁住意图归一（非法值一律 requirement，绝不因字段缺失拦启动）。
  */
-import { qualifyBlockers, normalizeSettle, TRIAGE_SETTLES, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, triageCacheIsPending, triageCacheMarkPending, triageCacheSettle, TRIAGE_CACHE_MAX } from '../host/core/triage.ts'
+import { qualifyBlockers, normalizeSettle, TRIAGE_SETTLES, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, triageRecordOf, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, triageCacheIsPending, triageCacheMarkPending, triageCacheSettle, TRIAGE_CACHE_MAX } from '../host/core/triage.ts'
 import { extractAssumptionsSection } from '../host/util.ts'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const here = dirname(fileURLToPath(import.meta.url))
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -227,6 +232,51 @@ ok(triageCacheSize() === 0, 'markPending 对不存在的键是安全无操作，
 triageCachePut(triageCacheKey('fb2', ''), V({ source: 'fallback' }), true)
 ok(!triageCacheIsPending(triageCacheKey('fb2', '')), 'fallback 裁决仍不入缓存（markPending 也没得标）')
 triageCacheClear()
+
+console.log('\n[10] journal.triage 落盘完整性（第五次「白名单漏字段」→ 形态契约注入整条链失效）')
+console.log("     实锤：旧 triageRecordOf 漏搬 artifact/installable → pipeline 注入读 journal.triage.artifact")
+console.log("     永远 undefined → artifactContractsFor('other') 恒为 [] → [交付形态契约] 从未注入过任何 PRD")
+console.log('     （全部 64/64 个 run 的 triage 不带 artifact；log.artifactContract 一次都没落过）')
+{
+  const rec = triageRecordOf(V({ artifact: 'plugin-full', installable: true }))
+  ok(rec.artifact === 'plugin-full', 'triageRecordOf 搬运 artifact（下游形态契约的唯一来源）')
+  ok(rec.installable === true, 'triageRecordOf 搬运 installable')
+  ok(triageRecordOf(V({ artifact: 'nonsense' })).artifact === 'other', 'artifact 走归一（脏值 → other，不套错契约）')
+  ok(triageRecordOf(V({ installable: 'yes' })).installable === false, 'installable 非严格 true → false（不猜）')
+  // ── 结构化门禁：接口顶层键逐个必须在 triageRecordOf 里被搬运 ──
+  const triageSrc3 = readFileSync(join(here, '../host/core/triage.ts'), 'utf8')
+  const iface = (triageSrc3.match(/export interface TriageVerdict \{[\s\S]*?\n\}/) || [''])[0]
+  const keys = []
+  for (const line of iface.split('\n')) {
+    const m = line.match(/^  ([A-Za-z_$][\w$]*)\??\s*:/)
+    if (m) keys.push(m[1])
+  }
+  ok(keys.length >= 12, `静态解析出 TriageVerdict 顶层键 ${keys.length} 个（解析失败会让下面的门禁空转）`)
+  /** 不在这里搬运的字段（各有明确归属，不是"忘了"）。 */
+  const EXEMPT = new Map([
+    ['needDesign', '落在 journal.options.needDesign（选项面已持久化）'],
+    ['slug', '落在 journal.runDocs（任务夹名已持久化）'],
+    ['rationale', '诊断文本，随工具返回给主线程，不进 journal 记录'],
+  ])
+  /** 特例：接口字段 `upgradedFrom` 由内部标记 `__upgradedFrom` 落盘（**属性读取**，不是类型注解）。 */
+  const SPECIAL = { upgradedFrom: /\.__upgradedFrom/ }
+  // 去注释后再判：否则**注释里提到字段名**就能让门禁假绿（实测：`__upgradedFrom` 在注释里出现，
+  // 把代码改成读 `.upgradedFrom` 也照样通过 —— 门禁必须只看代码）。
+  const body = ((triageSrc3.match(/export function triageRecordOf[\s\S]*?\n\}/) || [''])[0])
+    .replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const missing = keys.filter((k) => {
+    if (EXEMPT.has(k)) return false
+    if (SPECIAL[k]) return !SPECIAL[k].test(body)
+    return !body.includes(`v.${k}`)
+  })
+  ok(missing.length === 0, `**每个 TriageVerdict 顶层键都被 triageRecordOf 搬运**${missing.length ? `（漏了：${missing.join(', ')}）` : ''}`)
+  ok(EXEMPT.size === 3 && EXEMPT.has('needDesign'), '豁免表只有三项（新加字段默认要搬运，不许悄悄塞进豁免表）')
+  // ── 注入源必须是 journal.triage（不是透传的 options.__triage，后者不落盘、resume 就没了）──
+  const pipeSrc = readFileSync(join(here, '../host/core/pipeline.ts'), 'utf8')
+  ok(/const tj = journal\.triage as \{ artifact\?: string; installable\?: boolean \}/.test(pipeSrc), 'pipeline：形态契约的注入源是 **journal.triage**（落盘面，resume 也在）')
+  ok(/artifactContractsFor\(art, inst\)/.test(pipeSrc) && /state\.__runCtx\.artifactContracts = items\.map/.test(pipeSrc), 'pipeline：命中形态后展开契约并写进 __runCtx（供 prdPrompt/qaPrompt 消费）')
+  ok(/if \(items\.length\)/.test(pipeSrc) && /log\.artifactContract/.test(pipeSrc), 'pipeline：有契约才注入 + 落 log.artifactContract（**这条日志就是"防线活着"的判据**）')
+}
 
 console.log(failed ? `\n✗ triage-gate：${failed} 条失败\n` : '\n✓ triage-gate：全部通过\n')
 process.exit(failed ? 1 : 0)
