@@ -26,7 +26,7 @@ import type {
 import { RETRY_LIMIT, STATUS, PHASE_ORDER, PHASE_KEY_OF, PHASE_KEY_BY_NAME, phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER } from './constants.ts'
 import { toText, clip, extractText, normalizeRoot, normalizeTasks, sanitizeSnapOptions, normalizeSignal, isUnretryable, handoffBrief, runPool } from './util.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, devPrompt, qaPrompt, acceptancePrompt } from './prompts/index.ts'
-import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, setSessionProjections, workspaceScopeOf } from './core/context.ts'
+import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, setSessionProjections, setInstallCtx, workspaceScopeOf } from './core/context.ts'
 import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/backlog.ts'
 import { runsFor, runAddress, productKeyOf, runVisibleIn, runBrief, productMetaOf, listProducts } from './core/products.ts'
 import { loadTeams, findTeam, teamNameOf, teamDescOf, type TeamConfig } from './core/teams.ts'
@@ -704,6 +704,9 @@ export class TeamflowService extends TypertRemoteService {
     super(ctx, 'teamflow')
     // 注：曾硬注入 tokenMeter 但全仓从未使用（2026-09-10 清理）——计量走 sessionProjections 投影。
     setRuntime(ctx.get('agents'), ctx.get('subagents'), ctx.get('workspaceRegistry'), ctx.get('agentDefaultModel'), ctx.get('llm'))
+    // 宿主锚点：ctx.baseUrl = 当前 profile 目录（宿主挂载插件树前设好）→ 安装环境探测的主源。
+    // 不读 process.env.DSH_HOME（它不是"装了 dsh 就自带"，默认安装下为 undefined）。
+    setInstallCtx(ctx)
     // 可选能力：官方 Session 投影注册表（计量首选来源 tokenUsage/sessionStats）。
     // 走 ctx.inject 而非 static inject——服务缺失（最小 profile）时插件仍加载，计量回退事件扫描。
     ctx.inject(['sessionProjections'], (projectionCtx) => {

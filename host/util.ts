@@ -30,11 +30,22 @@ export function extractText(blocks) {
  * （`pnpm dsh web`，实测 `dsh` 不在 PATH），这条命令在他的环境里**永远跑不通**；而别人可能是一键
  * 安装（`dsh` 在 PATH）、profile 名也可能不叫 `web`。**每个用户环境不一样，路径绝不能写死。**
  *
- * 三条事实来源（**全部运行时得到，无一处硬编码**）：
- *  ① `DSH_HOME`（宿主注入的环境变量，实测存在）；
- *  ② **插件自身在磁盘上的位置** —— 我们被 `$DSH_HOME/profiles/<name>/node_modules/<pkg>/lib/host.mjs`
- *     加载，向上找 `profiles/<name>` 即得**当前 profile 名与目录**（不必从任何配置里猜）；
- *  ③ `dsh` 是否在 PATH（在 → CLI 可用；不在 → 源码运行，走等价手动步骤）。
+ * 四条事实来源（**全部运行时得到，无一处硬编码**；主源是宿主给的权威锚点）：
+ *  ① **`ctx.baseUrl` = 当前 profile 目录**（宿主在挂载插件树**之前**把它设为 profile 根配置所在目录：
+ *     `apps/cli/src/profile-boot.ts` 的 `rootConfig = join(profile.dir, 'cordis.yml')` →
+ *     `packages/boot/app-boot` 的 `boot()` 里 `ctx.baseUrl = pathToFileURL(dirname(absoluteConfigPath))`），
+ *     Cordis 子 ctx 原型继承 → 插件构造时即读得到。**唯一不依赖环境变量、也不受 junction 影响的来源**；
+ *  ② **插件自身在磁盘上的位置**（次源）—— 我们被 `$DSH_HOME/profiles/<name>/node_modules/<pkg>/lib/host.mjs`
+ *     加载，向上找 `profiles/<name>` 即得 profile 名与目录；⚠️ 但 `link:` 安装时 `import.meta.url`
+ *     会解析到**真实目标**（junction 实测：指向源码目录），此时反推落空 → 正是要靠 ① 兜住；
+ *  ③ **`DSH_HOME` 只能当兜底提示——它并非"装了 dsh 就自带"**：它是**可选覆盖变量**
+ *     （`home-paths` 的 `resolveDshHome`：显式配置 > `$DSH_HOME` > `~/.dsh`），装 dsh **不会**写它
+ *     （本机实测 User/Machine 两个作用域均为空），且 `.env` 永远设不了它（`app-boot` 的
+ *     `BOOTSTRAP_PREFIXES` 含 `DSH_`，命中即抛错）。宿主进程里它通常是 `undefined`。
+ *     ⚠️ **别拿 shell 里的观测推断宿主环境**：`shellEnv` 每次 shell 调用现算一个 overlay 塞给它
+ *     （`packages/shell/shell-env`，官方契约明写 `process.env` 不被修改），故 `pwsh`/`bash` 里能 echo 到它，
+ *     与宿主 `process.env` 无关（本轮即因此误判过一次）；
+ *  ④ `dsh` 是否在 PATH（在 → CLI 可用；不在 → 源码运行，走等价手动步骤）。
  *
  * 等价手动步骤**不是猜的**：读宿主源码 `apps/cli/src/plugin.ts` 的 `runPlugin`，其语义即
  * 「`pnpm add <spec>`（cwd=profile 目录）→ `reconcilePlugins`：依赖里**声明了 `dsh.bundle.patch`
@@ -59,8 +70,41 @@ export interface InstallEnv {
   ok: boolean
 }
 
+/** 从 `ctx.baseUrl`（宿主设为**当前 profile 目录**的 file:// URL）解析 profile。
+ * 形态要求 `.../profiles/<name>/`（容忍尾斜杠与 cordis.yml 之类的文件名段）；非该形态返回 null。
+ * 纯函数：`file://` 解码走 `decodeURIComponent`（路径含空格/中文时 URL 是编码过的）。 */
+export function profileDirFromBaseUrl(baseUrl: unknown): { home: string; profile: string; dir: string } | null {
+  const raw = String(baseUrl || '')
+  if (!raw) return null
+  let p = raw
+  if (/^file:\/\//i.test(p)) {
+    try { p = decodeURIComponent(new URL(p).pathname) } catch (e) { return null }
+    // Windows 的 file:///C:/... → pathname 为 /C:/...，去掉前导斜杠
+    if (/^\/[a-zA-Z]:/.test(p)) p = p.slice(1)
+  }
+  const norm = p.replace(/\\/g, '/')
+  const segs = norm.split('/').filter(Boolean)
+  let i = segs.lastIndexOf('profiles')
+  if (i < 0 || i + 1 >= segs.length) return null
+  // 容忍 baseUrl 指到文件（如 .../profiles/web/cordis.yml）：末尾段不是目录名时按文件名丢弃
+  let end = segs.length
+  if (end - i > 2 && /\.(ya?ml|json)$/i.test(segs[end - 1])) end -= 1
+  if (end !== i + 2) return null
+  const name = segs[i + 1]
+  if (!name) return null
+  const isPosix = norm.startsWith('/')
+  const sep = isPosix ? '/' : '\\'
+  const home = (isPosix ? '/' : '') + segs.slice(0, i).join(sep)
+  // 直接拼到 `profiles/<name>`（而非 join(home, …)）：POSIX 根 home 为 `/` 时
+  // `['/','profiles','web'].join('/')` 会产出 `//profiles/web` 这种双斜杠。
+  const dir = (isPosix ? '/' : '') + segs.slice(0, i + 2).join(sep)
+  return { home, profile: name, dir }
+}
+
 /** 从插件模块路径反推 `$DSH_HOME/profiles/<name>`（纯函数，门禁可测）。
- * 接受 `.../profiles/<name>/node_modules/<pkg>[/lib/host.mjs]` 形态；非该形态返回 null。 */
+ * 接受 `.../profiles/<name>/node_modules/<pkg>[/lib/host.mjs]` 形态；非该形态返回 null。
+ * ⚠️ 次源：`link:`/junction 安装下 `import.meta.url` 会解析到真实目标（源码目录）→ 返回 null，
+ * 此时靠 {@link profileDirFromBaseUrl}（宿主给的权威锚点）兜住。 */
 export function profileFromModulePath(modulePath: string): { home: string; profile: string; dir: string } | null {
   const raw = String(modulePath || '')
   if (!raw) return null
@@ -78,15 +122,37 @@ export function profileFromModulePath(modulePath: string): { home: string; profi
   return { home, profile: name, dir }
 }
 
-/** 探测本机安装环境。`modulePath` 传插件自身文件路径（`import.meta.url` 派生）；
- * `hasCli` 由调用方探测（纯函数不碰进程/PATH）。 */
-export function detectInstallEnv(opts: { modulePath?: string; dshHome?: string; hasCli?: boolean }): InstallEnv {
-  const home = String(opts.dshHome || '')
+/** 探测本机安装环境。取值顺序（**主源是宿主权威锚点，不是环境变量**）：
+ *  ① `baseUrl`（`ctx.baseUrl` = profile 目录）→ profile 名/目录/home 全齐，且不受 junction 影响；
+ *  ② `modulePath`（插件自身文件路径）反推 —— `link:` 安装下会落空，作为次源；
+ *  ③ `hintHome`（调用方给 `dshHome()`，**已有 `~/.dsh` 兜底**）只补 home；
+ *  `ok` = **profile 名已知 且 目录为绝对路径**。刻意**不要求 `DSH_HOME`**：它不是"装了 dsh 就自带"
+ *  （可选覆盖变量、`.env` 也设不了），默认安装下为 undefined，纳入判据会**误判失败**并把 PRD
+ *  降级成"问用户"。要求绝对路径是因为相对目录照做不了（命令要在任意 cwd 下可执行）。
+ *  纯函数（不碰进程/PATH；`hasCli` 由调用方探测）。 */
+export function detectInstallEnv(opts: { baseUrl?: string; modulePath?: string; dshHome?: string; hasCli?: boolean }): InstallEnv {
+  const hintHome = String(opts.dshHome || '').replace(/[\\/]+$/, '')
+  const fromUrl = profileDirFromBaseUrl(opts.baseUrl)
   const fromPath = profileFromModulePath(opts.modulePath || '')
-  const profile = fromPath?.profile || ''
+  const src = fromUrl || fromPath
+  const profile = src?.profile || ''
+  const home = src?.home || hintHome
   const sep = home.includes('/') && !home.includes('\\') ? '/' : '\\'
-  const profileDir = profile && home ? `${home.replace(/[\\/]+$/, '')}${sep}profiles${sep}${profile}` : ''
-  return { dshHome: home, profile, profileDir, cliOnPath: opts.hasCli === true, ok: !!home && !!profile && !!profileDir }
+  const profileDir = src?.dir || (profile && home ? `${home}${sep}profiles${sep}${profile}` : '')
+  return {
+    dshHome: home,
+    profile,
+    profileDir,
+    cliOnPath: opts.hasCli === true,
+    // 相对目录不算探测成功：命令必须在任意 cwd 下照做得了（且相对路径没有可照抄的绝对值）
+    ok: !!profile && isAbsolutePath(profileDir),
+  }
+}
+
+/** 绝对路径判据（跨平台，纯字符串）：POSIX `/x`、Windows `C:\x`/`C:/x`、UNC `\\srv\share`。 */
+export function isAbsolutePath(p: unknown): boolean {
+  const s = String(p || '')
+  return /^\//.test(s) || /^[a-zA-Z]:[\\/]/.test(s) || /^\\\\/.test(s)
 }
 
 /** 安装入口文案：**以探测结果为准**，不写死任何 profile 名/路径；探测失败 → 明确要求"问用户"，不猜。 */

@@ -4,7 +4,7 @@
  * 【档位阶段集】按 mode（full/medium/lite/tech/patch）经 STAGE_POLICY（constants.ts）
  * 展开实际执行阶段集（resolveStages），再与团队阶段取交集——见 ADR-0004。
  */
-import { runtime, runs, inFlight, activeProducts, providerName, workspaceScopeOf } from './context.ts'
+import { runtime, runs, inFlight, activeProducts, providerName, workspaceScopeOf, installCtx } from './context.ts'
 import { initPipelineBacklog, advanceTask, storeFor, parseDefectRows, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, createSubtask, completeSubtask, noteSubtaskUsage, getSubtasks, hasOpenBlockingBugs } from './backlog.ts'
 import { withRetry, resolveChildRoute } from './runner.ts'
 import { deliverCompletion } from './report.ts'
@@ -12,7 +12,7 @@ import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, d
 import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, devTaskIdAt, backfillDevTaskIds, artifactText, detectInstallEnv } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, FIX_GATE_PATTERN } from '../constants.ts'
-import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
+import { persistJournal, readJsonAny, journalFile, dshHome } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext, PipelineMode } from '../types.ts'
 import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, MODE_RANK, contractsForDeliverable, normalizeHost, forceHost, PLUGIN_ARTIFACTS, triageRecordOf, type TriageVerdict } from './triage.ts'
@@ -596,14 +596,17 @@ export async function executePipeline(
     state.__runCtx.locale = locale
     // **本机安装环境**（2026-09-21 用户实锤，勿写死路径）：契约里原本写死
     // 「`dsh plugin --profile web add`」——用户是源码运行（`pnpm dsh`，dsh 不在 PATH）、profile 名
-    // 也可能不叫 web，那条命令在别人机器上根本跑不通。改为**运行时探测**：`$DSH_HOME`（宿主环境变量）
-    // + 插件自身所在路径反推 profile 名/目录 + `dsh` 是否在 PATH。探测失败 → 明确要求"问用户"，不猜。
-    // 只对插件形态注入（其余交付物不涉及装进 profile）。
+    // 也可能不叫 web，那条命令在别人机器上根本跑不通。改为**运行时探测**，取值顺序见
+    // `util.detectInstallEnv`：① `ctx.baseUrl`（宿主权威锚点 = profile 目录，经 context.installCtx 搬运）
+    // ② 插件自身路径反推（`link:` 安装下会落空）③ `dshHome()` 只补 home（自带 `~/.dsh` 兜底）。
+    // ⚠️ 不读 `process.env.DSH_HOME`——它**不是"装了 dsh 就自带"**（可选覆盖变量、`.env` 也设不了），
+    // 默认安装下为 undefined，会让探测**误判失败**并把 PRD 降级成"问用户"。
+    // 探测失败 → 明确要求"问用户"，不猜。只对插件形态注入（其余交付物不涉及装进 profile）。
     try {
       const tj0 = journal.triage as { artifact?: string } | null | undefined
       const art0 = normalizeArtifact(tj0?.artifact)
       if (PLUGIN_ARTIFACTS.indexOf(art0) !== -1) {
-        const env = detectInstallEnv({ modulePath: selfModulePath(), dshHome: process.env.DSH_HOME, hasCli: cliOnPath() })
+        const env = detectInstallEnv({ baseUrl: installCtx.baseUrl, modulePath: selfModulePath(), dshHome: dshHome(), hasCli: cliOnPath() })
         state.__runCtx.installEnv = env
         journal.installEnv = env
         journal.logs.push({

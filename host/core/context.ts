@@ -35,6 +35,22 @@ export function setSessionProjections(projections: unknown): void {
   runtime.sessionProjections = projections
 }
 
+/**
+ * **宿主锚点**（2026-09-21）：TeamflowService 构造时把 `ctx.baseUrl`（= 当前 profile 目录的
+ * file:// URL，宿主在挂载插件树**之前**设好）与 `dshHomePath` 记下来，供 pipeline 起跑时探测本机
+ * 安装环境。**为何不由 pipeline 自己拿**：pipeline 是纯编排模块，没有 ctx；且它链到宿主私有 peer
+ * （report→@deepseek-ai/dsh-llm），Behavior 测试取不到 → 锚点经此单例搬运（与 setRuntime 同款，
+ * 单向依赖不破）。
+ * ⚠️ 不存 `process.env.DSH_HOME`：它**不是"装了 dsh 就自带"**（可选覆盖变量，装 dsh 不写它，
+ * `.env` 也设不了 DSH_ 前缀），默认安装下为 undefined。baseUrl 才是权威事实。
+ */
+export const installCtx: { baseUrl?: string } = {}
+export function setInstallCtx(ctx: unknown): void {
+  const c = ctx as { baseUrl?: unknown } | null | undefined
+  const url = c && typeof c.baseUrl === 'string' ? c.baseUrl : ''
+  if (url) installCtx.baseUrl = url
+}
+
 /** 运行期 run 注册表（runId → Journal）。 */
 export const runs = new Map()
 /** 进行中的 stage 注册表（runId → `Map<stage, run>`）。**同一 run 可有多路并发子代理**（dev 并发池），

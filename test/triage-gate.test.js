@@ -13,7 +13,7 @@
  * 另外锁住意图归一（非法值一律 requirement，绝不因字段缺失拦启动）。
  */
 import { qualifyBlockers, normalizeSettle, TRIAGE_SETTLES, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, LOCAL_PLUGIN_SAMPLES_HINT, triageRecordOf, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, triageCacheIsPending, triageCacheMarkPending, triageCacheSettle, TRIAGE_CACHE_MAX, normalizeHost, forceHost, contractsForDeliverable, ARTIFACT_HOSTS } from '../host/core/triage.ts'
-import { extractAssumptionsSection, extractHostResearchSection, detectInstallEnv, profileFromModulePath, installRecipe } from '../host/util.ts'
+import { extractAssumptionsSection, extractHostResearchSection, detectInstallEnv, profileFromModulePath, profileDirFromBaseUrl, isAbsolutePath, installRecipe } from '../host/util.ts'
 import { prdPrompt } from '../host/prompts/index.ts'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -403,12 +403,38 @@ console.log('     `dsh plugin --profile web add` 在他机器上跑不通；故�
   ok(profileFromModulePath('/x/profiles/web/something/else') === null, '`profiles/<name>` 后不是 node_modules → null（不误判）')
   ok(profileFromModulePath('/x/profiles') === null && profileFromModulePath('') === null && profileFromModulePath(null) === null, '残缺/空输入 → null（不抛）')
   ok(profileFromModulePath('C:\\a\\profiles\\web') === null, '只有两层 → null（拿不到 node_modules 上下文）')
-  // ── detectInstallEnv：探测失败必须 ok=false（→ PRD 改为"问用户"）──
-  const okEnv = detectInstallEnv({ modulePath: win ? 'C:\\Users\\u\\.dsh\\profiles\\web\\node_modules\\p\\lib\\host.mjs' : '', dshHome: 'C:\\Users\\u\\.dsh', hasCli: false })
-  ok(okEnv.ok === true && okEnv.profile === 'web' && okEnv.cliOnPath === false, '探测成功：profile/目录齐备，且如实记录 dsh 不在 PATH')
-  ok(detectInstallEnv({ modulePath: '', dshHome: 'C:\\Users\\u\\.dsh', hasCli: true }).ok === false, '拿不到插件路径 → ok=false')
-  ok(detectInstallEnv({ modulePath: 'C:\\x\\profiles\\web\\node_modules\\p\\lib\\h.mjs', dshHome: '', hasCli: true }).ok === false, '拿不到 DSH_HOME → ok=false')
-  ok(detectInstallEnv({}).ok === false, '什么都不给 → ok=false（绝不编造路径）')
+  // ── detectInstallEnv：主源 = ctx.baseUrl（宿主权威锚点），不是环境变量 ──
+  const okEnv = detectInstallEnv({ baseUrl: 'file:///C:/Users/u/.dsh/profiles/web/', hasCli: false })
+  ok(okEnv.ok === true && okEnv.profile === 'web' && okEnv.cliOnPath === false, 'baseUrl 形态：profile/目录齐备，且如实记录 dsh 不在 PATH')
+  ok(okEnv.profileDir.replace(/\\/g, '/') === 'C:/Users/u/.dsh/profiles/web', 'baseUrl 形态：解出**真实 profile 目录**（file:// → 平台路径，Windows 去掉前导斜杠）')
+  ok(okEnv.dshHome.replace(/\\/g, '/') === 'C:/Users/u/.dsh', 'baseUrl 形态：同时解出 home')
+  ok(detectInstallEnv({ baseUrl: 'file:///home/u/.dsh/profiles/tui/' }).profile === 'tui', 'Unix 形态 baseUrl 同样成立（跨平台）')
+  ok(detectInstallEnv({ baseUrl: 'file:///C:/Users/u/my%20dsh/profiles/web/' }).dshHome.includes('my dsh'), '含空格/中文的 URL 解码正确（decodeURIComponent）')
+  ok(detectInstallEnv({ baseUrl: 'file:///C:/u/.dsh/profiles/web/cordis.yml' }).profile === 'web', 'baseUrl 指到 profile 内文件也认（容忍文件名段）')
+  ok(detectInstallEnv({ baseUrl: 'C:\\Users\\u\\.dsh\\profiles\\web' }).profile === 'web', '非 file:// 的裸路径形态也认')
+  // ── 本轮核心缺陷回归锁：**不传 DSH_HOME 也必须 ok=true** ──
+  // 实锤：DSH_HOME 并非"装了 dsh 就自带"（可选覆盖变量，装 dsh 不写它、.env 也设不了 DSH_ 前缀），
+  // 默认安装下宿主进程里为 undefined —— 旧实现 ok 判据含 !!home → **误判失败** → PRD 降级成"问用户"。
+  ok(detectInstallEnv({ baseUrl: 'file:///C:/Users/u/.dsh/profiles/web/' }).ok === true, '**不给 dshHome 也必须 ok=true**（baseUrl 自证，不依赖环境变量）')
+  ok(detectInstallEnv({ modulePath: 'C:\\x\\profiles\\web\\node_modules\\p\\lib\\h.mjs' }).ok === true, '**不给 dshHome 也必须 ok=true**（次源 modulePath 自证）—— 旧实现此处误判 false')
+  // ── 次源：modulePath（link:/junction 下会落空，故只作次源）──
+  ok(detectInstallEnv({ modulePath: win ? 'C:\\Users\\u\\.dsh\\profiles\\web\\node_modules\\p\\lib\\host.mjs' : '' }).profile === 'web', '次源 modulePath 可用（反推出 profile 名）')
+  ok(detectInstallEnv({ modulePath: '/src/probe-v2/lib/host.mjs', baseUrl: 'file:///C:/u/.dsh/profiles/web/' }).profile === 'web', 'junction 实锤：modulePath 落空时由 baseUrl 兜住')
+  // ── 兜底：home 可由调用方 hint 补，但**补 home 不能凭空造出 profile** ──
+  ok(detectInstallEnv({ dshHome: 'C:\\Users\\u\\.dsh', hasCli: true }).ok === false, '只给 home、拿不到 profile → ok=false（不编造 profile 名）')
+  ok(detectInstallEnv({ modulePath: '', baseUrl: '', hasCli: true }).ok === false, '什么都不给 → ok=false（绝不编造路径）')
+  ok(detectInstallEnv({ baseUrl: 'file:///C:/x/proj/' }).ok === false, 'baseUrl 非 profile 形态（如源码仓）→ ok=false（不误判成已装 profile）')
+  ok(detectInstallEnv({ baseUrl: 'file:///tmp/' }).ok === false && detectInstallEnv({ baseUrl: 'not a url' }).ok === false, '残缺/非法 baseUrl → ok=false（不抛）')
+  // 相对目录不算成功：命令要在任意 cwd 下照做得了（且没有可照抄的绝对值）
+  ok(detectInstallEnv({ baseUrl: 'profiles/web' }).ok === false, '**相对目录 → ok=false**（非绝对路径照做不了）')
+  // POSIX 根 home 的拼接不得产出 `//profiles/web` 双斜杠
+  ok(detectInstallEnv({ baseUrl: 'file:///profiles/web/' }).profileDir.replace(/\\/g, '/') === '/profiles/web', 'POSIX 根形态：拼接不产生双斜杠（`/profiles/web`）')
+  ok(isAbsolutePath('C:\\a') && isAbsolutePath('C:/a') && isAbsolutePath('/a') && isAbsolutePath('\\\\srv\\s') === true, '绝对路径判据认 Windows/POSIX/UNC')
+  ok(isAbsolutePath('profiles/web') === false && isAbsolutePath('') === false && isAbsolutePath(null) === false, '绝对路径判据拒绝相对/空（不抛）')
+  ok(detectInstallEnv({}).ok === false, '空入参 → ok=false（不抛）')
+  // ── profileDirFromBaseUrl：纯函数负例 ──
+  ok(profileDirFromBaseUrl('file:///x/profiles/web/node_modules/p') === null, '`profiles/<name>` 后还有多余段 → null（只认「profiles/<name>」本身）')
+  ok(profileDirFromBaseUrl('') === null && profileDirFromBaseUrl(null) === null && profileDirFromBaseUrl(undefined) === null, '空/缺省 → null（不抛）')
   // ── installRecipe：以探测结果为准，且探测失败时明确"问用户"──
   const rCli = installRecipe({ dshHome: 'C:\\u\\.dsh', profile: 'web', profileDir: 'C:\\u\\.dsh\\profiles\\web', cliOnPath: true, ok: true }, 'link:E:/p/x', 'dsh-plugin-x')
   ok(/dsh plugin --profile web add/.test(rCli), 'CLI 可用 → 给 CLI 命令（profile 名来自探测，不是写死 web 常量）')
@@ -422,10 +448,20 @@ console.log('     `dsh plugin --profile web add` 在他机器上跑不通；故�
   // ── 接线：探测在 pipeline 起跑注入、进 __runCtx、落盘 ──
   const utilSrc2 = readFileSync(join(here, '../host/util.ts'), 'utf8')
   ok(/export function detectInstallEnv/.test(utilSrc2) && /export function profileFromModulePath/.test(utilSrc2) && /export function installRecipe/.test(utilSrc2), '三个纯函数住 util.ts（门禁可直接测）')
+  ok(/export function profileDirFromBaseUrl/.test(utilSrc2), 'baseUrl 解析函数住 util.ts（纯函数）')
   const pipeSrc3 = readFileSync(join(here, '../host/core/pipeline.ts'), 'utf8')
-  ok(/detectInstallEnv\(\{ modulePath: selfModulePath\(\), dshHome: process\.env\.DSH_HOME, hasCli: cliOnPath\(\) \}\)/.test(pipeSrc3), 'pipeline：**运行时探测**（DSH_HOME + 自身路径 + PATH），无写死路径')
+  ok(/detectInstallEnv\(\{ baseUrl: installCtx\.baseUrl, modulePath: selfModulePath\(\), dshHome: dshHome\(\), hasCli: cliOnPath\(\) \}\)/.test(pipeSrc3), 'pipeline：**以 ctx.baseUrl 为主源**探测，无写死路径')
+  // 断言只看**代码**，不看注释：本仓有在注释里点名反例的习惯（解释"为何不读它"），
+  // 直接全文匹配会把注释误判成违规。
+  const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+  ok(!/process\.env\.DSH_HOME/.test(stripComments(pipeSrc3)), 'pipeline 代码中**不得**读 process.env.DSH_HOME（它不是"装了 dsh 就自带"，默认安装下为 undefined → 会误判失败）')
   ok(/state\.__runCtx\.installEnv = env/.test(pipeSrc3) && /journal\.installEnv = env/.test(pipeSrc3), 'pipeline：探测结果同时进 __runCtx（供 prompt）与 journal（留痕）')
   ok(/PLUGIN_ARTIFACTS\.indexOf\(art0\) !== -1/.test(pipeSrc3), '只对插件形态探测（其余交付物不涉及装进 profile）')
+  // ── 锚点搬运链：index(构造) → context 单例 → pipeline 读 ──
+  const ctxSrc = readFileSync(join(here, '../host/core/context.ts'), 'utf8')
+  ok(/export function setInstallCtx/.test(ctxSrc) && /export const installCtx/.test(ctxSrc), 'context.ts：installCtx 单例 + setter（与 setRuntime 同款搬运）')
+  const idxSrc = readFileSync(join(here, '../host/index.ts'), 'utf8')
+  ok(/setInstallCtx\(ctx\)/.test(idxSrc), 'index.ts：TeamflowService 构造时登记宿主锚点（ctx.baseUrl）')
   ok(/if \(!verdict\.ok && text && stop === 'completed'\)/.test(readFileSync(join(here, '../host/core/runner.ts'), 'utf8')) || true, '(占位)')
   const storeSrc2 = readFileSync(join(here, '../store.ts'), 'utf8')
   ok(/installEnv: journal\.installEnv \|\| null/.test(storeSrc2), '落盘：installEnv 进 serializeJournal')
