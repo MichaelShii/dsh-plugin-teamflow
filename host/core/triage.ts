@@ -203,7 +203,24 @@ export function contractsForDeliverable(host: ArtifactHost, kind: ArtifactKind, 
   return { items: artifactContractsFor(kind, installable), hostResearch: false }
 }
 
-/** 本仓已有正确样本（写进 prompt 让 PM 去读，而不是把字段名硬编码——防宿主版本漂移）。 */
+/**
+ * **本机已安装的 dsh 插件** = 任何 dsh 插件开发者机器上**必然存在**的样本来源（首选项）。
+ *
+ * 由来（2026-09-21 用户实锤追问「指向的是不是都是我本地的目录，那如果用户没有的话会导致什么结果」）：
+ * 旧实现在 prompt 里写「去读**本仓**同类插件样本（`plugins/dsh-plugin-teamflow`）」——那是**本仓相对路径**：
+ *  - **只在工作区位于我们仓库的 `plugins/` 下时成立**（probe-v2 恰好如此，于是"有参考"是**测试被喂了答案**）；
+ *  - 而 `npm pack` 实测发布包**只有 10 个文件**（`lib/*` + `package.json` + `cordis.patch.yml` + README），
+ *    **源码 `client/index.tsx` / `host/index.ts` 根本不发布** → npm 用户的机器上：① 没有
+ *    `plugins/dsh-plugin-teamflow` 这个路径（PM 读空或跳过 → "禁止凭记忆写"退化成空话）；
+ *    ② 连我们自己的插件目录里也只有编译产物，**没有源码样本**可读。
+ * 但用户在开发 dsh 插件 = 他机器上**一定装着 dsh 宿主与若干 dsh 插件**（就在 profile 的 `node_modules` 里），
+ * 那些目录的 `package.json`（`dsh` 块：`bundle.patch` / `client`）与 `cordis.patch.yml` 正是
+ * 「**声明怎么写**」的权威现场，且随宿主版本演进 —— 正是本契约要核实的东西。
+ * 故样本首选项 = 本机已装插件；路径**运行时由 `$DSH_HOME` 表达，不写死任何绝对路径**。
+ */
+export const LOCAL_PLUGIN_SAMPLES_HINT = '$DSH_HOME/profiles/*/node_modules/<任一 dsh 插件>/'
+
+/** 本仓样本（**次选**：仅当工作区恰好就在本仓 `plugins/` 下时可就近读；用户机器上不存在）。 */
 export const ARTIFACT_REFERENCE_SAMPLES: Record<ArtifactKind, string[]> = {
   app: [], 'plugin-host': ['plugins/dsh-plugin-teamflow'], 'plugin-client': ['plugins/dsh-plugin-teamflow'],
   'plugin-full': ['plugins/dsh-plugin-teamflow'], cli: ['plugins/assetd'], lib: ['plugins/assetd'],

@@ -12,7 +12,7 @@
  *     实测模型系统性自选 `lite:true`（33 次启动 14 次显式传档位、0 次先预览），故放宽为「只有 patch 豁免」。
  * 另外锁住意图归一（非法值一律 requirement，绝不因字段缺失拦启动）。
  */
-import { qualifyBlockers, normalizeSettle, TRIAGE_SETTLES, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, triageRecordOf, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, triageCacheIsPending, triageCacheMarkPending, triageCacheSettle, TRIAGE_CACHE_MAX, normalizeHost, forceHost, contractsForDeliverable, ARTIFACT_HOSTS } from '../host/core/triage.ts'
+import { qualifyBlockers, normalizeSettle, TRIAGE_SETTLES, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, LOCAL_PLUGIN_SAMPLES_HINT, triageRecordOf, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, triageCacheIsPending, triageCacheMarkPending, triageCacheSettle, TRIAGE_CACHE_MAX, normalizeHost, forceHost, contractsForDeliverable, ARTIFACT_HOSTS } from '../host/core/triage.ts'
 import { extractAssumptionsSection, extractHostResearchSection } from '../host/util.ts'
 import { prdPrompt } from '../host/prompts/index.ts'
 import { readFileSync } from 'node:fs'
@@ -143,7 +143,11 @@ const pfInst = artifactContractsFor('plugin-full', true)
 ok(pfItems.length >= 4 && pfInst.length > pfItems.length, 'plugin-full：installable=true 追加安装类契约（源码目录 vs 可安装分档）')
 ok(pfItems.every((it) => it.requirement && it.criteria), '每条契约都带「要求 + 判据形态」（否则 PM 写不出可测 AC）')
 ok(!/manifestVersion|bundle\.patch|dsh\.client/.test(JSON.stringify(ARTIFACT_CONTRACTS)), '契约表**不硬编码宿主字段名**（字段名随宿主版本演进，必须让 PM 读同仓样本核实）')
-ok(ARTIFACT_REFERENCE_SAMPLES['plugin-full'].includes('plugins/dsh-plugin-teamflow'), 'plugin-full 指向同仓正确样本供 PM 核对')
+// 样本来源（2026-09-21 用户实锤修正）：首选项必须是**本机已装 dsh 插件**——npm 包不发源码（实测 pack 10 文件），
+// 用户机器上既没有 plugins/dsh-plugin-teamflow 这个路径、也没有我们的源码，只有 profile 里装好的插件。
+ok(ARTIFACT_REFERENCE_SAMPLES['plugin-full'].includes('plugins/dsh-plugin-teamflow'), 'plugin-full 仍保留本仓样本（次选：工作区恰在本仓时可就近读）')
+ok(/DSH_HOME/.test(LOCAL_PLUGIN_SAMPLES_HINT) && /profiles/.test(LOCAL_PLUGIN_SAMPLES_HINT) && /node_modules/.test(LOCAL_PLUGIN_SAMPLES_HINT), '样本首选项是「本机已装 dsh 插件」（$DSH_HOME/profiles/*/node_modules），任何开发机都有')
+ok(!/^[A-Za-z]:[\\/]/.test(LOCAL_PLUGIN_SAMPLES_HINT) && !LOCAL_PLUGIN_SAMPLES_HINT.includes('E:'), '样本路径不写死绝对路径（用 $DSH_HOME 表达，跨机器成立）')
 ok(artifactContractsFor('cli', false).some((it) => /bin|可执行/.test(it.requirement + it.criteria)), 'cli：契约含可执行入口')
 ok(artifactContractsFor('lib', false).some((it) => /入口|main|exports/.test(it.requirement + it.criteria)), 'lib：契约含模块入口')
 ok(artifactContractsFor('plugin-host', false).some((it) => /workspace:/.test(it.criteria)), 'plugin-host：含"依赖不得用 workspace: 协议"（本次实锤缺口之一）')

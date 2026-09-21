@@ -34,7 +34,7 @@ import { clip } from '../util.ts'
 import { stateSliceFor, STATE_BLOCK_INSTRUCTION } from '../core/state.ts'
 // 形态契约的**参考样本**表（纯数据；core/triage.ts 不 import prompts → 无循环依赖）。
 // 只取样本路径给 PM 去读，**不引入任何判定逻辑**：字段名随宿主版本演进，必须读样本核实。
-import { ARTIFACT_REFERENCE_SAMPLES } from '../core/triage.ts'
+import { ARTIFACT_REFERENCE_SAMPLES, LOCAL_PLUGIN_SAMPLES_HINT } from '../core/triage.ts'
 import { langDirective, t, type HostLocale } from '../locales.ts'
 
 /** 产品层文档根（memory.md 等跨任务资产；任务产物在其中的任务夹内）。 */
@@ -359,9 +359,15 @@ export const prdPrompt = (requirement, root, runId, state) => {
       const kind = String(rc.artifact || 'other')
       const inst = rc.installable === true
       const lines = items.map((it, i) => `   ${i + 1}. ${it.requirement} — ${it.criteria}`).join('\n')
+      // 样本来源（2026-09-21 用户实锤修正）：**首选项 = 本机已安装的 dsh 插件**（任何开发机都有），
+      // 本仓样本降为次选（用户机器上不存在——npm 包不发源码，实测 pack 只有 10 个文件）。
+      const repo = (ARTIFACT_REFERENCE_SAMPLES[kind] || []).join(en ? ', ' : '、')
+      const where = en
+        ? `**first look at the dsh plugins already installed on THIS machine** — \`${LOCAL_PLUGIN_SAMPLES_HINT}\`: their \`package.json\` (\`dsh\` block) and \`cordis.patch.yml\` are the authoritative, version-current samples of how the declarations are really written${repo ? `; if the workspace happens to sit inside this repo you may also read \`${repo}\`` : ''}; if neither exists, read the host docs or ask the user — **never write them from memory**`
+        : `**先读本机已安装的 dsh 插件**——\`${LOCAL_PLUGIN_SAMPLES_HINT}\`：它们的 \`package.json\`（\`dsh\` 块）与 \`cordis.patch.yml\` 就是"声明到底怎么写"的**权威且与宿主版本同步**的样本${repo ? `；若工作区恰好在本仓内，也可就近读 \`${repo}\`` : ''}；两者都没有就去读宿主文档或问用户——**禁止凭记忆写**`
       return en
-        ? `\n[DELIVERABLE SHAPE · mandatory ACs] Triage judged this deliverable as \`${kind}\`${inst ? ' and it must be **installable/loadable by its host**' : ''}. The following are **objective delivery contracts of that shape** — every item MUST become a testable AC in this PRD (not prose, not a "notes" section), because downstream QA/acceptance only verify what is in the AC table:\n${lines}\n   Field names / file names vary with the host version: **read the existing sibling plugin samples in this repo** (${(ARTIFACT_REFERENCE_SAMPLES[kind] || []).join(', ') || 'see repo'}) or the host docs to confirm them — do NOT write them from memory.`
-        : `\n[交付形态契约 · 必填 AC] 分诊判定本次交付物形态为 \`${kind}\`${inst ? '，且**必须可被宿主安装/加载**' : ''}。以下是该形态的**客观交付契约**——每一条都**必须落成 PRD 里可测的 AC**（不是正文说明、不是"备注"小节），因为下游 QA/验收只验 AC 表里的东西：\n${lines}\n   字段名/文件名随宿主版本演进：**必须去读本仓已有的同类插件样本**（${(ARTIFACT_REFERENCE_SAMPLES[kind] || []).join('、') || '见仓库'}）或宿主文档核实 —— **禁止凭记忆写**。`
+        ? `\n[DELIVERABLE SHAPE · mandatory ACs] Triage judged this deliverable as \`${kind}\`${inst ? ' and it must be **installable/loadable by its host**' : ''}. The following are **objective delivery contracts of that shape** — every item MUST become a testable AC in this PRD (not prose, not a "notes" section), because downstream QA/acceptance only verify what is in the AC table:\n${lines}\n   Field names / file names vary with the host version, so ${where}.`
+        : `\n[交付形态契约 · 必填 AC] 分诊判定本次交付物形态为 \`${kind}\`${inst ? '，且**必须可被宿主安装/加载**' : ''}。以下是该形态的**客观交付契约**——每一条都**必须落成 PRD 里可测的 AC**（不是正文说明、不是"备注"小节），因为下游 QA/验收只验 AC 表里的东西：\n${lines}\n   字段名/文件名随宿主版本演进，所以${where}。`
     } catch (e) { return '' }
   })()
   // **宿主契约调研（2026-09-18 用户实锤，硬门禁）**：交付物要被**非 dsh 宿主**加载时（openclaw / hermes /

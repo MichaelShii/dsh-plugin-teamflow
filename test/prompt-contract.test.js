@@ -164,14 +164,24 @@ assertContract({
 })
 assertContract({
   id: 'PRD-ARTIFACT-CONTRACTS', level: 'policy', targets: 'prdPrompt',
-  intent: '形态契约必须落成 PRD 必填 AC（清单由 host 数据表下发；字段名要求读同仓样本核实）',
-  include: [/\[交付形态契约 · 必填 AC\]/, /必须落成 PRD 里可测的 AC/, /禁止凭记忆写/, /plugins\/dsh-plugin-teamflow/],
+  intent: '形态契约必须落成 PRD 必填 AC（清单由 host 数据表下发；字段名要求读本机已装插件样本核实）',
+  include: [/\[交付形态契约 · 必填 AC\]/, /必须落成 PRD 里可测的 AC/, /禁止凭记忆写/, /本机已安装的 dsh 插件/, /\$DSH_HOME\/profiles/, /package\.json/],
+  fixture: prdWithContract,
+})
+// 样本来源必须是「本机已装插件」（2026-09-21 用户实锤）——npm 包实测只发 10 文件、**不含源码**，
+// 用户的孤立工作区里既没有 `plugins/dsh-plugin-teamflow`、也没有我们的源码；而任何 dsh 插件开发者
+// 机器上一定有 profile 里装好的插件（其 package.json 的 dsh 块 + cordis.patch.yml 才是权威现场）。
+assertContract({
+  id: 'PRD-SAMPLE-SOURCE-LOCAL-FIRST', level: 'policy', targets: 'prdPrompt',
+  intent: '样本首选项 = 本机已装 dsh 插件（不能只指本仓相对路径——用户机器上不存在）',
+  include: [/先读本机已安装的 dsh 插件/, /\$DSH_HOME\/profiles\/\*\/node_modules/],
+  exclude: [/必须去读本仓已有的同类插件样本（plugins\/dsh-plugin-teamflow）\s*或宿主文档/],
   fixture: prdWithContract,
 })
 assertContract({
   id: 'PRD-ARTIFACT-CONTRACTS-EN', level: 'policy', targets: 'prdPrompt', en: true,
-  intent: 'en run 同契约（语言跟随 run 快照）',
-  include: [/\[DELIVERABLE SHAPE · mandatory ACs\]/, /do NOT write them from memory/],
+  intent: 'en run 同契约（语言跟随 run 快照；样本同样指向本机已装插件）',
+  include: [/\[DELIVERABLE SHAPE · mandatory ACs\]/, /never write them from memory/, /dsh plugins already installed on THIS machine/, /\$DSH_HOME\/profiles/],
   fixture: prdWithContractEn,
 })
 assertContract({
