@@ -13,7 +13,7 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { parseAcceptanceVerdict, extractVerificationEvidence, extractBlueprint, judgeDeliverable } from '../host/util.ts'
+import { parseAcceptanceVerdict, extractVerificationEvidence, extractBlueprint, judgeDeliverable, extractHostResearchSection } from '../host/util.ts'
 import { parseDefects } from '../host/core/backlog.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -37,6 +37,7 @@ function runParser(parser, text, meta) {
     case 'extractVerificationEvidence': return extractVerificationEvidence(text)
     case 'extractBlueprint': return extractBlueprint(text)
     case 'judgeDeliverable': return judgeDeliverable((meta && meta.phase) || 'dev', text)
+    case 'extractHostResearchSection': return extractHostResearchSection(text)
     default: throw new Error(`未知 parser: ${parser}`)
   }
 }
@@ -79,6 +80,16 @@ function matches(parser, actual, expect, caseId) {
     }
     problems.forEach((p) => fail(`${caseId} ${p}`))
     return problems.length === 0
+  }
+  if (parser === 'extractHostResearchSection') {
+    if (expect === null) {
+      if (actual !== null) fail(`${caseId} 期望无宿主调研段(null)，实得块内容`)
+      return actual === null
+    }
+    const need = (expect && expect.contains) || []
+    const misses = need.filter((s) => !actual || !actual.includes(s))
+    if (misses.length) fail(`${caseId} 宿主调研段缺片段: ${misses.join(' | ')}`)
+    return misses.length === 0
   }
   if (parser === 'judgeDeliverable') {
     const problems = []

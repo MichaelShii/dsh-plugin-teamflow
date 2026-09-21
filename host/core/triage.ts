@@ -129,6 +129,9 @@ export interface TriageVerdict {
   artifact: ArtifactKind
   /** 是否要求「可安装/可被宿主加载」（形态语义的一部分：源码目录里的插件 ≠ 能装进 profile 的插件）。 */
   installable: boolean
+  /** **目标宿主框架**（2026-09-18 新增维度，与 `artifact` 正交）：交付物**被谁加载**。
+   *  见 ARTIFACT_HOSTS —— 契约只在 `host === 'dsh'` 时才是 dsh 的那一套；非 dsh 一律走「宿主契约调研」。 */
+  host: ArtifactHost
 }
 
 /** 交付物形态（单选，与 ARTIFACT_CONTRACTS 一一对应）。 */
@@ -139,6 +142,66 @@ export const ARTIFACT_KINDS: ArtifactKind[] = ['app', 'plugin-host', 'plugin-cli
 /** 形态归一：非法/缺失一律 `other`（绝不因模型没给字段就套用某类契约）。 */
 export const normalizeArtifact = (raw: unknown): ArtifactKind =>
   (ARTIFACT_KINDS.indexOf(raw as ArtifactKind) !== -1 ? (raw as ArtifactKind) : 'other')
+
+/**
+ * **目标宿主框架**（2026-09-18 新增，与 `artifact` 正交）。
+ *
+ * **为什么必须单独一个维度**（用户实锤提问："我开发 openclaw 插件、或者 hermes 插件，你如何识别不同场景？
+ * 这些在 dsh 的契约在其他的不一定有效吧"）：`plugin-host/plugin-client/plugin-full` 这三个形态名是
+ * **dsh 私有的词汇**（profile 层入口声明 / bundle patch / `dsh.client` 块 / `files` 白名单全是 dsh 的加载机制）。
+ * 旧实现把 `plugin-*` 当"开发插件"的通用形态 → 给 openclaw/hermes 插件套 dsh 契约 = **反向返工**
+ * （改了 dsh 的入口声明，目标宿主根本不看；真需要的东西没人管）。
+ *
+ * `host` 取值刻意**粗**：
+ *  - `dsh`：本项目寄生其上的宿主，我们有权威（同仓样本可核实）→ 下发 dsh 具体契约；
+ *  - `other`：明确是别的宿主（openclaw / hermes / pi / …）→ **不套 dsh 契约**，改下发「宿主契约调研」必填段；
+ *  - `unknown`：判不出来 → 同上（先调研再说），并由 prompt 要求提 `settles:"host"` 的 must-ask 缺口。
+ *
+ * **刻意不做的事**：不为 openclaw/hermes/pi 各写一套契约——那既无界增长（每来一个框架加一套），
+ * 又必然过期（那些项目的插件 API 演进很快），而我们**对它们没有权威**（凭记忆写字段名正是 dddd 事故的成因）。
+ */
+export type ArtifactHost = 'dsh' | 'other' | 'unknown'
+
+export const ARTIFACT_HOSTS: ArtifactHost[] = ['dsh', 'other', 'unknown']
+
+/** 宿主归一：非法/缺失一律 `unknown`（= 去调研，绝不默认成 dsh 而套错契约）。 */
+export const normalizeHost = (raw: unknown): ArtifactHost =>
+  (ARTIFACT_HOSTS.indexOf(raw as ArtifactHost) !== -1 ? (raw as ArtifactHost) : 'unknown')
+
+/**
+ * dsh 宿主的**确定性标识词**（护栏用；不是"自然语言理解"，是防模型漏判丢契约）。
+ *
+ * 只在模型判 `unknown` 时才升级为 `dsh`——**不覆盖 `other`**：模型明确判了别的宿主就尊重它，
+ * 否则"开发一个 openclaw 插件，不要 dsh 那套"会被这条正则强行拖回 dsh（拿词表当身份，本项目已两次踩过）。
+ */
+export const DSH_HOST_SIGNAL = /\bdsh\b|@deepseek-ai\/dsh|deepseek[- ]harness|cordis/i
+
+/** 宿主护栏：模型没判出来（`unknown`）而需求里有 dsh 标识词 → 判 `dsh`（否则整条 dsh 契约静默丢失）。 */
+export function forceHost(requirement: unknown, judged: ArtifactHost): ArtifactHost {
+  if (judged === 'dsh') return 'dsh'
+  if (judged === 'unknown' && DSH_HOST_SIGNAL.test(String(requirement || ''))) return 'dsh'
+  return judged
+}
+
+/** `plugin-*` = **要被宿主加载的交付物**（只有这一类才谈"宿主契约"；cli/lib/app 与宿主加载无关）。 */
+export const PLUGIN_ARTIFACTS: ArtifactKind[] = ['plugin-host', 'plugin-client', 'plugin-full']
+
+/** 该交付物是否必须走「宿主契约调研」（= 要被宿主加载、但宿主不是我们有权威的 dsh）。 */
+export function hostResearchRequired(host: ArtifactHost, kind: ArtifactKind): boolean {
+  return host !== 'dsh' && PLUGIN_ARTIFACTS.indexOf(kind) !== -1
+}
+
+/**
+ * 按（宿主 × 形态）取契约 —— **唯一的契约取用入口**（pipeline 调它，不再直接调 `artifactContractsFor`）。
+ *
+ * 规则：`plugin-*` 且 `host !== 'dsh'` → **不下发任何 dsh 契约**，改为要求「宿主契约调研」
+ * （`hostResearch: true`，PRD 必须含对应段落，硬门禁在 pipeline）。其余情况照旧取形态契约
+ * （`cli`/`lib` 的"有 bin / 有 main 且可 import"是通用判据，与宿主无关，不误伤）。
+ */
+export function contractsForDeliverable(host: ArtifactHost, kind: ArtifactKind, installable: boolean): { items: ArtifactContractItem[]; hostResearch: boolean } {
+  if (hostResearchRequired(host, kind)) return { items: [], hostResearch: true }
+  return { items: artifactContractsFor(kind, installable), hostResearch: false }
+}
 
 /** 本仓已有正确样本（写进 prompt 让 PM 去读，而不是把字段名硬编码——防宿主版本漂移）。 */
 export const ARTIFACT_REFERENCE_SAMPLES: Record<ArtifactKind, string[]> = {
@@ -171,8 +234,8 @@ export interface ArtifactContractItem {
 export const ARTIFACT_CONTRACTS: Record<ArtifactKind, ArtifactContractItem[]> = {
   app: [],
   'plugin-host': [
-    { requirement: '宿主半必须有 profile 层加载入口声明（参照同仓既有插件，不凭记忆写字段名）', criteria: '存在该声明文件/字段，且其 `name` 用**包根名**（子路径会被 loader 判为"无 client 声明"而跳过）' },
-    { requirement: '该入口声明文件必须进包分发白名单（`files` 等）', criteria: '读 package.json 的 files 数组，确认包含该声明文件' },
+    { requirement: '宿主半必须有 profile 层加载入口声明（参照同仓既有插件，不凭记忆写字段名）', criteria: '存在该声明文件/字段；**入口 `name` 必须用包根名**（写子路径会被 loader 判为"无 client 声明"而**静默跳过**——踩过）' },
+    { requirement: '该入口声明文件必须进包分发白名单（`files` 等）', criteria: '读 package.json 的 files 数组，确认包含该声明文件（漏了 = 装进 profile 后不加载）' },
     { requirement: '依赖协议必须是 profile 可解析的形态（不得用 `workspace:` 等本地协议）', criteria: '`node -e "const s=require(\'fs\').readFileSync(\'package.json\',\'utf8\');process.exit(/workspace:/.test(s)?1:0)"` 退出码 0' },
     { requirement: '宿主运行期依赖要按宿主模块表声明（peer/可选 peer，而非真实下载依赖）', criteria: 'package.json 的 peerDependencies/peerDependenciesMeta 覆盖宿主提供的 @deepseek-ai/* 包' },
     { requirement: '**构建产物与源码同步**（实锤 dddd：`lib` 是旧产物 → 装上后宿主启动即炸）', criteria: '提交/安装前重新构建；产物里能找到只存在于当前源码的特征字符串（或产物 mtime 晚于全部 src 文件）' },
@@ -182,20 +245,22 @@ export const ARTIFACT_CONTRACTS: Record<ArtifactKind, ArtifactContractItem[]> = 
     { requirement: '**安装必须带回滚**（实锤 dddd：装上后宿主起不来，只能另开 agent 手术卸载）', criteria: '安装前先写明卸载命令（如 `dsh plugin remove <name>` / 从 profile 依赖与 bundles 同时摘除），装后验证失败 → 立即执行卸载恢复', onlyWhenInstallable: true },
   ],
   'plugin-client': [
-    { requirement: 'client 半必须有 bundle 声明与被扫描的 id/name（参照同仓既有插件）', criteria: 'package.json 的 client 声明块字段名与同仓样本一致，且构建会产出非空 client 产物' },
-    { requirement: '构建产物必须进包分发白名单', criteria: '读 files 数组确认包含构建产物目录/文件' },
+    { requirement: 'client 半必须有 bundle 声明与被扫描的 id/name（参照同仓既有插件）', criteria: 'package.json 的 client 声明块**字段集合与同仓样本逐字段一致**（少一个/名字错了 = loader 不扫）；构建产出非空 client 产物，且产物里能找到注册用的包 id' },
+    { requirement: '构建产物必须进包分发白名单', criteria: '读 files 数组确认包含构建产物目录/文件（漏了 = 装进 profile 后不加载）' },
     { requirement: '**构建产物与源码同步**（实锤 dddd：旧 `lib/client.js` 让浏览器端行为与源码不符）', criteria: '提交/安装前重新构建；产物含当前源码特征字符串或 mtime 晚于全部 src' },
+    { requirement: '**沙箱装不了真 profile 时必须写明人工手测步骤**（交付前必做）', criteria: '安装命令 + 重启宿主 + GUI 可见性检查三步写成可照做的清单；**不得因为沙箱跑不了就默认通过**', onlyWhenInstallable: true },
   ],
   'plugin-full': [
-    { requirement: '宿主半必须有 profile 层加载入口声明（参照同仓既有插件，不凭记忆写字段名）', criteria: '存在该声明文件/字段，`name` 用包根名' },
-    { requirement: 'client 半必须有 bundle 声明与被扫描的 id/name', criteria: 'client 声明块字段名与同仓样本一致，构建产出非空 client 产物' },
-    { requirement: '入口声明与构建产物都必须进包分发白名单', criteria: '读 package.json 的 files 数组确认包含二者' },
+    { requirement: '宿主半必须有 profile 层加载入口声明（参照同仓既有插件，不凭记忆写字段名）', criteria: '存在该声明文件/字段；**入口 `name` 必须用包根名**（子路径会被静默跳过——踩过）' },
+    { requirement: 'client 半必须有 bundle 声明与被扫描的 id/name', criteria: 'client 声明块**字段集合与同仓样本逐字段一致**；构建产出非空 client 产物且含包 id' },
+    { requirement: '入口声明与构建产物都必须进包分发白名单', criteria: '读 package.json 的 files 数组确认包含二者（漏了 = 装进 profile 后不加载）' },
     { requirement: '依赖协议必须是 profile 可解析的形态（不得用 `workspace:` 等本地协议）', criteria: '读 package.json 全文不得命中 `workspace:`' },
     { requirement: '宿主运行期依赖按宿主模块表声明（peer/可选 peer）', criteria: 'peerDependencies/peerDependenciesMeta 覆盖宿主提供的 @deepseek-ai/* 包' },
     { requirement: '**构建产物与源码同步**（实锤 dddd：旧 `lib/index.js` → 装上后宿主启动即炸）', criteria: '提交/安装前重新构建；宿主与 client 产物均含当前源码特征字符串（或 mtime 晚于全部 src）' },
     { requirement: '**装载安全**：两个产物的模块顶层都不得抛错（实锤 dddd：顶层访问未注入服务 → 宿主起不来，P0）', criteria: '`node -e "require(\'<宿主产物入口>\')"` 与 client 产物同样检查，退出码 0' },
     { requirement: '能被 profile 真实装入且被宿主加载（端到端）', criteria: 'profile 安装命令退出码 0 + 重启宿主后启动日志出现该插件', onlyWhenInstallable: true },
     { requirement: '**安装必须带回滚**（实锤 dddd：装上后宿主起不来，只能另开 agent 手术卸载才能救回宿主）', criteria: '安装前先写明卸载命令（如 `dsh plugin remove <name>` / 从 profile 依赖与 bundles 同时摘除），装后验证失败 → 立即执行卸载恢复', onlyWhenInstallable: true },
+    { requirement: '**沙箱装不了真 profile 时必须写明人工手测步骤**（交付前必做）', criteria: '安装命令 + 重启宿主 + GUI 可见性检查三步写成可照做的清单；**不得因为沙箱跑不了就默认通过**（实锤：AC-7 被列为"人工补测"后无人真跑，用户装完才发现问题）', onlyWhenInstallable: true },
   ],
   cli: [
     { requirement: '必须有可执行入口声明', criteria: 'package.json 有 bin 字段且指向真实存在的文件' },
@@ -226,9 +291,9 @@ export type TriageIntent = 'requirement' | 'exploration' | 'feedback'
  * （拿文本长相当判据是本项目已两次踩过的坑），所以让模型**显式声明**它要定哪个字段，宿主只做一致性
  * 检查：**已判定的字段不得再被当成未知来问**。
  */
-export type TriageSettle = 'installable' | 'artifact' | 'scope' | 'ui' | 'data' | 'other'
+export type TriageSettle = 'installable' | 'artifact' | 'host' | 'scope' | 'ui' | 'data' | 'other'
 
-export const TRIAGE_SETTLES: TriageSettle[] = ['installable', 'artifact', 'scope', 'ui', 'data', 'other']
+export const TRIAGE_SETTLES: TriageSettle[] = ['installable', 'artifact', 'host', 'scope', 'ui', 'data', 'other']
 
 /** 归一：非法/缺失一律 `other`（= 不参与自洽门禁，绝不因字段缺失误丢一条真缺口）。 */
 export const normalizeSettle = (raw: unknown): TriageSettle =>
@@ -305,7 +370,7 @@ export const normalizeIntent = (raw: unknown): TriageIntent =>
  * 注意只按 `true` 判：`false` 是"模型没给这个字段"的默认值，既可能是「不需要装」也可能是「还不知道」——
  * 后者正是 must-ask 缺口的合法形态，丢了它就会重演 dddd「插件装不进 profile」。
  */
-export function qualifyBlockers(raw: unknown, ctx?: { installable?: boolean }): { blockers: TriageBlocker[]; dropped: number } {
+export function qualifyBlockers(raw: unknown, ctx?: { installable?: boolean; host?: ArtifactHost }): { blockers: TriageBlocker[]; dropped: number } {
   const arr = Array.isArray(raw) ? raw : []
   const good: TriageBlocker[] = []
   let dropped = 0
@@ -321,6 +386,8 @@ export function qualifyBlockers(raw: unknown, ctx?: { installable?: boolean }): 
       const settles = normalizeSettle(o && o.settles)
       // 自洽门禁：已明确判定可安装 → 不得再问「要不要能装」
       if (settles === 'installable' && ctx && ctx.installable === true) { dropped++; continue }
+      // 自洽门禁（2026-09-18 同型扩展）：宿主已判定（dsh 或明确的别的宿主）→ 不得再问「装到哪个宿主」
+      if (settles === 'host' && ctx && ctx.host && ctx.host !== 'unknown') { dropped++; continue }
       good.push({
         settles,
         question: question.slice(0, 300),
@@ -335,14 +402,16 @@ export function qualifyBlockers(raw: unknown, ctx?: { installable?: boolean }): 
 }
 
 /** 解析模型 JSON 输出（容错：定位首个 {...} 块；字段缺失/非法回退 null）。 */
-function parseVerdictText(text: string): TriageVerdict | null {
+function parseVerdictText(text: string, requirement = ''): TriageVerdict | null {
   const m = String(text || '').match(/\{[\s\S]*\}/)
   if (!m) return null
   try {
     const raw = JSON.parse(m[0])
     const mode = normalizeMode(raw.mode)
     if (!mode) return null
-    const qb = qualifyBlockers(raw.blockers, { installable: raw.installable === true })
+    // 宿主先归一 + 护栏（判不出但需求含 dsh 标识词 → dsh），再据此判 blocker 自洽
+    const host = forceHost(requirement, normalizeHost(raw.host))
+    const qb = qualifyBlockers(raw.blockers, { installable: raw.installable === true, host })
     return {
       mode,
       kind: typeof raw.kind === 'string' ? raw.kind : '',
@@ -355,6 +424,7 @@ function parseVerdictText(text: string): TriageVerdict | null {
       intent: normalizeIntent(raw.intent),
       artifact: normalizeArtifact(raw.artifact),
       installable: raw.installable === true,
+      host: forceHost(requirement, normalizeHost(raw.host)),
       blockers: qb.blockers,
       blockersDropped: qb.dropped,
     }
@@ -381,6 +451,8 @@ export function triageRecordOf(v: TriageVerdict) {
     intent: v.intent, blockers: v.blockers, blockersDropped: v.blockersDropped,
     // 交付形态 = 下游「形态契约注入」的**唯一来源**（漏一个字段 = 整条防线静默失效）
     artifact: normalizeArtifact(v.artifact), installable: v.installable === true,
+    // 目标宿主（2026-09-18）：`plugin-*` 且 host≠dsh → 契约分流到「宿主契约调研」，漏搬 = 又给别的宿主套 dsh 契约
+    host: normalizeHost(v.host),
     // 内部标记 `__upgradedFrom` 才是被写入的那个（护栏强升的三处调用点都写它）——接口上的
     // `upgradedFrom` 只是记录形态声明：**读错一个下划线 = 升档日志静默消失**（同型，门禁含此断言）。
     upgradedFrom: (v as { __upgradedFrom?: PipelineMode | null }).__upgradedFrom || null,
@@ -399,6 +471,9 @@ function fallbackVerdict(requirement: string, opts?: { needDesign?: boolean }, l
     intent: 'requirement', blockers: [], blockersDropped: 0,
     // 兜底路径不猜形态（一律 other = 不套用任何形态契约）：宁可不加，也不要给错形态的契约
     artifact: 'other', installable: false,
+    // 兜底不猜宿主（unknown = 去调研）；但 dsh 标识词是确定性的，有就判 dsh——否则分诊不可用时
+    // dsh 插件开发会连契约带调研一起丢（分诊失败本来就该保守，但"保守"不等于"把已知事实也丢掉"）。
+    host: forceHost(requirement, 'unknown'),
     ...(reason ? { fallbackReason: String(reason).slice(0, 300) } : {}),
   } as TriageVerdict
 }
@@ -537,7 +612,7 @@ export async function runTriage(
         run.result,
         new Promise<never>((_, rej) => setTimeout(() => rej(new Error(t(locale, 'err.triageTimeout') + ` (${Math.round(TRIAGE_TIMEOUT_MS / 1000)}s)`)), TRIAGE_TIMEOUT_MS)),
       ]) as { output?: unknown; stopReason?: string }
-      const parsed = parseVerdictText(extractText(result && result.output))
+      const parsed = parseVerdictText(extractText(result && result.output), requirement)
       if (parsed) return parsed
       lastReason = `empty/unparseable verdict (stopReason=${result && result.stopReason || 'unknown'})`
     } catch (e) {

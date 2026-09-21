@@ -6,7 +6,8 @@
     "parseAcceptanceVerdict": "host/util.ts（验收报告 → accepted/rework/reject/needs-human）",
     "extractVerificationEvidence": "host/util.ts（dev/qaFix 回复 → 证据块原文或 null）",
     "extractBlueprint": "host/util.ts（tech/architect 产出 → 架构蓝图对象或 null；含畸形 JSON 抢救）",
-    "judgeDeliverable": "host/util.ts（阶段产出 → 交付判定 {ok,reason,refusal}；信号分级=客观形态→证据块→措辞兜底）"
+    "judgeDeliverable": "host/util.ts（阶段产出 → 交付判定 {ok,reason,refusal}；信号分级=客观形态→证据块→措辞兜底）",
+    "extractHostResearchSection": "host/util.ts（PRD → 「宿主契约调研」段原文或 null；非 dsh 宿主 + 插件形态时的硬门禁判据）"
   },
   "cases": [
     {
@@ -161,6 +162,27 @@
         { "id": "R2-2", "severity": "P1", "module": "缺陷解析面" },
         { "id": "R2-3", "severity": "P1", "module": "运行时" }
       ]
+    },
+    {
+      "id": "host-research-present",
+      "file": "prd-host-research-openclaw.md",
+      "parser": "extractHostResearchSection",
+      "note": "2026-09-18 宿主维度：非 dsh 宿主（openclaw）的 PRD 带「宿主契约调研」段 → 摘出正文（编号标题 `## 7.` 也要认，与 extractAssumptionsSection 同源的坑）",
+      "expect": { "contains": ["目标宿主", "openclaw", "未能核实"] }
+    },
+    {
+      "id": "host-research-missing",
+      "file": "prd-host-research-missing.md",
+      "parser": "extractHostResearchSection",
+      "note": "契约未兑现的真实形状：别的宿主的插件 PRD 却没有任何调研段 → null（硬门禁据此判 PRD 阶段失败）",
+      "expect": null
+    },
+    {
+      "id": "host-research-empty-heading",
+      "file": "prd-host-research-empty.md",
+      "parser": "extractHostResearchSection",
+      "note": "最隐蔽的漏做：标题在、正文空 → 必须判 null（否则模型学会「只写标题」就能过门禁；与假设段同一判定纪律）",
+      "expect": null
     }
   ]
 }

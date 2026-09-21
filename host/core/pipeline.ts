@@ -9,13 +9,13 @@ import { initPipelineBacklog, advanceTask, storeFor, parseDefectRows, syncQaDefe
 import { withRetry, resolveChildRoute } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
-import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool, extractAssumptionsSection, devTaskStatuses, devTaskIdAt, backfillDevTaskIds, artifactText } from '../util.ts'
+import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, devTaskIdAt, backfillDevTaskIds, artifactText } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, FIX_GATE_PATTERN } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext, PipelineMode } from '../types.ts'
-import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, MODE_RANK, artifactContractsFor, triageRecordOf, type TriageVerdict } from './triage.ts'
+import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, MODE_RANK, contractsForDeliverable, normalizeHost, forceHost, triageRecordOf, type TriageVerdict } from './triage.ts'
 import { loadTeams, findTeam, getActiveStages, teamNameOf } from './teams.ts'
 import { loadState, saveState, extractStateBlock, mergeStateBlock, noteRun } from './state.ts'
 import { isDangerousVcsRoot, dirTooLargeForBaseline } from '../util.ts'
@@ -128,7 +128,7 @@ function normalizeTriagePassthrough(raw: unknown): TriageVerdict | null {
   if (!o) return null
   const mode = normalizeMode(o.mode)
   if (!mode) return null
-  const qb = qualifyBlockers(o.blockers, { installable: o.installable === true })
+  const qb = qualifyBlockers(o.blockers, { installable: o.installable === true, host: forceHost(o.requirement, normalizeHost(o.host)) })
   return {
     mode,
     kind: typeof o.kind === 'string' ? o.kind : '',
@@ -141,6 +141,8 @@ function normalizeTriagePassthrough(raw: unknown): TriageVerdict | null {
     intent: normalizeIntent(o.intent),
     artifact: normalizeArtifact(o.artifact),
     installable: o.installable === true,
+    // 透传路径同样要过宿主护栏：预检已经判过一遍，但缺字段/判不出时 dsh 标识词是确定性事实
+    host: forceHost(o.requirement, normalizeHost(o.host)),
     blockers: qb.blockers,
     blockersDropped: qb.dropped,
     // host 侧填：档位被架构护栏从 X 升上来（ADR-0006）——仅用于日志与审计，不参与路由
@@ -152,15 +154,21 @@ function normalizeTriagePassthrough(raw: unknown): TriageVerdict | null {
  * 的第五次现场（漏 artifact/installable → 形态契约注入整条链失效），故住 triage.ts 便于门禁直接测。 */
 
 /**
- * PRD 收口：把「假设 / 待澄清」段摘出来落 `journal.assumptions`（2026-09-16，需求澄清闸门 Phase 1）。
+ * PRD 收口：① 摘「假设 / 待澄清」段落 `journal.assumptions`；② **宿主契约调研硬门禁**。
  *
- * 为什么必须先做这个（哪怕闸门还没上）：实测 **12/12（另一次 39/39）份 PRD 都没记录过假设**——
- * agent 的替代决定完全不可见，验收人无从判断"这份 PRD 是不是我想要的"。
- * 缺失只记 warn（policy 级：闸门落地前先看数据，不硬失败）。
+ * ① 的由来（2026-09-16 需求澄清闸门 Phase 1）：实测 **12/12（另一次 39/39）份 PRD 都没记录过假设**——
+ * agent 的替代决定完全不可见，验收人无从判断"这份 PRD 是不是我想要的"。缺失只记 warn（policy 级）。
+ *
+ * ② 的由来（2026-09-18 用户实锤，**偏硬**）：交付物要被**非 dsh 宿主**加载（openclaw/hermes/pi…）时，
+ * dsh 的契约一条都不适用，而我们对其没有权威 → PRD **必须含「宿主契约调研」段**（目标宿主是哪个、
+ * 从哪儿读到它的插件加载契约、核实到哪些要求）。缺失 → 返回失败原因（由调用方抛阶段失败 → 走重试诊断），
+ * 而不是只记 warn：用户原话「不然你上下文都不知道你开发个啥出来都不知道」。
+ *
+ * @returns 硬门禁失败原因（null = 通过或本 run 不需要该段）
  */
-function notePrdAssumptions(journal: Journal, locale: HostLocale): void {
+function notePrdAssumptions(journal: Journal, locale: HostLocale): string | null {
   const doc = artifactText(journal, 'PRD.md') || artifactText(journal, 'TECH-CHANGE.md')
-  if (!doc) return
+  if (!doc) return null
   // 提取走 util.extractAssumptionsSection（行式；容错编号标题/附录前缀/空正文）——
   // 早先内联的 `^#{1,6}\s*(假设|…)` 正则在真实产物（`## 9. 假设与待澄清`）上匹配不到，
   // 会误报「契约未兑现」（实测 tf-mu34afd2-wcjaw1）。
@@ -171,6 +179,17 @@ function notePrdAssumptions(journal: Journal, locale: HostLocale): void {
   } else {
     journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.prdAssumptionsMissing') })
   }
+  // ② 宿主契约调研硬门禁（仅当本 run 被判为「非 dsh 宿主 + 插件形态」时）
+  if (journal.hostResearch === true) {
+    const hr = extractHostResearchSection(doc)
+    if (!hr) {
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.hostResearchMissing') })
+      return t(locale, 'log.hostResearchMissing')
+    }
+    journal.hostContract = clip(hr, 2000)
+    journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.hostResearchOk', { n: hr.split(/\n+/).filter((l) => l.trim()).length }) })
+  }
+  return null
 }
 
 /**
@@ -565,16 +584,27 @@ export async function executePipeline(
     // 展开（ARTIFACT_CONTRACTS）→ PRD 必须把它们写成可测 AC。缺这一环的实锤：dddd 的插件"看着完整"却装不进
     // profile（缺 profile 层入口声明 + bundle 声明 + files 白名单 + workspace: 协议），而功能 AC 全绿 → 验收通过。
     // `other` 形态不注入（避免给既有产品内的普通改动套错契约）。
+    // **宿主分流**（2026-09-18 用户实锤提问）：`plugin-*` 且 host≠dsh（openclaw/hermes/pi/判不出）→
+    // **绝不下发 dsh 契约**（那些机制目标宿主根本不看，反而造成反向返工），改为要求「宿主契约调研」。
     try {
-      const tj = journal.triage as { artifact?: string; installable?: boolean } | null | undefined
+      const tj = journal.triage as { artifact?: string; installable?: boolean; host?: string } | null | undefined
       const art = normalizeArtifact(tj?.artifact)
       const inst = tj?.installable === true
-      const items = artifactContractsFor(art, inst)
+      const hst = normalizeHost(tj?.host)
+      const { items, hostResearch } = contractsForDeliverable(hst, art, inst)
       if (items.length) {
         state.__runCtx.artifact = art
         state.__runCtx.installable = inst
+        state.__runCtx.host = hst
         state.__runCtx.artifactContracts = items.map((it) => ({ requirement: it.requirement, criteria: it.criteria }))
         journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.artifactContract', { kind: art, n: items.length }) })
+      }
+      if (hostResearch) {
+        // 硬门禁的注入源（PRD 必须含对应段落；验收判定见 noteHostResearch）
+        state.__runCtx.hostResearch = true
+        state.__runCtx.host = hst
+        journal.hostResearch = true
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.hostResearch', { kind: art, host: hst }) })
       }
     } catch (e) { /* 形态契约注入失败不阻断（policy 级） */ }
     // M0 状态核对：核对代码库真实状态（多人/场外提交/非流水线改动），注入后续所有阶段。
@@ -647,7 +677,10 @@ export async function executePipeline(
     // PRD 收口（2026-09-16 需求澄清闸门 Phase 1）：把「假设 / 待澄清」段读出来落 journal，
     // 让完成汇报能显式提示「本次基于以下假设启动」——今天的缺口是**假设完全不可见**
     // （实测 12/12、39/39 份 PRD 都没这一段），验收人无从知道 agent 替他决定了什么。
-    notePrdAssumptions(journal, locale)
+    // 同处还有**宿主契约调研硬门禁**（非 dsh 宿主 + 插件形态时必须调研目标宿主，2026-09-18）：
+    // 缺失 → 抛阶段失败走重试（附诊断），不放过"连开发对象是什么都没搞清"的 PRD。
+    // 注：此处不引 `prdR`——resume 分支没有它（PRD 是复用的产物），重试计数由 stageFailError 自行兜底。
+    if (notePrdAssumptions(journal, locale)) throw stageFailError('prd', {})
 
     /* ── UI/UX 设计阶段（档位阶段集启用；lite+needDesign 也保留，显式要求的 UI 需求不被吞） ── */
     let design = null

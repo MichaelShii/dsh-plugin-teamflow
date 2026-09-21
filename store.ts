@@ -114,6 +114,11 @@ export interface JournalRecord {
    * （检测命令优先：QA 每轮重编号，缺陷 id 跨轮不可比，见 util.defectFingerprint）。
    */
   qaRounds?: Array<Record<string, unknown>> | null
+  /** **宿主契约调研**（2026-09-18 用户实锤）：交付物要被**非 dsh 宿主**（openclaw/hermes/pi…）加载时，
+   *  dsh 的插件契约一条都不适用 → PRD 必须含「宿主契约调研」段（硬门禁）。`hostResearch=true` 标记
+   *  「本 run 需要该段」，`hostContract` 存摘出的核实结论（人可读留痕）。 */
+  hostResearch?: boolean
+  hostContract?: string | null
   result?: unknown
   [key: string]: unknown
 }
@@ -256,6 +261,8 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
      *  裁决是 shadow 埋点（Phase 2 定闸门强度的数据源）；假设段是「agent 替你决定了什么」的可见化。 */
     triage: journal.triage || null,
     assumptions: journal.assumptions || null,
+    hostResearch: journal.hostResearch === true,
+    hostContract: journal.hostContract || null,
     requirementSupplement: journal.requirementSupplement || null,
     /** 外部供应商故障标记（限流/无额度/上游故障/超时）：run 落可续跑中断态时置位，汇报据此讲清「非交付缺陷」。 */
     externalFailure: journal.externalFailure === true,

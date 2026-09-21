@@ -12,8 +12,8 @@
  *     实测模型系统性自选 `lite:true`（33 次启动 14 次显式传档位、0 次先预览），故放宽为「只有 patch 豁免」。
  * 另外锁住意图归一（非法值一律 requirement，绝不因字段缺失拦启动）。
  */
-import { qualifyBlockers, normalizeSettle, TRIAGE_SETTLES, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, triageRecordOf, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, triageCacheIsPending, triageCacheMarkPending, triageCacheSettle, TRIAGE_CACHE_MAX } from '../host/core/triage.ts'
-import { extractAssumptionsSection } from '../host/util.ts'
+import { qualifyBlockers, normalizeSettle, TRIAGE_SETTLES, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, triageRecordOf, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, triageCacheIsPending, triageCacheMarkPending, triageCacheSettle, TRIAGE_CACHE_MAX, normalizeHost, forceHost, contractsForDeliverable, ARTIFACT_HOSTS } from '../host/core/triage.ts'
+import { extractAssumptionsSection, extractHostResearchSection } from '../host/util.ts'
 import { prdPrompt } from '../host/prompts/index.ts'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -74,7 +74,7 @@ ok(qualifyBlockers([{ ...formGap, settles: 'scope' }], { installable: true }).bl
 ok(qualifyBlockers([{ ...formGap, settles: 'ui' }], { installable: true }).blockers.length === 1, 'settles=ui 同样不受影响')
 ok(qualifyBlockers([full], { installable: true }).blockers[0].settles === 'other', '未声明的 settles → 归一为 other（旧裁决不退化成形态类）')
 ok(normalizeSettle('installable') === 'installable' && normalizeSettle('nonsense') === 'other' && normalizeSettle(undefined) === 'other', 'settles 归一：非法/缺失 → other')
-ok(TRIAGE_SETTLES.length === 6 && TRIAGE_SETTLES.indexOf('installable') !== -1, 'settles 枚举固定六档')
+ok(TRIAGE_SETTLES.length === 7 && TRIAGE_SETTLES.indexOf('installable') !== -1 && TRIAGE_SETTLES.indexOf('host') !== -1, 'settles 枚举七档（第六次扩展：+host）')
 
 console.log('\n[3] 兜底路径绝不拦启动（无 subagents → fallbackVerdict）')
 const fx = await runTriage('给登录页加个记住我勾选框', { needDesign: false }, undefined, undefined, 'zh')
@@ -274,8 +274,8 @@ console.log('     （全部 64/64 个 run 的 triage 不带 artifact；log.artif
   ok(EXEMPT.size === 3 && EXEMPT.has('needDesign'), '豁免表只有三项（新加字段默认要搬运，不许悄悄塞进豁免表）')
   // ── 注入源必须是 journal.triage（不是透传的 options.__triage，后者不落盘、resume 就没了）──
   const pipeSrc = readFileSync(join(here, '../host/core/pipeline.ts'), 'utf8')
-  ok(/const tj = journal\.triage as \{ artifact\?: string; installable\?: boolean \}/.test(pipeSrc), 'pipeline：形态契约的注入源是 **journal.triage**（落盘面，resume 也在）')
-  ok(/artifactContractsFor\(art, inst\)/.test(pipeSrc) && /state\.__runCtx\.artifactContracts = items\.map/.test(pipeSrc), 'pipeline：命中形态后展开契约并写进 __runCtx（供 prdPrompt/qaPrompt 消费）')
+  ok(/const tj = journal\.triage as \{ artifact\?: string; installable\?: boolean; host\?: string \}/.test(pipeSrc), 'pipeline：形态契约的注入源是 **journal.triage**（落盘面，resume 也在）')
+  ok(/contractsForDeliverable\(hst, art, inst\)/.test(pipeSrc) && /state\.__runCtx\.artifactContracts = items\.map/.test(pipeSrc), 'pipeline：命中形态后展开契约并写进 __runCtx（供 prdPrompt/qaPrompt 消费）')
   ok(/if \(items\.length\)/.test(pipeSrc) && /log\.artifactContract/.test(pipeSrc), 'pipeline：有契约才注入 + 落 log.artifactContract（**这条日志就是"防线活着"的判据**）')
   // ── 端到端接线（缺的正是这一段）：verdict → journal.triage → __runCtx → prdPrompt 真的出现形态契约 ──
   const full = { mode: 'medium', kind: 'feature', needDesign: true, complexity: 'medium', rationale: [], confidence: 'high', slug: 'x', source: 'model', intent: 'requirement', blockers: [], blockersDropped: 0, artifact: 'plugin-full', installable: true }
@@ -293,6 +293,74 @@ console.log('     （全部 64/64 个 run 的 triage 不带 artifact；log.artif
   const itemsOld = artifactContractsFor(normalizeArtifact(undefined), false)
   const promptOld = prdPrompt('做一个 dsh 插件', 'E:/x', 'tf-x', { ...stBase, __runCtx: { runDocs: 'docs/teamflow/x' } })
   ok(itemsOld.length === 0 && !/交付形态契约/.test(promptOld), '反向：无形态字段 → 0 条契约、prompt 无注入（即修复前的生产状态）')
+}
+
+console.log('\n[11] 宿主维度（2026-09-18 用户实锤：开发 openclaw/hermes 插件时 dsh 契约不适用）')
+console.log('     用户原话：「我开发 openclaw 插件，或者 hermes 插件……这些在 dsh 的契约在其他的不一定有效吧」')
+console.log('     → 契约必须按宿主分键：dsh 给具体契约；非 dsh 一律**不下发 dsh 契约**，改走「宿主契约调研」')
+{
+  // ── 归一：缺省一律 unknown（**绝不默认成 dsh**——那正是给别的宿主套错契约的路径）──
+  ok(normalizeHost('dsh') === 'dsh' && normalizeHost('other') === 'other', 'host 归一：合法值原样')
+  ok(normalizeHost(undefined) === 'unknown' && normalizeHost(null) === 'unknown' && normalizeHost('nonsense') === 'unknown', '缺省/脏值 → unknown（不是 dsh）')
+  ok(ARTIFACT_HOSTS.length === 3, '宿主枚举恰为三档（dsh/other/unknown）')
+  // ── 确定性护栏：判不出但有 dsh 标识词 → dsh（否则整条 dsh 契约静默丢失）──
+  ok(forceHost('开发一个 dsh 插件', 'unknown') === 'dsh', '护栏：需求含 dsh → unknown 抬为 dsh')
+  ok(forceHost('开发一个 @deepseek-ai/dsh-x 插件', 'unknown') === 'dsh', '护栏：@deepseek-ai/dsh-* → dsh')
+  ok(forceHost('装进我的 dsh web profile 里真实可用', 'unknown') === 'dsh', '护栏：dsh web profile → dsh')
+  ok(forceHost('cordis 服务插件', 'unknown') === 'dsh', '护栏：cordis → dsh')
+  ok(forceHost('开发一个 openclaw 插件', 'unknown') === 'unknown', '护栏不猜：无 dsh 词的 other 场景仍 unknown（交给澄清）')
+  ok(forceHost('开发一个 openclaw 插件', 'other') === 'other', '**护栏不覆盖模型明确判的 other**（拿词表当身份已两次踩坑）')
+  ok(forceHost('用 dsh 风格写个 openclaw 插件', 'other') === 'other', '同上：模型说 other 就尊重（哪怕句中出现 dsh）')
+  // ── 契约分流：这是本批的核心行为 ──
+  const dshFull = contractsForDeliverable('dsh', 'plugin-full', true)
+  ok(dshFull.items.length > 0 && !dshFull.hostResearch, 'dsh + plugin-full → 下发本仓具体契约（不给调研段）')
+  for (const host of ['other', 'unknown']) {
+    const r = contractsForDeliverable(host, 'plugin-full', true)
+    ok(r.items.length === 0, `**${host} + plugin-full → 0 条 dsh 契约**（不得把 profile 入口/bundle/files 套给别的宿主）`)
+    ok(r.hostResearch === true, `${host} + plugin-full → 要求「宿主契约调研」段`)
+  }
+  ok(contractsForDeliverable('other', 'plugin-host', true).hostResearch === true, 'other + plugin-host → 同样走调研')
+  ok(contractsForDeliverable('other', 'plugin-client', true).hostResearch === true, 'other + plugin-client → 同样走调研')
+  // 非插件形态不误伤（cli/lib 的判据与宿主无关）
+  ok(contractsForDeliverable('other', 'cli', false).hostResearch === false && contractsForDeliverable('other', 'cli', false).items.length > 0, 'other + cli → 不下发调研（bin 判据与宿主无关）')
+  ok(contractsForDeliverable('other', 'lib', false).hostResearch === false, 'other + lib → 不下发调研')
+  ok(contractsForDeliverable('other', 'docs', false).hostResearch === false && contractsForDeliverable('other', 'docs', false).items.length === 0, 'other + docs → 无契约无调研')
+  // ── 自洽门禁：宿主已判定还问宿主 = 自我矛盾 ──
+  const hostBlocker = { ...full, settles: 'host' }
+  ok(qualifyBlockers([hostBlocker], { host: 'dsh' }).blockers.length === 0, '自洽门禁：host=dsh 已判定 → settles=host 的 blocker 丢弃（同型第三次）')
+  ok(qualifyBlockers([hostBlocker], { host: 'other' }).blockers.length === 0, '自洽门禁：host=other 已判定 → 同样丢弃')
+  ok(qualifyBlockers([hostBlocker], { host: 'unknown' }).blockers.length === 1, '**host=unknown 时保留**（这正是 must-ask 缺口的合法形态，丢了就重演套错契约）')
+  ok(qualifyBlockers([hostBlocker], {}).blockers.length === 1, '未给 ctx.host → 不误丢（默认放行）')
+  ok(TRIAGE_SETTLES.indexOf('host') !== -1 && TRIAGE_SETTLES.length === 7, 'settles 枚举新增 host（7 档）')
+  // ── 落盘完整性：host 是第六次「白名单漏字段」的当事字段 ──
+  ok(triageRecordOf(V({ host: 'other' })).host === 'other', 'triageRecordOf 搬运 host')
+  ok(triageRecordOf(V({})).host === 'unknown', 'triageRecordOf：缺 field → unknown（不默认 dsh）')
+  // ── 端到端：非 dsh 宿主时 prdPrompt 必须出现「宿主契约调研」必填段，且**不得**出现 dsh 契约 ──
+  const stBase2 = { version: 1, projectName: 'p', updatedAt: null, product: { summary: null, techStack: null }, modules: {}, verifyScripts: [], acIndex: {}, stages: {}, lastRun: null }
+  const pOther = prdPrompt('开发一个 openclaw 插件', 'E:/x', 'tf-x', { ...stBase2, __runCtx: { runDocs: 'docs/teamflow/x', artifact: 'plugin-full', host: 'other', hostResearch: true } })
+  ok(/宿主契约调研/.test(pOther), '**端到端：非 dsh 宿主 → prdPrompt 注入「宿主契约调研 · 必填段」**')
+  ok(!/\[交付形态契约/.test(pOther), '**端到端：非 dsh 宿主 → 不注入本仓形态契约**（防反向返工）')
+  ok(/禁止凭记忆写字段名/.test(pOther), '端到端：调研段明确禁止凭记忆写字段名（dddd 事故的成因）')
+  const pDsh = prdPrompt('做一个 dsh 插件', 'E:/x', 'tf-x', { ...stBase2, __runCtx: { runDocs: 'docs/teamflow/x', artifact: 'plugin-full', installable: true, host: 'dsh', artifactContracts: [{ requirement: 'r', criteria: 'c' }] } })
+  ok(/\[交付形态契约/.test(pDsh) && !/宿主契约调研/.test(pDsh), '端到端：dsh 宿主 → 只注入本仓契约，不要调研段')
+}
+
+console.log('\n[12] 「宿主契约调研」硬门禁（2026-09-18 用户定调：偏硬）')
+console.log('     用户原话：「不然你上下文都不知道你开发个啥出来都不知道」→ 缺段 = PRD 阶段失败，不只 warn')
+{
+  ok(extractHostResearchSection('## 7. 宿主契约调研\ntarget: openclaw v1\n- 入口: plugins/<name>\n') === 'target: openclaw v1\n- 入口: plugins/<name>', '带编号标题也能摘到（同 extractAssumptionsSection 的坑）')
+  ok(extractHostResearchSection('## Host contract research\n- read docs/x.md\n') === '- read docs/x.md', 'en 标题同样认（产物随 run 语言）')
+  ok(extractHostResearchSection('## 7. 宿主契约调研\n') === null, '标题下正文为空 → null（空标题不算调研过）')
+  ok(extractHostResearchSection('## 其它段\n内容\n') === null, '没有该段 → null')
+  ok(extractHostResearchSection('') === null && extractHostResearchSection(null) === null, '空产物 → null（不抛）')
+  ok(extractHostResearchSection('## 宿主调研\n有内容\n## 下一段\n别的\n') === '有内容', '取到下一个标题为止（不吞后文）')
+  const utilSrc = readFileSync(join(here, '../host/util.ts'), 'utf8')
+  ok(/export function extractHostResearchSection/.test(utilSrc), '判定函数住 util.ts（纯函数、门禁可直接测）')
+  const pipeSrc2 = readFileSync(join(here, '../host/core/pipeline.ts'), 'utf8')
+  ok(/if \(notePrdAssumptions\(journal, locale\)\) throw stageFailError\('prd'/.test(pipeSrc2), '**pipeline：缺段即抛 PRD 阶段失败**（硬门禁接线在位）')
+  ok(/journal\.hostResearch === true/.test(pipeSrc2), '硬门禁只在 hostResearch 标记时生效（dsh 场景不误伤）')
+  const storeSrc = readFileSync(join(here, '../store.ts'), 'utf8')
+  ok(/hostResearch: journal\.hostResearch === true/.test(storeSrc) && /hostContract: journal\.hostContract/.test(storeSrc), '落盘：hostResearch/hostContract 进 serializeJournal（**不许只写不落盘**）')
 }
 
 console.log(failed ? `\n✗ triage-gate：${failed} 条失败\n` : '\n✓ triage-gate：全部通过\n')

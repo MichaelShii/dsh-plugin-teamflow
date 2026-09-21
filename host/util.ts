@@ -632,6 +632,40 @@ export function extractAssumptionsSection(doc: string | null | undefined): strin
   return null
 }
 
+/**
+ * 「宿主契约调研」小节的判定（2026-09-18 用户实锤新增，**硬门禁**）。
+ *
+ * 由来：teamflow 寄生在 dsh 上，我们对 dsh 的插件契约有权威（同仓样本可核实）；但用户明确说过
+ * 「用户拿我们去干活，不只是干开发 dsh 插件」——开发 openclaw / hermes / pi 插件时，**dsh 的契约
+ * 一条都不适用**（那些框架有各自的加载/注册机制），套过去就是反向返工。而我们**对它们没有权威**，
+ * 凭记忆写字段名正是 dddd 事故的成因。
+ *
+ * 故规则：`plugin-*` 且目标宿主不是 dsh → PRD **必须**含「宿主契约调研」段（写清目标宿主是哪个、
+ * 从哪儿读到它的插件加载契约、核实到哪些具体要求）。用户原话：「不然你上下文都不知道你开发个啥出来
+ * 都不知道」——所以这条**偏硬**：缺失 → PRD 阶段失败（走重试，附诊断），而不是只记 warn。
+ *
+ * 解析方式与 `extractAssumptionsSection` 同源（行式 + 容错编号标题）：产物标题惯例带编号
+ * （`## 7. 宿主契约调研`），单条正则匹配不到会误判"契约未兑现"（该坑已踩过一次）。
+ */
+export function extractHostResearchSection(doc: string | null | undefined): string | null {
+  const text = String(doc || '')
+  if (!text.trim()) return null
+  const lines = text.split(/\r?\n/)
+  const head = /^#{1,6}\s*(?:[0-9]+[.、)]\s*)?(?:附录\s*[0-9A-Za-z]*[.、)]?\s*)?(宿主契约调研|宿主调研|host contract research|host research)/i
+  const isHead = (l: string) => /^#{1,6}\s/.test(l)
+  for (let i = 0; i < lines.length; i++) {
+    if (!head.test(lines[i])) continue
+    const out: string[] = []
+    for (let k = i + 1; k < lines.length; k++) {
+      if (isHead(lines[k])) break
+      out.push(lines[k])
+    }
+    const body = out.join('\n').trim()
+    return body || null
+  }
+  return null
+}
+
 /* ── dev 任务身份与 resume 判定（2026-09-18 实锤修复，勿回退）─────────────────────────
  * 背景（probe-cache `tf-mu6tb281-4n43oc`，用户实测「T0 被触发两次，第一次明面成功了」）：
  *  ① 冲突检测把 files 有交集的任务**合并**成一个子代理执行，合并时 title 被**拼接**成

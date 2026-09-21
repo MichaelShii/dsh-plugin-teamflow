@@ -621,8 +621,16 @@ ok(/if \(opts && opts\.needDesign === true && want < MODE_RANK\.medium\) return 
 // 形态类 blocker 自洽门禁（2026-09-18 probe-v2 实锤：需求已写「装进我的 dsh web profile」、分诊自己已判
 // installable=true，却仍抛出「要不要真能装」→ 凭空一轮澄清 → 输入变了 → 缓存必然不命中 → 同一需求分诊两次）
 ok(/settles === 'installable' && ctx && ctx\.installable === true/.test(triageSrc), 'triage：**形态类 blocker 自洽门禁**（已判 installable=true 却仍问「要不要能装」→ 丢弃并计数）')
-ok(/qualifyBlockers\(raw\.blockers, \{ installable: raw\.installable === true \}\)/.test(triageSrc) && /qualifyBlockers\(o\.blockers, \{ installable: o\.installable === true \}\)/.test(pipelineSrc), 'triage/pipeline：两条解析路径都把 installable 传给合格线（漏传 = 门禁失效）')
-ok(/"settles": "installable\|artifact\|scope\|ui\|data\|other"/.test(promptsSrc) && /settles: TriageSettle/.test(triageSrc), 'prompt/triage：blocker 带机器可读的 settles 字段（宿主只做一致性检查，**不解析问句文本**）')
+// 宿主一致性门禁（2026-09-18 同型扩展）：宿主已判定（dsh / 明确的别的宿主）→ 不得再问「装到哪个宿主」。
+// 与 installable 那条同源：让模型显式声明 settles，宿主只做一致性检查，**不解析问句文本**。
+ok(/settles === 'host' && ctx && ctx\.host && ctx\.host !== 'unknown'/.test(triageSrc), 'triage：**宿主类 blocker 自洽门禁**（已判 host≠unknown 却仍问「装到哪个宿主」→ 丢弃并计数）')
+ok(/qualifyBlockers\(raw\.blockers, \{ installable: raw\.installable === true, host \}\)/.test(triageSrc) && /qualifyBlockers\(o\.blockers, \{ installable: o\.installable === true, host: forceHost\(/.test(pipelineSrc), 'triage/pipeline：两条解析路径都把 installable+host 传给合格线（漏传 = 门禁失效）')
+ok(/"settles": "installable\|artifact\|host\|scope\|ui\|data\|other"/.test(promptsSrc) && /settles: TriageSettle/.test(triageSrc), 'prompt/triage：blocker 带机器可读的 settles 字段（宿主只做一致性检查，**不解析问句文本**）')
+// 宿主维度接线（2026-09-18 用户实锤：开发 openclaw/hermes 插件时本仓契约不适用）——契约必须按宿主分键。
+ok(/host: forceHost\(requirement, normalizeHost\(raw\.host\)\)/.test(triageSrc) && /host: normalizeHost\(v\.host\)/.test(triageSrc), 'triage：模型裁决与落盘记录都带 host（**漏搬 = 又给别的宿主套 dsh 契约**，同型第六次）')
+ok(/contractsForDeliverable\(hst, art, inst\)/.test(pipelineSrc) && /if \(hostResearch\)/.test(pipelineSrc), 'pipeline：契约取用走 contractsForDeliverable（宿主分流），非 dsh → 走宿主调研分支')
+ok(/"host": "dsh\|other\|unknown"/.test(promptsSrc), 'prompt：triage 输出模板声明 host 字段（模型才知道要判它）')
+ok(/export function contractsForDeliverable/.test(triageSrc) && /hostResearchRequired/.test(triageSrc), 'triage：契约分流的唯一入口在位（plugin-* × 非 dsh → 0 条本仓契约 + 要求调研）')
 ok(/log\.modeUpgraded/.test(pipelineSrc) && /__upgradedFrom/.test(hostSrc) && /__upgradedFrom/.test(pipelineSrc), 'pipeline：升档落日志（调用方自选轻档位被护栏纠正时可见）')
 // 注入文案闭环（2026-09-16 实测补充）：实测会话 session-518e9188 里团队注入已下发、用户说「我想开发一个
 // dsh 插件」，但**模型根本没调用 teamflow_start**（0 次调用、该产品线 runs=0）——不复现「抢跑」，可闸门也

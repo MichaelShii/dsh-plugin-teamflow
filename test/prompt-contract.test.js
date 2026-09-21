@@ -127,7 +127,7 @@ console.log('── L1 prompt 行为级契约（工厂真实产出断言）─�
 assertContract({
   id: 'TRIAGE-INTENT-BLOCKERS', level: 'policy', targets: 'triagePrompt',
   intent: '分诊输出 intent（需求/探索/反馈）+ 合格 blocker 五字段（settles + question/readings≥2/changes/rework）',
-  include: [/"intent": "requirement\|exploration\|feedback"/, /"blockers": \[\{ "settles": "installable\|artifact\|scope\|ui\|data\|other", "question"/, /\[INTENT — decide before mode\]/, /\[BLOCKERS — must-know gaps only\]/, /readings/, /rework/],
+  include: [/"intent": "requirement\|exploration\|feedback"/, /"blockers": \[\{ "settles": "installable\|artifact\|host\|scope\|ui\|data\|other", "question"/, /\[INTENT — decide before mode\]/, /\[BLOCKERS — must-know gaps only\]/, /readings/, /rework/],
 })
 assertContract({
   id: 'PRD-ASSUMPTIONS-SECTION', level: 'policy', targets: 'prdPrompt',
@@ -180,6 +180,45 @@ assertContract({
   include: [],
   exclude: [/\[交付形态契约 · 必填 AC\]/],
   fixture: prdNoContract,
+})
+// ── 宿主维度契约（2026-09-18 用户实锤："我开发 openclaw 插件，或者 hermes 插件……这些在 dsh 的契约在其他的不一定有效吧"）──
+// 交付物形态与目标宿主是**两个正交维度**：plugin-* 是 dsh 的词汇（profile 入口/bundle patch/client 块/files 白名单），
+// 套给别的宿主 = 反向返工；而对别的宿主我们没有权威（凭记忆写字段名正是 dddd 事故的成因）→ 改为强制"先去调研"。
+assertContract({
+  id: 'TRIAGE-HOST-AXIS', level: 'policy', targets: 'triagePrompt',
+  intent: '分诊必须判目标宿主框架（dsh / other / unknown），与 artifact 正交——契约是否适用取决于它',
+  include: [/"host": "dsh\|other\|unknown"/, /\[HOST — which framework will load this deliverable\]/, /host-contract research/],
+})
+const ST_HOST_OTHER = { ...ST, __runCtx: { ...ST.__runCtx, artifact: 'plugin-full', host: 'other', hostResearch: true } }
+const ST_HOST_DSH = { ...ST, __runCtx: { ...ST.__runCtx, artifact: 'plugin-full', installable: true, host: 'dsh', artifactContracts: artifactContractsFor('plugin-full', true) } }
+const prdHostOther = prdPrompt('开发一个 openclaw 插件', ROOT, RUN_ID, ST_HOST_OTHER)
+const prdHostDsh = prdPrompt('做一个 dsh 插件', ROOT, RUN_ID, ST_HOST_DSH)
+const prdHostOtherEn = prdPrompt('build an openclaw plugin', ROOT, RUN_ID, { ...ST_EN, __runCtx: { ...ST_EN.__runCtx, artifact: 'plugin-full', host: 'other', hostResearch: true } })
+assertContract({
+  id: 'PRD-HOST-RESEARCH-GATE', level: 'host-enforced', targets: 'prdPrompt',
+  intent: '非 dsh 宿主 + 插件形态 → PRD 必须含「宿主契约调研」段（硬门禁：缺段 = PRD 阶段失败）',
+  include: [/\[宿主契约调研 · 必填段\]/, /禁止凭记忆写字段名/, /这一段是硬门禁/],
+  fixture: prdHostOther,
+})
+assertContract({
+  id: 'PRD-HOST-RESEARCH-GATE-EN', level: 'host-enforced', targets: 'prdPrompt', en: true,
+  intent: 'en run 同门禁（语言跟随 run 快照）',
+  include: [/\[HOST CONTRACT RESEARCH · mandatory section\]/, /Never invent field names from memory/, /hard gate/],
+  fixture: prdHostOtherEn,
+})
+assertContract({
+  id: 'PRD-NO-DSH-CONTRACT-FOR-OTHER-HOST', level: 'host-enforced', targets: 'prdPrompt',
+  intent: '**非 dsh 宿主时绝不注入本仓形态契约**（profile 入口/bundle patch/client 块/files 白名单对别的宿主全不适用）',
+  include: [/\[宿主契约调研 · 必填段\]/],
+  exclude: [/\[交付形态契约 · 必填 AC\]/],
+  fixture: prdHostOther,
+})
+assertContract({
+  id: 'PRD-DSH-HOST-KEEPS-CONTRACTS', level: 'policy', targets: 'prdPrompt',
+  intent: 'dsh 宿主照旧拿到具体契约、且**不要**调研段（不误伤我们唯一有权威的场景）',
+  include: [/\[交付形态契约 · 必填 AC\]/],
+  exclude: [/\[宿主契约调研 · 必填段\]/],
+  fixture: prdHostDsh,
 })
 assertContract({
   id: 'QA-SHAPE-PROBES', level: 'policy', targets: 'qaPrompt',
