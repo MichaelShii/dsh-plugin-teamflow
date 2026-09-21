@@ -85,6 +85,9 @@ export interface TeamflowState {
     /** 目标宿主（2026-09-18）与「需产出宿主契约调研」标记（非 dsh 宿主 + 插件形态时置位，PRD 硬门禁依据）。 */
     host?: string
     hostResearch?: boolean
+    /** **本机安装环境**（2026-09-21）：`$DSH_HOME` + 插件自身路径反推的 profile 名/目录 + `dsh` 是否在 PATH。
+     *  路径全为运行时探测（用户环境各异，不得写死）；探测失败时 PRD 必须改为"问用户"。 */
+    installEnv?: { dshHome?: string; profile?: string; profileDir?: string; cliOnPath?: boolean; ok?: boolean } | null
   } | null
   /** **版本控制模式**（2026-09-17 方案 A：入口定、出口遵）：'repo'=是仓库/已初始化（出口正常收口提交）；
    *  'none'=用户明确选择不用版本控制（出口**不尝试提交**，汇报明写"未存档"）。缺省=未知（按旧逻辑探测）。 */

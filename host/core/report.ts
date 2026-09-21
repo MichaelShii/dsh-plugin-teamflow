@@ -4,7 +4,7 @@
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { clip } from '../util.ts'
-import { MODE_REGISTRY } from './triage.ts'
+import { MODE_REGISTRY, normalizeArtifact, PLUGIN_ARTIFACTS } from './triage.ts'
 import { gitCmd } from './sanity.ts'
 import { loadState } from './state.ts'
 import { modeLabel, t } from '../locales.ts'
@@ -124,6 +124,25 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
     // dddd 实测那批失败 16 分钟后同请求即成功，属外部窗口问题；旧文案只给「失败 + 需人工」，
     // 会让人误判成交付质量。此处显式说明「非交付缺陷 + 可续跑只补这一段」。
     const externalLine = journal.externalFailure === true ? t(locale, 'report.externalFailure') : ''
+    // **安装待办（2026-09-21 用户实锤）**：交付物是要装进 profile 的插件时，完成汇报必须给主 agent
+    // 一段**可直接执行**的安装指令（含本机探测到的 profile 目录/命令/回滚）——而不是"请用户手动测试"。
+    // 理由（实测）：流水线子代理权限启动即固定、**写不了 profile**；而主 agent 能（被拒后宿主给
+    // `escalation available`，`approval/policy: ask` 下经用户批准）→ 这一步的执行者就是主 agent。
+    const installLine = (() => {
+      try {
+        const env = journal.installEnv as { ok?: boolean; profile?: string; profileDir?: string; cliOnPath?: boolean } | null | undefined
+        if (!env) return ''
+        const art = normalizeArtifact((journal.triage as { artifact?: string } | null | undefined)?.artifact)
+        if (PLUGIN_ARTIFACTS.indexOf(art) === -1) return ''
+        if (env.ok !== true) return t(locale, 'report.installAskUser')
+        return t(locale, 'report.installPending', {
+          dir: env.profileDir || '?',
+          how: env.cliOnPath === true
+            ? t(locale, 'report.installHowCli', { profile: env.profile || '?' })
+            : t(locale, 'report.installHowManual'),
+        })
+      } catch (e) { return '' }
+    })()
     // 改动存档可见化（2026-09-17 方案 A）：非程序员的安全网必须有"看得见"的回执——
     // repo → 「已存档，可整体撤销」；none → 「未存档（用户选择），无法一键撤销」。
     const vcsLine = (() => {
@@ -158,6 +177,7 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
         ? t(locale, 'report.engine', { engine: `${journal.engine.provider || '?'}/${journal.engine.model || '?'}` })
         : '',
       t(locale, 'report.backlog', { reqId: journal.reqId || '—' }),
+      installLine,
       needsHumanNotice,
       mergeHint,
       t(locale, 'report.tabHint'),

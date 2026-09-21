@@ -119,6 +119,9 @@ export interface JournalRecord {
    *  「本 run 需要该段」，`hostContract` 存摘出的核实结论（人可读留痕）。 */
   hostResearch?: boolean
   hostContract?: string | null
+  /** **本机安装环境**（2026-09-21）：`$DSH_HOME` + 由插件自身路径反推的 profile 名/目录 + `dsh` 是否在 PATH。
+   *  路径全为运行时探测（用户环境各异，**不得写死**）；探测失败（`ok=false`）时 PRD 必须改为"问用户"。 */
+  installEnv?: { dshHome?: string; profile?: string; profileDir?: string; cliOnPath?: boolean; ok?: boolean } | null
   result?: unknown
   [key: string]: unknown
 }
@@ -263,6 +266,7 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     assumptions: journal.assumptions || null,
     hostResearch: journal.hostResearch === true,
     hostContract: journal.hostContract || null,
+    installEnv: journal.installEnv || null,
     requirementSupplement: journal.requirementSupplement || null,
     /** 外部供应商故障标记（限流/无额度/上游故障/超时）：run 落可续跑中断态时置位，汇报据此讲清「非交付缺陷」。 */
     externalFailure: journal.externalFailure === true,

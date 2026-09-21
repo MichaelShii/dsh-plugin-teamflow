@@ -178,6 +178,32 @@ assertContract({
   exclude: [/必须去读本仓已有的同类插件样本（plugins\/dsh-plugin-teamflow）\s*或宿主文档/],
   fixture: prdWithContract,
 })
+// ── 本机安装环境注入（2026-09-21 用户实锤：「每个用户环境不一样，路径不要写死」）──
+// 用户源码运行 `pnpm dsh`（dsh 不在 PATH）、profile 名也可能不是 web；契约里写死的命令在他机器上跑不通。
+// 故 host 起跑时探测（DSH_HOME + 插件自身路径反推 profile + dsh 是否在 PATH）并注入；探测失败 → 问用户。
+const instEnvFix = { dshHome: 'C:\\u\\.dsh', profile: 'web', profileDir: 'C:\\u\\.dsh\\profiles\\web', cliOnPath: false, ok: true }
+const instCtx = { artifact: 'plugin-full', installable: true, artifactContracts: artifactContractsFor('plugin-full', true), installEnv: instEnvFix }
+const prdInstall = prdPrompt('做一个 dsh 插件', ROOT, RUN_ID, { ...ST, __runCtx: { ...ST.__runCtx, ...instCtx } })
+const prdInstallEn = prdPrompt('build a dsh plugin', ROOT, RUN_ID, { ...ST_EN, __runCtx: { ...ST_EN.__runCtx, ...instCtx } })
+assertContract({
+  id: 'PRD-INSTALL-ENV-PROBED', level: 'policy', targets: 'prdPrompt',
+  intent: 'PRD 必须带「本机环境」段（路径/命令来自运行时探测，且点明安装由主 agent 执行）',
+  include: [/【本机环境/, /禁止假设 profile 名或路径/, /主 agent 执行/],
+  fixture: prdInstall,
+})
+assertContract({
+  id: 'PRD-INSTALL-ENV-PROBED-EN', level: 'policy', targets: 'prdPrompt', en: true,
+  intent: 'en run 同段（语言跟随 run 快照）',
+  include: [/\[THIS MACHINE/, /never assume a profile name or path/, /for the main agent/],
+  fixture: prdInstallEn,
+})
+assertContract({
+  id: 'PRD-NO-INSTALL-ENV-WITHOUT-PROBE', level: 'policy', targets: 'prdPrompt',
+  intent: '没有探测结果时不注入「本机环境」段（不编路径）',
+  include: [],
+  exclude: [/【本机环境/],
+  fixture: prdWithContract,
+})
 assertContract({
   id: 'PRD-ARTIFACT-CONTRACTS-EN', level: 'policy', targets: 'prdPrompt', en: true,
   intent: 'en run 同契约（语言跟随 run 快照；样本同样指向本机已装插件）',

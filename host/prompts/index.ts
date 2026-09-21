@@ -340,9 +340,37 @@ export const ONCE_DISCIPLINE = `[ONE-SHOT WRITE · policy] The most important ef
 - Always end output with a state block so the host can index and the next run needn't re-read.
 `
 
+/**
+ * **本机安装环境注入块**（2026-09-21 用户实锤，勿写死路径）。
+ *
+ * 契约原来写死 `dsh plugin --profile web add`——用户是源码运行（`pnpm dsh`，`dsh` 不在 PATH），
+ * 那条命令在他机器上跑不通；profile 名也可能不是 `web`。现在路径/命令**全部由 host 运行时探测**
+ * （`$DSH_HOME` + 插件自身所在路径反推 profile + `dsh` 是否在 PATH），这里只把结论转述给 PM。
+ * 探测失败 → 明确要求"问用户"，**不许猜**。
+ * 同时点明**执行者**：流水线子代理权限被钉死在工作区、**装不了**（会话原文：
+ * `permission scope was fixed ... cannot be widened`）；**主 agent 能**——它的 profile 写入被拒后
+ * 宿主给出 `escalation available`，`approval/policy: ask` 下经用户批准即可。故 PRD 必须把「安装」
+ * 写成一个**给主 agent 执行的步骤**，而不是"请用户手动测试"。
+ */
+function installBlock(en: boolean, rc: Record<string, unknown>): string {
+  const env = (rc && rc.installEnv) as { ok?: boolean; profile?: string; profileDir?: string; cliOnPath?: boolean; dshHome?: string } | undefined
+  if (!env) return ''
+  const ok = env.ok === true
+  const p = env.profile || '?'
+  const dir = env.profileDir || '?'
+  const cli = env.cliOnPath === true
+  if (en) {
+    return ok
+      ? `\n   [THIS MACHINE · install environment, probed at run start — never assume a profile name or path] DSH_HOME=\`${env.dshHome}\`; profile=\`${p}\`; profile dir=\`${dir}\`; \`dsh\` on PATH: ${cli ? 'yes (use the CLI)' : 'NO (source-run — use the equivalent manual steps)'}.\n   **Who installs**: pipeline subagents CANNOT write outside the workspace (their permission scope is fixed) — so the PRD must specify the install as a step **for the main agent to execute** (it can request a one-shot escalation, which the user approves), not as "please test it manually". Write the concrete command for THIS machine (CLI form, or \`pnpm add\` inside the profile dir + the \`dsh.profile.bundles\` entry, which is auto-derived from the package's \`dsh.bundle.patch\`), plus the exact rollback.`
+      : `\n   [THIS MACHINE · install environment] Could NOT be probed (DSH_HOME / profile name unavailable) → the PRD must instruct the main agent to **ASK THE USER** for the profile location; never invent a path. Subagents cannot install (their permission scope is fixed); the install step is for the main agent.`
+  }
+  return ok
+    ? `\n   【本机环境 · 起跑时探测，禁止假设 profile 名或路径】DSH_HOME=\`${env.dshHome}\`；profile=\`${p}\`；profile 目录=\`${dir}\`；\`dsh\` 在 PATH：${cli ? '是（用 CLI）' : '**否**（源码运行 → 走等价手动步骤）'}。\n   **谁执行安装**：流水线子代理**写不了**工作区之外（权限启动即固定）——所以 PRD 必须把安装写成**给主 agent 执行的步骤**（主 agent 可申请一次性升级授权，由用户批准），而不是"请用户手动测试"。请按**本机**实际情况给出可照做的命令（CLI 形式，或在 profile 目录内 \`pnpm add\` + \`dsh.profile.bundles\` 条目——后者由包的 \`dsh.bundle.patch\` 声明自动推导），并给出精确回滚。`
+    : `\n   【本机环境】探测失败（DSH_HOME / profile 名不可得）→ PRD 必须指示主 agent **先问用户** profile 位置，**绝不许编路径**。子代理装不了（权限固定）；安装步骤归主 agent。`
+}
+
 export const prdPrompt = (requirement, root, runId, state) => {
-  const en = LOCALE(state) === 'en'
-  /** PRD 头部声明模板：zh 逐字不变；en 为新增英文契约（仅 en 分支出现，AC-4③）。 */
+  const en = LOCALE(state) === 'en'  /** PRD 头部声明模板：zh 逐字不变；en 为新增英文契约（仅 en 分支出现，AC-4③）。 */
   const hdrBaseline = en
     ? '`Baseline dependency: <prior task folder this requirement depends on> (its established behavior must not regress)`; write `Baseline dependency: none` if no dependency.'
     : '`基线依赖：<prior task folder this requirement depends on>（its established behavior must not regress）`; write `基线依赖：无` if no dependency.'
@@ -366,8 +394,8 @@ export const prdPrompt = (requirement, root, runId, state) => {
         ? `**first look at the dsh plugins already installed on THIS machine** — \`${LOCAL_PLUGIN_SAMPLES_HINT}\`: their \`package.json\` (\`dsh\` block) and \`cordis.patch.yml\` are the authoritative, version-current samples of how the declarations are really written${repo ? `; if the workspace happens to sit inside this repo you may also read \`${repo}\`` : ''}; if neither exists, read the host docs or ask the user — **never write them from memory**`
         : `**先读本机已安装的 dsh 插件**——\`${LOCAL_PLUGIN_SAMPLES_HINT}\`：它们的 \`package.json\`（\`dsh\` 块）与 \`cordis.patch.yml\` 就是"声明到底怎么写"的**权威且与宿主版本同步**的样本${repo ? `；若工作区恰好在本仓内，也可就近读 \`${repo}\`` : ''}；两者都没有就去读宿主文档或问用户——**禁止凭记忆写**`
       return en
-        ? `\n[DELIVERABLE SHAPE · mandatory ACs] Triage judged this deliverable as \`${kind}\`${inst ? ' and it must be **installable/loadable by its host**' : ''}. The following are **objective delivery contracts of that shape** — every item MUST become a testable AC in this PRD (not prose, not a "notes" section), because downstream QA/acceptance only verify what is in the AC table:\n${lines}\n   Field names / file names vary with the host version, so ${where}.`
-        : `\n[交付形态契约 · 必填 AC] 分诊判定本次交付物形态为 \`${kind}\`${inst ? '，且**必须可被宿主安装/加载**' : ''}。以下是该形态的**客观交付契约**——每一条都**必须落成 PRD 里可测的 AC**（不是正文说明、不是"备注"小节），因为下游 QA/验收只验 AC 表里的东西：\n${lines}\n   字段名/文件名随宿主版本演进，所以${where}。`
+        ? `\n[DELIVERABLE SHAPE · mandatory ACs] Triage judged this deliverable as \`${kind}\`${inst ? ' and it must be **installable/loadable by its host**' : ''}. The following are **objective delivery contracts of that shape** — every item MUST become a testable AC in this PRD (not prose, not a "notes" section), because downstream QA/acceptance only verify what is in the AC table:\n${lines}\n   Field names / file names vary with the host version, so ${where}.${installBlock(en, rc)}`
+        : `\n[交付形态契约 · 必填 AC] 分诊判定本次交付物形态为 \`${kind}\`${inst ? '，且**必须可被宿主安装/加载**' : ''}。以下是该形态的**客观交付契约**——每一条都**必须落成 PRD 里可测的 AC**（不是正文说明、不是"备注"小节），因为下游 QA/验收只验 AC 表里的东西：\n${lines}\n   字段名/文件名随宿主版本演进，所以${where}。${installBlock(en, rc)}`
     } catch (e) { return '' }
   })()
   // **宿主契约调研（2026-09-18 用户实锤，硬门禁）**：交付物要被**非 dsh 宿主**加载时（openclaw / hermes /

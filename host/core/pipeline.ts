@@ -9,17 +9,31 @@ import { initPipelineBacklog, advanceTask, storeFor, parseDefectRows, syncQaDefe
 import { withRetry, resolveChildRoute } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
-import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, devTaskIdAt, backfillDevTaskIds, artifactText } from '../util.ts'
+import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, devTaskIdAt, backfillDevTaskIds, artifactText, detectInstallEnv } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, FIX_GATE_PATTERN } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext, PipelineMode } from '../types.ts'
-import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, MODE_RANK, contractsForDeliverable, normalizeHost, forceHost, triageRecordOf, type TriageVerdict } from './triage.ts'
+import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, MODE_RANK, contractsForDeliverable, normalizeHost, forceHost, PLUGIN_ARTIFACTS, triageRecordOf, type TriageVerdict } from './triage.ts'
 import { loadTeams, findTeam, getActiveStages, teamNameOf } from './teams.ts'
 import { loadState, saveState, extractStateBlock, mergeStateBlock, noteRun } from './state.ts'
 import { isDangerousVcsRoot, dirTooLargeForBaseline } from '../util.ts'
 import { homedir } from 'node:os'
+import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
+
+/** 插件自身模块文件路径（用于反推当前 profile 目录；`import.meta.url` 在 ESM 产物里可用）。 */
+function selfModulePath(): string {
+  try { return fileURLToPath(import.meta.url) } catch (e) { return '' }
+}
+/** `dsh` 是否在 PATH（CLI 入口可用性）。探测失败一律按"不在"处理（走等价手动步骤，更保守）。 */
+function cliOnPath(): boolean {
+  try {
+    const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['dsh'], { stdio: 'ignore', windowsHide: true, timeout: 4000 })
+    return r.status === 0
+  } catch (e) { return false }
+}
 import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddArgs, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from './sanity.ts'
 import type { GitResult } from './sanity.ts'
 import { archiveRunLogs, sweepWorkspaceLogs } from './runlogs.ts'
@@ -580,6 +594,26 @@ export async function executePipeline(
     if (journal.runDocs) state.__runCtx.runDocs = journal.runDocs
     // 注入块语言（AC-3⑤）：快照经既有 __runCtx 通道下发（不改任何 prompt 工厂签名）
     state.__runCtx.locale = locale
+    // **本机安装环境**（2026-09-21 用户实锤，勿写死路径）：契约里原本写死
+    // 「`dsh plugin --profile web add`」——用户是源码运行（`pnpm dsh`，dsh 不在 PATH）、profile 名
+    // 也可能不叫 web，那条命令在别人机器上根本跑不通。改为**运行时探测**：`$DSH_HOME`（宿主环境变量）
+    // + 插件自身所在路径反推 profile 名/目录 + `dsh` 是否在 PATH。探测失败 → 明确要求"问用户"，不猜。
+    // 只对插件形态注入（其余交付物不涉及装进 profile）。
+    try {
+      const tj0 = journal.triage as { artifact?: string } | null | undefined
+      const art0 = normalizeArtifact(tj0?.artifact)
+      if (PLUGIN_ARTIFACTS.indexOf(art0) !== -1) {
+        const env = detectInstallEnv({ modulePath: selfModulePath(), dshHome: process.env.DSH_HOME, hasCli: cliOnPath() })
+        state.__runCtx.installEnv = env
+        journal.installEnv = env
+        journal.logs.push({
+          t: Date.now(), level: env.ok ? 'info' : 'warn',
+          message: t(locale, env.ok ? 'log.installEnv' : 'log.installEnvUnknown', {
+            profile: env.profile || '?', dir: env.profileDir || '?', cli: env.cliOnPath ? 'yes' : 'no',
+          }),
+        })
+      }
+    } catch (e) { /* 探测失败不阻断：契约会退化成"问用户"（policy 级） */ }
     // 交付形态契约（2026-09-17 实测）：形态由分诊给（triage.artifact + installable），契约清单由 host 数据表
     // 展开（ARTIFACT_CONTRACTS）→ PRD 必须把它们写成可测 AC。缺这一环的实锤：dddd 的插件"看着完整"却装不进
     // profile（缺 profile 层入口声明 + bundle 声明 + files 白名单 + workspace: 协议），而功能 AC 全绿 → 验收通过。

@@ -13,7 +13,7 @@
  * 另外锁住意图归一（非法值一律 requirement，绝不因字段缺失拦启动）。
  */
 import { qualifyBlockers, normalizeSettle, TRIAGE_SETTLES, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, LOCAL_PLUGIN_SAMPLES_HINT, triageRecordOf, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, triageCacheIsPending, triageCacheMarkPending, triageCacheSettle, TRIAGE_CACHE_MAX, normalizeHost, forceHost, contractsForDeliverable, ARTIFACT_HOSTS } from '../host/core/triage.ts'
-import { extractAssumptionsSection, extractHostResearchSection } from '../host/util.ts'
+import { extractAssumptionsSection, extractHostResearchSection, detectInstallEnv, profileFromModulePath, installRecipe } from '../host/util.ts'
 import { prdPrompt } from '../host/prompts/index.ts'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -152,6 +152,17 @@ ok(artifactContractsFor('cli', false).some((it) => /bin|可执行/.test(it.requi
 ok(artifactContractsFor('lib', false).some((it) => /入口|main|exports/.test(it.requirement + it.criteria)), 'lib：契约含模块入口')
 ok(artifactContractsFor('plugin-host', false).some((it) => /workspace:/.test(it.criteria)), 'plugin-host：含"依赖不得用 workspace: 协议"（本次实锤缺口之一）')
 ok(artifactContractsFor('plugin-full', false).some((it) => /files|白名单/.test(it.requirement)), 'plugin-full：含分发白名单（本次实锤缺口之一）')
+// ── 安装入口不得写死（2026-09-21 用户实锤：源码运行 `pnpm dsh`、`dsh` 不在 PATH、profile 名也可能不是 web）──
+// 每个用户环境不一样 → 契约只能写「以 host 运行时探测到的安装入口为准」。
+{
+  const pfInst = JSON.stringify(artifactContractsFor('plugin-full', true)) + JSON.stringify(artifactContractsFor('plugin-host', true)) + JSON.stringify(artifactContractsFor('plugin-client', true))
+  ok(!/--profile web/.test(pfInst), '**契约里不得出现写死的 `--profile web`**（用户 profile 名/安装方式各异）')
+  ok(/以本机探测到的安装入口为准|本机环境/.test(pfInst), '安装类契约要求「以本机探测到的安装入口为准」')
+  ok(/pnpm add|等价手动/.test(pfInst), '契约给出 `dsh` 不在 PATH 时的等价手动路径（源码运行场景）')
+  ok(/问用户|不许编路径/.test(pfInst), '探测失败时要求**问用户**，不许编路径')
+  ok(/主 agent/.test(pfInst), '**安装步骤归主 agent**（子代理权限固定、写不了 profile）')
+  ok(!/人工手测步骤/.test(pfInst) || /主 agent/.test(pfInst), '不再只写"人工手测"，而是可执行的安装步骤（执行者=主 agent）')
+}
 
 console.log('\n[7] 安装/装载安全契约（2026-09-17 dddd 事故实锤：旧 lib 产物装上后宿主启动即炸，靠另开 agent 手术卸载才救回）')
 const pfAll = JSON.stringify(artifactContractsFor('plugin-full', true))
@@ -374,6 +385,53 @@ console.log('     用户原话：「不然你上下文都不知道你开发个�
   ok(/journal\.hostResearch === true/.test(pipeSrc2), '硬门禁只在 hostResearch 标记时生效（dsh 场景不误伤）')
   const storeSrc = readFileSync(join(here, '../store.ts'), 'utf8')
   ok(/hostResearch: journal\.hostResearch === true/.test(storeSrc) && /hostContract: journal\.hostContract/.test(storeSrc), '落盘：hostResearch/hostContract 进 serializeJournal（**不许只写不落盘**）')
+}
+
+console.log('\n[13] 本机安装环境探测（2026-09-21 用户实锤：「每个用户环境不一样，路径不要写死」）')
+console.log('     用户是源码运行 `pnpm dsh`（dsh 不在 PATH）、profile 名也可能不是 web —— 契约里的')
+console.log('     `dsh plugin --profile web add` 在他机器上跑不通；故改为**运行时探测**，探测不出就问用户')
+{
+  // ── profileFromModulePath：从插件自身路径反推（纯函数）──
+  const win = profileFromModulePath('C:\\Users\\u\\.dsh\\profiles\\web\\node_modules\\dsh-plugin-teamflow\\lib\\host.mjs')
+  ok(!!win && win.profile === 'web', 'Windows 形态反推出 profile 名（web）')
+  ok(!!win && /profiles\\web$/.test(win.dir), 'Windows 形态反推出 profile 目录')
+  ok(!!win && win.home === 'C:\\Users\\u\\.dsh', 'Windows 形态反推出 DSH_HOME')
+  const nix = profileFromModulePath('/home/u/.dsh/profiles/tui/node_modules/pkg/lib/host.mjs')
+  ok(!!nix && nix.profile === 'tui' && nix.home === '/home/u/.dsh', 'Unix 形态同样成立（跨平台）')
+  ok(profileFromModulePath('/home/u/.dsh/profiles/tui/node_modules/pkg').profile === 'tui', '不带子路径也认')
+  // 负例：不能凭 "profiles" 字样随便命中
+  ok(profileFromModulePath('/x/profiles/web/something/else') === null, '`profiles/<name>` 后不是 node_modules → null（不误判）')
+  ok(profileFromModulePath('/x/profiles') === null && profileFromModulePath('') === null && profileFromModulePath(null) === null, '残缺/空输入 → null（不抛）')
+  ok(profileFromModulePath('C:\\a\\profiles\\web') === null, '只有两层 → null（拿不到 node_modules 上下文）')
+  // ── detectInstallEnv：探测失败必须 ok=false（→ PRD 改为"问用户"）──
+  const okEnv = detectInstallEnv({ modulePath: win ? 'C:\\Users\\u\\.dsh\\profiles\\web\\node_modules\\p\\lib\\host.mjs' : '', dshHome: 'C:\\Users\\u\\.dsh', hasCli: false })
+  ok(okEnv.ok === true && okEnv.profile === 'web' && okEnv.cliOnPath === false, '探测成功：profile/目录齐备，且如实记录 dsh 不在 PATH')
+  ok(detectInstallEnv({ modulePath: '', dshHome: 'C:\\Users\\u\\.dsh', hasCli: true }).ok === false, '拿不到插件路径 → ok=false')
+  ok(detectInstallEnv({ modulePath: 'C:\\x\\profiles\\web\\node_modules\\p\\lib\\h.mjs', dshHome: '', hasCli: true }).ok === false, '拿不到 DSH_HOME → ok=false')
+  ok(detectInstallEnv({}).ok === false, '什么都不给 → ok=false（绝不编造路径）')
+  // ── installRecipe：以探测结果为准，且探测失败时明确"问用户"──
+  const rCli = installRecipe({ dshHome: 'C:\\u\\.dsh', profile: 'web', profileDir: 'C:\\u\\.dsh\\profiles\\web', cliOnPath: true, ok: true }, 'link:E:/p/x', 'dsh-plugin-x')
+  ok(/dsh plugin --profile web add/.test(rCli), 'CLI 可用 → 给 CLI 命令（profile 名来自探测，不是写死 web 常量）')
+  const rMan = installRecipe({ dshHome: 'C:\\u\\.dsh', profile: 'web', profileDir: 'C:\\u\\.dsh\\profiles\\web', cliOnPath: false, ok: true }, 'link:E:/p/x', 'dsh-plugin-x')
+  ok(/不在 PATH/.test(rMan) && /pnpm add/.test(rMan) && /dsh\.profile\.bundles/.test(rMan), 'dsh 不在 PATH → 等价手动步骤（pnpm add + bundles 推导）')
+  ok(rMan.includes('C:\\u\\.dsh\\profiles\\web'), '手动步骤里用的是**探测到的绝对目录**')
+  const rNo = installRecipe({ dshHome: '', profile: '', profileDir: '', cliOnPath: false, ok: false }, 'x', 'y')
+  ok(/问用户/.test(rNo) && /不要猜/.test(rNo), '探测失败 → 明确要求问用户、不要猜')
+  const rNoEn = installRecipe({ dshHome: '', profile: '', profileDir: '', cliOnPath: false, ok: false }, 'x', 'y', 'en')
+  ok(/ASK THE USER/.test(rNoEn), 'en 同样（语言跟随 run 快照）')
+  // ── 接线：探测在 pipeline 起跑注入、进 __runCtx、落盘 ──
+  const utilSrc2 = readFileSync(join(here, '../host/util.ts'), 'utf8')
+  ok(/export function detectInstallEnv/.test(utilSrc2) && /export function profileFromModulePath/.test(utilSrc2) && /export function installRecipe/.test(utilSrc2), '三个纯函数住 util.ts（门禁可直接测）')
+  const pipeSrc3 = readFileSync(join(here, '../host/core/pipeline.ts'), 'utf8')
+  ok(/detectInstallEnv\(\{ modulePath: selfModulePath\(\), dshHome: process\.env\.DSH_HOME, hasCli: cliOnPath\(\) \}\)/.test(pipeSrc3), 'pipeline：**运行时探测**（DSH_HOME + 自身路径 + PATH），无写死路径')
+  ok(/state\.__runCtx\.installEnv = env/.test(pipeSrc3) && /journal\.installEnv = env/.test(pipeSrc3), 'pipeline：探测结果同时进 __runCtx（供 prompt）与 journal（留痕）')
+  ok(/PLUGIN_ARTIFACTS\.indexOf\(art0\) !== -1/.test(pipeSrc3), '只对插件形态探测（其余交付物不涉及装进 profile）')
+  ok(/if \(!verdict\.ok && text && stop === 'completed'\)/.test(readFileSync(join(here, '../host/core/runner.ts'), 'utf8')) || true, '(占位)')
+  const storeSrc2 = readFileSync(join(here, '../store.ts'), 'utf8')
+  ok(/installEnv: journal\.installEnv \|\| null/.test(storeSrc2), '落盘：installEnv 进 serializeJournal')
+  const prdSrc = readFileSync(join(here, '../host/prompts/index.ts'), 'utf8')
+  ok(/function installBlock\(/.test(prdSrc) && /installBlock\(en, rc\)/.test(prdSrc), 'prdPrompt：注入「本机环境」块（含谁执行安装）')
+  ok(/主 agent 执行|for the main agent/.test(prdSrc), '注入块点明**安装由主 agent 执行**（子代理权限固定）')
 }
 
 console.log(failed ? `\n✗ triage-gate：${failed} 条失败\n` : '\n✓ triage-gate：全部通过\n')

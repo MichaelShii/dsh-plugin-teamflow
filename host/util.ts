@@ -23,6 +23,89 @@ export function extractText(blocks) {
   return blocks.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n')
 }
 
+/**
+ * **本机安装环境探测**（2026-09-21 用户实锤，勿写死路径）。
+ *
+ * 由来：契约里原本写死「`dsh plugin --profile web add <spec>` 退出码 0」——但用户是**源码运行**
+ * （`pnpm dsh web`，实测 `dsh` 不在 PATH），这条命令在他的环境里**永远跑不通**；而别人可能是一键
+ * 安装（`dsh` 在 PATH）、profile 名也可能不叫 `web`。**每个用户环境不一样，路径绝不能写死。**
+ *
+ * 三条事实来源（**全部运行时得到，无一处硬编码**）：
+ *  ① `DSH_HOME`（宿主注入的环境变量，实测存在）；
+ *  ② **插件自身在磁盘上的位置** —— 我们被 `$DSH_HOME/profiles/<name>/node_modules/<pkg>/lib/host.mjs`
+ *     加载，向上找 `profiles/<name>` 即得**当前 profile 名与目录**（不必从任何配置里猜）；
+ *  ③ `dsh` 是否在 PATH（在 → CLI 可用；不在 → 源码运行，走等价手动步骤）。
+ *
+ * 等价手动步骤**不是猜的**：读宿主源码 `apps/cli/src/plugin.ts` 的 `runPlugin`，其语义即
+ * 「`pnpm add <spec>`（cwd=profile 目录）→ `reconcilePlugins`：依赖里**声明了 `dsh.bundle.patch`
+ * 的包自动进 `dsh.profile.bundles`**」——故手动路径 = 在 profile 目录 pnpm add，bundles 由同一条
+ * 机械规则推导（手写效果一致）。
+ *
+ * **谁能执行**：流水线子代理**不能**（沙箱 `workspace-write` 钉死在工作区，会话里明写
+ * `permission scope was fixed ... cannot be widened`）；**主 agent 能**——实测它的 profile 写入被拒后
+ * 宿主给出 `escalation available ... sandbox_permissions + justification`，`approval/policy: ask`
+ * 下经用户批准即可（无人应答时 fail closed）。故安装这一步的**执行者是主 agent，不是子代理**。
+ */
+export interface InstallEnv {
+  /** `$DSH_HOME`（缺失为空串——探测失败，调用方须降级为"询问用户"）。 */
+  dshHome: string
+  /** 当前 profile 名（从插件自身路径反推；反推不出为空串）。 */
+  profile: string
+  /** 当前 profile 目录绝对路径。 */
+  profileDir: string
+  /** `dsh` 是否在 PATH（true → CLI 入口可用）。 */
+  cliOnPath: boolean
+  /** 探测是否完整；false 时**不得**编安装指令，只能让主线程问用户。 */
+  ok: boolean
+}
+
+/** 从插件模块路径反推 `$DSH_HOME/profiles/<name>`（纯函数，门禁可测）。
+ * 接受 `.../profiles/<name>/node_modules/<pkg>[/lib/host.mjs]` 形态；非该形态返回 null。 */
+export function profileFromModulePath(modulePath: string): { home: string; profile: string; dir: string } | null {
+  const raw = String(modulePath || '')
+  if (!raw) return null
+  const norm = raw.replace(/\\/g, '/')
+  const segs = norm.split('/').filter(Boolean)
+  const i = segs.lastIndexOf('profiles')
+  if (i < 0 || i + 2 >= segs.length) return null
+  const name = segs[i + 1]
+  // 必须是 `profiles/<name>/node_modules/...`（否则命中的是同名的无关目录）
+  if (segs[i + 2] !== 'node_modules' || !name) return null
+  const sep = norm.startsWith('/') ? '/' : '\\'
+  const homeBody = segs.slice(0, i).join(sep)
+  const home = (norm.startsWith('/') ? '/' : '') + homeBody
+  const dir = [home, 'profiles', name].join(sep).replace(new RegExp(`\\${sep === '/' ? '/' : '\\\\'}+`, 'g'), sep)
+  return { home, profile: name, dir }
+}
+
+/** 探测本机安装环境。`modulePath` 传插件自身文件路径（`import.meta.url` 派生）；
+ * `hasCli` 由调用方探测（纯函数不碰进程/PATH）。 */
+export function detectInstallEnv(opts: { modulePath?: string; dshHome?: string; hasCli?: boolean }): InstallEnv {
+  const home = String(opts.dshHome || '')
+  const fromPath = profileFromModulePath(opts.modulePath || '')
+  const profile = fromPath?.profile || ''
+  const sep = home.includes('/') && !home.includes('\\') ? '/' : '\\'
+  const profileDir = profile && home ? `${home.replace(/[\\/]+$/, '')}${sep}profiles${sep}${profile}` : ''
+  return { dshHome: home, profile, profileDir, cliOnPath: opts.hasCli === true, ok: !!home && !!profile && !!profileDir }
+}
+
+/** 安装入口文案：**以探测结果为准**，不写死任何 profile 名/路径；探测失败 → 明确要求"问用户"，不猜。 */
+export function installRecipe(env: InstallEnv, pkgSpec: string, pkgName: string, locale: HostLocale = 'zh'): string {
+  if (!env.ok) {
+    return locale === 'en'
+      ? 'Profile directory could NOT be detected (DSH_HOME / profile name unavailable) — ASK THE USER where their profile lives; do NOT guess.'
+      : '未能探测到 profile 目录（DSH_HOME / profile 名不可得）——**问用户**他的 profile 在哪，**不要猜**。'
+  }
+  if (env.cliOnPath) {
+    return locale === 'en'
+      ? `\`dsh plugin --profile ${env.profile} add "${pkgSpec}"\` (run from the plugin directory; dsh is on PATH)`
+      : `\`dsh plugin --profile ${env.profile} add "${pkgSpec}"\`（在插件目录执行；dsh 在 PATH 上）`
+  }
+  return locale === 'en'
+    ? `dsh is NOT on PATH (source-run / \`pnpm dsh\`) → equivalent manual steps IN the profile dir \`${env.profileDir}\`: 1) \`pnpm add "${pkgSpec}"\`; 2) the package joins \`dsh.profile.bundles\` automatically once its package.json declares \`dsh.bundle.patch\` (add the name manually otherwise); 3) restart the host and confirm it loads. Package name \`${pkgName}\`.`
+    : `dsh **不在 PATH**（源码运行 / \`pnpm dsh\`）→ 在 profile 目录 \`${env.profileDir}\` 内走等价手动步骤：① \`pnpm add "${pkgSpec}"\`；② 包的 package.json 声明了 \`dsh.bundle.patch\` 时会**自动进** \`dsh.profile.bundles\`（未声明就手写这一条）；③ 重启宿主并确认加载。包名 \`${pkgName}\`。`
+}
+
 /** 从 dev/qaFix 回复中提取「验证证据」块（`[Verification evidence]` 行起，到 state 块/结尾止）。
  * dev 阶段无独立对抗校验（QA 有 QA-REPORT.md 结构化证据，dev 只有自述）——证据块是「可审计的
  * 具体自述」：命令+退出码+断言计数+失败行引用，可对照 logs/teamflow/<runId>/ 命令输出日志核实；
