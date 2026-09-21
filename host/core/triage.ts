@@ -246,6 +246,7 @@ export const ARTIFACT_CONTRACTS: Record<ArtifactKind, ArtifactContractItem[]> = 
   ],
   'plugin-client': [
     { requirement: 'client 半必须有 bundle 声明与被扫描的 id/name（参照同仓既有插件）', criteria: 'package.json 的 client 声明块**字段集合与同仓样本逐字段一致**（少一个/名字错了 = loader 不扫）；构建产出非空 client 产物，且产物里能找到注册用的包 id' },
+    { requirement: '**UI 挂载点的 `name` 必须是 slot 名本身**（实锤：probe-v2 交付的表格对齐器把 `name` 写成插件自己的标识 `md-table-align.dock` → 与 slot 名对不上 → **静默不挂载**、工具条永不出现，而功能单测 31/31 全绿、AC 全过）', criteria: '读同仓样本核实两段式写法——`ctx.slots.inject(\'<slot>\', () => ctx.slots.register({ name: \'<同一个 slot 字符串>\', id: \'<本插件标识>\', order: N }, Component))`：`inject` 的参数与 `register` 的 `name` **必须逐字相同**，插件自己的名字放进 `id`；端到端判据仍以「装进宿主后该 UI 真的出现」为准' },
     { requirement: '构建产物必须进包分发白名单', criteria: '读 files 数组确认包含构建产物目录/文件（漏了 = 装进 profile 后不加载）' },
     { requirement: '**构建产物与源码同步**（实锤 dddd：旧 `lib/client.js` 让浏览器端行为与源码不符）', criteria: '提交/安装前重新构建；产物含当前源码特征字符串或 mtime 晚于全部 src' },
     { requirement: '**沙箱装不了真 profile 时必须写明人工手测步骤**（交付前必做）', criteria: '安装命令 + 重启宿主 + GUI 可见性检查三步写成可照做的清单；**不得因为沙箱跑不了就默认通过**', onlyWhenInstallable: true },
@@ -253,6 +254,7 @@ export const ARTIFACT_CONTRACTS: Record<ArtifactKind, ArtifactContractItem[]> = 
   'plugin-full': [
     { requirement: '宿主半必须有 profile 层加载入口声明（参照同仓既有插件，不凭记忆写字段名）', criteria: '存在该声明文件/字段；**入口 `name` 必须用包根名**（子路径会被静默跳过——踩过）' },
     { requirement: 'client 半必须有 bundle 声明与被扫描的 id/name', criteria: 'client 声明块**字段集合与同仓样本逐字段一致**；构建产出非空 client 产物且含包 id' },
+    { requirement: '**UI 挂载点的 `name` 必须是 slot 名本身**（实锤：probe-v2 交付的表格对齐器把 `name` 写成插件自己的标识 → 与 slot 名对不上 → **静默不挂载**、工具条永不出现，而功能单测全绿）', criteria: '读同仓样本核实两段式写法——`ctx.slots.inject(\'<slot>\', () => ctx.slots.register({ name: \'<同一个 slot 字符串>\', id: \'<本插件标识>\', order: N }, Component))`：`inject` 的参数与 `register` 的 `name` **必须逐字相同**，插件自己的名字放进 `id`；端到端判据以「装进宿主后该 UI 真的出现」为准' },
     { requirement: '入口声明与构建产物都必须进包分发白名单', criteria: '读 package.json 的 files 数组确认包含二者（漏了 = 装进 profile 后不加载）' },
     { requirement: '依赖协议必须是 profile 可解析的形态（不得用 `workspace:` 等本地协议）', criteria: '读 package.json 全文不得命中 `workspace:`' },
     { requirement: '宿主运行期依赖按宿主模块表声明（peer/可选 peer）', criteria: 'peerDependencies/peerDependenciesMeta 覆盖宿主提供的 @deepseek-ai/* 包' },

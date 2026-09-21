@@ -325,6 +325,15 @@ console.log('     → 契约必须按宿主分键：dsh 给具体契约；非 ds
   ok(contractsForDeliverable('other', 'cli', false).hostResearch === false && contractsForDeliverable('other', 'cli', false).items.length > 0, 'other + cli → 不下发调研（bin 判据与宿主无关）')
   ok(contractsForDeliverable('other', 'lib', false).hostResearch === false, 'other + lib → 不下发调研')
   ok(contractsForDeliverable('other', 'docs', false).hostResearch === false && contractsForDeliverable('other', 'docs', false).items.length === 0, 'other + docs → 无契约无调研')
+  // ── slot 挂载契约（2026-09-21 实锤：probe-v2 交付的工具条因为 register.name 写错而**静默不挂载**）──
+  // 反例证据：`git diff` 显示修的就是 `name: 'md-table-align.dock'` → `name: 'conversation.input.dock'`；
+  // 而功能单测 31/31 全绿、AC 全过——属于"看着完整却见不到 UI"的静默失败，必须进契约。
+  for (const kind of ['plugin-client', 'plugin-full']) {
+    const items = contractsForDeliverable('dsh', kind, true).items
+    const slot = items.find((it) => /slot/.test(it.requirement))
+    ok(!!slot, `${kind} 契约含「UI 挂载点 name 必须是 slot 名」一条（静默不挂载的反例已进数据）`)
+    ok(!!slot && /inject/.test(slot.criteria) && /register/.test(slot.criteria) && /同一个 slot/.test(slot.criteria), `${kind}：该条判据写明 inject 参数与 register.name 必须逐字相同`)
+  }
   // ── 自洽门禁：宿主已判定还问宿主 = 自我矛盾 ──
   const hostBlocker = { ...full, settles: 'host' }
   ok(qualifyBlockers([hostBlocker], { host: 'dsh' }).blockers.length === 0, '自洽门禁：host=dsh 已判定 → settles=host 的 blocker 丢弃（同型第三次）')

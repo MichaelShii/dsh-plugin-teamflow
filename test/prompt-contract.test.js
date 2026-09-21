@@ -181,6 +181,16 @@ assertContract({
   exclude: [/\[交付形态契约 · 必填 AC\]/],
   fixture: prdNoContract,
 })
+// ── slot 挂载契约（2026-09-21 实锤：probe-v2 交付的对齐器工具条**静默不挂载**）──
+// 反例：`ctx.slots.register({ name: 'md-table-align.dock' })` —— 插件拿自己的标识当 slot 名，
+// 与 `inject` 的 slot 对不上 → 浏览器端永不出现；而功能单测 31/31 全绿、AC 全过（静默失败）。
+// 修法是 `name` == slot 名、插件标识放 `id`（同仓 5 处注册全这么写，可核实）。
+assertContract({
+  id: 'PRD-SLOT-NAME-CONTRACT', level: 'policy', targets: 'prdPrompt',
+  intent: 'UI 挂载类交付（client 半）必须把「register.name == inject 的 slot 名」写成可测 AC（防静默不挂载）',
+  include: [/UI 挂载点的 `name` 必须是 slot 名本身/, /同一个 slot 字符串/, /装进宿主后该 UI 真的出现/],
+  fixture: prdWithContract,
+})
 // ── 宿主维度契约（2026-09-18 用户实锤："我开发 openclaw 插件，或者 hermes 插件……这些在 dsh 的契约在其他的不一定有效吧"）──
 // 交付物形态与目标宿主是**两个正交维度**：plugin-* 是 dsh 的词汇（profile 入口/bundle patch/client 块/files 白名单），
 // 套给别的宿主 = 反向返工；而对别的宿主我们没有权威（凭记忆写字段名正是 dddd 事故的成因）→ 改为强制"先去调研"。
