@@ -1,8 +1,8 @@
 <!-- Announcement · English version · anchored to **v0.2.0** (2026-09-23) · venue TBD (GitHub Discussion or elsewhere; the body assumes no particular platform)
      **This version posts in ENGLISH by default**; the Chinese version (`show-your-plugin-v0.2.0.zh.md`) is the switcher target, linked on the first line of the body.
      Suggested titles:
-       ▶ primary [Plugin] TeamFlow v0.2.0 for DeepSeek Harness — requirement → acceptance, with quality gates, token accounting and resume
-       · alt [Plugin] TeamFlow v0.2.0 — a multi-agent R&D pipeline for DeepSeek Harness (requirement → acceptance)
+       ▶ primary dsh-plugin-teamflow v0.2.0 — from one sentence of requirements to an accepted delivery (multi-agent pipeline for DeepSeek Harness)
+       · alt [Plugin] TeamFlow v0.2.0 for DeepSeek Harness — requirement → acceptance, with quality gates, token accounting and resume
      Every number below can be checked verbatim in the repository (sources are noted inline). This is a NEW
      announcement: the previous one (`github-discussion-show-your-plugin.md`, anchored to v0.1.8) is frozen and kept for history only.
      **Previous posting**: the v0.1.8 announcement ran in `deepseek-ai/deepseek-harness` Discussions [#6405](https://github.com/deepseek-ai/deepseek-harness/discussions/6405) (2026-09-12 07:26 UTC) under the title "dsh-plugin-teamflow：把「一句话需求」跑成一条带质量门禁的多 Agent 研发流水线"; @boshk0 asked "Is there English translation?" in its comments — that request is why this version posts in English.

@@ -1,8 +1,9 @@
 <!-- 通稿 · 中文版 · 锚定 **v0.2.0**（2026-09-23）· 投放平台待定（GitHub Discussion / 站外中文社区均可，正文不假设平台）
      **本版默认发英文稿**（`show-your-plugin-v0.2.0.en.md`），本文件是正文首行跳转的目标。
      建议标题（发帖时用）：
-       ▶ 主选 [插件] TeamFlow v0.2.0 —— dsh 多 Agent 研发流水线：一句话需求 → 可验收交付
-       · 备用 [开源] TeamFlow v0.2.0 —— dsh 多 Agent 研发流水线：一句话需求 → 可验收交付，产物落盘、结论有契约、token 对得上账
+       ▶ 主选 dsh-plugin-teamflow v0.2.0：把「一句话需求」跑成可验收交付
+         （血缘：v0.1.8 原帖标题是「dsh-plugin-teamflow：把「一句话需求」跑成一条带质量门禁的多 Agent 研发流水线」——本版保留这个动词句、补上版本号；原帖标题没版本号，承载不了本版最硬的那条信息「0.1.9 在新宿主上不可用、必须升 0.2.0」）
+       · 备用 [插件] TeamFlow v0.2.0 —— dsh 多 Agent 研发流水线：一句话需求 → 可验收交付
      引用的一切数字都可在仓库内逐字核对（来源见各条括注）；与 v0.1.8 那份旧通稿的关系：
      旧稿 `github-discussion-show-your-plugin.md` 已冻结、只作历史留存，本文件是新通稿，版本锚定 v0.2.0。
      **上一版投放记录**：v0.1.8 通稿发于 `deepseek-ai/deepseek-harness` Discussions [#6405](https://github.com/deepseek-ai/deepseek-harness/discussions/6405)（2026-09-12 07:26 UTC / 北京 15:26），当时标题「dsh-plugin-teamflow：把「一句话需求」跑成一条带质量门禁的多 Agent 研发流水线」；该帖评论中 @boshk0 问「Is there English translation?」——本版默认发英文稿即源于此。
