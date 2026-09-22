@@ -21,8 +21,8 @@
 - 🔜 **用「持久化」类需求重跑验证 ADR-0006**：确认 M0 状态核对注入、M1 蓝图产出（架构阶段不再被 lite 跳过）、M2 dev 按蓝图拆任务、M3 验收架构核验（重复适配器应被打回）全链路生效。
 - **需求有效性前置拦截**（ADR-0005 触发信号）：在 PRD/确认单阶段判别"需求与现状不符"即停，避免走完开发/验收。
 - `STAGE_TOKEN_BUDGET=60k` 硬编码 → 可升级为 service Config（熔断阈值可调）。
-- 🔜 **给官方提交 PR（低侵入原则下不自改 DSH）**：`conversation` 服务增加 `setView(viewId)`（复用内部 `store.actions.setView`），使「查看子代理会话」可一键跳转并自动切到「对话」tab；PR 合并前暂用 B 方案（按钮加引导文案：「跳转后请切「对话」tab 查看轨迹」）。
-- 🔜 **跨会话跳转子代理（同 PR 范畴）**：DSH 子代理目录按父会话加载，`selectSubagent` 不支持跨父导航。已记录 `journal.ownerSession`（发起会话，下发于 stageDetail），跳转按钮在 ownerSession≠当前会话时**禁用 + title/文案提示**；待官方支持跨父会话导航后再解锁（数据已备好）。
+- 🔜 **跨父会话跳转子代理 —— 新 API 可能已支持，待实测解锁**：现状是 `client/index.tsx` 的 `crossSession` 守卫在 `ownerSession ≠ 当前会话` 时**禁用按钮**（旧依据：DSH 子代理目录按父会话加载，`selectSubagent` 不支持跨父导航）。**新证据（2026-09-23）**：宿主 0.1.7-alpha.1 的 `uiWorkspace.openSession(target)` 接受持久子代理地址，`ui-workspace/README.zh.md:68` 明写「显式地址不需要预加载父会话目录」——跨父导航的宿主前提可能已消失。**测法**：会话 A 跑一个 run，在会话 B 的 `conversation.view` 工作台打开该 run 的阶段详情，看按钮是否变亮、点击是否真跳到 A 的子代理会话；通过则删掉 `crossSession` 守卫（数据面已备好：`journal.ownerSession` + stageDetail 下发）。
+  > 原「给官方提 PR：`conversation` 服务增加 `setView(viewId)`」条目**已作废删除**——宿主 0.1.7-alpha.1 自己提供了 `uiWorkspace.openSession`（真跳转：同步替换 owned `mainView` reference 并让主区回到 Conversation），本插件已在 0.2.0 迁过去（commit `4935f4e`）。
 
 - 🔜 **需求澄清 / 计划确认闸门（两段式：启动前 must-know + **PRD 确认单**；2026-09-16 重写）**：
   **现状（已核实）**：`teamflow_start` 三道预检（`no-team` `host/index.ts:160` / `needs-confirmation` 疑问句式正则 `:168` / `needs-decision` 分支决策 `:197-239`）只覆盖「要不要做」「怎么开工」，**零需求澄清**；陈述式探索（「我最近在想加个 X」）不匹配正则 → 直接开跑。`prdPrompt` 7 条 REQUIREMENTS（`prompts/index.ts:354-365`）无一条「信息不足时提问/列待澄清项」。**内容侧约束**：宿主 `DELEGATED_CALLER`（`tool-ask-user/README.md:142`）与 `exit_plan_mode`（`plan/plan-mode/README.md:186`）都**拒绝存活子级**——阶段子代理永远不能问用户，澄清只能由 host 发起、落主线程。
@@ -44,6 +44,11 @@
 ⑧ **交付形态契约的后续（policy 级）**：① 现在只要求 PRD 把形态契约写成 AC（缺失不拦，靠 QA/验收按 AC 走）→ 若仍有漏，可升级为 **host 硬门禁**（PRD 产物里检查是否含形态 AC，缺则不进 dev）；② QA/验收侧尚未加"可安装性探针"（`ARTIFACT_CONTRACTS` 的 criteria 已写好判据形态，可复用成 QA 探针清单）；③ `plugin-client` 形态的契约目前只有 2 条（bundle 声明 + files），待真实案例补充。
 ⑦ **闸门语义已定**：只负责"唤起第一轮对齐"（未带 `requirementSupplement` 才拦），不负责"追问到满意"（已澄清 → 按假设开工 + 假设可见化兜底）。若将来要支持"多轮追问到满意"，需要一个**跨调用的状态**（例如把 blocker 指纹与轮次存进产品线目录的 `clarify-state.json`，并设轮次上限与 TTL），否则不可能在不污染 journal 的前提下记住上一轮问了什么。
   **回溯基线（2026-09-16，供前后对比）**：近 12 天 23 run——PRD 记假设 0/12；humanIntervention 8/23；明确需求偏差 2–3 条；社区实证 1 例（全身浪费）。
+- 🔜 **0.2.0 发布后收口 CHANGELOG**：`CHANGELOG.md` 的 `[0.2.0]` 段 35 条条目 / 约 80 KB 详细论证（取证、源码坐标、事故复盘）应在发布后迁到 `docs/releases/v0.2.0.md`，段内只留 TL;DR + 用户可感知变更；同时把 `test/changelog.test.js` 的 `GRANDFATHERED_HITS` 从 50 下调研判基线（迁走后应 ≈6）。现状：已发布版本段都有 release note（门禁已守），但 0.2.0 的论证仍留在 CHANGELOG 里 —— 属「债不是 bug」。
+- 🔜 **熔断预算的作用域 = 单阶段单次尝试（跨 resume 累计不设闸；需产品决策）**：`tf-mucx3sq1-53262i` 实测 —— scaffold 重试链 6 次尝试累计 fresh **315,623 > `FRESH_TOKEN_BUDGET` 200k**，但单次最大仅 **122,091**，故全程未触发熔断。原因是两次 env-unavailable 之后都是**人工 `teamflow_resume`**（每次 resume = 新的一次阶段尝试，预算重新起算）。即：预算挡得住「单次失控」，挡不住「人工反复续跑」。若要给跨 resume 的累计设闸，需在 journal 上加 run 级累计口径，**与 `freshTokensOf` 的单次口径并存、不得合并**（AGENTS §5「token 官方口径」）。
+- 🔜 **AGENTS.md §5 余量只剩 143 B**：`test/instruction-budget.test.js` 实测 5,881 B / 上限 6,144 B（全文 20,177 B / 22 KiB）。下一条不变量锚点加入前**必须先压缩**（把某行的论证再迁 `docs/anchors/`），否则门禁直接红。
+- 🔜 **宿主 Windows 沙箱 ACL provision 失败（已上报，跟踪上游）**：`SetNamedSecurityInfoW failed (Win32 5): grantWrite(E:\tmp\probe-v4)` —— 工作区里 `pwsh`/`shell` 任何命令都失败，用户视角就是「插件完全不可用」。`tf-mucx3sq1-53262i` 实测：两次触发我们的 `env-unavailable` 早停（01:38:48 / 01:51:00，日志 + 阶段 `outcome` 均可查），之后**自行恢复**（seq6 子代理报告 "shell 恢复可用"），run 完整跑完。上报件：`docs/reports/2026-09-23-dsh-windows-sandbox-acl-provision-failure.md`。待观察：是否与「非系统盘工作区 + 首次 ACL 授予」相关、能否稳定复现。
+- 🔜 **宿主 0.1.7-alpha.1 事件 source v4 适配缺直接断言**：目前只有间接证据（整条流水线跑通、20 阶段无事件格式报错、`agentsStarted=20`）。建议补一条 L2 conformance 语料（把 v4 `kind: 'plugin:dsh-plugin-teamflow'` 的 source 形态冻结进 `docs/benchmarks/corpus/` 回放），避免宿主下次再改 source 形态时又是「用起来才发现」。
 
 ## 优化候选（2026-09-10 四路调研 + 自查，按收益/成本排序）
 
