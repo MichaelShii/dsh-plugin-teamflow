@@ -792,6 +792,22 @@ ok(/diag\.externalBackoff/.test(hostSrc) && /diag\.externalExhausted/.test(hostS
 ok(/\[Clarify first, do not jump the gun\]/.test(hostSrc) && /\[After clarifying, come back to the pipeline\]/.test(hostSrc), '注入（en）：同上（语言跟随会话，双语同形门禁另有 locale 测试）')
 ok(/若 teamflow_start 返回 needs-clarification，按它列出的 blockers 继续问用户/.test(hostSrc) && /If teamflow_start returns needs-clarification, keep asking the user about the blockers/.test(hostSrc), '注入：needs-clarification 的处理指引（按 blockers 问 → 带 supplement 重调，禁止替用户假设）')
 
+// ── 环境不可用护栏（2026-09-23 probe-v4 实锤：命令工具持续同一错误失败 = 工作区坏了）──
+// 实锤：`pwsh` 因 Windows 沙箱 ACL provision 失败（`SetNamedSecurityInfoW failed (Win32 5)`）**每次同样报错**，
+// 架构师重试 7 次 + 90k 字符推理才撞 max-tokens 停下 —— 白烧 52.6k 输出，且汇报把真因误写成 `max-tokens`。
+console.log('── 3q) 环境不可用护栏（同一工具持续同一错误失败 → 早停 + 点名环境）──')
+ok(/GUARD_TOOL_FAIL_WARN = 2/.test(constantsSrc) && /GUARD_TOOL_FAIL_ABORT = 3/.test(constantsSrc), 'constants：工具失败 WARN=2 / ABORT=3（实测模型第 2 次就放弃 shell，3/5 太晚）')
+ok(/function observeToolFailures/.test(guardSrc) && /observeToolFailures\(newEvents\)/.test(guardSrc), 'guard：失败的 tool/result 增量归因（callId → 工具名）并参与判定')
+ok(/isToolErrorResult\(e\.data\)/.test(guardSrc) && /toolFailureAction\(n, GUARD_TOOL_FAIL_WARN, GUARD_TOOL_FAIL_ABORT\)/.test(guardSrc), 'guard：判据走结构化 isError + 纯函数阈值（不猜文本）')
+ok(/'guard\.reasonToolFail'[\s\S]{0,90}'env-unavailable'/.test(guardSrc), "guard：达阈值 → fire(outcome='env-unavailable')")
+ok(/outcome === 'env-unavailable'\) \{/.test(runnerSrc) && /diag\.envUnavailable/.test(runnerSrc), 'runner：env-unavailable 不自动重试 + 日志点名环境（needs-human）')
+ok(/stage\.outcome === 'env-unavailable'/.test(runnerSrc), 'runner：isExternalFailure 排除 env-unavailable（不误走供应商退避）')
+ok(/env-unavailable/.test(storeSrc) && /export function isToolErrorResult/.test(utilSrc) && /export function toolFailureAction/.test(utilSrc), 'store/util：outcome 类型 + 纯函数齐备')
+ok(/stage\.envUnavailable = /.test(guardSrc) && /if \(stage\.envUnavailable\) \{/.test(runnerSrc), 'guard→runner：WARN 档落证据，runner 据此把「模型听劝停手」也归成 env-unavailable（否则误判产出过短并重试）')
+ok(runnerSrc.indexOf('if (stage.envUnavailable)') > -1 && runnerSrc.indexOf('if (stage.envUnavailable)') < runnerSrc.indexOf("stop === 'completed' && text && (verdict.ok || docFallback)"), 'runner：环境不可用**优先于「完成了」**（绕道用文件工具写完的骨架无法验证，不得算 done——probe-v4 第二次实测 69.8k 输出）')
+ok(/envUnavailable: s\.envUnavailable \|\| null/.test(storeSrc), 'store：envUnavailable 落盘（序列化完整性门禁覆盖）')
+ok(promptsSrc.indexOf('[Env unavailable · policy]') > -1 && promptsSrc.indexOf('[Env unavailable · policy]') < promptsSrc.indexOf('export const prdPrompt'), 'prompts：政策块落在共享前缀（早于第一个阶段工厂 → 11 个阶段全覆盖，含 scaffold）')
+
 // ── 文档完整性门禁（2026-09-16 实证）──
 // 补丁脚本用 String.replace(from, to) 时，替换文本里的 `` $` `` / `$&` / `$'` 会被当成**特殊模式**，
 // 把匹配点前后的文件内容插进来 → AGENTS.md / CHANGELOG.md / devlog.md 被整份复制成两份（白占注入预算）。

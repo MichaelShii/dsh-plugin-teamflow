@@ -10,6 +10,29 @@ export interface Journal extends JournalRecord {
   stages: JournalStage[]
   logs: Array<{ t: number; level: string; message: string }>
 }
+
+/**
+ * **声明本插件自己的 message source kind**（2026-09-23 补：v4 source 适配的类型面，此前只改了字面量）。
+ *
+ * 宿主 `MessageSource` 是**声明合并的可扩展联合**——`packages/llm/llm/src/message.ts:103-115` 原文：
+ * "Merge-extensible sum type — each producer declares its own `kind` in its own module; there is no
+ * shared catch-all `plugin` kind"。会话格式 v4 同样要求 producer-owned kind
+ * （`plugin:<name>`；退役的 `{ kind: 'plugin', plugin }` wrapper 会被 `assertV4MessageSources` 拒绝）。
+ *
+ * 所以按宿主约定在这里注册我们的 kind（而不是在调用点写裸字面量）：
+ * v4 修复当时只改了 `createUserMessage` 的 source 字面量、没登记类型 → tsc 报
+ * 「'"plugin:dsh-plugin-teamflow"' is not assignable to ...」而 **bundle 不做类型检查**，
+ * 于是这个错误一路留到本轮跑 typecheck 才暴露（AGENTS.md：改 type 后必跑 typecheck）。
+ * `form` 按宿主 `ContextFormed` 判别式给足字段：`notice` 必须带一行 `summary`。
+ */
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'plugin:dsh-plugin-teamflow':
+      | { readonly kind: 'plugin:dsh-plugin-teamflow'; readonly form?: never }
+      | { readonly kind: 'plugin:dsh-plugin-teamflow'; readonly form: 'instructions' }
+      | { readonly kind: 'plugin:dsh-plugin-teamflow'; readonly form: 'notice'; readonly summary: string }
+  }
+}
 /** backlog 记录（需求/任务/缺陷通用形状）。 */
 export interface BacklogItem {
   id: string

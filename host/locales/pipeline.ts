@@ -217,6 +217,11 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'guard.noticeSummary': '护栏轻提醒',
     'guard.reminderRead': '你已整读 {file} 第 3 次（TOKEN_HYGIENE 上限 1 次）。停止整读：需要确认细节时用 grep 定位行号 + 限量片段读取。',
     'guard.reminderScript': '验证脚本 {file} 已重复执行 3 次。遵守批量修复纪律：一次读完所有失败用例 → 一次全修 → 再跑一次；超出 3 轮请输出诊断摘要并停止。',
+    'guard.toolFail': '{label} 命令/工具以同一错误持续失败（{tool}，已 {n} 次）：{detail}',
+    'guard.reasonToolFail': '环境不可用（{tool} 连续 {n} 次以同一错误失败：{detail}）',
+    'guard.reminderToolFail': '命令工具不可用：{tool} 已连续 {n} 次以同一错误失败（原文：{detail}）。立即停止——不要重试、不要换命令绕过、不要用推理代替执行。请在回复里写明：工具名 + 原文错误 + 已完成/未完成，然后结束。',
+    'diag.envUnavailable': '{label} 环境不可用（命令工具持续以同一错误失败）→ 不再自动重试：这不是模型问题，请先修复工作区，再 teamflow_resume 续跑（已完成阶段与产物全部复用）',
+    'diag.envUnavailableStage': '{label} 环境不可用（命令工具持续以同一错误失败）：{detail}',
 
     /* ── 完成汇报（deliverCompletion） ──────────────────────── */
     'report.header': '【团队研发流水线汇报】runId={id}',
@@ -580,6 +585,11 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'guard.noticeSummary': 'Guard reminder',
     'guard.reminderRead': 'You have fully read {file} for the 3rd time (TOKEN_HYGIENE allows 1). Stop full reads: to confirm details, locate line numbers with grep and read a limited segment.',
     'guard.reminderScript': 'Verification script {file} has been executed 3 times. Follow the batch-fix discipline: read all failing cases once → fix them all in one pass → run once more; beyond 3 rounds, output a diagnostic summary and stop.',
+    'guard.toolFail': '{label} a command/tool keeps failing with the same error ({tool}, {n} times so far): {detail}',
+    'guard.reasonToolFail': 'environment unavailable ({tool} failed {n} times with the same error: {detail})',
+    'guard.reminderToolFail': 'The command tool is unavailable: {tool} has now failed {n} times with the same error (raw: {detail}). STOP now — do not retry, do not switch commands to work around it, do not replace execution with reasoning. Reply with the tool name, the raw error, what you finished and what is left undone, then end.',
+    'diag.envUnavailable': '{label} environment unavailable (a command tool kept failing with the same error) → no automatic retry: this is not a model problem; repair the workspace first, then teamflow_resume to continue (finished stages and artifacts are all reused)',
+    'diag.envUnavailableStage': '{label} environment unavailable (a command tool kept failing with the same error): {detail}',
 
     /* ── 完成汇报 ─────────────────────────────────────────── */
     'report.header': '[Team R&D pipeline report] runId={id}',

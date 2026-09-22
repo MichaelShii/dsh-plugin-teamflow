@@ -37,10 +37,16 @@ export interface JournalStage {
   handoff?: string | null
   summary?: string | null
   output?: string | null
-  /** 单调用护栏中止原因（进行中退化检测触发时记录；outcome 相应为 degenerated/stalled）。 */
+  /** 单调用护栏中止原因（进行中退化检测触发时记录；outcome 相应为 degenerated/stalled/env-unavailable）。 */
   guardReason?: string | null
-  /** 护栏中止分类：degenerated（复读，可干净重试）/ stalled（挂死/空转，走预算门转人工）。 */
-  guardOutcome?: 'degenerated' | 'stalled' | null
+  /** 护栏中止分类：degenerated（复读，可干净重试）/ stalled（挂死/空转，走预算门转人工）/ env-unavailable（命令工具持续同一错误失败＝环境坏了，不重试、点名环境）。 */
+  guardOutcome?: 'degenerated' | 'stalled' | 'env-unavailable' | null
+  /**
+   * 环境不可用证据（2026-09-23 probe-v4 实锤）：命令工具**以完全相同错误**持续失败时的「工具名: 原文错误」。
+   * 护栏在 WARN 档就记录，**不等中止**——因为模型可能听劝主动停手，那种情况回复很短，默认判定会落
+   * `insubstantial`（产出过短）→ 真因被掩掉且自动重试白烧两轮；有这条证据，runner 才能如实归类成 `env-unavailable`。
+   */
+  envUnavailable?: string | null
   /** dev/qaFix 回复中的「验证证据」块原文（提取自 [Verification evidence] 块；审计用，可对照 logs/ 命令输出）。 */
   verifyEvidence?: string | null
   /** 该阶段**实际生效的模型路由**（2026-09-18 新增）：子代理路由跟随主线程/团队配置，
@@ -296,6 +302,7 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
       // 护栏中止留痕（结构性门禁发现：这两个字段曾**只写不落盘**——内存里写了、serialize 丢了）
       guardReason: s.guardReason || null,
       guardOutcome: s.guardOutcome || null,
+      envUnavailable: s.envUnavailable || null,
       output: clip(s.output || s.summary || '', STAGE_OUTPUT_CLIP),
       verifyEvidence: s.verifyEvidence ? clip(s.verifyEvidence, 8000) : null,
     })),

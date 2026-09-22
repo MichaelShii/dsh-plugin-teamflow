@@ -540,6 +540,48 @@ export function externalBackoffMs(n: number): number | null {
   return EXTERNAL_BACKOFF_MS[n - 1] ?? null
 }
 
+/* ── 工具「环境不可用」检测（2026-09-23 probe-v4 实锤）────────────────────────────────
+ * 实锤：`pwsh` 因 Windows 沙箱 ACL provision 失败（`SetNamedSecurityInfoW failed (Win32 5)`）**每次同样报错**，
+ * 架构师把它重试 7 次 + 90k 字符推理后撞 max-tokens 被截断 —— 白烧 52.6k 输出，且汇报把真因写成 `max-tokens`。
+ * 这类失败**不是模型问题**：重试、换命令绕过、用推理代替执行都修不好环境，必须在烧钱之前停下并说清原因。 */
+
+/** 工具结果文本（拼接 message.content 的 text 块）——签名与日志共用。 */
+export function toolResultText(data: unknown): string {
+  try {
+    const content = (data as { message?: { content?: unknown } } | null | undefined)?.message?.content
+    if (!Array.isArray(content)) return ''
+    return content
+      .map((c) => (c && typeof (c as { text?: unknown }).text === 'string' ? (c as { text: string }).text : ''))
+      .join('')
+  } catch (e) { return '' }
+}
+
+/**
+ * 工具结果是否**失败**。首选结构化 `message.isError`（宿主 `tool/result` 自带，权威、不猜文本——
+ * `packages/core/tools` 的 ToolExecutionResult）；缺该字段（老宿主/裁剪事件）时按 `Error`/`failed`
+ * 前缀兜底，宁严勿松：只认明确失败。
+ */
+export function isToolErrorResult(data: unknown): boolean {
+  const msg = (data as { message?: { isError?: unknown } } | null | undefined)?.message
+  if (msg && typeof msg.isError === 'boolean') return msg.isError
+  return /^\s*(?:error|failed|fatal)\b/i.test(toolResultText(data))
+}
+
+/** 失败指纹：工具名 + 归一化错误前 160 字符。同一指纹反复出现 = 同一个坏环境（而非模型措辞波动）。 */
+export function toolFailureSignature(tool: unknown, text: unknown): string {
+  const name = String(tool || '').trim().toLowerCase() || 'tool'
+  const detail = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 160)
+  return `${name}::${detail}`
+}
+
+/** 失败次数 → 护栏动作（纯函数，阈值可测）：none = 继续观察；warn = 提醒模型停手；abort = 中止本阶段。 */
+export function toolFailureAction(count: unknown, warnAt: number, abortAt: number): 'none' | 'warn' | 'abort' {
+  const n = typeof count === 'number' && Number.isFinite(count) ? count : 0
+  if (n >= abortAt) return 'abort'
+  if (n >= warnAt) return 'warn'
+  return 'none'
+}
+
 /** 重试诊断包：上一轮失败详情回灌进重试 prompt（盲试 → 带因重试）。
  * 失败分类/详情/护栏原因取自 stage；产出尾部截断 1000 字符供自查修正。
  * `locale` 为**尾参可选**（缺省/`zh` → 现状中文**逐字不变**；`en` → 新增英文文案，AC-3④）。

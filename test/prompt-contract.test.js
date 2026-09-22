@@ -227,6 +227,14 @@ assertContract({
   include: [/UI 挂载点的 `name` 必须是 slot 名本身/, /同一个 slot 字符串/, /装进宿主后该 UI 真的出现/],
   fixture: prdWithContract,
 })
+// ── 环境不可用政策（2026-09-23 probe-v4 实锤：工作区命令全废时，架构师重试 7 次 + 90k 字符推理才被截断）──
+// 政策块落在 `productCtx`（11 个阶段工厂共用前缀）→ 所有阶段都带，含当时踩坑的 scaffold。
+assertContract({
+  id: 'ENV-UNAVAILABLE-STOP', level: 'policy', targets: 'prdPrompt',
+  intent: '同一命令持续以同一错误失败时必须立即停手上报（禁重试 / 禁换命令绕过 / 禁用推理代替执行），并给出工具名 + 原文错误',
+  include: [/\[Env unavailable · policy\]/, /do NOT retry it/, /do NOT switch to another command/, /the RAW error text/],
+  fixture: prdWithContract,
+})
 // ── 宿主维度契约（2026-09-18 用户实锤："我开发 openclaw 插件，或者 hermes 插件……这些在 dsh 的契约在其他的不一定有效吧"）──
 // 交付物形态与目标宿主是**两个正交维度**：plugin-* 是 dsh 的词汇（profile 入口/bundle patch/client 块/files 白名单），
 // 套给别的宿主 = 反向返工；而对别的宿主我们没有权威（凭记忆写字段名正是 dddd 事故的成因）→ 改为强制"先去调研"。

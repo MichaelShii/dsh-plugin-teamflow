@@ -195,6 +195,19 @@ export async function runAgent(
       stage.status = 'cancelled'; stage.outcome = 'cancelled'
       return null
     }
+    // **环境不可用优先于「完成了」**（2026-09-23 probe-v4 第二次实机，勿回退）：护栏在 WARN 档一旦记下
+    // 「同一工具持续同一错误失败」，本阶段就已证明**该工作区跑不了命令**。此时模型可能改用文件工具把活干完
+    // （实测：它手写 13 个文件 / 69.8k 输出，其中一个 18.7KB 的自测脚本**一次都没跑过**）——这种"完成"无法验证，
+    // 而下游 dev/QA/验收更需要 shell，按**防假交付**原则不得算 done → 归 env-unavailable：不重试、汇报点名
+    // 环境与原文错误、引导「先修工作区再 resume」（工作区里已落地的文件不删，resume 会带着 shell 重跑本阶段）。
+    if (stage.envUnavailable) {
+      stage.status = 'failed'
+      stage.outcome = 'env-unavailable'
+      stage.summary = t(locale, 'diag.envUnavailableStage', { label, detail: stage.envUnavailable })
+      if (text) stage.output = clip(text, 4000)
+      journal.logs.push({ t: Date.now(), level: 'error', message: stage.summary })
+      return null
+    }
     if (stop === 'completed' && text && (verdict.ok || docFallback)) {
       stage.status = 'done'; stage.outcome = 'completed'
       stage.output = clip(text, 50000) // 阶段产物全文（断点续跑重建上下文）
@@ -265,7 +278,7 @@ export async function runAgent(
  * ⚠️ 启发式：宿主只给 `stopReason=error` + 错误文本，无结构化错误码；命中原文进日志便于日后核对。
  */
 function isExternalFailure(stage: { summary?: string | null; outcome?: string | null; output?: string | null }): boolean {
-  if (stage.outcome === 'insubstantial' || stage.outcome === 'degenerated' || stage.outcome === 'stalled' || stage.outcome === 'aborted') return false
+  if (stage.outcome === 'insubstantial' || stage.outcome === 'degenerated' || stage.outcome === 'stalled' || stage.outcome === 'aborted' || stage.outcome === 'env-unavailable') return false
   return classifyExternalFailure(String(stage.summary || ''), String(stage.output || '').slice(-500)) === 'external'
 }
 
@@ -364,6 +377,15 @@ export async function withRetry(
     // 旧行为结算成「熔断」误导（freshTokens 是本次调用累计，含成功任务消耗；真实原因是外部中止）。
     if (lastStage && lastStage.outcome === 'aborted') {
       journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.aborted', { label }) })
+      journal.humanIntervention = true
+      return { text: null, attempts, freshTokens, stage: lastStage }
+    }
+    // **环境不可用**（2026-09-23 probe-v4 实锤）：命令工具持续以同一错误失败（如 Windows 沙箱 ACL
+    // provision 失败 → 该工作区所有命令全废）。重试/换命令/更多推理都修不好**环境**，自动重试只会把同样的
+    // 钱再烧一遍（实锤那次白烧 52.6k 输出，且汇报把真因误写成 max-tokens）→ 直接 needs-human，
+    // 并明确点名「环境不可用、先修工作区再 resume」（已完成阶段与产物全部复用）。
+    if (lastStage && lastStage.outcome === 'env-unavailable') {
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'diag.envUnavailable', { label }) })
       journal.humanIntervention = true
       return { text: null, attempts, freshTokens, stage: lastStage }
     }
