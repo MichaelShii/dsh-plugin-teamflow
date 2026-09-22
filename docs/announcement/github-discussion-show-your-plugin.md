@@ -3,6 +3,7 @@
      其后 dsh 与插件均已演进（当前：dsh v0.1.7-alpha.1，下限 `>=0.1.7-alpha.1 <0.2.0`，见 README「版本锚定」段），
      此处**不再追改**——改它就等于把一份历史发言改成今天的话。
      ➜ 要发新通稿请**另建文件**，并写当时的锚定版本；本文件只作历史留存。
+     ➜ v0.2.0 新通稿（2026-09-23）：`show-your-plugin-v0.2.0.zh.md` / `show-your-plugin-v0.2.0.en.md` —— 中英各一份完整正文，投放平台待定。
      （原「发布前检查」清单已随发布完成退休，如需查阅见 git 历史提交 5989395。） -->
 
 > `dsh plugin --profile web add dsh-plugin-teamflow` → 重启 `dsh --profile web` 即可使用
