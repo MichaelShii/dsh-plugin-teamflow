@@ -5,6 +5,7 @@
        · 备用 [开源] TeamFlow v0.2.0 —— dsh 多 Agent 研发流水线：一句话需求 → 可验收交付，产物落盘、结论有契约、token 对得上账
      引用的一切数字都可在仓库内逐字核对（来源见各条括注）；与 v0.1.8 那份旧通稿的关系：
      旧稿 `github-discussion-show-your-plugin.md` 已冻结、只作历史留存，本文件是新通稿，版本锚定 v0.2.0。
+     **上一版投放记录**：v0.1.8 通稿发于 `deepseek-ai/deepseek-harness` Discussions [#6405](https://github.com/deepseek-ai/deepseek-harness/discussions/6405)（2026-09-12 07:26 UTC / 北京 15:26），当时标题「dsh-plugin-teamflow：把「一句话需求」跑成一条带质量门禁的多 Agent 研发流水线」；该帖评论中 @boshk0 问「Is there English translation?」——本版默认发英文稿即源于此。
      **对外口径（2026-09-23 决定）**：本版**不展开**第三次对照测量（`assetd-clarity-vs-gate.md`，平局）与自评式措辞（自曝风格只留在仓库内部文档）——完整数据仍在 `docs/benchmarks/`，正文已给出目录链接，**不是删数据**。
      ➜ 发布后本文件同样停止更新；再发通稿请另建文件并写当时的锚定版本。 -->
 
@@ -27,7 +28,7 @@
 
 **当前版本 v0.2.0**（npm `latest`）。**如果你装过旧版，请先看下一节**——0.1.9 在新宿主上根本不工作。
 
-> **看过上一版通稿（v0.1.8）的读者**：建议只读这几处——「先说升级」、「核心特性」里的 ② 需求澄清闸门 / ⑧ 环境不可用早停 / ⑨ 流水线可中断 / ⑪ 最小侵入你的仓库、以及「给在做 dsh 插件的人」中标了 🆕 的条目；③④⑤⑥⑦ 与「它长什么样」「安装与上手」「实测基准」和上一版基本一致，可略过。
+> **看过上一版通稿（v0.1.8，[原帖 #6405](https://github.com/deepseek-ai/deepseek-harness/discussions/6405)）的读者**：建议只读这几处——「先说升级」、「核心特性」里的 ② 需求澄清闸门 / ⑧ 环境不可用早停 / ⑨ 流水线可中断 / ⑪ 最小侵入你的仓库、以及「给在做 dsh 插件的人」中标了 🆕 的条目；③④⑤⑥⑦ 与「它长什么样」「安装与上手」「实测基准」和上一版基本一致，可略过。
 
 ---
 
@@ -221,9 +222,10 @@ dsh --profile web
 - npm：https://www.npmjs.com/package/dsh-plugin-teamflow
 - v0.2.0 发布说明（双语，含逐条变更与升级要点）：https://github.com/MichaelShii/dsh-plugin-teamflow/blob/main/docs/releases/v0.2.0.md
 - 架构决策记录（ADR 0001–0009）：https://github.com/MichaelShii/dsh-plugin-teamflow/tree/main/docs/adr
-- 基准与复盘（含我们输的那次）：https://github.com/MichaelShii/dsh-plugin-teamflow/tree/main/docs/benchmarks
+- 基准与复盘（全部测量与复盘）：https://github.com/MichaelShii/dsh-plugin-teamflow/tree/main/docs/benchmarks
 - 开发日志：https://github.com/MichaelShii/dsh-plugin-teamflow/blob/main/docs/devlog.md
 - 待办与已知缺口：https://github.com/MichaelShii/dsh-plugin-teamflow/blob/main/docs/TODO.md
 - 🆕 上报给上游的宿主问题（Windows 沙箱 ACL provision 失败）：https://github.com/deepseek-ai/deepseek-harness/discussions/7538
+- 🆕 上一版通稿原帖（v0.1.8，2026-09-12）：https://github.com/deepseek-ai/deepseek-harness/discussions/6405 —— 那帖评论里的「意图澄清」反馈（@tongwoojun / @zweix123）催生了本版 ②，而「有英文版吗」（@boshk0）是本版默认发英文稿的原因。
 
 > **一致性提醒**：本文所有版本锚定（`v0.2.0` / `>=0.1.7-alpha.1 <0.2.0` / npm `latest`）写于 **2026-09-23**；发布后作者不再追改本文档（改了就等于把一份历史发言改成今天的话）——要看当前事实请以仓库 `README.md` 与 `CHANGELOG.md` 为准。

@@ -5,6 +5,7 @@
        · alt [Plugin] TeamFlow v0.2.0 — a multi-agent R&D pipeline for DeepSeek Harness (requirement → acceptance)
      Every number below can be checked verbatim in the repository (sources are noted inline). This is a NEW
      announcement: the previous one (`github-discussion-show-your-plugin.md`, anchored to v0.1.8) is frozen and kept for history only.
+     **Previous posting**: the v0.1.8 announcement ran in `deepseek-ai/deepseek-harness` Discussions [#6405](https://github.com/deepseek-ai/deepseek-harness/discussions/6405) (2026-09-12 07:26 UTC) under the title "dsh-plugin-teamflow：把「一句话需求」跑成一条带质量门禁的多 Agent 研发流水线"; @boshk0 asked "Is there English translation?" in its comments — that request is why this version posts in English.
      **Editorial line (decided 2026-09-23)**: this version does NOT surface the third comparison measurement (`assetd-clarity-vs-gate.md`, a tie) or self-critical phrasing — that style stays in the repository's internal docs. The data itself is still in `docs/benchmarks/` (linked in the body); nothing was deleted.
      ➜ This file freezes after posting too; write a new one, anchored to that version, next time. -->
 
@@ -219,9 +220,10 @@ The two point in opposite directions on cost, and they mean the same thing: **wh
 - npm: https://www.npmjs.com/package/dsh-plugin-teamflow
 - v0.2.0 release notes (bilingual, item-by-item changes and upgrade notes): https://github.com/MichaelShii/dsh-plugin-teamflow/blob/main/docs/releases/v0.2.0.md
 - Architecture decision records (ADR 0001–0009): https://github.com/MichaelShii/dsh-plugin-teamflow/tree/main/docs/adr
-- Benchmarks and post-mortems (including the one we lost): https://github.com/MichaelShii/dsh-plugin-teamflow/tree/main/docs/benchmarks
+- Benchmarks and post-mortems (every measurement and post-mortem): https://github.com/MichaelShii/dsh-plugin-teamflow/tree/main/docs/benchmarks
 - Development log: https://github.com/MichaelShii/dsh-plugin-teamflow/blob/main/docs/devlog.md
 - TODO and known gaps: https://github.com/MichaelShii/dsh-plugin-teamflow/blob/main/docs/TODO.md
 - New: host issue filed upstream (Windows sandbox ACL provisioning failure): https://github.com/deepseek-ai/deepseek-harness/discussions/7538
+- New: the previous announcement thread (v0.1.8, 2026-09-12): https://github.com/deepseek-ai/deepseek-harness/discussions/6405 — the "intent clarification" feedback in its comments (@tongwoojun / @zweix123) became feature ② (the clarification gate), and the "is there an English translation?" request (@boshk0) is why this post is in English.
 
 > **Consistency note**: every version anchor in this document (`v0.2.0` / `>=0.1.7-alpha.1 <0.2.0` / npm `latest`) was written on **2026-09-23**. The author will not retro-edit it after posting (editing it would turn a historical statement into today's words) — for current facts, trust the repository's `README.md` and `CHANGELOG.md`.
