@@ -5,7 +5,7 @@
  *    （id/service/namespace/method/参数 wire 唯一/src-json codec/endpoint 唯一）
  * 2) 校验 client 模块导出形状（inject/apply）与 host 模块结构（默认导出 class）
  */
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { TEAMFLOW_DESCRIPTORS } from '../descriptors.ts'
@@ -128,6 +128,9 @@ ok(/const anyFail = g\.stages\.some\(\(s\) => s\.status === 'failed' \|\| s\.sta
 ok(/phaseKeyOf\(s\.phase\) === 'dev' && raw/.test(sharedSrc), 'shared：stageLabelOf 对 dev 阶段兜底保留 label（缺 taskKey 时不退化成阶段名）')
 
 console.log('── 3) host 模块结构 ──')
+// host/core 领域文件清单（聚合进 hostSrc 供源码断言；新增领域文件必须加进来，否则断言读不到它）。
+// 完整性由下面「清单完整性门禁」用真实目录校验——不靠人记（此前实测漏过 sanity.ts）。
+const CORE_FILES = ['context', 'backlog', 'metering', 'runner', 'guard', 'report', 'pipeline', 'teams', 'state', 'products', 'triage', 'locale', 'runlogs', 'sanity']
 const hostSrc = [
   readFileSync(join(here, '../host/index.ts'), 'utf8'),
   readFileSync(join(here, '../host/util.ts'), 'utf8'),
@@ -136,7 +139,7 @@ const hostSrc = [
   readFileSync(join(here, '../host/locales.ts'), 'utf8'),
   readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8'),
   readFileSync(join(here, '../host/locales/tools.ts'), 'utf8'),
-  ...['context', 'backlog', 'metering', 'runner', 'guard', 'report', 'pipeline', 'teams', 'state', 'products', 'triage', 'locale', 'runlogs'].map((f) => readFileSync(join(here, `../host/core/${f}.ts`), 'utf8')),
+  ...CORE_FILES.map((f) => readFileSync(join(here, `../host/core/${f}.ts`), 'utf8')),
 ].join('\n//#region host-pool\n')
 const utilSrc = readFileSync(join(here, '../host/util.ts'), 'utf8')
 // smoke 自身源码（用于断言「测试里确实写了这条回归样本」——防测试被悄悄删掉而源码仍在/或反之）
@@ -474,6 +477,21 @@ ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static i
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
 ok(/"version": "0\.2\.0"/.test(pkgSrc), 'package.json：版本 0.2.0（release-v0.2.0 开发线）')
 ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.1\.7-alpha\.1 <0\.2\.0"/.test(pkgSrc), 'package.json：声明 dsh.manifestVersion 与 engines.dsh 兼容窗口（下限 = v4 宿主 0.1.7-alpha.1）')
+// 手工枚举的清单必须配门禁（同型教训：journal 字段 / execOptions / loadState / triageRecordOf）。
+// deploy.mjs FILES 与上面的 CORE_FILES 都是手写清单，领域化拆分后两者都漂移过——实测 FILES 漏了
+// guard/products/runlogs/state/teams 五个（profile 副本里那份源码因此永久陈旧），CORE_FILES 漏了 sanity。
+// 这里用「真实文件 ⊆ 清单」把漂移变红灯，不再靠人记。
+const walkSources = (base) => readdirSync(join(here, '..', base), { recursive: true })
+  .map((f) => `${base}/${String(f).replace(/\\/g, '/')}`)
+  .filter((f) => /\.(ts|tsx)$/.test(f))
+const realSources = [...walkSources('host'), ...walkSources('client'), 'descriptors.ts', 'store.ts']
+const filesBlock = (readFileSync(join(here, '../deploy.mjs'), 'utf8').match(/const FILES = \[([\s\S]*?)\n\]/) || [])[1] || ''
+const deployFiles = new Set([...filesBlock.matchAll(/'([^']+)'/g)].map((m) => m[1]))
+const missingDeploy = realSources.filter((f) => !deployFiles.has(f))
+ok(missingDeploy.length === 0, `deploy.mjs FILES 覆盖全部源码（漏项 = profile 副本源码永久陈旧）${missingDeploy.length ? '；缺: ' + missingDeploy.join(', ') : ''}`)
+const realCore = walkSources('host').filter((f) => f.startsWith('host/core/')).map((f) => f.slice('host/core/'.length).replace(/\.ts$/, ''))
+const missingPool = realCore.filter((f) => !CORE_FILES.includes(f))
+ok(missingPool.length === 0, `smoke CORE_FILES 覆盖全部 host/core 领域文件（漏项 = 源码断言读不到它）${missingPool.length ? '；缺: ' + missingPool.join(', ') : ''}`)
 
 console.log('── 3p2) 引擎留痕：provider/model 必须落 journal（排查「是不是模型的锅」不该翻会话文件）──')
 ok(/stage\.provider = route\.provider \|\| providerName\(\) \|\| null/.test(runnerSrc) && /stage\.model = route\.model \|\| null/.test(runnerSrc), 'runner：逐阶段记**实际生效**的 provider/model（子代理路由可被改道，与 run 起始默认可能不同）')

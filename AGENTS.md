@@ -85,7 +85,7 @@ client/
 - **数据**：backlog/journal 持久化于 `$DSH_HOME/teamflow/<product>/`；`stores`/`runs`/`activeProducts` 走 `core/context.ts`（进程单例）。
 - **token 口径**（官方口径）：stage 记 `usage` = `{ input(未命中), cacheRead(命中), cacheWrite, output, calls }`；billed input = input+cacheRead+cacheWrite，缓存命中率 = cacheRead/(input+cacheRead)。汇报与工作台卡片均按官方口径展示（`totalTokensOf`）。**熔断是另一套口径**：`freshTokensOf` = input+cacheWrite+output（**排除 cacheRead**）+ `FRESH_TOKEN_BUDGET`——缓存命中是廉价重放，计入熔断等于「任何任务失败一次必熔断、RETRY_LIMIT 失效」（实锤见 §5 交付判定锚点）；不得把两套口径再合并。
 - **输出单轨制**：QA/验收的产物**只在任务夹文件**（`QA-REPORT.md`/`ACCEPTANCE.md`），子代理回复仅摘要+路径+state 块；host 读文件解析（缺失 → 硬失败 needs-human，不回退解析回复）。tech 蓝图允许写文件（host 有文件 fallback）。详见 `docs/devlog.md` 2026-09-03 条目。
-- **deploy 工作副本**：`deploy.mjs FILES` 不含 `host/core/**`、`host/util.ts`、`host/constants.ts`、`host/prompts/**` 源码（运行时只看 lib，不影响功能）。
+- **deploy 工作副本**：`deploy.mjs FILES` 覆盖**全部** host/client 源码（含 `host/core/**`、`host/util.ts`、`host/constants.ts`、`host/prompts/**`、`descriptors.ts`、`store.ts`）+ 4 个 `lib/` 产物 + `package.json`/`cordis.patch.yml`/`AGENTS.md`。**运行时只加载 `lib/`**，源码同步只为让 profile 副本可读/可与仓库对照——但清单漏项会让「profile 里那份源码」长期陈旧（实测漏过 `guard.ts`/`products.ts`/`runlogs.ts`/`state.ts`/`teams.ts` 五个）。清单完整性由 smoke 门禁守（真实文件 ⊆ FILES，漏一个即红），不靠人记。
 - **smoke 断言聚合**：源码断言依赖 host 目录聚合（`#region host-pool`）——新增领域文件需同步加入 `test/smoke.js` 聚合列表。
 - **优化禁令**：已判定假优化勿再投入（子 agent 共享已读文件全文、拆任务存在性预检、护栏强制削减、测试任务合并、tech 分层注入）——详见 `docs/benchmarks/hold-pipeline-vs-native.md` 复核节与 `docs/devlog.md` 2026-08-27 条目。
 - **变更记录**：迭代流水写 `docs/devlog.md` + commit message；**不写进本文件**（本文件只承载当前状态，历史注入会污染决策与膨胀 token）。
