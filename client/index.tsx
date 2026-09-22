@@ -24,7 +24,8 @@ import {
 import { NS, zh, en } from './locales.js'
 import { GlobalPanel, TeamflowPanelIcon, RunDetailTab, runTabDefinition, RUN_TAB_ID } from './panel.js'
 
-export const inject = ['remote', 'slots', 'sessions', 'locale']
+// uiWorkspace：跳会话唯一入口（0.1.7-alpha.1 起 `uiWorkspace.openSession(target)` 取代已移除的 `sessions.openSubagent` / `sessions.open`）
+export const inject = ['remote', 'slots', 'uiWorkspace', 'locale']
 
 /* 主题 token / 状态词表 / 格式化等共享展示层见 client/shared.tsx（与全局面板共用）。 */
 
@@ -164,7 +165,7 @@ function FlowNode(node, onOpen) {
 /** 阶段详情抽屉（卡片点击打开；浮于画布右侧，不参与拖动/缩放）。
  * 2026-09-06 状态机化：同任务多次尝试 → 顶部尝试时间线 + 选中展开（默认最新）；
  * 单次尝试保持现状（不渲染时间线）。 */
-function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
+function StageDetailDrawer({ det, onClose, sessionId, uiWorkspace }) {
   const [sel, setSel] = React.useState(null)
   const st = det.stage
   const d = det.data
@@ -176,10 +177,13 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
   const ownerSession = (d && d.ownerSession) ? String(d.ownerSession) : null
   const mySession = sessionId ? String(sessionId) : null
   const crossSession = !!ownerSession && !!mySession && ownerSession !== mySession
-  const hasChild = !!(!crossSession && cur && cur.childId && sessions && typeof sessions.openSubagent === 'function')
+  // 2026-09-23 迁移：宿主 0.1.7-alpha.1 移除了 `sessions.openSubagent`，旧守卫
+  // `typeof sessions.openSubagent === 'function'` 恒为 false → 按钮长期灰着。改走 `uiWorkspace.openSession`
+  // （宿主自家 ui-workflow-run 面板同款调用，且是真跳转：替换 mainView 并让主区回到 Conversation）。
+  const hasChild = !!(!crossSession && cur && cur.childId && uiWorkspace && typeof uiWorkspace.openSession === 'function')
   const openChild = () => {
     if (crossSession || !hasChild) return
-    try { sessions.openSubagent({ parentSessionId: (ownerSession || sessionId), childSessionId: cur.childId, mode: 'one-shot' }) } catch (e) { /* 会话跳转失败忽略 */ }
+    try { uiWorkspace.openSession({ parentSessionId: (ownerSession || sessionId), childSessionId: cur.childId, mode: 'one-shot' }) } catch (e) { /* 会话跳转失败忽略 */ }
   }
   const outText = cur && cur.output ? cur.output
     : cur && cur.summary ? t('stage.summaryFallback', { summary: cur.summary })
@@ -292,7 +296,7 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
   )
 }
 
-function PipelinePanel({ active, api, runId, sessionId, sessions }) {
+function PipelinePanel({ active, api, runId, sessionId, uiWorkspace }) {
   if (!active) return h('div', { style: { color: T.text2, fontSize: 13, padding: '28px 20px', textAlign: 'center' } },
     h('div', { style: { fontSize: 28, marginBottom: 8 } }, '🏭'),
     t('pipeline.empty'))
@@ -456,7 +460,7 @@ function PipelinePanel({ active, api, runId, sessionId, sessions }) {
       h('span', { style: { fontSize: 10.5, color: T.text2, paddingRight: 4, opacity: 0.85 } }, t('pipeline.canvasHint')),
     ),
     /* 阶段详情浮层：悬浮于画布右上，不挤占画布宽度；浮层内滚轮只滚正文（原生 stopPropagation），不触发画布缩放 */
-    det ? h(StageDetailDrawer, { det, onClose: closeDet, sessionId, sessions }) : null,
+    det ? h(StageDetailDrawer, { det, onClose: closeDet, sessionId, uiWorkspace }) : null,
   )
 }
 
@@ -946,8 +950,10 @@ interface TeamFlowViewProps {
   openArtifact?: (address: string, name: string) => void
   /** 通用右侧栏打开（run 详情 tab 等）；返回 false 表示右侧栏不可用，调用方自行降级。 */
   openResource?: (address: string, label: string) => boolean
-  sessions?: {
-    openSubagent?: (a: { parentSessionId: string; childSessionId: string; mode?: string }) => void
+  /** 跳会话唯一入口：宿主 0.1.7-alpha.1 起用 `uiWorkspace.openSession(target)` 取代已移除的 `sessions.openSubagent` / `sessions.open`。
+   *  target 可以是会话 id，也可以是持久子代理地址 `{ parentSessionId, childSessionId, mode }` —— 一次真跳转。 */
+  uiWorkspace?: {
+    openSession?: (target: string | { parentSessionId: string; childSessionId: string; mode?: 'one-shot' | 'continuable' | 'unknown' }) => void
   } | null
 }
 
@@ -1159,7 +1165,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
     /* 内容区：占满剩余高度并自行滚动——宿主 `.viewArea` 是 flex:1/min-height:0 且不滚动，
        根容器不约束高度就会顶出可视区（外层多出一条页面滚动条，2026-09-11 用户实测） */
     h('div', { style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } },
-      tab === 'pipeline' ? h(PipelinePanel, { active, api, runId: activeRun ? activeRun.id : null, sessionId: props.sessionId, sessions: props.sessions }) : h(BoardPanel, { backlog, api, onRefresh: refresh, sessionId: props.sessionId, openArtifact: props.openArtifact, onShowRun: (rid) => { setTab('pipeline'); setRunId(rid) } })),
+      tab === 'pipeline' ? h(PipelinePanel, { active, api, runId: activeRun ? activeRun.id : null, sessionId: props.sessionId, uiWorkspace: props.uiWorkspace }) : h(BoardPanel, { backlog, api, onRefresh: refresh, sessionId: props.sessionId, openArtifact: props.openArtifact, onShowRun: (rid) => { setTab('pipeline'); setRunId(rid) } })),
   )
 }
 
@@ -1240,7 +1246,7 @@ export async function apply(ctx) {
     locale: NS,
     inject: () => ({
       remote: teamflow,
-      sessions: ctx.get('sessions'),
+      uiWorkspace: ctx.get('uiWorkspace'),
       layout: ctx.get('layout'),
       openResource: openResourceSafe,
       openArtifact,
@@ -1268,7 +1274,7 @@ export async function apply(ctx) {
     order: 20,
     locale: NS,
     label: () => `🏭 ${t('workbench.title')}`,
-    inject: (sessionId) => ({ sessionId, remote: teamflow, sessions: ctx.get('sessions'), openArtifact, openResource: openResourceSafe }),
+    inject: (sessionId) => ({ sessionId, remote: teamflow, uiWorkspace: ctx.get('uiWorkspace'), openArtifact, openResource: openResourceSafe }),
   }, TeamFlowView))
   // 注册输入框旁的团队选择按钮
   ctx.slots.inject('conversation.input.right', () => ctx.slots.register({

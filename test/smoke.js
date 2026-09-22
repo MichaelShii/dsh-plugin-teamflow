@@ -54,7 +54,9 @@ const sharedSrc = readFileSync(join(here, '../client/shared.tsx'), 'utf8')
 const localesSrc = readFileSync(join(here, '../client/locales.ts'), 'utf8')
 /** 词典是否声明了某 key（zh 与 en 两侧都要有）。 */
 const hasKey = (key) => (localesSrc.match(new RegExp(`'${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}':`, 'g')) || []).length >= 2
-ok(/export const inject = \['remote', 'slots', 'sessions', 'locale'\]/.test(clientSrc), '导出 inject（remote/slots/sessions/locale）')
+// 2026-09-23：宿主 0.1.7-alpha.1 移除了 sessions.openSubagent / sessions.open → 跳会话改走 uiWorkspace；
+// sessions 已无任何引用，故不再是注入依赖（保留死依赖＝白等一个服务）
+ok(/export const inject = \['remote', 'slots', 'uiWorkspace', 'locale'\]/.test(clientSrc), '导出 inject（remote/slots/uiWorkspace/locale）')
 ok(/export async function apply/.test(clientSrc), '导出 async apply')
 ok(/ctx\.remote\.\$mount\(TEAMFLOW_REMOTE_CONTRIBUTION\)/.test(clientSrc), 'apply 中 $mount Remote 贡献')
 ok(/conversation\.view/.test(clientSrc), '注册 conversation.view tab')
@@ -78,7 +80,9 @@ ok(/position: 'absolute', top: 8, right: 12, bottom: 8, width: 440, zIndex: 9/.t
 // 详情单一事实源：曾经 detail + inlineRun 两个 state 共用一个浮层 → 关一次只清一个，浮层立刻变回另一个（「两个面板、关两次」）
 ok(!/inlineRun/.test(panelSrc) && /const closeDetail = \(\) => setDetail\(null\)/.test(panelSrc) && /const detailOpen = !!detail\b/.test(panelSrc), 'panel：详情只有一个状态源（detail），关闭即全部关闭')
 // 全局面板的右栏入口必须"跳到资源所属会话"而不是"用户当前所在会话"（右侧栏是会话级的）
-ok(/goOwnerSessionAndOpen/.test(panelSrc) && /sessions\.open\(ownerSession\)/.test(panelSrc) && /nowCurrent === ownerSession/.test(panelSrc), 'panel：全局面板开右栏先 sessions.open(ownerSession)，等会话真的切过去再打开')
+// 2026-09-23 迁移：宿主 0.1.7-alpha.1 移除 sessions.open 与 SessionListState.current
+// → 改 uiWorkspace.openSession(ownerSession) + 纯时间维度重试（旧「等 current 切过去」判据恒为 undefined）
+ok(/goOwnerSessionAndOpen/.test(panelSrc) && /uiWorkspace\.openSession\(ownerSession\)/.test(panelSrc), 'panel：全局面板开右栏先 uiWorkspace.openSession(ownerSession)（宿主已移除 sessions.open），再小步重试打开')
 // 同值点击产品线：曾经把 view 清空但 current 未变 → 依赖数组不变 → 永远卡在「读取产品线数据中…」（用户实测）
 ok(/viewTick/.test(panelSrc) && /const selectProduct = \(k\) =>/.test(panelSrc) && /s\.current === k \? s\.view : null/.test(panelSrc), 'panel：同值点击产品线 = 刷新（viewTick 重载 + 保留视图，不卡「读取中」）')
 ok(/loadingKey/.test(panelSrc), 'panel：选中但视图未就绪时卡片显示「读取中…」（消除"选中态 vs 加载中"的误导）')

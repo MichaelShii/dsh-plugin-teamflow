@@ -590,8 +590,10 @@ export function GlobalPanel(props) {
   /**
    * **跳到资源所属的会话，再在那个会话的右栏打开**（全局面板的正确语义）。
    * 右侧栏是会话级的：从全局面板看 tetris 的 run 却把 tab 挂到"用户当前所在会话"上没有意义
-   * （用户 2026-09-11 提出）。所以先 `sessions.open(ownerSession)`，等当前会话真的切过去、
-   * 且对话 seat 挂载 bind 之后再 openResource（两者都要等，故小步重试 + 就绪判据）。
+   * （用户 2026-09-11 提出）。所以先 `uiWorkspace.openSession(ownerSession)`，再小步重试等右栏 seat 就绪后 openResource。
+   * **2026-09-23 迁移（宿主 0.1.7-alpha.1）**：`sessions.open` 与 `sessions.openSubagent` 同批被移除，
+   * 跳会话唯一入口改为 `uiWorkspace.openSession(target)`；同时 `SessionListState` 已无 `current` 字段，
+   * 故原先"等当前会话真的切过去"的判据删除（契约变更后它恒为 undefined，等于死代码），只留时间维度的重试。
    * @param target.ownerSession - 资源所属会话（run 的发起会话 / 产物地址里的会话）
    * @param target.address - host 生成的 dsh-resource 地址
    * @param target.label - 提示用的名字
@@ -599,13 +601,13 @@ export function GlobalPanel(props) {
    */
   const goOwnerSessionAndOpen = (target) => {
     const { ownerSession, address, label, fallback } = target || {}
-    const sessions = props.sessions
-    if (!ownerSession || !sessions || typeof sessions.open !== 'function') {
-      // 老数据没有 ownerSession / 会话服务不可用 → 退回"在当前会话右栏打开"
+    const ws = props.uiWorkspace
+    if (!ownerSession || !ws || typeof ws.openSession !== 'function') {
+      // 老数据没有 ownerSession / 工作区导航服务不可用 → 退回"在当前会话右栏打开"
       openInConversationRightbar(address, label, fallback)
       return
     }
-    try { sessions.open(ownerSession) } catch (e) {
+    try { ws.openSession(ownerSession) } catch (e) {
       setHint(t('panel.hintSessionGone', { sid: String(ownerSession).slice(0, 8) }))
       if (fallback) fallback()
       return
@@ -614,11 +616,8 @@ export function GlobalPanel(props) {
     let tries = 0
     const tick = () => {
       tries += 1
-      let nowCurrent = null
-      try { nowCurrent = sessions.list && sessions.list.getSnapshot ? sessions.list.getSnapshot().current : null } catch (e) { nowCurrent = null }
-      // 等目标会话成为当前会话（最多等 6 次），再尝试打开右栏 tab
-      const sessionReady = nowCurrent === ownerSession || tries >= 6
-      if (sessionReady && props.openResource && address && props.openResource(address, label, tries < 6)) return
+      // openSession 同步完成导航；右栏 seat 还要等新一轮渲染挂载 → 前 6 次静默重试，之后给提示
+      if (props.openResource && address && props.openResource(address, label, tries < 6)) return
       if (tries < 14) { setTimeout(tick, 130); return }
       setHint(t('panel.hintSwitchedNoRightbar', { label }))
     }
