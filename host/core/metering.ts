@@ -173,3 +173,43 @@ export function freshTokensOf(usage: UsageBuckets | null | undefined): number {
   if (!usage) return 0
   return (usage.input || 0) + (usage.cacheWrite || 0) + (usage.output || 0)
 }
+
+/* ── 熔断预算的**缓存能力自适应**（2026-09-18 probe-v2 实锤） ──────────────────────────
+ * `FRESH_TOKEN_BUDGET = 200k` 的立论默认「cacheRead 是廉价重放、新增只是零头」（有缓存的
+ * provider 上实测每次调用新增 1.2–2.4k）。**这个前提对不缓存的 provider 不成立**：system
+ * prompt + 工具定义（该会话实测 ~15.5k token）每轮工具调用都要整体重发一次，于是
+ * 「新增 token」实际是「调用次数 × 15.5k」，200k ≈ 一个阶段最多 13 次调用 —— 阈值从
+ * 「真跑飞才熔断」退化成「调用多一点就熔断」。
+ * 实锤：probe-v2 `tf-mu71waxg-4iws10` 的 PRD 阶段用 `inception/mercury-2.5`（命中率 10.4%、
+ * cacheWrite=0）跑了 17 次调用 → 259k → 熔断转人工；同一阶段在命中 90%+ 的 provider 上
+ * 17 次调用只需 ~25–40k。故：**观测到「不缓存」时按倍数放宽预算**（有缓存的 provider 分毫不动）。
+ */
+
+/** 「不缓存」判定阈值：命中率低于它且调用数够多（单次调用的样本没有意义）。 */
+export const UNCACHED_HIT_RATIO = 0.5
+export const UNCACHED_MIN_CALLS = 5
+/** 放宽倍数 = 原设计的相对余量（200k ≈ 两轮尝试）→ 无缓存下同样要留两轮尝试。 */
+export const UNCACHED_BUDGET_FACTOR = 3
+
+/** 官方口径缓存命中率 = cacheRead/(input+cacheRead)（无输入记 0，不做除零外推）。 */
+export function cacheHitRatioOf(usage: UsageBuckets | null | undefined): number {
+  const input = (usage && usage.input) || 0
+  const cacheRead = (usage && usage.cacheRead) || 0
+  const total = input + cacheRead
+  return total > 0 ? cacheRead / total : 0
+}
+
+/**
+ * 该阶段**有效的新增 token 预算** + 判定依据（供熔断日志留痕）。
+ * @returns budget = 基础预算（无缓存 ×`UNCACHED_BUDGET_FACTOR`）；uncached = 是否放宽；
+ *          ratio/calls = 依据（命中率与累计调用数），未放宽时也为真实值。
+ */
+export function effectiveFreshBudget(
+  usage: UsageBuckets | null | undefined,
+  base: number,
+): { budget: number; uncached: boolean; ratio: number; calls: number } {
+  const calls = (usage && usage.calls) || 0
+  const ratio = cacheHitRatioOf(usage)
+  const uncached = calls >= UNCACHED_MIN_CALLS && ratio < UNCACHED_HIT_RATIO
+  return { budget: uncached ? base * UNCACHED_BUDGET_FACTOR : base, uncached, ratio, calls }
+}

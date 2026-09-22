@@ -20,8 +20,14 @@ export interface JournalStage {
   label: string
   /** 阶段英文键（2026-09-06 英文化：prd/design/scaffold/tech/dev/qa/acceptance；存量中文经迁移脚本映射）。 */
   phase: string
-  /** 任务键（dev 子任务聚合用：任务 title 数据值；非任务型阶段为 null）。 */
+  /** 任务键（dev 子任务聚合用：任务 title 数据值；非任务型阶段为 null）。
+   *  ⚠️ **仅作展示/子卡命名**——判定请看 `taskIds`（title 会因任务合并而被拼接，不是稳定身份）。 */
   taskKey?: string | null
+  /** **开发任务身份**（host 按蓝图定义顺序生成的 `dt-N`；2026-09-18 新增）。
+   *  合并任务（files 有交集被并成一个子代理）时是**数组**，如 `['dt-1','dt-7','dt-8']`。
+   *  resume 的「哪些任务已完成」判定**只认它**，不认 title（见 pipeline.devTaskStatuses）。
+   *  存量 stage 无此字段 → 判定回退 taskKey/label（只增不改，不影响历史 run）。 */
+  taskIds?: string[] | null
   status: string
   outcome?: string | null
   childId?: string | null
@@ -31,12 +37,22 @@ export interface JournalStage {
   handoff?: string | null
   summary?: string | null
   output?: string | null
-  /** 单调用护栏中止原因（进行中退化检测触发时记录；outcome 相应为 degenerated/stalled）。 */
+  /** 单调用护栏中止原因（进行中退化检测触发时记录；outcome 相应为 degenerated/stalled/env-unavailable）。 */
   guardReason?: string | null
-  /** 护栏中止分类：degenerated（复读，可干净重试）/ stalled（挂死/空转，走预算门转人工）。 */
-  guardOutcome?: 'degenerated' | 'stalled' | null
+  /** 护栏中止分类：degenerated（复读，可干净重试）/ stalled（挂死/空转，走预算门转人工）/ env-unavailable（命令工具持续同一错误失败＝环境坏了，不重试、点名环境）。 */
+  guardOutcome?: 'degenerated' | 'stalled' | 'env-unavailable' | null
+  /**
+   * 环境不可用证据（2026-09-23 probe-v4 实锤）：命令工具**以完全相同错误**持续失败时的「工具名: 原文错误」。
+   * 护栏在 WARN 档就记录，**不等中止**——因为模型可能听劝主动停手，那种情况回复很短，默认判定会落
+   * `insubstantial`（产出过短）→ 真因被掩掉且自动重试白烧两轮；有这条证据，runner 才能如实归类成 `env-unavailable`。
+   */
+  envUnavailable?: string | null
   /** dev/qaFix 回复中的「验证证据」块原文（提取自 [Verification evidence] 块；审计用，可对照 logs/ 命令输出）。 */
   verifyEvidence?: string | null
+  /** 该阶段**实际生效的模型路由**（2026-09-18 新增）：子代理路由跟随主线程/团队配置，
+   *  可能与 run 起始默认不同（见 runner.resolveChildRoute）。回答「是不是模型的锅」靠它。 */
+  provider?: string | null
+  model?: string | null
 }
 
 /** 运行日志（journal）——运行时对象与磁盘可持久化形态的公共形状。 */
@@ -46,6 +62,12 @@ export interface JournalRecord {
   status: string
   requirement?: string
   options?: Record<string, unknown>
+  /** **run 起始的引擎快照**（2026-09-18 新增）：`{ provider, model }`，由 pipeline 在起跑时用
+   *  `runner.resolveChildRoute(parent)` 解析（= 主线程当前生效的模型路由）。逐阶段的真实路由见
+   *  `JournalStage.provider/model`（子代理可被团队配置改道）。**留痕的理由**：一次失败排查里为了回答
+   *  「是不是模型的锅」（不同 provider 的 prompt 缓存能力差 10 倍，见 FRESH_TOKEN_BUDGET），
+   *  只能去解压会话文件翻 `request/header` —— run 记录里查不到。 */
+  engine?: { provider?: string | null; model?: string | null } | null
   /** 工作区作用域：安全槽位（用作 $DSH_HOME/teamflow/<workspace>/ 目录键，backlog 按此隔离）。 */
   workspace?: string | null
   /** 工作区绝对路径（发起会话 cwd；docs/logs 落点与看板展示用）。 */
@@ -98,6 +120,14 @@ export interface JournalRecord {
    * （检测命令优先：QA 每轮重编号，缺陷 id 跨轮不可比，见 util.defectFingerprint）。
    */
   qaRounds?: Array<Record<string, unknown>> | null
+  /** **宿主契约调研**（2026-09-18 用户实锤）：交付物要被**非 dsh 宿主**（openclaw/hermes/pi…）加载时，
+   *  dsh 的插件契约一条都不适用 → PRD 必须含「宿主契约调研」段（硬门禁）。`hostResearch=true` 标记
+   *  「本 run 需要该段」，`hostContract` 存摘出的核实结论（人可读留痕）。 */
+  hostResearch?: boolean
+  hostContract?: string | null
+  /** **本机安装环境**（2026-09-21）：`$DSH_HOME` + 由插件自身路径反推的 profile 名/目录 + `dsh` 是否在 PATH。
+   *  路径全为运行时探测（用户环境各异，**不得写死**）；探测失败（`ok=false`）时 PRD 必须改为"问用户"。 */
+  installEnv?: { dshHome?: string; profile?: string; profileDir?: string; cliOnPath?: boolean; ok?: boolean } | null
   result?: unknown
   [key: string]: unknown
 }
@@ -211,6 +241,8 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     status: journal.status,
     requirement: journal.requirement,
     options: journal.options,
+    // 引擎留痕（2026-09-18）：run 起始模型路由（provider/model）——排查「是不是模型的锅」的第一手依据
+    engine: journal.engine || null,
     workspace: journal.workspace || null,
     workspacePath: journal.workspacePath || null,
     ownerSession: journal.ownerSession || null,
@@ -220,6 +252,9 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     blueprint: journal.blueprint || null,
     reqId: journal.reqId || null,
     runDocs: journal.runDocs || null,
+    // 分支与合回决策留痕（结构性门禁发现：这两个字段也曾**只写不落盘**）
+    branch: journal.branch || null,
+    mergeStatus: journal.mergeStatus || null,
     taskId: journal.taskId || null,
     taskMap: journal.taskMap || {},
     agentsStarted: journal.agentsStarted || 0,
@@ -228,6 +263,19 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
      *  「结论被强制为需人工裁定、不要据此合回」的显式提示（持久化：重启/resume 后仍可判）。 */
     knownIssuesAcceptance: journal.knownIssuesAcceptance === true,
     cancelled: journal.cancelled === true,
+    /** 取消来源（ui=界面按钮/人工，tool=模型工具，unknown=历史 run）：主线程据此判断「谁停的」。 */
+    cancelSource: journal.cancelSource || null,
+    cancelRequestedAt: journal.cancelRequestedAt || null,
+    /** 需求澄清闸门（2026-09-16 Phase 1）：分诊裁决（intent/blockers）+ PRD 假设段 + 澄清答复。
+     *  裁决是 shadow 埋点（Phase 2 定闸门强度的数据源）；假设段是「agent 替你决定了什么」的可见化。 */
+    triage: journal.triage || null,
+    assumptions: journal.assumptions || null,
+    hostResearch: journal.hostResearch === true,
+    hostContract: journal.hostContract || null,
+    installEnv: journal.installEnv || null,
+    requirementSupplement: journal.requirementSupplement || null,
+    /** 外部供应商故障标记（限流/无额度/上游故障/超时）：run 落可续跑中断态时置位，汇报据此讲清「非交付缺陷」。 */
+    externalFailure: journal.externalFailure === true,
     interrupted: journal.interrupted === true,
     interruptedAt: journal.interruptedAt || null,
     supersededBy: journal.supersededBy || null,
@@ -239,6 +287,10 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
       label: s.label,
       phase: s.phase,
       taskKey: s.taskKey || null,
+      taskIds: (Array.isArray(s.taskIds) && s.taskIds.length) ? s.taskIds : null,
+      // 该阶段**实际生效**的模型路由（子代理可被改道，故逐阶段记）
+      provider: s.provider || null,
+      model: s.model || null,
       status: s.status,
       outcome: s.outcome || null,
       childId: s.childId || null,
@@ -247,6 +299,10 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
       usage: s.usage || null,
       handoff: clip(s.handoff || '', 2000),
       summary: clip(s.summary || '', 3000),
+      // 护栏中止留痕（结构性门禁发现：这两个字段曾**只写不落盘**——内存里写了、serialize 丢了）
+      guardReason: s.guardReason || null,
+      guardOutcome: s.guardOutcome || null,
+      envUnavailable: s.envUnavailable || null,
       output: clip(s.output || s.summary || '', STAGE_OUTPUT_CLIP),
       verifyEvidence: s.verifyEvidence ? clip(s.verifyEvidence, 8000) : null,
     })),

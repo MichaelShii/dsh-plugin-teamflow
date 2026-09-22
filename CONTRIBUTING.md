@@ -52,16 +52,34 @@ test/                # dependency-free test suites
   is injected by the harness.
 - Every behavior change should carry a smoke assertion (`test/smoke.js` source-string
   assertions are the cheap safety net for this codebase).
+- **Docs & screenshots**: user-facing behavior changes must touch **both** `README.md` and
+  `README.en.md` (they are kept in sync line by line). Screenshots live in `docs/screenshots/`
+  and are **split by UI language**: Chinese UI → `docs/screenshots/<name>.png`, English UI →
+  `docs/screenshots/en/<name>.png`. Never point the English README at a Chinese screenshot
+  (or vice versa) — re-shoot and overwrite; keep each file under ~400 KB and the same viewport
+  for both languages.
 - Tests must stay dependency-free (no test framework; `node test/*.js`).
 
 ## PR workflow
 
+**Branch model**: `main` mirrors the **published release** (kept identical to npm `latest`) and only
+receives release merges — it is not a development branch. Day-to-day work accumulates on the current
+**release branch** `release-vX.Y.Z` (one per release cycle, long-lived, pushed to the remote; a new one
+is cut right after each release).
+
 1. Open an issue first if the change is non-trivial (pipeline stage semantics, state machine,
    persistence format, prompt contracts).
-2. Branch from `main`, keep PRs focused; squash commits on merge.
-3. CI runs `pnpm test` + `pnpm bundle`; make sure both are green locally too.
+2. **Branch from the latest release branch** (e.g. `release-v0.2.0`) — **not from `main`** — and open
+   your PR **against that release branch**. Keep PRs focused — we merge with a real merge commit
+   that keeps every commit (we do not squash).
+3. CI runs `pnpm test` + `pnpm bundle` on pushes to `main` and `release-*` and on every PR; make sure
+   both are green locally too.
 4. Update `README.md`/`README.en.md` if user-facing, `CHANGELOG.md` for released behavior
    changes, and `AGENTS.md` (maintainer memory) for pipeline-level decisions.
+
+Releases are cut from the release branch: finalise version + `CHANGELOG` + `docs/releases/<v>.md` →
+`npm publish` (the manual 2FA node) → PR → merge into `main` **keeping every commit** (no squash) →
+annotated tag → GitHub Release → cut the next release branch. See `AGENTS.md` §4 for the exact order.
 
 ## License
 

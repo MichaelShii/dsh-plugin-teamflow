@@ -88,8 +88,68 @@ export { TF_LOG_DIR }
  * `-c advice.addIgnoredFile=false` 也不行（那是 error 不是 advice）。
  * 复现与候选方案矩阵见 `test/commit-path.test.js`（真 git 集成测试，锁死这个坑）。
  */
-export function tfAddArgs(): string[] {
-  return ['add', '-A', '--', '.']
+export function tfAddArgs(excludes: readonly string[] = [], cwd?: string): string[] {
+  return ['add', '-A', '--', '.', ...tfExcludePathspecs(excludes, cwd)]
+}
+
+/**
+ * 冷启动基线提交的**索引层噪音排除**（2026-09-18 方案 B 根治，勿回退为「写用户 .gitignore」）。
+ *
+ * 为什么存在：`git init` 后第一次 `add -A` 是**整树冷扫描**，pnpm 本地 store / node_modules
+ * 在实测里是 549 文件 / 51 MB（probe-clock），默认 8s 超时被直接杀掉 → 基线提交失败。
+ *
+ * **为什么不再写进 `.gitignore`（用户实锤截图）**：旧实现 `pipeline.ensureCommonNoiseIgnores()`
+ * 调 `mergeGitignore(before, ['.pnpm-store/','node_modules/'], 'zh')` —— 而 `mergeGitignore` 的注释
+ * 参数是**整批一条**，于是 `.pnpm-store/` 顶着「TeamFlow 运行日志（插件自有产物…）」的文案写进了
+ * **用户的 `.gitignore`**。两处错：① 注释张冠李戴；② **越界**——`.gitignore` 是用户的项目资产，
+ * 「该忽略什么」属于 L2（PRD 阶段 PM 按技术栈规划）与用户本人，host 只该在**自己那一次 git 调用**上
+ * 收敛范围，不该在用户文件里留下任何痕迹。
+ *
+ * 稳定性依据（temp 仓库实测，见 `test/commit-path.test.js`）：`:(exclude)` 报错退出 1 的**唯一前提**
+ * 是该路径**已被 `.gitignore` 忽略**（「显式点名 + 被忽略」）。本清单里的路径**从不写进 .gitignore**，
+ * 故恒定 exit 0。运行时另有 `tfExcludePathspecs` 的自检双保险。
+ */
+export const BASELINE_NOISE_EXCLUDES: readonly string[] = ['.pnpm-store', 'node_modules']
+
+/**
+ * 把排除项转成 magic pathspec，并**用 git 自己判断**哪些项不该下发。
+ *
+ * **为什么必须用 `git check-ignore` 而不是自己读 `.gitignore`（2026-09-18 实测修正，勿回退）**：
+ * 初版自检用 `existsSync('.gitignore')` + 正则近似——**相对路径读的是宿主进程的 cwd，不是目标仓库**，
+ * 于是两个方向同时错：目标仓库没忽略的项被误拦（排除失效、噪音进索引），目标仓库忽略了的项被误放
+ * （点名 + 被忽略 → **exit 1，正是 2026-09-11→09-15「4 天没有任何 run 提交过」那个坑原样复活**）。
+ * `git check-ignore` 以**目标仓库为根**、且用 git 自己的规则引擎（通配/取反/嵌套 `.gitignore`/全局
+ * excludesfile 全覆盖），是本判据唯一正确的实现。`-q` 只取退出码：0=被忽略，1=未忽略。
+ *
+ * 兜底方向（宁可不排、不可 exit 1）：git 不可用/异常 → 一律**不下发**该排除项。
+ * 代价只是"这次少排一点、add 慢一点"，而失败的代价是**整条提交链路静默失效**——不对称，故从严。
+ */
+function tfExcludePathspecs(excludes: readonly string[], cwd?: string): string[] {
+  const list = excludes.filter((p): p is string => typeof p === 'string' && !!p.trim())
+  if (!list.length) return []
+  const out: string[] = []
+  for (const p of list) {
+    const clean = p.replace(/\\/g, '/').replace(/\/+$/, '')
+    if (!clean) continue
+    if (isIgnoredByGit(clean, cwd)) continue // 已被忽略 → 交给 .gitignore 生效，绝不点名（点名即 exit 1）
+    out.push(`:(exclude)${clean}`)
+  }
+  return out
+}
+
+/** `git check-ignore` 判定（0=被忽略／1=未忽略／其它=无法判定）。无法判定时按「被忽略」处理＝不下发 pathspec。 */
+function isIgnoredByGit(rel: string, cwd?: string): boolean {
+  try {
+    execFileSync('git', ['check-ignore', '-q', '--', rel], {
+      cwd: cwd || process.cwd(), encoding: 'utf8', timeout: 4000, windowsHide: true,
+    })
+    return true // exit 0 = 被忽略
+  } catch (e) {
+    // exit 1 = 明确未被忽略 → 可安全下发 pathspec（这是唯一允许下发的分支）
+    const code = (e as { status?: number }).status
+    if (code === 1) return false
+    return true // git 缺失/不在仓库/超时 → 无法判定 → 不下发（宁可少排，绝不让 add exit 1）
+  }
 }
 
 /**

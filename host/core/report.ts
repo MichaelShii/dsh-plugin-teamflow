@@ -4,8 +4,9 @@
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { clip } from '../util.ts'
-import { MODE_REGISTRY } from './triage.ts'
+import { MODE_REGISTRY, normalizeArtifact, PLUGIN_ARTIFACTS } from './triage.ts'
 import { gitCmd } from './sanity.ts'
+import { loadState } from './state.ts'
 import { modeLabel, t } from '../locales.ts'
 import { phaseKeyOf } from '../constants.ts'
 import { runLocaleOf } from './locale.ts'
@@ -107,9 +108,59 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
     // 通知摘要里的状态词（未知状态回落 status 字面量）
     const noticeKey = `report.noticeStatus.${journal.status}`
     const noticeStatus = t(locale, noticeKey) === noticeKey ? journal.status : t(locale, noticeKey)
+    // 取消来源（2026-09-16 实测补充）：主线程看到「已取消」但不知道谁停的，曾据错误前提怀疑
+    // 「另一会话在自动续跑」（实际是人工点界面按钮）。来源随汇报显式给出，并说明**不会自动续跑**。
+    const cancelSrcKey = `cancelSource.${journal.cancelSource || 'unknown'}`
+    const cancelSourceLine = (journal.status === 'cancelled' || journal.cancelled === true)
+      ? t(locale, 'report.cancelSource', { source: t(locale, cancelSrcKey) })
+      : ''
+    // 假设可见化（2026-09-16 需求澄清闸门 Phase 1）：把 PRD 的「假设 / 待澄清」段显式回给主线程——
+    // 原缺口是 agent 的替代决定完全不可见（实测 39/39 份 PRD 从未记录过假设），验收人无从判断
+    // 「这份 PRD 是不是我想要的」。
+    const assumptionsLine = (journal.assumptions && String(journal.assumptions).trim())
+      ? t(locale, 'report.assumptions', { list: clip(String(journal.assumptions), 900) })
+      : ''
+    // 外部供应商故障可见化（2026-09-17）：把"限流/无额度/上游故障"与"交付有缺陷"分开讲清楚——
+    // dddd 实测那批失败 16 分钟后同请求即成功，属外部窗口问题；旧文案只给「失败 + 需人工」，
+    // 会让人误判成交付质量。此处显式说明「非交付缺陷 + 可续跑只补这一段」。
+    const externalLine = journal.externalFailure === true ? t(locale, 'report.externalFailure') : ''
+    // **安装待办（2026-09-21 用户实锤）**：交付物是要装进 profile 的插件时，完成汇报必须给主 agent
+    // 一段**可直接执行**的安装指令（含本机探测到的 profile 目录/命令/回滚）——而不是"请用户手动测试"。
+    // 理由（实测）：流水线子代理权限启动即固定、**写不了 profile**；而主 agent 能（被拒后宿主给
+    // `escalation available`，`approval/policy: ask` 下经用户批准）→ 这一步的执行者就是主 agent。
+    const installLine = (() => {
+      try {
+        const env = journal.installEnv as { ok?: boolean; profile?: string; profileDir?: string; cliOnPath?: boolean } | null | undefined
+        if (!env) return ''
+        const art = normalizeArtifact((journal.triage as { artifact?: string } | null | undefined)?.artifact)
+        if (PLUGIN_ARTIFACTS.indexOf(art) === -1) return ''
+        if (env.ok !== true) return t(locale, 'report.installAskUser')
+        return t(locale, 'report.installPending', {
+          dir: env.profileDir || '?',
+          how: env.cliOnPath === true
+            ? t(locale, 'report.installHowCli', { profile: env.profile || '?' })
+            : t(locale, 'report.installHowManual'),
+        })
+      } catch (e) { return '' }
+    })()
+    // 改动存档可见化（2026-09-17 方案 A）：非程序员的安全网必须有"看得见"的回执——
+    // repo → 「已存档，可整体撤销」；none → 「未存档（用户选择），无法一键撤销」。
+    const vcsLine = (() => {
+      try {
+        if (!journal.workspacePath) return ''
+        const st = loadState(journal.workspacePath)
+        if (st.gitMode === 'none') return t(locale, 'log.noVcsByChoice')
+        if (journal.status === 'completed') return t(locale, 'report.vcsArchived')
+        return ''
+      } catch (e) { return '' }
+    })()
     const text = [
       t(locale, 'report.header', { id: journal.id }),
       t(locale, 'report.statusLine', { status: statusLine, error: journal.error ? t(locale, 'report.error', { error: clip(journal.error, 300) }) : '' }),
+      externalLine,
+      vcsLine,
+      cancelSourceLine,
+      assumptionsLine,
       t(locale, 'report.stagesLine', { stages: stagesLine }),
       t(locale, 'report.agents', { n: journal.agentsStarted || 0 }),
       tokenLine,
@@ -121,18 +172,23 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
           ? t(locale, 'report.mode', { mode: modeLabel(locale, m, MODE_REGISTRY[m as keyof typeof MODE_REGISTRY] ? MODE_REGISTRY[m as keyof typeof MODE_REGISTRY].label : m) })
           : ''
       })(),
+      // 引擎留痕（2026-09-18）：汇报里直接给出模型路由——排查「是不是模型的锅」不必再翻会话文件
+      journal.engine && (journal.engine.provider || journal.engine.model)
+        ? t(locale, 'report.engine', { engine: `${journal.engine.provider || '?'}/${journal.engine.model || '?'}` })
+        : '',
       t(locale, 'report.backlog', { reqId: journal.reqId || '—' }),
+      installLine,
       needsHumanNotice,
       mergeHint,
       t(locale, 'report.tabHint'),
-      t(locale, 'report.next'),
+      // 取消态的「下一步」换措辞：不给模型续跑引导（续跑是人的决定，且本 run 不会自动续跑）
+      (journal.status === 'cancelled' || journal.cancelled === true) ? t(locale, 'report.nextCancelled') : t(locale, 'report.next'),
       t(locale, 'report.relay'),
     ].filter(Boolean).join('\n')
     const message = createUserMessage({
       content: [{ type: 'text', text }],
       source: {
-        kind: 'plugin',
-        plugin: 'dsh-plugin-teamflow',
+        kind: 'plugin:dsh-plugin-teamflow',
         form: 'notice',
         // 状态词走词典（未知状态回落原始 status 字面量）
         summary: t(locale, 'report.notice', { status: noticeStatus, id: journal.id }),

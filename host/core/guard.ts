@@ -21,12 +21,19 @@
  *  C. 空转检测：会话仍在产出事件，但连续 GUARD_NO_TOOL_MS 没有任何工具调用
  *    （纯推理打转/改写式循环；正常 agent 每分钟都在调工具）→ outcome='stalled'。
  *    兜底关系：复读判定放宽后，edit 后陷入死循环的漏网场景由 C（长时间无工具调用）兜住。
+ *  D. **环境不可用检测（2026-09-23 probe-v4 实锤）**：同一工具**以完全相同错误**持续失败
+ *    （达 GUARD_TOOL_FAIL_WARN 次先注入提醒，达 GUARD_TOOL_FAIL_ABORT 次中止）→ outcome='env-unavailable'
+ *    （不自动重试，直接 needs-human 并点名环境）。实锤：`pwsh` 因 Windows 沙箱 ACL provision 失败
+ *    （`SetNamedSecurityInfoW failed (Win32 5)`）每次同样报错，架构师重试 7 次 + 90k 字符推理后撞
+ *    max-tokens 才停 —— 白烧 52.6k 输出，且汇报把真因误写成 `max-tokens`。重试/换命令/用推理代替执行
+ *    都修不好环境，所以必须在烧钱之前停下并说清原因。
  *
  * 中止方式：run.dispose() → run.result 结算。outcome 命名刻意避开 isUnretryable 的
  * /token|context|limit/ 正则；只有 'degenerated' 享受干净重试豁免（runner.withRetry）。
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { GUARD_NO_TOOL_MS, GUARD_POLL_MS, GUARD_REPEAT_LIMIT, GUARD_SILENCE_MS, GUARD_WINDOW_SIZE } from '../constants.ts'
+import { GUARD_NO_TOOL_MS, GUARD_POLL_MS, GUARD_REPEAT_LIMIT, GUARD_SILENCE_MS, GUARD_TOOL_FAIL_ABORT, GUARD_TOOL_FAIL_WARN, GUARD_WINDOW_SIZE } from '../constants.ts'
+import { clip, isToolErrorResult, toolFailureAction, toolFailureSignature, toolResultText } from '../util.ts'
 import { t, type HostLocale } from '../locales.ts'
 import { runtime } from './context.ts'
 import { runLocaleOf } from './locale.ts'
@@ -124,7 +131,7 @@ function injectReminder(run: SubagentRunLike, text: string, locale: HostLocale):
     agent.inject(createUserMessage({
       content: [{ type: 'text', text }],
       // form:'notice' 必须带 summary（宿主 ContextFormed 判别式要求一行说明）
-      source: { kind: 'plugin', plugin: 'dsh-plugin-teamflow', form: 'notice', summary: t(locale, 'guard.noticeSummary') },
+      source: { kind: 'plugin:dsh-plugin-teamflow', form: 'notice', summary: t(locale, 'guard.noticeSummary') },
     }))
   } catch (e) { /* 注入失败静默 */ }
 }
@@ -162,6 +169,11 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
   let lastMutationAt = 0
   let repeatWarned = false
   let busyWarned = false
+  // 环境不可用检测（2026-09-23）：callId → 工具名（把失败的 tool/result 归因到具体工具）
+  const callNames = new Map<string, string>()
+  // 失败指纹 → 累计次数（跨轮询持久）+ 已提醒过的指纹（同一指纹只提醒一次，避免刷屏）
+  const toolFailures = new Map<string, number>()
+  const toolFailWarned = new Set<string>()
 
   function warnOnce(key: string, set: Set<string>, message: string, hint?: string) {
     if (set.has(key)) return
@@ -172,7 +184,7 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
     if (hint) injectReminder(run, `[TOKEN GUARD · reminder] ${hint}`, locale)
   }
 
-  function fire(reason: string, outcome: 'degenerated' | 'stalled') {
+  function fire(reason: string, outcome: 'degenerated' | 'stalled' | 'env-unavailable') {
     if (fired) return
     fired = true
     clearInterval(timer)
@@ -259,6 +271,9 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
         }
         // token 观测（只记 warning）：增量处理新完成的工具调用
         observeToolCalls(newEvents)
+        // 环境不可用检测（2026-09-23）：失败的 tool/result 增量归因 + 计数（达阈值会 fire）
+        observeToolFailures(newEvents)
+        if (fired) return
         processed = events.length
       }
 
@@ -349,6 +364,50 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
         const n = (scriptCounts.get(key) || 0) + 1
         scriptCounts.set(key, n)
         if (n === 3) warnOnce(key, warnedScripts, t(locale, 'guard.repeatScript', { n, file: key }), t(locale, 'guard.reminderScript', { file: key }))
+      }
+    }
+  }
+
+  /**
+   * 环境不可用检测（2026-09-23 probe-v4 实锤，增量处理**失败**的 tool/result）。
+   *
+   * 判据：同一工具**以完全相同错误**反复失败 = 工作区坏了（实锤：Windows 沙箱 ACL provision 失败
+   * `SetNamedSecurityInfoW failed (Win32 5): grantWrite(<workspace>)` → 该工作区所有命令全废）。
+   * 这类失败不是模型问题——重试、换命令绕过、用推理代替执行都修不好它，只会继续烧钱
+   * （那次架构师重试 7 次 + 90k 字符推理才撞 max-tokens 停下，白烧 52.6k 输出，且汇报把真因误写成 max-tokens）。
+   * 失败判定用结构化 `message.isError`（不猜文本）；指纹 = 工具名 + 归一化错误前 160 字符。
+   * 动作：达 WARN → 记 warn + 注入提醒（请模型停手上报）；达 ABORT → fire（outcome='env-unavailable'）。
+   */
+  function observeToolFailures(events: unknown[]) {
+    for (const ev of events) {
+      const e = ev as { type?: string; data?: unknown } | null
+      if (!e) continue
+      if (e.type === 'tool/call' || e.type === 'tool-call') {
+        const d = e.data as { callId?: unknown; name?: unknown } | null
+        if (d && typeof d.callId === 'string' && typeof d.name === 'string') callNames.set(d.callId, d.name)
+        continue
+      }
+      if (e.type !== 'tool/result') continue
+      if (!isToolErrorResult(e.data)) continue
+      const callId = (e.data as { message?: { toolCallId?: unknown } } | null)?.message?.toolCallId
+      const tool = (typeof callId === 'string' && callNames.get(callId)) || 'command'
+      const text = toolResultText(e.data)
+      const sig = toolFailureSignature(tool, text)
+      const n = (toolFailures.get(sig) || 0) + 1
+      toolFailures.set(sig, n)
+      const detail = clip(String(text).replace(/\s+/g, ' ').trim(), 160)
+      const action = toolFailureAction(n, GUARD_TOOL_FAIL_WARN, GUARD_TOOL_FAIL_ABORT)
+      if (action === 'warn' && !toolFailWarned.has(sig)) {
+        toolFailWarned.add(sig)
+        // 证据先落 stage（不等中止）：模型**听劝停手**时回复很短，默认判定会落 insubstantial「产出过短」
+        // → 真因被掩掉并自动重试白烧两轮；有这条证据，runner 才能把它如实归成 env-unavailable。
+        stage.envUnavailable = `${tool}: ${detail}`
+        try { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.toolFail', { label, tool, n, detail }) }) } catch (err) { /* ignore */ }
+        injectReminder(run, `[ENV GUARD · reminder] ${t(locale, 'guard.reminderToolFail', { tool, n, detail })}`, locale)
+      } else if (action === 'abort') {
+        stage.envUnavailable = `${tool}: ${detail}`
+        fire(t(locale, 'guard.reasonToolFail', { tool, n, detail }), 'env-unavailable')
+        return
       }
     }
   }

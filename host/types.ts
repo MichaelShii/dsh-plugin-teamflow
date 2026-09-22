@@ -10,6 +10,29 @@ export interface Journal extends JournalRecord {
   stages: JournalStage[]
   logs: Array<{ t: number; level: string; message: string }>
 }
+
+/**
+ * **声明本插件自己的 message source kind**（2026-09-23 补：v4 source 适配的类型面，此前只改了字面量）。
+ *
+ * 宿主 `MessageSource` 是**声明合并的可扩展联合**——`packages/llm/llm/src/message.ts:103-115` 原文：
+ * "Merge-extensible sum type — each producer declares its own `kind` in its own module; there is no
+ * shared catch-all `plugin` kind"。会话格式 v4 同样要求 producer-owned kind
+ * （`plugin:<name>`；退役的 `{ kind: 'plugin', plugin }` wrapper 会被 `assertV4MessageSources` 拒绝）。
+ *
+ * 所以按宿主约定在这里注册我们的 kind（而不是在调用点写裸字面量）：
+ * v4 修复当时只改了 `createUserMessage` 的 source 字面量、没登记类型 → tsc 报
+ * 「'"plugin:dsh-plugin-teamflow"' is not assignable to ...」而 **bundle 不做类型检查**，
+ * 于是这个错误一路留到本轮跑 typecheck 才暴露（AGENTS.md：改 type 后必跑 typecheck）。
+ * `form` 按宿主 `ContextFormed` 判别式给足字段：`notice` 必须带一行 `summary`。
+ */
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'plugin:dsh-plugin-teamflow':
+      | { readonly kind: 'plugin:dsh-plugin-teamflow'; readonly form?: never }
+      | { readonly kind: 'plugin:dsh-plugin-teamflow'; readonly form: 'instructions' }
+      | { readonly kind: 'plugin:dsh-plugin-teamflow'; readonly form: 'notice'; readonly summary: string }
+  }
+}
 /** backlog 记录（需求/任务/缺陷通用形状）。 */
 export interface BacklogItem {
   id: string
@@ -43,10 +66,15 @@ export interface PipelineOptions {
   branchPolicy?: 'auto' | 'keep'
   /** 自定义分支名（branchPolicy=auto 时生效；缺省用 triage slug；仅 [a-z0-9-_]，host 校验）。 */
   branchName?: string | null
-  /** 脏工作区的启动前处理（配合 needs-decision 选择）：'stash'（推荐，改动暂存，完成后 git stash pop）；'commit'（提交现有改动，commitMessage 缺省用默认信息）；缺省不处理（改动混入开发）。 */
-  preAction?: 'stash' | 'commit' | null
+  /** 脏工作区的启动前处理（配合 needs-decision 选择）：'stash'（推荐，改动暂存，完成后 git stash pop）；'commit'（提交现有改动，commitMessage 缺省用默认信息）；'init'（2026-09-17 改动存档：非 git 工作区用户选"开启存档" → git init +（目录不大时）基线提交，执行期二次校验危险路径/大目录）；'keep-nogit'（用户明确选"不用版本控制" → gitMode='none'，出口不尝试提交）；缺省不处理（改动混入开发）。 */
+  preAction?: 'stash' | 'commit' | 'init' | 'keep-nogit' | null
   /** preAction=commit 时的提交信息。 */
   commitMessage?: string | null
+  /** 需求澄清答复（2026-09-16 需求澄清闸门）：用户在澄清轮补充的说明——与原始 requirement 分开存，
+   *  PRD prompt 会作为 `[CLARIFIED]` 权威输入下发（不污染「用户原话」的忠实转写）。 */
+  requirementSupplement?: string | null
+  /** 内部：tool 侧预检透传的分诊裁决（避免 pipeline 重复跑一次模型分诊；快照已由 sanitizeSnapOptions 过滤）。 */
+  __triage?: unknown
 }
 /** 断点续跑上下文。 */
 export interface ResumeContext {

@@ -19,6 +19,8 @@ import {
   devPrompt, qaPrompt, qaFixPrompt, acceptancePrompt, TRIAGE_PROMPT,
   techChangePrompt, patchConfirmPrompt, VISUAL_POLICY,
 } from '../host/prompts/index.ts'
+// 形态契约夹具需要 host 数据表（纯数据；core/triage.ts 不依赖 prompts → 无循环）
+import { artifactContractsFor } from '../host/core/triage.ts'
 
 let failed = 0
 const fail = (msg) => { console.error(`    ✗ ${msg}`); failed++ }
@@ -90,12 +92,14 @@ const STAGE_ALL = [
 
 /** 断言：targets 为 key 数组（'ALL'=STAGE_ALL）；include 须全命中、exclude 须全不命中。
  *  en=true → 断言取自 outEn（`state.__runCtx.locale='en'` 的真实工厂产出）。 */
-function assertContract({ id, level, intent, targets, include = [], exclude = [], en = false }) {
+function assertContract({ id, level, intent, targets, include = [], exclude = [], en = false, fixture }) {
   const tNames = targets === 'ALL' ? STAGE_ALL : (typeof targets === 'string' ? [targets] : targets)
   const src = en ? outEn : out
   let ok = true
   for (const name of tNames) {
-    const text = src[name]
+    // `fixture`：调用方直接给工厂产出文本（用于「同一工厂 + 不同 state 上下文」的契约，
+    // 例如形态契约段只在 __runCtx 带 artifactContracts 时才注入）。
+    const text = fixture !== undefined ? fixture : src[name]
     if (text === undefined) { fail(`${id} [${name}] 工厂产出缺失（夹具未构建？）`); ok = false; continue }
     for (const anchor of include) {
       const hit = anchor instanceof RegExp ? anchor.test(text) : text.includes(anchor)
@@ -117,6 +121,174 @@ function assertContract({ id, level, intent, targets, include = [], exclude = []
 }
 
 console.log('── L1 prompt 行为级契约（工厂真实产出断言）──')
+
+// ── 需求澄清闸门（2026-09-16 Phase 1）：分诊的 intent/blockers 契约 + PRD 的假设段契约 ──
+// 这两条是闸门的数据源：分诊不输出 intent/blockers → 探索态需求直接开跑；PRD 不写假设段 → 假设继续不可见。
+assertContract({
+  id: 'TRIAGE-INTENT-BLOCKERS', level: 'policy', targets: 'triagePrompt',
+  intent: '分诊输出 intent（需求/探索/反馈）+ 合格 blocker 五字段（settles + question/readings≥2/changes/rework）',
+  include: [/"intent": "requirement\|exploration\|feedback"/, /"blockers": \[\{ "settles": "installable\|artifact\|host\|scope\|ui\|data\|other", "question"/, /\[INTENT — decide before mode\]/, /\[BLOCKERS — must-know gaps only\]/, /readings/, /rework/],
+})
+assertContract({
+  id: 'PRD-ASSUMPTIONS-SECTION', level: 'policy', targets: 'prdPrompt',
+  intent: 'PRD 必填「假设/待澄清」段 + 镜像进 state 块 openQuestions（假设可见化的落点）',
+  include: [/\[Assumptions · mandatory\]/, /openQuestions/, /假设与待澄清/],
+})
+assertContract({
+  id: 'PRD-ASSUMPTIONS-SECTION-EN', level: 'policy', targets: 'prdPrompt', en: true,
+  intent: 'en run 的 PRD 同样要求假设段（语言跟随 run 快照，不写死中文标题）',
+  include: [/\[Assumptions · mandatory\]/, /openQuestions/, /Assumptions & open questions/],
+})
+assertContract({
+  id: 'TECH-PATCH-ASSUMPTIONS', level: 'policy', targets: ['techChangePrompt', 'patchConfirmPrompt'],
+  intent: '非 PRD 档位（tech 变更单 / patch 确认单）也要一句话假设，避免覆盖缺口',
+  include: [/假设与待澄清/],
+})
+
+// 交付形态契约（2026-09-17 实测：dddd 的插件"看着完整"却装不进 profile——"能被宿主加载"从未进过 AC）
+assertContract({
+  id: 'TRIAGE-ARTIFACT-SHAPE', level: 'policy', targets: 'triagePrompt',
+  intent: '分诊必须判「交付物形态 + 是否要求可安装」（形态决定该满足哪些客观契约）',
+  include: [/"artifact": "app\|plugin-host\|plugin-client\|plugin-full\|cli\|lib\|docs\|data\|other"/, /"installable": true\|false/, /\[ARTIFACT — what kind of deliverable/],
+})
+/** 形态契约段的夹具：`state.__runCtx` 带 artifact/installable/artifactContracts（由 pipeline 从 host 数据表展开）。
+ *  缺此上下文时 prdPrompt 不注入该段——这正是设计（形态=other 的普通改动不该被套契约）。 */
+const ST_ARTIFACT = { ...ST, __runCtx: { ...ST.__runCtx, artifact: 'plugin-full', installable: true, artifactContracts: artifactContractsFor('plugin-full', true) } }
+const prdWithContract = prdPrompt('做一个 dsh 插件', ROOT, RUN_ID, ST_ARTIFACT)
+const prdWithContractEn = prdPrompt('build a dsh plugin', ROOT, RUN_ID, { ...ST_EN, __runCtx: { ...ST_EN.__runCtx, artifact: 'plugin-full', installable: true, artifactContracts: artifactContractsFor('plugin-full', true) } })
+const prdNoContract = out.prdPrompt
+assertContract({
+  id: 'TRIAGE-INSTALL-BLOCKER', level: 'policy', targets: 'triagePrompt',
+  intent: '新交付物但需求没写「交付/安装形态」时，必须作为 must-know blocker 问用户（形态不同 → 契约集与 AC 不同）',
+  include: [/One gap is must-ask whenever it applies/, /installed\/published/, /source in the repo/, /source-only, no packaging/],
+})
+assertContract({
+  id: 'PRD-ARTIFACT-CONTRACTS', level: 'policy', targets: 'prdPrompt',
+  intent: '形态契约必须落成 PRD 必填 AC（清单由 host 数据表下发；字段名要求读本机已装插件样本核实）',
+  include: [/\[交付形态契约 · 必填 AC\]/, /必须落成 PRD 里可测的 AC/, /禁止凭记忆写/, /本机已安装的 dsh 插件/, /\$DSH_HOME\/profiles/, /package\.json/],
+  fixture: prdWithContract,
+})
+// 样本来源必须是「本机已装插件」（2026-09-21 用户实锤）——npm 包实测只发 10 文件、**不含源码**，
+// 用户的孤立工作区里既没有 `plugins/dsh-plugin-teamflow`、也没有我们的源码；而任何 dsh 插件开发者
+// 机器上一定有 profile 里装好的插件（其 package.json 的 dsh 块 + cordis.patch.yml 才是权威现场）。
+assertContract({
+  id: 'PRD-SAMPLE-SOURCE-LOCAL-FIRST', level: 'policy', targets: 'prdPrompt',
+  intent: '样本首选项 = 本机已装 dsh 插件（不能只指本仓相对路径——用户机器上不存在）',
+  include: [/先读本机已安装的 dsh 插件/, /\$DSH_HOME\/profiles\/\*\/node_modules/],
+  exclude: [/必须去读本仓已有的同类插件样本（plugins\/dsh-plugin-teamflow）\s*或宿主文档/],
+  fixture: prdWithContract,
+})
+// ── 本机安装环境注入（2026-09-21 用户实锤：「每个用户环境不一样，路径不要写死」）──
+// 用户源码运行 `pnpm dsh`（dsh 不在 PATH）、profile 名也可能不是 web；契约里写死的命令在他机器上跑不通。
+// 故 host 起跑时探测（DSH_HOME + 插件自身路径反推 profile + dsh 是否在 PATH）并注入；探测失败 → 问用户。
+const instEnvFix = { dshHome: 'C:\\u\\.dsh', profile: 'web', profileDir: 'C:\\u\\.dsh\\profiles\\web', cliOnPath: false, ok: true }
+const instCtx = { artifact: 'plugin-full', installable: true, artifactContracts: artifactContractsFor('plugin-full', true), installEnv: instEnvFix }
+const prdInstall = prdPrompt('做一个 dsh 插件', ROOT, RUN_ID, { ...ST, __runCtx: { ...ST.__runCtx, ...instCtx } })
+const prdInstallEn = prdPrompt('build a dsh plugin', ROOT, RUN_ID, { ...ST_EN, __runCtx: { ...ST_EN.__runCtx, ...instCtx } })
+assertContract({
+  id: 'PRD-INSTALL-ENV-PROBED', level: 'policy', targets: 'prdPrompt',
+  intent: 'PRD 必须带「本机环境」段（路径/命令来自运行时探测，且点明安装由主 agent 执行）',
+  include: [/【本机环境/, /禁止假设 profile 名或路径/, /主 agent 执行/],
+  fixture: prdInstall,
+})
+assertContract({
+  id: 'PRD-INSTALL-ENV-PROBED-EN', level: 'policy', targets: 'prdPrompt', en: true,
+  intent: 'en run 同段（语言跟随 run 快照）',
+  include: [/\[THIS MACHINE/, /never assume a profile name or path/, /for the main agent/],
+  fixture: prdInstallEn,
+})
+assertContract({
+  id: 'PRD-NO-INSTALL-ENV-WITHOUT-PROBE', level: 'policy', targets: 'prdPrompt',
+  intent: '没有探测结果时不注入「本机环境」段（不编路径）',
+  include: [],
+  exclude: [/【本机环境/],
+  fixture: prdWithContract,
+})
+assertContract({
+  id: 'PRD-ARTIFACT-CONTRACTS-EN', level: 'policy', targets: 'prdPrompt', en: true,
+  intent: 'en run 同契约（语言跟随 run 快照；样本同样指向本机已装插件）',
+  include: [/\[DELIVERABLE SHAPE · mandatory ACs\]/, /never write them from memory/, /dsh plugins already installed on THIS machine/, /\$DSH_HOME\/profiles/],
+  fixture: prdWithContractEn,
+})
+assertContract({
+  id: 'PRD-NO-CONTRACT-WHEN-OTHER', level: 'policy', targets: 'prdPrompt',
+  intent: '未判形态（other/缺上下文）时**不得**注入形态契约段（防给普通改动套错契约）',
+  include: [],
+  exclude: [/\[交付形态契约 · 必填 AC\]/],
+  fixture: prdNoContract,
+})
+// ── slot 挂载契约（2026-09-21 实锤：probe-v2 交付的对齐器工具条**静默不挂载**）──
+// 反例：`ctx.slots.register({ name: 'md-table-align.dock' })` —— 插件拿自己的标识当 slot 名，
+// 与 `inject` 的 slot 对不上 → 浏览器端永不出现；而功能单测 31/31 全绿、AC 全过（静默失败）。
+// 修法是 `name` == slot 名、插件标识放 `id`（同仓 5 处注册全这么写，可核实）。
+assertContract({
+  id: 'PRD-SLOT-NAME-CONTRACT', level: 'policy', targets: 'prdPrompt',
+  intent: 'UI 挂载类交付（client 半）必须把「register.name == inject 的 slot 名」写成可测 AC（防静默不挂载）',
+  include: [/UI 挂载点的 `name` 必须是 slot 名本身/, /同一个 slot 字符串/, /装进宿主后该 UI 真的出现/],
+  fixture: prdWithContract,
+})
+// ── 环境不可用政策（2026-09-23 probe-v4 实锤：工作区命令全废时，架构师重试 7 次 + 90k 字符推理才被截断）──
+// 政策块落在 `productCtx`（11 个阶段工厂共用前缀）→ 所有阶段都带，含当时踩坑的 scaffold。
+assertContract({
+  id: 'ENV-UNAVAILABLE-STOP', level: 'policy', targets: 'prdPrompt',
+  intent: '同一命令持续以同一错误失败时必须立即停手上报（禁重试 / 禁换命令绕过 / 禁用推理代替执行），并给出工具名 + 原文错误',
+  include: [/\[Env unavailable · policy\]/, /do NOT retry it/, /do NOT switch to another command/, /the RAW error text/],
+  fixture: prdWithContract,
+})
+// ── 宿主维度契约（2026-09-18 用户实锤："我开发 openclaw 插件，或者 hermes 插件……这些在 dsh 的契约在其他的不一定有效吧"）──
+// 交付物形态与目标宿主是**两个正交维度**：plugin-* 是 dsh 的词汇（profile 入口/bundle patch/client 块/files 白名单），
+// 套给别的宿主 = 反向返工；而对别的宿主我们没有权威（凭记忆写字段名正是 dddd 事故的成因）→ 改为强制"先去调研"。
+assertContract({
+  id: 'TRIAGE-HOST-AXIS', level: 'policy', targets: 'triagePrompt',
+  intent: '分诊必须判目标宿主框架（dsh / other / unknown），与 artifact 正交——契约是否适用取决于它',
+  include: [/"host": "dsh\|other\|unknown"/, /\[HOST — which framework will load this deliverable\]/, /host-contract research/],
+})
+const ST_HOST_OTHER = { ...ST, __runCtx: { ...ST.__runCtx, artifact: 'plugin-full', host: 'other', hostResearch: true } }
+const ST_HOST_DSH = { ...ST, __runCtx: { ...ST.__runCtx, artifact: 'plugin-full', installable: true, host: 'dsh', artifactContracts: artifactContractsFor('plugin-full', true) } }
+const prdHostOther = prdPrompt('开发一个 openclaw 插件', ROOT, RUN_ID, ST_HOST_OTHER)
+const prdHostDsh = prdPrompt('做一个 dsh 插件', ROOT, RUN_ID, ST_HOST_DSH)
+const prdHostOtherEn = prdPrompt('build an openclaw plugin', ROOT, RUN_ID, { ...ST_EN, __runCtx: { ...ST_EN.__runCtx, artifact: 'plugin-full', host: 'other', hostResearch: true } })
+assertContract({
+  id: 'PRD-HOST-RESEARCH-GATE', level: 'host-enforced', targets: 'prdPrompt',
+  intent: '非 dsh 宿主 + 插件形态 → PRD 必须含「宿主契约调研」段（硬门禁：缺段 = PRD 阶段失败）',
+  include: [/\[宿主契约调研 · 必填段\]/, /禁止凭记忆写字段名/, /这一段是硬门禁/],
+  fixture: prdHostOther,
+})
+assertContract({
+  id: 'PRD-HOST-RESEARCH-GATE-EN', level: 'host-enforced', targets: 'prdPrompt', en: true,
+  intent: 'en run 同门禁（语言跟随 run 快照）',
+  include: [/\[HOST CONTRACT RESEARCH · mandatory section\]/, /Never invent field names from memory/, /hard gate/],
+  fixture: prdHostOtherEn,
+})
+assertContract({
+  id: 'PRD-NO-DSH-CONTRACT-FOR-OTHER-HOST', level: 'host-enforced', targets: 'prdPrompt',
+  intent: '**非 dsh 宿主时绝不注入本仓形态契约**（profile 入口/bundle patch/client 块/files 白名单对别的宿主全不适用）',
+  include: [/\[宿主契约调研 · 必填段\]/],
+  exclude: [/\[交付形态契约 · 必填 AC\]/],
+  fixture: prdHostOther,
+})
+assertContract({
+  id: 'PRD-DSH-HOST-KEEPS-CONTRACTS', level: 'policy', targets: 'prdPrompt',
+  intent: 'dsh 宿主照旧拿到具体契约、且**不要**调研段（不误伤我们唯一有权威的场景）',
+  include: [/\[交付形态契约 · 必填 AC\]/],
+  exclude: [/\[宿主契约调研 · 必填段\]/],
+  fixture: prdHostDsh,
+})
+assertContract({
+  id: 'QA-SHAPE-PROBES', level: 'policy', targets: 'qaPrompt',
+  intent: 'QA 必须把形态契约逐条当探针跑（构建产物新鲜度/装载安全/安装回滚纪律——dddd 实锤：旧 lib 装上后宿主启动即炸，靠另开 agent 手术卸载才救回）',
+  include: [/Deliverable-shape verification · mandatory when injected/, /roll back FIRST/, /Never silently skip/],
+})
+assertContract({
+  id: 'PRD-GITIGNORE-PLAN', level: 'policy', targets: 'prdPrompt',
+  intent: '版本化工作区：PM 必须按本项目技术栈审计/规划 .gitignore（收口提交整树 add，噪音进历史=永久）——模型规划，非固定清单',
+  include: [/Version-control hygiene · mandatory when the workspace is versioned/, /read the project, don't guess from a generic list/],
+})
+assertContract({
+  id: 'QA-COMMIT-SURFACE-PROBE', level: 'policy', targets: 'qaPrompt',
+  intent: 'QA 收口探针：git status --porcelain 不得含依赖/构建产物/工具缓存/IDE/密钥；缺失 → P1 缺陷（模块=版本控制）',
+  include: [/Commit-surface hygiene probe · when the workspace is versioned/, /git status --porcelain/],
+})
 
 // ── HOST-ENFORCED：验收结论契约（parseAcceptanceVerdict 只认显式结论行）──
 assertContract({

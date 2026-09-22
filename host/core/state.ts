@@ -77,7 +77,21 @@ export interface TeamflowState {
     /** 验收是否「已知问题」只读模式（E 方案 2026-09-15）：QA 打回超限时 pipeline 写入，
      *  acceptancePrompt 据此产出交付级视图 + 未闭环清单（结论由 host 强制为需人工裁定）。 */
     knownIssues?: boolean
+    /** **交付形态契约**（2026-09-17）：分诊判定形态 → host 数据表展开的必填 AC 清单，
+     *  prdPrompt 据此要求 PM 把形态契约写成可测 AC（防"看着完整却装不上"）。 */
+    artifact?: string
+    installable?: boolean
+    artifactContracts?: Array<{ requirement: string; criteria: string }>
+    /** 目标宿主（2026-09-18）与「需产出宿主契约调研」标记（非 dsh 宿主 + 插件形态时置位，PRD 硬门禁依据）。 */
+    host?: string
+    hostResearch?: boolean
+    /** **本机安装环境**（2026-09-21）：`$DSH_HOME` + 插件自身路径反推的 profile 名/目录 + `dsh` 是否在 PATH。
+     *  路径全为运行时探测（用户环境各异，不得写死）；探测失败时 PRD 必须改为"问用户"。 */
+    installEnv?: { dshHome?: string; profile?: string; profileDir?: string; cliOnPath?: boolean; ok?: boolean } | null
   } | null
+  /** **版本控制模式**（2026-09-17 方案 A：入口定、出口遵）：'repo'=是仓库/已初始化（出口正常收口提交）；
+   *  'none'=用户明确选择不用版本控制（出口**不尝试提交**，汇报明写"未存档"）。缺省=未知（按旧逻辑探测）。 */
+  gitMode?: 'repo' | 'none'
 }
 
 /** 空态 state。 */
@@ -118,6 +132,13 @@ export function loadState(projectKey: string): TeamflowState {
         base.acIndex = raw.acIndex || {}
         base.stages = raw.stages || {}
         base.lastRun = raw.lastRun ?? null
+        // **gitMode 必须显式搬运**（2026-09-18 实锤修复）：本函数是**逐字段白名单重建**（不是整体读取），
+        // 漏一个字段 = 该字段永远存不住。实测 `tf-mu6tb281`：pipeline 明写 `st.gitMode='repo'; saveState(...)`
+        // （日志也有「改动存档已开启」），但**任何一次阶段 state 块合并**（`mergeStateBlock` 走 load→save）
+        // 都会把它丢掉 → 下次 run 又从头问一遍「要不要开启改动存档」——用户当初要的「答案记住、后续不再问」
+        // 整条失效。这类"白名单漏字段"已第四次（B1 同型：execOptions/journal.options/loadState）。
+        // **门禁**：`test/state.test.js` 静态解析本接口的顶层键，逐个断言在本函数里被搬运（新增字段漏了就红）。
+        if (raw.gitMode === 'repo' || raw.gitMode === 'none') base.gitMode = raw.gitMode
         return base
       }
     }
@@ -216,6 +237,16 @@ export function stateSliceFor(state: TeamflowState, role: RoleKey): string {
   }
   if (state.verifyScripts.length && (role === 'qa' || role === 'tech' || role === 'dev')) {
     lines.push(t(locale, 'state.verifyScripts', { list: state.verifyScripts.join(t(locale, 'state.commaSep')) }))
+  }
+  // 交付形态契约 → QA/验收（2026-09-17）：形态契约在 PRD 已落成 AC，但 QA/验收需要**可执行判据**——
+  // 每条契约的 criteria 就是探针清单（装得上/被加载/构建产物新鲜/卸载回滚），缺它 QA 只能凭自觉。
+  if (state.__runCtx && Array.isArray(state.__runCtx.artifactContracts) && state.__runCtx.artifactContracts.length && (role === 'qa' || role === 'acceptance')) {
+    const kind = state.__runCtx.artifact || 'other'
+    lines.push(t(locale, 'state.artifactContracts', {
+      kind,
+      n: state.__runCtx.artifactContracts.length,
+      list: state.__runCtx.artifactContracts.map((it, i) => `${i + 1}. ${it.requirement} — ${it.criteria}`).join('\n'),
+    }))
   }
   // 各阶段结论：本角色只需要前后几段
   if (role === 'pm' || role === 'acceptance') {

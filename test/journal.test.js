@@ -7,8 +7,9 @@
  * 4) 损坏自愈仍生效（.bak 恢复）
  */
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import {
   journalFile, runsDir, persistJournal, loadJournals, serializeJournal, readJson, slugPath, runLogFile, runLogArchiveDir,
 } from '../store.ts'
@@ -95,6 +96,64 @@ persistJournal(projectJournal)
 ok(existsSync(join(projectRunsDir, 'tf-proj1.json')), '新 journal 写到 per-project runs/')
 const loaded4 = loadJournals()
 ok(loaded4.some((x) => x.journal.id === 'tf-proj1'), 'loadJournals 扫描 per-project runs/')
+
+console.log('── 7) 序列化完整性门禁（白名单漏字段的通用防线）──')
+// 历史实锤：`verifyEvidence` 曾存在于 JournalStage 却漏在 stage 序列化里 → 内存写对了、落盘丢了
+// （0.1.9 那次「证据块全空」的根因）。这类"手工枚举清单漏一项"已五次，故对**持久化形态**立结构化门禁：
+// `JournalRecord` / `JournalStage` 的每个字段都必须被 serializeJournal 写出来（不靠有人记得加断言）。
+{
+  const storeSrc = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../store.ts'), 'utf8')
+  const keysOf = (ifaceName) => {
+    const block = (storeSrc.match(new RegExp(`export interface ${ifaceName} \\{[\\s\\S]*?\\n\\}`)) || [''])[0]
+    const out = []
+    for (const line of block.split('\n')) {
+      const m = line.match(/^  ([A-Za-z_$][\w$]*)\??\s*:/)
+      if (m) out.push(m[1])
+    }
+    return out
+  }
+  const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const ser = (storeSrc.match(/export function serializeJournal[\s\S]*?\n\}/) || [''])[0]
+  const serBody = stripComments(ser)
+  const stageBody = stripComments((ser.match(/stages: \(journal\.stages \|\| \[\]\)\.map\(\(s\) => \(\{[\s\S]*?\}\)\)/) || [''])[0])
+
+  const recKeys = keysOf('JournalRecord')
+  ok(recKeys.length >= 25, `静态解析出 JournalRecord 顶层键 ${recKeys.length} 个（解析失败会让门禁空转）`)
+  /** 不落盘的字段（必须**有理由**，不是"忘了"）：目前只有进程内运行期字段。 */
+  const REC_EXEMPT = new Map([
+    ['result', '进程内运行期字段（requirement/options/timeline 的内存副本，不进磁盘）'],
+  ])
+  const recMissing = recKeys.filter((k) => !REC_EXEMPT.has(k) && !new RegExp(`^\\s*${k}:`, 'm').test(serBody))
+  ok(recMissing.length === 0, `JournalRecord 每个字段都被 serializeJournal 写出${recMissing.length ? `（漏了：${recMissing.join(', ')}）` : ''}`)
+  ok(REC_EXEMPT.size === 1 && REC_EXEMPT.has('result'), '豁免表只有一项（新加持久化字段默认必须搬运，不许悄悄塞进豁免表）')
+
+  const stKeys = keysOf('JournalStage')
+  ok(stKeys.length >= 15, `静态解析出 JournalStage 顶层键 ${stKeys.length} 个`)
+  const ST_EXEMPT = new Map([
+    ['tokens', '历史遗留字段（usage 取代）；仅为读取存量数据兼容保留，不再写出'],
+  ])
+  const stMissing = stKeys.filter((k) => !ST_EXEMPT.has(k) && !new RegExp(`^\\s*${k}:`, 'm').test(stageBody))
+  ok(stMissing.length === 0, `JournalStage 每个字段都被阶段序列化写出${stMissing.length ? `（漏了：${stMissing.join(', ')}）` : ''}`)
+  ok(ST_EXEMPT.size === 1, '阶段豁免表只有一项（tokens 历史遗留）')
+  ok(stageBody.length > 100, '阶段序列化体抽取成功（否则上面两条会假绿）')
+  ok(/verifyEvidence/.test(stageBody), '反向锁：verifyEvidence 必须在 stage 序列化里（历史丢字段实锤）')
+}
+
+console.log('── 8) 引擎留痕（provider/model）：run 与阶段两级都要落盘 ──')
+{
+  const j = {
+    ...journal, id: 'tf-engine1', status: 'failed', stages: [{
+      seq: 1, label: '产品经理 · 梳理 PRD', phase: 'prd', status: 'failed', outcome: 'insubstantial',
+      provider: 'inception', model: 'mercury-2.5', startedAt: 1, endedAt: 2,
+    }],
+    engine: { provider: 'inception', model: 'mercury-2.5' },
+  }
+  const out = serializeJournal(j)
+  ok(out.engine && out.engine.provider === 'inception' && out.engine.model === 'mercury-2.5', 'run 级 engine（provider/model）落盘')
+  ok(out.stages[0].provider === 'inception' && out.stages[0].model === 'mercury-2.5', '阶段级 provider/model 落盘（子代理可改道，故逐阶段记）')
+  ok(serializeJournal({ ...j, engine: undefined }).engine === null, '缺 engine → null（不编造）')
+  ok(serializeJournal({ ...j, stages: [{ seq: 1, label: 'x', phase: 'prd', status: 'done' }] }).stages[0].provider === null, '阶段缺 provider → null')
+}
 
 cleanup()
 console.log(failed === 0 ? '\n✅ journal 测试全部通过' : `\n❌ ${failed} 项失败`)

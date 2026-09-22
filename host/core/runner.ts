@@ -2,10 +2,10 @@
  * dsh-plugin-teamflow core — 子代理执行器（并发池 / 单阶段运行 / 重试与熔断）。
  * 依赖：util/constants/types + core(context/metering)。
  */
-import { runtime, inFlight, providerName } from './context.ts'
-import { accumulateSessionUsage, freshTokensOf } from './metering.ts'
+import { runtime, providerName, trackInFlight, untrackInFlight } from './context.ts'
+import { accumulateSessionUsage, freshTokensOf, effectiveFreshBudget } from './metering.ts'
 import { startStageGuard } from './guard.ts'
-import { clip, extractText, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic } from '../util.ts'
+import { clip, extractText, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs, stageDocText } from '../util.ts'
 import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../constants.ts'
 import { t, type HostLocale } from '../locales.ts'
 import { runLocaleOf } from './locale.ts'
@@ -63,20 +63,6 @@ async function resolveStageEffort(
   return { effort: wanted }
 }
 
-/** 并发池：按 max 个 worker 消费 items，返回同序结果。 */
-export async function runPool(items, max, fn) {
-  const results = new Array(items.length)
-  let cursor = 0
-  const workers = Array.from({ length: Math.min(Math.max(1, max), items.length) }, async () => {
-    while (cursor < items.length) {
-      const i = cursor++
-      results[i] = await fn(items[i], i)
-    }
-  })
-  await Promise.all(workers)
-  return results
-}
-
 /**
  * 解析父 agent 当前生效的模型路由（provider/model）。
  *
@@ -127,10 +113,12 @@ export function resolveChildRoute(parent: ParentAgentLike): { provider?: string;
   return out
 }
 
-/** 运行单个阶段子代理：执行 + 产出实质校验 + token 双口径计量 + stage 状态流转。 */
+/** 运行单个阶段子代理：执行 + 产出实质校验 + token 双口径计量 + stage 状态流转。
+ *  `taskIds`：本阶段承载的**开发任务身份**（host 生成的 `dt-N`；合并任务时是数组）。
+ *  与 `taskKey`（人读标题）分家——判定只认 id，title 只作展示（见 pipeline.buildDevTaskDefs 注释）。 */
 export async function runAgent(
   journal: Journal, parent: ParentAgentLike, label: string, phase: string, prompt: string, signal: unknown, taskKey?: string | null,
-  attempt = 1, effortHint?: string | null,
+  attempt = 1, effortHint?: string | null, taskIds?: string[] | null,
 ): Promise<string | null> {
   const maxSeq = journal.stages.length ? Math.max(...journal.stages.map((s) => s.seq)) : 0
   // run 语言快照（AC-2）：诊断/日志/失败摘要一律随 run，不受界面当前语言影响
@@ -139,6 +127,7 @@ export async function runAgent(
   const stage: JournalStage = {
     seq: maxSeq + 1, label, phase, status: 'running', outcome: null,
     taskKey: taskKey || null,
+    taskIds: (Array.isArray(taskIds) && taskIds.length) ? [...taskIds] : null,
     childId: null, startedAt: Date.now(), endedAt: null, summary: null,
     usage: null, handoff: null, output: null,
   }
@@ -149,6 +138,11 @@ export async function runAgent(
   try {
     // 显式传当前生效路由，避免继承过期的 parent.options 快照（主线程已切换代理的情况）
     const route = resolveChildRoute(parent)
+    // **引擎留痕（2026-09-18）**：逐阶段记下实际生效的 provider/model —— 子代理路由跟随主线程/团队配置，
+    // 与 run 起始默认可能不同；一次真实排查里为了回答「是不是模型的锅」（不缓存的 provider 每轮调用
+    // 要多付 ~15.5k，见 FRESH_TOKEN_BUDGET），只能去解压会话文件翻 request/header。
+    stage.provider = route.provider || providerName() || null
+    stage.model = route.model || null
     // 机械阶段降档（可选）：只在宿主声明支持时下发；重试自动回升 high（见 resolveStageEffort）
     const eff = await resolveStageEffort(route, attempt, effortHint, locale)
     const effort = eff.effort
@@ -172,7 +166,7 @@ export async function runAgent(
       signal: normalizeSignal(signal),
     })
     stage.childId = run.id
-    inFlight.set(journal.id, { run, stage })
+    trackInFlight(journal.id, stage, run)
     try {
       if (parent && parent.session && typeof parent.session.append === 'function') {
         parent.session.append('tool-workflow/agent-start', {
@@ -188,13 +182,39 @@ export async function runAgent(
     stageText = text
     // 交付判定（信号分级：客观形态 → 证据块 → 措辞兜底，见 util.judgeDeliverable）
     const verdict = judgeDeliverable(phase, text)
+    // **doc 类阶段的产物兜底**（2026-09-18 probe-v2 实锤，见 util.DOC_STAGE_FILES）：这些阶段的产物
+    // 是任务夹文件，回复只是摘要 —— 回复过短不等于没干活（实锤：PRD.md 4894 字节已落盘、还调了
+    // `present` 声明交付物，却因回复只有 284 字符的 state 块被判「未交付」）。回读文件，达下限即判交付。
+    // 前提仍是**回复非空**：pipeline 要用回复合并 state 块，空回复是真的没交付。
+    let docFallback: { name: string; length: number } | null = null
+    if (!verdict.ok && text && stop === 'completed') {
+      const doc = stageDocText(journal, phase)
+      if (doc && doc.length >= verdict.min) docFallback = { name: doc.name, length: doc.length }
+    }
     if (journal.cancelled) {
       stage.status = 'cancelled'; stage.outcome = 'cancelled'
       return null
     }
-    if (stop === 'completed' && text && verdict.ok) {
+    // **环境不可用优先于「完成了」**（2026-09-23 probe-v4 第二次实机，勿回退）：护栏在 WARN 档一旦记下
+    // 「同一工具持续同一错误失败」，本阶段就已证明**该工作区跑不了命令**。此时模型可能改用文件工具把活干完
+    // （实测：它手写 13 个文件 / 69.8k 输出，其中一个 18.7KB 的自测脚本**一次都没跑过**）——这种"完成"无法验证，
+    // 而下游 dev/QA/验收更需要 shell，按**防假交付**原则不得算 done → 归 env-unavailable：不重试、汇报点名
+    // 环境与原文错误、引导「先修工作区再 resume」（工作区里已落地的文件不删，resume 会带着 shell 重跑本阶段）。
+    if (stage.envUnavailable) {
+      stage.status = 'failed'
+      stage.outcome = 'env-unavailable'
+      stage.summary = t(locale, 'diag.envUnavailableStage', { label, detail: stage.envUnavailable })
+      if (text) stage.output = clip(text, 4000)
+      journal.logs.push({ t: Date.now(), level: 'error', message: stage.summary })
+      return null
+    }
+    if (stop === 'completed' && text && (verdict.ok || docFallback)) {
       stage.status = 'done'; stage.outcome = 'completed'
       stage.output = clip(text, 50000) // 阶段产物全文（断点续跑重建上下文）
+      if (docFallback) {
+        // 留痕（visible）：判交付的依据是文件而不是回复 —— 否则"为什么这次没重试"又成黑盒
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.docDelivered', { label, length: verdict.length, min: verdict.min, name: docFallback.name, docLen: docFallback.length }) })
+      }
       // 措辞只作诊断：命中拒绝词但已带验证证据块 → 仍判交付（2026-09-11 信号换轨）。
       // 留一条 warn 是为了审计可见（「为什么这句『无法执行』没判失败」有据可查），不改变结论。
       if (verdict.refusal) {
@@ -248,9 +268,31 @@ export async function runAgent(
     stage.usage = accumulateSessionUsage(run)
     stage.handoff = stageText ? handoffBrief(stageText) : null
     stage.endedAt = Date.now()
-    if (inFlight.get(journal.id) && inFlight.get(journal.id).stage === stage) inFlight.delete(journal.id)
-    if (run) { try { await run.dispose() } catch (e2) { /* ignore */ } }
+    untrackInFlight(journal.id, stage) // 只注销自己这一路（并发 dev 同 run 多路在飞，见 context.inFlight）    if (run) { try { await run.dispose() } catch (e2) { /* ignore */ } }
   }
+}
+
+/**
+ * 该阶段失败是否「外部供应商不可用」（限流/无额度/上游 5xx/超时…）。
+ * 判据 = `classifyExternalFailure(错误细节, stage.summary)`（纯函数，单测覆盖真值表）。
+ * ⚠️ 启发式：宿主只给 `stopReason=error` + 错误文本，无结构化错误码；命中原文进日志便于日后核对。
+ */
+function isExternalFailure(stage: { summary?: string | null; outcome?: string | null; output?: string | null }): boolean {
+  if (stage.outcome === 'insubstantial' || stage.outcome === 'degenerated' || stage.outcome === 'stalled' || stage.outcome === 'aborted' || stage.outcome === 'env-unavailable') return false
+  return classifyExternalFailure(String(stage.summary || ''), String(stage.output || '').slice(-500)) === 'external'
+}
+
+/** 可取消等待：等待期间被取消/中断则立刻返回 false（不把 sleep 变成不可打断的挂起）。 */
+async function sleepUnlessCancelled(ms: number, isCancelled: () => boolean): Promise<boolean> {
+  const step = 1000
+  let waited = 0
+  while (waited < ms) {
+    if (isCancelled()) return false
+    const slice = Math.min(step, ms - waited)
+    await new Promise((r) => setTimeout(r, slice))
+    waited += slice
+  }
+  return !isCancelled()
 }
 
 /**
@@ -260,10 +302,16 @@ export async function runAgent(
  * `effortHint`：机械阶段的推理强度降档提示（第 1 次尝试生效，重试自动回升 high，见 resolveStageEffort）。 */
 export async function withRetry(
   journal: Journal, parent: unknown, label: string, phase: string, prompt: string, signal: unknown, taskKey?: string | null, effortHint?: string | null,
+  taskIds?: string[] | null,
 ): Promise<{ text: string | null; attempts: number; freshTokens: number; stage: JournalStage | null }> {
   let attempts = 0
   let freshTokens = 0
+  // 熔断预算的缓存能力判据：累计本次调用各次尝试的 usage（只看本阶段，见 metering.effectiveFreshBudget）
+  let usageAcc: { input: number; cacheRead: number; cacheWrite: number; output: number; calls: number } = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 }
   let lastStage: JournalStage | null | undefined = null
+  // 外部供应商故障的独立计数（不受 RETRY_LIMIT 约束：那是"换做法重试"的次数，
+  // 外部故障是"等窗口过去"，两件事不能共用一个计数器）
+  let externalAttempts = 0
   // 重试诊断包与重试日志同样随 run 语言（诊断包是喂回子代理的注入文本）
   const locale = runLocaleOf(journal)
   for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
@@ -276,12 +324,20 @@ export async function withRetry(
     // runAgent 同步 push 本次尝试的 stage（第一个 await 前），期间其他任务的 runAgent
     // 可能已 push 新 stage；用 length-1 取 stage 会错位（证据块/重试诊断/usage 累计全串）。
     const beforeLen = journal.stages.length
-    const result = await runAgent(journal, parent, labelNow, phase, promptNow, signal, taskKey, attempt, effortHint)
+    const result = await runAgent(journal, parent, labelNow, phase, promptNow, signal, taskKey, attempt, effortHint, taskIds)
     lastStage = journal.stages[beforeLen] || null
     // 累计本次调用各次尝试的**新增**消耗（input+cacheWrite+output；cacheRead 是廉价重放，
     // 不计入熔断——旧口径含 cacheRead 导致「一次失败必熔断」，见 FRESH_TOKEN_BUDGET 注释）
     if (lastStage && lastStage.phase === phase) {
       freshTokens += freshTokensOf(lastStage.usage)
+      const u = (lastStage.usage || {}) as { input?: number; cacheRead?: number; cacheWrite?: number; output?: number; calls?: number }
+      usageAcc = {
+        input: usageAcc.input + (u.input || 0),
+        cacheRead: usageAcc.cacheRead + (u.cacheRead || 0),
+        cacheWrite: usageAcc.cacheWrite + (u.cacheWrite || 0),
+        output: usageAcc.output + (u.output || 0),
+        calls: usageAcc.calls + (u.calls || 0),
+      }
     }
     if (result) return { text: result, attempts, freshTokens, stage: lastStage }
     if (journal.cancelled) return { text: null, attempts, freshTokens, stage: lastStage }
@@ -291,11 +347,45 @@ export async function withRetry(
       journal.humanIntervention = true
       return { text: null, attempts, freshTokens, stage: lastStage }
     }
+    // **外部供应商不可用**（限流 / 无额度 / 上游 5xx / 超时…；2026-09-17 dddd 实测：同请求 16 分钟后成功）
+    // ——这不是内容失败，重试同样的请求只是"等窗口过去"。处置：**长退避重试**（30s→60s→120s→240s），
+    // 而不是像内容失败那样快速失败两次就转人工。退避**不计入熔断预算**（等待不烧 token）。
+    if (lastStage && isExternalFailure(lastStage)) {
+      const wait = externalBackoffMs(externalAttempts + 1)
+      if (wait !== null) {
+        externalAttempts++
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.externalBackoff', { label, n: externalAttempts, sec: Math.round(wait / 1000), detail: clip(String(lastStage.summary || ''), 200) }) })
+        if (!(await sleepUnlessCancelled(wait, () => journal.cancelled))) {
+          return { text: null, attempts, freshTokens, stage: lastStage } // 等待期间被取消 → 按取消收尾（不重试）
+        }
+        // 退避后重试同一阶段（attempt 计数不推进 RETRY_LIMIT：这是"等窗口"而非"换做法重试"）
+        attempt--
+        continue
+      }
+      // 退避用尽：仍失败 → **可续跑的外部中断态**（不是内容失败，也不要求改需求）：
+      // run 落 interrupted、阶段标 interrupted，汇报明写"疑似限流/额度，窗口恢复后 resume 只补这一段"。
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'diag.externalExhausted', { label, n: externalAttempts }) })
+      if (lastStage) { lastStage.status = 'interrupted'; lastStage.outcome = 'external' }
+      journal.interrupted = true
+      journal.interruptedAt = Date.now()
+      journal.externalFailure = true
+      journal.humanIntervention = true
+      return { text: null, attempts, freshTokens, stage: lastStage }
+    }
     // 外部中止（aborted：用户重启/进程被杀等）：非模型失败、非烧钱——不熔断、不自动重试，
     // needs-human 引导 resume 续跑（resume 精确补跑失败任务，已完成任务复用；实证 r29 重启后 resume 成功）。
     // 旧行为结算成「熔断」误导（freshTokens 是本次调用累计，含成功任务消耗；真实原因是外部中止）。
     if (lastStage && lastStage.outcome === 'aborted') {
       journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.aborted', { label }) })
+      journal.humanIntervention = true
+      return { text: null, attempts, freshTokens, stage: lastStage }
+    }
+    // **环境不可用**（2026-09-23 probe-v4 实锤）：命令工具持续以同一错误失败（如 Windows 沙箱 ACL
+    // provision 失败 → 该工作区所有命令全废）。重试/换命令/更多推理都修不好**环境**，自动重试只会把同样的
+    // 钱再烧一遍（实锤那次白烧 52.6k 输出，且汇报把真因误写成 max-tokens）→ 直接 needs-human，
+    // 并明确点名「环境不可用、先修工作区再 resume」（已完成阶段与产物全部复用）。
+    if (lastStage && lastStage.outcome === 'env-unavailable') {
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'diag.envUnavailable', { label }) })
       journal.humanIntervention = true
       return { text: null, attempts, freshTokens, stage: lastStage }
     }
@@ -317,8 +407,15 @@ export async function withRetry(
     // token 熔断（新增口径）：本次调用累计新增消耗超预算 → 停止重试转人工。
     // 位置在「自动重试」之前是刻意的：预算合理（≈2 轮尝试量级）时，首次失败走下方重试；
     // 只有该量级数倍的真跑飞才熔断——旧口径把 cacheRead 算进来，等于取消了自动重试（2026-09-11 修）。
-    if (freshTokens >= FRESH_TOKEN_BUDGET) {
-      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'diag.breaker', { label, fresh: Math.round(freshTokens / 1000), budget: Math.round(FRESH_TOKEN_BUDGET / 1000) }) })
+    // **预算随缓存能力自适应**（2026-09-18 probe-v2 实锤）：不缓存的 provider 上每轮调用都要重付
+    // system+tools（实测 ~15.5k/次），200k 会退化成「约 13 次调用上限」→ 按倍数放宽（见 metering）。
+    const eff = effectiveFreshBudget(usageAcc, FRESH_TOKEN_BUDGET)
+    if (freshTokens >= eff.budget) {
+      const params = {
+        label, fresh: Math.round(freshTokens / 1000), budget: Math.round(eff.budget / 1000),
+        calls: eff.calls, ratio: Math.round(eff.ratio * 100),
+      }
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, eff.uncached ? 'diag.breakerUncached' : 'diag.breaker', params) })
       journal.humanIntervention = true
       return { text: null, attempts, freshTokens, stage: lastStage }
     }

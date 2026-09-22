@@ -1,9 +1,9 @@
-<!-- 发布前检查（本注释在 GitHub 上不可见，发布后请整块删除）
-  1. 三条基准链接均指向 main —— 第三条 `assetd-clarity-vs-gate.md` 需 v0.1.8 合入 main 后才可达；
-     若在合入前发布，请把该条链接改成 blob/release-v0.1.8/... 或先合入。
-  2. 文中「已在 main，随下一版发布」已改为 release-v0.1.8 —— 与本文实际发布时机保持一致。
-  3. screenshots 三张图（pipeline-view / board / stage-detail / board-task-detail）需确认已推到 main 的 docs/screenshots/。
--->
+<!-- ⛔ 定稿冻结（2026-09-23 标记）——本通稿已随 **v0.1.8** 发布（GitHub Discussion），内容停止更新。
+     文中版本锚定（`engines.dsh: ">=0.1.5-rc.2 <0.2.0"`、「开发与验证锚定 v0.1.5-rc.2」）是**发布当时**的事实；
+     其后 dsh 与插件均已演进（当前：dsh v0.1.7-alpha.1，下限 `>=0.1.7-alpha.1 <0.2.0`，见 README「版本锚定」段），
+     此处**不再追改**——改它就等于把一份历史发言改成今天的话。
+     ➜ 要发新通稿请**另建文件**，并写当时的锚定版本；本文件只作历史留存。
+     （原「发布前检查」清单已随发布完成退休，如需查阅见 git 历史提交 5989395。） -->
 
 > `dsh plugin --profile web add dsh-plugin-teamflow` → 重启 `dsh --profile web` 即可使用
 

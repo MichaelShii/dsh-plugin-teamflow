@@ -20,51 +20,41 @@ requirement → PRD (based on existing patterns / product memory, archived to pr
 
 ## Screenshots
 
-1. Pipeline view — stage serpentine lanes + node cards (status / duration / tokens / subagent session)
+1. Global panel — the 🏭 Team Workspace icon in the left sidebar (cross-session, product-line view: product list + run list + Backlog tab + overlay detail pane)
 
-   ![Pipeline view](docs/screenshots/pipeline-view.png)
+   ![Global panel](docs/screenshots/en/global-panel.png)
 
-2. Backlog board — draggable lanes for requirements / tasks / defects
+2. Pipeline view — stage serpentine lanes + node cards (status / duration / tokens / subagent session)
 
-   ![Backlog board](docs/screenshots/board.png)
+   ![Pipeline view](docs/screenshots/en/pipeline-view.png)
 
 3. Stage detail drawer — full stage artifacts + token breakdown + "🎬 jump to subagent session"
 
-   ![Stage detail](docs/screenshots/stage-detail.png)
+   ![Stage detail](docs/screenshots/en/stage-detail.png)
 
-4. Board task detail — task-card drawer (requirement text / assignments / event timeline / subtasks / defects / tokens)
+4. Backlog board — draggable lanes for requirements / tasks / defects
 
-   ![Board task detail](docs/screenshots/board-task-detail.png)
+   ![Backlog board](docs/screenshots/en/board.png)
 
-5. Team selector — 🏭 button + team dropdown
+5. Board task detail — task-card drawer (requirement text / assignments / event timeline / subtasks / defects / tokens)
 
-   ![Team selector](docs/screenshots/team-selector.png)
+   ![Board task detail](docs/screenshots/en/board-task-detail.png)
+
+6. Team selector — 🏭 button + team dropdown
+
+   ![Team selector](docs/screenshots/en/team-selector.png)
 
 ## Core Features
 
-- **Anti-fake-delivery**: ① Delivery is judged by **tiered signals** — objective shape (non-empty + per-stage length floor) → real-delivery signal (a `[Verification evidence]` block) → **wording only as a fallback** (rejection phrases like "I cannot complete" count as undelivered **only when there is no evidence block**; a matched phrase with an evidence block is logged as a diagnostic and never vetoes — honestly reporting environment limits is no longer a false failure); ② Token circuit breaker — new tokens accumulated per call (`input+cacheWrite+output`, cache hits excluded) beyond 200k stop retries and require human intervention; ③ Context-exhaustion failures are not retried (retrying the same prompt likely reproduces); ④ Product-level concurrency lock — only one active pipeline per product at a time, preventing requirement state from stepping on itself; ⑤ Full stage outputs are retained (memory + disk) for the detail drawer and checkpoint resume.
-- **Auto completion report to main thread**: when a pipeline ends (success / failure / cancel / interrupt), it automatically delivers a summary (status / stage stats / total token / backlog / next-step guidance) to the initiating session's Agent — wakes on idle (followup), injects next-step context when busy (inject), using the same mechanism as DSH's background-task notifications (tool-jobs mode, but independently implemented and not dependent on the web-disabled tool-jobs). The user need not watch the panel; the model relays the result or continues per guidance (claim defects / transition / resume from checkpoint).
-- **Resume from checkpoint**: every stage checkpoint persists to `$DSH_HOME/teamflow/runs/<runId>.json` (LangGraph checkpointer semantics); after a process crash / restart it is auto-marked `interrupted`, and `teamflow_resume` / the panel's "↻ resume from checkpoint" continues from the first unfinished stage (skipping completed stages, reusing full stage outputs).
-- **Backlog persistence (workspace-isolated since v0.1.0)** under `$DSH_HOME/teamflow/<workspace>/backlog/` as `requirements.json` / `tasks.json` / `bugs.json`, surviving restarts; backlog is isolated per "workspace (project)" — one workspace is one product line, and different workspaces each see their own Team Workspace.
-- **Single-task model **: one requirement = one rotating task card (no longer split by role); the task card records `devAssign` / `qaAssign` / acceptor, with state rotation: todo → developing → to-test → testing → to-accept → accepted | bounced | needs-human; the delivered frontend page also shows each role's **real token usage** spent on that task.
-- **Artifact consolidation **: pipeline docs (PRD / design / architecture / tech spec / QA / memory / history) all consolidate into `docs/teamflow/`, command run logs are staged into `logs/teamflow/<runId>/` while the run is live, so the host `docs/<role>/` and project root are no longer polluted by TeamFlow.
-- **The log root lives in `$DSH_HOME`, not in your project (v0.1.9)**: sub-agents are confined by the DSH file sandbox (`workspace-write` can only write the session workspace), so they stage inside the project first; **as soon as the run ends the host archives what is worth keeping to `$DSH_HOME/teamflow/<workspace>/logs/<runId>/` and deletes the in-project copy** (the host's own event log `run.log` is written straight to the archive). **No output dumps are manufactured**: sub-agents are told *not* to redirect command/suite output into files — long output is already truncated to its tail by the host, which spills the full text to a temp path it reports (native DSH behaviour). What survives is therefore only your **checkers** (`scripts/`), **non-derivable payloads** (`captures.json`) and conclusion notes (`.md`); everything else (`*.log`/`*.out`/`*.txt`, source snapshots) is **dropped at archive time**. Measured on a real run, 93% of the bytes were rerunnable output or an exact copy of something already in git. A crashed/killed run leaves no residue (the next run in the same workspace applies the same rule — self-healing), and **each workspace keeps only the latest 20 runs**.
-- **Delivery surface vs. noise**: only **code + the `docs/teamflow/` task folder** go into the closing commit (one commit per run); `logs/teamflow/` is the plugin's own run log (including sub-agent scratch verification scripts) and is **not a deliverable** — before committing, the host appends that rule to the workspace `.gitignore` (idempotent, visible in the same commit) and, right after the whole-tree `git add`, **unstages the directory again** (`git rm -r --cached --ignore-unmatch` — index only, your files stay put), so **your project needs no pre-configured .gitignore** (these two guards cover the window where you commit yourself while a run is live). If a repo already committed that noise, run `git rm -r --cached logs/teamflow` there to untrack it (local files are kept).
-- **State machine + event log**: requirement (initiated → in-progress → to-accept → accepted), task (todo → developing → to-test → testing → to-accept → done | bounced | needs-human), defect (to-claim → in-progress → fixed-to-verify → closed).
-- **Bounce-back threshold**: 2 consecutive Agent failures in a single stage auto-retry; still failing → `needs-human`, requiring human intervention.
-- **Concurrency pool**: dev tasks run in parallel by `maxConcurrency` (default 3, max 8).
-- **QA defect registration**: the QA report outputs in a fixed table → auto-parsed into bugs entering the backlog.
-- **Token metering (official semantics)**: each stage records `usage` = **cache-miss input / cache-hit input / write-cache / output + call count** (accumulated per event by the sub-agent session) + **cache hit rate** (cacheRead / (input + cacheRead)). Workspace cards / task cards / completion reports all display in this basis — model-agnostic and consistent with the official bill.
-- **lite mode**: lightweight micro-features — `teamflow_start(lite:true)` skips the standalone tech-spec doc stage (PRD is the contract) and goes straight **PRD → dev → QA → acceptance**; with `needDesign:true` it **keeps the UI/UX design stage**. The point is trimming the stage set to match requirement size instead of running a full waterfall on a micro-feature (the `patch` tier is smaller still: single-point confirmation + dev).
-- **Token circuit breaker**: when the **new tokens** accumulated per call (`input + cacheWrite + output`, **cache hits excluded**) exceed `FRESH_TOKEN_BUDGET` (default 200k), retries stop and human intervention is required; reporting/display still uses the official billed basis (`totalTokensOf`). Cache hits are cheap replays — counting them here would mean "any single failure trips the breaker, making auto-retry dead code" (see `docs/devlog.md` entry 15).
-- **🏭 Team Workspace (Web tab)**: a session-header tab alongside chat / trace, containing:
-  - Pipeline graph (stage swimlanes + node cards: status / duration / token / sub-agent session, 2s live refresh)
-  - **Backlog drag-drop kanban** (requirement / task / defect three status swimlanes, cards dragged to transition, native HTML5 DnD zero-dep)
-  - Cost center (per-stage token + total + runtime)
-  - Human-intervention center (needs-human items aggregated + one-click terminal state)
-  - History run switching + product switching
+- **One-line requirement → accepted delivery**: requirement → PRD → technical design → parallel development → QA → acceptance is orchestrated end to end; every stage gets a task card, artifacts and a verdict. Small mechanical changes can use the `patch` / `lite` tiers to trim the stage set instead of running a full waterfall.
+- **Multi-agent team + parallel development**: the requirement is split into parallelizable tasks from the architecture blueprint (3 concurrent by default, 8 max), with product / architecture / dev / QA each working in their own isolated context.
+- **Anti-fake-delivery**: delivery is judged by evidence, not wording — a stage must provide a `[Verification evidence]` block (command + exit code + assertion count), QA runs its own adversarial probes, and acceptance only trusts an explicit verdict line (missing ⇒ the pipeline stops for a human).
+- **QA bounce-back loop**: P0–P2 defects are sent back for a fix and re-verified (≤2 rounds), each defect carrying its own check command and pass criterion; exceeding the limit hands over to a human instead of pretending the run is "done".
+- **Resume + completion report**: after a crash or restart the pipeline continues from the first unfinished stage (completed stages reuse their artifacts); when a run ends, a summary (status / stages / tokens / next steps) is delivered back to the originating session.
+- **Your repository stays clean**: pipeline docs live in the `docs/teamflow/` task folder and the plugin's own run logs are archived out of your project when the run ends — the closing commit carries **code + the task folder only** (one commit per run, **no pre-configured `.gitignore` required**). If an older commit already swept in `logs/teamflow/`, untrack it in that repository with `git rm -r --cached logs/teamflow` (your local files stay).
+- **🏭 Team workbench (two entry points)**: an in-session tab (pipeline graph, drag-and-drop kanban, cost centre, human-intervention centre) and an app-level panel (product-line view, usable across sessions); open any run to see its stages, tokens, verification evidence and artifacts. The UI is **bilingual (Chinese / English)** and follows the host language live; host replies, pipeline logs and pipeline artifacts follow it too (resolved once per run).
+- **Token accounting you can audit**: every stage records its input (cache miss / hit), cache write, output and call count, plus the cache-hit rate, shown on the same basis in reports and in the workbench; mechanical stages automatically drop their reasoning effort and raise it again on retry.
 
-- **Bilingual UI — Chinese / English (v0.1.9, P1 client surface)**: the workbench follows the host language (Settings → General → Language) and **switches live, no restart** — it rides the host `ctx.locale` service (the plugin registers dictionaries and declares `locale` on its slot entries, so every outlet re-renders on a switch) rather than a bespoke i18n layer. Status/phase/role/token-metering vocabularies and time formatting all go through one lookup table; all 247 keys are paired zh↔en, guarded by `test/smoke.js` (the two key sets must match, and no Chinese copy may remain in the client outside `console` diagnostics). **Scope boundary**: the **client display layer only**. Host-generated completion reports, tool results, pipeline logs and artifact documents (PRD/QA-REPORT/ACCEPTANCE…) remain Chinese — artifact language and the acceptance-verdict line are a host parsing contract, tracked as P3 (see `docs/TODO.md`).
 
 ## AGENTS.md minimal-invasion principle (important)
 
@@ -79,37 +69,37 @@ AGENTS.md is unconditionally injected into every session by the harness; it is *
 
 ```
 web profile host composition
-├── teamflow-host   (dsh-plugin-teamflow/host)      Cordis service `teamflow`
-│     └── TeamflowService extends TypertRemoteService
-│           ├── ctx.typert.register(strict descriptors)   ← 17 Remote methods
-│           ├── ctx.tools.register(teamflow_*)            ← 12 model tools
-│           └── node:fs → $DSH_HOME/teamflow/...
-└── teamflow-client (dsh-plugin-teamflow/client, auto-scanned)  ← package.json declares dsh.client,
-      └── ctx.remote.$mount(TEAMFLOW_REMOTE_CONTRIBUTION)      no patch line needed, clientModules auto-registers
-            └── conversation.view tab "🏭 Team Workspace"
+├── teamflow-host   (host/)     Cordis service `teamflow`
+│     ├── ctx.typert.register(strict descriptors)   ← Remote methods (`descriptors.ts` pure data, shared by host / client)
+│     ├── ctx.tools.register(teamflow_*)            ← model tools
+│     └── node:fs → $DSH_HOME/teamflow/…            ← backlog / journal / archived logs
+└── teamflow-client (client/)   ← `package.json` declares `dsh.client`; the host composition scans and registers it
+      ├── conversation.view "🏭 Team Workspace" (in-session tab)
+      ├── sidebar.panellist + main/teamflow (global product-line panel)
+      └── sidebarRightTabs "teamflow-run" (right-sidebar run detail)
 ```
 
-**Why not the @Remote decorator**: host plugins are distributed as plain JS to avoid decorator syntax / TS compilation requirements; `ctx.typert.register` registers strict descriptors (`descriptors.js` pure data, shared by host/client, keeping endpoint and wire parameters consistent).
+Two hard constraints shaped this (details in `AGENTS.md` §3): **no `@Remote` decorator** (plugins ship as plain JS, so Remote uses `ctx.typert.register`'s strict descriptors); **it must be a host-level plugin** (a dynamic plugin's `fs` is sandboxed to the runtime root and cannot write `$DSH_HOME`).
 
-**Why a host-level plugin (not a dynamic plugin)**: dynamic (in-session) plugins run in a restricted sandbox whose `fs` is hard-limited to the runtime root and cannot write to `$DSH_HOME` or the session workspace (observed `file access denied under workspace-write mode`). Only a formal plugin inside the host composition has real Node `fs`, able to land backlog in `$DSH_HOME`, and the client can register an independent tab.
+
 
 ## Directory structure
 
 ```
 dsh-plugin-teamflow/
-  package.json        # dsh.bundle.patch + dsh.client declarations; exports point to lib/ build output
-  cordis.patch.yml    # insert block; entry name uses package root (so clientModules can scan dsh.client)
-  tsdown.config.ts    # client build (ModuleLoader bundle → lib/client.js)
-  tsdown.host.config.ts # host/store/descriptors build (ESM → lib/*.mjs)
-  descriptors.ts      # Remote descriptors (pure data, shared by host/client)
-  store.ts            # persistence layer: atomic write / backup / corruption self-heal + journal serialize / load (independently testable)
-  host/index.ts       # TeamflowService (TS; built to lib/host.mjs for the host to load)
-  client/index.tsx    # Team Workspace (TSX; built to lib/client.js)
-  test/smoke.js       # dependency-free smoke test (descriptors / structure / security hardening)
-  test/journal.test.js # journal behavior test (runs store.ts source directly)
+  package.json          # dsh.bundle.patch + dsh.client declarations; exports point to lib/
+  cordis.patch.yml      # plugin mount patch (insert block, entry uses the package root)
+  tsdown*.config.ts     # builds: client → lib/client.js; host/store/descriptors → lib/*.mjs
+  host/                 # TeamflowService + core/* (pipeline / backlog / runner / guard / triage / state…)
+  client/               # Web workbench (in-session tab + global panel + right-sidebar run detail)
+  store.ts              # persistence layer (atomic write / backup / corruption self-heal + journal serialize)
+  descriptors.ts        # Remote descriptors (pure data, shared by host / client)
+  test/                 # dependency-free tests (node test/*.js, 14 suites)
+  docs/                 # ADRs / dev log / benchmark corpus / release notes
 ```
 
-**TypeScript note**: the whole repo is TS/TSX. The host **must be built** (cannot rely on Node strip-types to run directly) — Node 22's type stripping does not apply to files under `node_modules` ("unsupported for files under node_modules"), while the host composition loads plugins from `profile/node_modules`. Consistent with the DSH ecosystem (the `@deepseek-ai/dsh-*` host packages' exports all point to lib/*.js). After changing source, run `pnpm bundle` to rebuild and sync the profile copy's `lib/`.
+The whole repo is TS/TSX: **the host must be built** (Node's type stripping does not apply to files under `node_modules`, and the host loads plugins from the profile's `node_modules`), so run `pnpm bundle` after changing source and sync the profile copy's `lib/`. Per-file details and the dev environment are in `CONTRIBUTING.md`.
+
 
 ## Requirements
 
@@ -119,11 +109,16 @@ dsh-plugin-teamflow/
 
 ### Version anchor (dsh host compatibility)
 
-This plugin is developed and verified against **dsh v0.1.5-rc.2 (2026-09-10, tag `dsh-v0.1.5-rc.2`)**; on npm the `@deepseek-ai/dsh` package has `next`=0.1.5-rc.2 and `latest`=0.1.5-rc.1 (`latest` lags behind `next` — do not use `latest` to judge the release line). `peerDependencies` stay at `*` (host-injected, deliberately loose), and `package.json` declares the compatibility window **`engines.dsh: ">=0.1.5-rc.2 <0.2.0"`** plus **`dsh.manifestVersion: 1`** — dsh does not read or validate either field today (they exist as types only), so they are declarative author metadata.
+This plugin is developed and verified against **dsh v0.1.7-alpha.1** (session format v4). **That is also the floor for running a pipeline**: every message the plugin injects must carry a producer-owned `source.kind` (`plugin:dsh-plugin-teamflow`), while a v3 host validates `source.kind` against a **closed vocabulary** (`SOURCE_KINDS` contains no `plugin:*`) — the old form `{kind:'plugin', plugin:…}` is rejected outright by a v4 host, and the new form is equally illegal on a v3 host, so the two shapes are **mutually incompatible**; the plugin therefore no longer claims it can run back to v0.1.5-rc.2. The Remote descriptors still expose both `schema` and `create()` for hosts of either generation, see "typert descriptor contract" below. `package.json`'s `engines.dsh: ">=0.1.7-alpha.1 <0.2.0"` (**narrowed to this floor** — see the measurement below) and `dsh.manifestVersion: 1` are declarative author metadata (the host neither reads nor validates them).
 
-Compatibility check of 2026-09-10 (dsh 0.1.5-rc.2): plugin panel slots (the old `conversation` root slot → the `conversation` key under `main`), session format V3 + Session lifecycle (`SessionHandle`, async `agentLoop.create()`, session locks), removal of `ctx.agent` and typed Inbox, adjusted default tools for SDK/Headless/ACP, subprocess handles without pid — **the plugin is compatible with all of them** (it uses none of the changed interfaces; the `conversation.view` / `conversation.input.right` declarations are unchanged and no slot was removed). One follow-up item:
+⚠️ **How the prerelease-tuple rule interacts with this range** (verified 2026-09-23 with semver 7.7.4's `satisfies`): a prerelease only matches a range carrying a prerelease on the **same `[major,minor,patch]` tuple** — `>=0.1.7-alpha.1 <0.2.0` evaluates to **PASS for `0.1.7-alpha.1` / `0.1.7-alpha.2` / `0.1.7` / `0.1.8` / `0.1.9`** and **fail for `0.1.6-alpha.2` / `0.1.6` / `0.2.0-rc.1` / `0.2.0`** (exactly the v4 floor above). Note the old range `>=0.1.5-rc.2 <0.2.0` judged even the then-current `0.1.6-alpha.2` false under the same rule, so a field like this only states compatibility **against stable releases**; the host does not validate it anyway, and day to day you should go by **`next`**: `latest` lags behind it, so don't use `latest` to judge the release line.
 
-- **The synchronous session event readers are deprecated** (`session.eventAt()` / `snapshotEvents()` / `ownEvents()`; since 2026-09-09 the host allows existing calls but forbids new ones, aiming to stop keeping the full event sequence resident in memory): **token metering now prefers the official Session projection** (`ctx.sessionProjections.stateOf(session,'tokenUsage')` for the four buckets + `'sessionStats'.steps` for the call count), with event scanning degraded to a fallback for hosts without projections; **the guard reminder channel moved to the official `Agent.inject()` and the stall check to the official `subagentTiming` projection's `active.through`** (long silent tools are still exempted by the agent-activity guard). Only **repeat detection** still reads events (it needs streaming text; the official replacement — subscribing to `'session/event'` post-commit delivery — requires an equivalent predicate first, see `docs/TODO.md`).
+**Breaking surface of v0.1.7-alpha.1 (this audit)**: the session event format moved to **v4** — before adopting an event the host validates every message's `source.kind` and **refuses the retired v3 plugin wrapper** (`{kind:'plugin', plugin:…}` → `format v4 message requires a producer-owned source kind`), requiring `kind:'plugin:<name>'` instead. All four injection sites (team context ×2 / completion report / guard reminder) still wrote the old wrapper, so a fresh run failed at the write step (the journal never even landed). They now emit `plugin:dsh-plugin-teamflow`. Every other surface re-checked (typert strict descriptors still require `create()`, `subagents.start`/`SubagentRun`, the `tokenUsage` four buckets + `sessionStats.steps`, `agent.inject/followup/steer`, the `settings.locale` read-only port, `remote.$mount`, `sessions.openSubagent`, `sidebarRight.openResource`) showed **no breakage**.
+
+**Breaking surface of v0.1.6-alpha.2 (previous audit)**: the typert strict codec changed from `{ mode, typeSymbol, schema }` to `{ mode, typeSymbol, create: () => Schema }` (lazy materialisation — `materializeSchema` does `record.value ??= record.create()`); `validateCodec` **throws at registration** for a strict codec missing `create()` — `"strict codec has no create() factory"`. Combined with dsh-app-boot's policy (a required plugin failing to activate fails the whole profile with `startup failed`), the symptom is **"dsh won't start"** (`web boot: N entries did not activate`). A full diff of the other surfaces (client-modules / subagent / agent runtime / manifest / the tools llm projection) found no further breakage for this plugin, and the three UI slot packages have zero changes in `src/index.ts` → slot names are safe.
+
+If behaviour looks wrong after a dsh upgrade, check two things first: ① the session events this plugin injects (`tool-workflow/agent-start`, `user/message` with `source.kind='plugin:dsh-plugin-teamflow'`) must sit inside the host's event vocabulary — **a v4 host only accepts producer-owned source kinds (the v3 `plugin` wrapper is retired)**, and a v3 host's closed vocabulary does not accept `plugin:*` either (hence the v4 floor); `tool-workflow/agent-start` carries no message/source slot and is outside that check. **New custom event types must carry `ignorable: true`**, and known types must not add keys outside it; ② metering reads the host **projection keys** (`tokenUsage` / `sessionStats`), so if the host renames them or bumps their state version, `host/core/metering.ts` has to be updated in step. Compatibility checks and open follow-ups are recorded in `CHANGELOG.md` (0.1.6–0.1.9) and `docs/TODO.md` (for example, repeat detection still reads the deprecated event readers).
+
 
 ## Install (for users)
 
@@ -137,7 +132,7 @@ dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 
 After install, **restart** `dsh --profile web` for the host `teamflow-host` to take effect:
 - The model side gains 12 `teamflow_*` tools: `start / triage / status / backlog / claim / update / assign / cancel / resume / pause / resume_session / merge`;
-- The browser session header shows the "🏭 Team Workspace" tab;
+- The browser session header shows the "🏭 Team Workspace" tab (in-session) **and the "Team Workspace" icon in the left sidebar** (the global panel: product-line view, cross-session);
 - Backlog is written to `$DSH_HOME/teamflow/<product>/backlog/*.json`.
 
 > Note: `@deepseek-ai/*` are host-private packages; running requires the DeepSeek Harness (dsh) host environment; this package is neither published standalone nor runnable alone.
@@ -146,7 +141,7 @@ After install, **restart** `dsh --profile web` for the host `teamflow-host` to t
 
 1. **Pick a team**: click the 🏭 button next to the input box and choose a team (or "no team" = chat directly, no pipeline);
 2. **Say the requirement**: just describe it — the model calls `teamflow_start` automatically (auto-triage: patch / lite / tech / medium / full); or force a mode, e.g. "run this in medium mode";
-3. **Watch progress**: switch to the 🏭 Team Workspace tab in the session header — the pipeline graph live-refreshes (per-stage token / duration / sub-agent session), and the backlog kanban supports drag transitions and card detail drawers;
+3. **Watch progress**: switch to the 🏭 Team Workspace tab in the session header — the pipeline graph live-refreshes (per-stage token / duration / sub-agent session), and the backlog kanban supports drag transitions and card detail drawers; for a **cross-session / global** view, click the "Team Workspace" icon in the left sidebar (product-line perspective: product lines → runs + backlog), and hit "⏹ Stop" to cancel a live run (two-step confirm);
 4. **Get the result**: the pipeline reports back to the session automatically when done (status / stage stats / token / next steps); interrupted/failed runs can "↻ resume from checkpoint".
 
 > Note: after `teamflow_start`, the **main thread should not modify code or run verifications itself** — implementation, QA, and reporting are done by pipeline sub-agents (avoid fighting the pipeline over the workspace).
@@ -166,10 +161,10 @@ Optional cleanup (NOT done automatically; run as needed):
 ## Development & verification
 
 ```bash
-npm test                # smoke (descriptors / structure / security) + journal (resume behavior)
-npm run typecheck       # tsc --noEmit type check (same as VSCode, no drift)
+pnpm test               # smoke (descriptors / structure / security) + journal (resume behavior)
+pnpm run typecheck      # tsc --noEmit type check (needs the local dsh profile for @deepseek-ai/* types)
 node --check lib/host.mjs lib/client.js lib/store.mjs lib/descriptors.mjs
-npm run bundle          # build client (tsdown → lib/client.js, __ModuleLoader__.load registers)
+pnpm run bundle         # build client (tsdown → lib/client.js, registered via __ModuleLoader__.load)
 ```
 
 **For plugin developers** (the local dev loop of THIS plugin): see [`AGENTS.md`](./AGENTS.md) and [`docs/adr/`](./docs/adr) in the repo — deployment sync (`node deploy.mjs` → restart `dsh --profile web`), the "running web loads the host from the profile deployment copy, building source alone does not take effect" caveat, design decision records (ADR-0001~0009) and benchmarks (`docs/benchmarks/`). All repo source is TS/TSX and must be built first (`pnpm bundle`) to run (`strip-types` does not apply under `node_modules`).
@@ -185,7 +180,7 @@ Note: `lib/` is excluded by `.gitignore` but must ship with the package (`files`
 | `teamflow_backlog` / `teamflow.backlog(product)` | View backlog (+ persistence path) |
 | `teamflow_claim` | Claim a task or defect |
 | `teamflow_update` / `teamflow.backlogUpdate(kind, id, to, product, reason)` | Manually transition state (handle needs-human) |
-| `teamflow_cancel` / `teamflow.cancel(runId)` | Cancel a run |
+| `teamflow_cancel` / `teamflow.cancel(runId)` | Cancel a run (buttons in the workbench, the global panel's run row and run detail; two-step confirm; only effective while the run is live) |
 | `teamflow_resume` / `teamflow.resume(runId, sessionId)` | Resume from checkpoint (rerun from first unfinished stage) |
 | `teamflow_triage` | Requirement triage preview (start auto-triages by default; use only to pre-assess / force a mode) |
 | `teamflow_assign` | Assign owner of a task / defect (separate from claim: claim only changes state) |

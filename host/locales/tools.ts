@@ -19,7 +19,14 @@ export const TOOLS_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'tool.replyLang': '【回复语言】用中文回复用户（本会话的界面语言是中文）。',
     /* ── 分支决策（teamflow_start 的 needs-decision） ──────────── */
     'tool.start.decision': '【分支决策】{question}\n{options}\n（也可自定义输入）——请询问用户选择，确认后把所选选项的 value 作为 branchPolicy 重新调用 teamflow_start（如 \'new\'/\'keep\'；脏工作区选项可拆为 branchPolicy + preAction 组合），自定义分支名则传 branchName。',
-    'tool.start.needsConfirm': '【需求确认】{question}\n{note}——请按此询问用户后再决定。',
+    'tool.start.gitDecision': '【改动存档决策】{question}\n{options}\n——**建议用 ask_user_question 呈现**（把选项转成点选项，另加"其他"兜底），问句用自然语言（开启=这次运行的改动会单独存档、可撤销、能看清改了什么；不开启=改动直接写入文件夹，之后无法一键撤销）。确认后把所选 value 重新调用 teamflow_start（init → branchPolicy="new" + preAction="init"；keep → branchPolicy="keep" + preAction="keep-nogit"）。',
+    'tool.start.gitDecisionNote': '{question}\n{options}\n{note}',
+    'tool.start.gitDecisionDanger': '【改动存档决策】{question}\n{options}\n——**建议用 ask_user_question 呈现**（点选项 + "其他"兜底）。请向用户说明原因（这个位置太靠根/太特殊，开启存档会波及大量无关文件，已被系统禁止），并建议把项目放进一个单独的文件夹后重新运行。确认后把所选 value（keep → branchPolicy="keep" + preAction="keep-nogit"）重新调用 teamflow_start。',
+    'tool.start.needsConfirm': '【需求确认】{question}\n{note}——**建议用 ask_user_question 呈现**（点选项 + "其他"兜底），请按此询问用户后再决定。',
+    'tool.start.needsClarification': '【需求澄清】这条消息还不足以开工（意图：{intent}）——**没有启动流水线**，也没有创建任何 run。请把每个 blocker 作为**一题 ask_user_question** 问用户（题干=question，选项=readings 里的互斥读法 + "其他"兜底），拿到全部答复后**保留原始 requirement 不变**、把答复放进 requirementSupplement 重新调用 teamflow_start。不要自行替用户假设后直接重调（这正是要拦的行为）。',
+    'tool.start.blockerReadings': '两种读法',
+    'tool.start.blockerChanges': '影响面',
+    'tool.start.blockerRework': '猜错的代价',
     'tool.start.started': '团队研发流水线已启动（runId={runId}，{status}），正在后台执行。【重要】你现在停手：不要自行读取/修改代码实现该需求，不要重复跑测试验证——实现、QA、汇报由流水线各阶段完成。你只需告知用户流水线已启动，等待流水线完成后的官方完成汇报，再向用户转述结果。可用 teamflow_status 查询进度/阶段 token；backlog 已持久化到 $DSH_HOME/teamflow。\n【回复语言】用中文回复用户。',
     'tool.start.paused': '当前会话已暂停 teamflow。如需恢复，调用 teamflow_resume_session；或直接写代码。',
     'tool.start.noTeam': '请先通过输入框旁的 🏭 按钮选择团队，再发送需求消息。未选团队时不走 teamflow。',
@@ -44,6 +51,15 @@ export const TOOLS_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'branch.opt.commitNewChild': '提交现有改动后新建子分支开发',
     'branch.decisionNote': '选项之外可自定义输入（如指定分支名）。确认选择后，请以 teamflow_start 的 branchPolicy（回传所选选项 value，如 new/keep）与 branchName/preAction/commitMessage 参数重新调用本工具。',
 
+    /* ── 改动存档决策（非 git 工作区，2026-09-17；方案 A：问一次、记住、人话） ── */
+    'git.q.noRepo': '这个文件夹（{path}）还没有开启「改动存档」。开启后：本次运行的改动会单独存成一档，随时可以整体撤销，也能清楚看到这次改了什么；不开启：改动会直接写入文件夹，之后无法一键撤销。要开启吗？',
+    'git.opt.init': '开启改动存档（推荐）——将初始化版本档案{baseline}，然后开始运行',
+    'git.opt.initBaseline': '，并把文件夹里现有的 {n} 个文件记录为初始状态',
+    'git.opt.initNoBaseline': '（该文件夹内容较多，只开启存档、不记录现有内容为初始状态）',
+    'git.opt.keep': '不开启，直接修改（本次运行的改动将无法一键撤销，也不会记录改了什么）',
+    'git.q.danger': '这个位置（{path}）不适合开启「改动存档」——它太靠近磁盘根目录或系统目录，开启会波及大量与本项目无关的文件，已被系统禁止。',
+    'git.opt.keepOnly': '不开启，直接修改（建议：把项目放进一个单独的文件夹后重新运行，即可开启存档）',
+
     /* ── 工具返回（其余工具） ──────────────────────────────── */
     'tool.status.reminder': '流水线仍在后台执行：不要自行改代码实现该需求或重复跑验证，等待完成汇报。',
     'tool.merge.command': '请用户在项目目录执行以下命令完成合回（合回后可 git branch -d {branch} 清理特性分支）：\ngit checkout main && git merge --no-ff {branch}',
@@ -61,7 +77,7 @@ export const TOOLS_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'tool.cancel.fail': '取消失败',
     'tool.resume.ok': '流水线 {runId} 已从断点「{phase}」续跑',
     'tool.resume.fail': '续跑失败：{error}',
-    'tool.ctx.team': '[TeamFlow 上下文] 用户已选择「{icon} {name}」团队。只有收到明确的开发需求（新功能/迭代/重构/bug修复/代码改动请求）时才调用 teamflow_start 并指定 teamId="{teamId}"，requirement 参数忠实转写用户原话即可（不要自行扩写、不要臆造文件路径或技术细节）。收到反馈、讨论、闲聊、UI 意见等非开发请求时，不要调用 teamflow_start，直接正常回复。调用 teamflow_start 之后：流水线在后台执行，你不要再自行读取/修改代码实现该需求，也不要重复跑测试验证——只需告知用户流水线已启动，等待流水线的完成汇报后再答复用户。【回复语言】用中文回复用户（本会话界面语言为中文）。',
+    'tool.ctx.team': '[TeamFlow 上下文] 用户已选择「{icon} {name}」团队。只有收到明确的开发需求（新功能/迭代/重构/bug修复/代码改动请求）时才调用 teamflow_start 并指定 teamId="{teamId}"，requirement 参数忠实转写用户原话即可（不要自行扩写、不要臆造文件路径或技术细节）。收到反馈、讨论、闲聊、UI 意见等非开发请求时，不要调用 teamflow_start，直接正常回复。【需求不明确就先澄清，不要抢跑】需求只是探索/笼统时（如「我想做个 X」「帮我搞点 Y」），先跟用户对齐：给 2–4 个方向候选（每个一句话说明它做什么、什么场合用），只问**无法自查、答错就要返工**的关键点；能从代码/文档自己查到的不问。【澄清完必须回到流水线】对齐后**务必**调用 teamflow_start 开工：requirement 保留用户原话，澄清得到的补充说明放进 requirementSupplement——不要聊完就停在对话里不动手。若 teamflow_start 返回 needs-clarification，按它列出的 blockers 继续问用户，再把答复放进 requirementSupplement 重新调用；**不要自行替用户假设后直接重调**。调用 teamflow_start 之后：流水线在后台执行，你不要再自行读取/修改代码实现该需求，也不要重复跑测试验证——只需告知用户流水线已启动，等待流水线的完成汇报后再答复用户。【回复语言】用中文回复用户（本会话界面语言为中文）。',
 
     /* ── 工具入参错误（工具返回面） ────────────────────────── */
     'err.tool.missingKindId': '缺少 kind/id',
@@ -111,7 +127,14 @@ export const TOOLS_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'tool.replyLang': '[Reply language] Reply to the user in English (this session is running with the English UI language).',
     /* ── 分支决策 ─────────────────────────────────────────── */
     'tool.start.decision': '[Branch decision] {question}\n{options}\n(custom input is allowed too) — ask the user to choose, then call teamflow_start again passing the chosen option value as branchPolicy (e.g. \'new\'/\'keep\'; dirty-workspace options can be split into branchPolicy + preAction), or pass branchName for a custom branch name.',
-    'tool.start.needsConfirm': '[Requirement confirmation] {question}\n{note} — ask the user accordingly before deciding.',
+    'tool.start.gitDecision': '[Change-archiving decision] {question}\n{options}\n— **present via ask_user_question** (turn the options into clickable choices plus an "Other" fallback), phrased in plain words (enabling = this run\'s changes are archived separately, can be undone as a whole, and you can see exactly what changed; not enabling = changes are written straight into the folder and cannot be undone in one step later). Then RE-CALL teamflow_start with the chosen value (init → branchPolicy="new" + preAction="init"; keep → branchPolicy="keep" + preAction="keep-nogit").',
+    'tool.start.gitDecisionNote': '{question}\n{options}\n{note}',
+    'tool.start.gitDecisionDanger': '[Change-archiving decision] {question}\n{options}\n— **present via ask_user_question** (clickable choices + "Other" fallback). Explain the reason (this location is too close to the disk root / a special directory; archiving here would sweep in many unrelated files and has been disallowed) and suggest putting the project in its own folder. Then RE-CALL teamflow_start with the chosen value (keep → branchPolicy="keep" + preAction="keep-nogit").',
+    'tool.start.needsConfirm': '[Requirement confirmation] {question}\n{note} — **present via ask_user_question** (clickable choices + "Other" fallback), then decide accordingly.',
+    'tool.start.needsClarification': '[Requirement clarification] This message is not settled enough to start (intent: {intent}) — **no pipeline was started and no run was created**. Ask each blocker as **one ask_user_question** (stem = question, choices = the competing readings + an "Other" fallback); once all answers are in, RE-CALL teamflow_start keeping the original requirement unchanged and putting the user\'s answers into requirementSupplement. Do not just assume on the user\'s behalf and re-call — that is exactly what this gate blocks.',
+    'tool.start.blockerReadings': 'Competing readings',
+    'tool.start.blockerChanges': 'What it changes',
+    'tool.start.blockerRework': 'Cost if guessed wrong',
     'tool.start.started': 'The team R&D pipeline has started (runId={runId}, {status}) and runs in the background. [IMPORTANT] Stop now: do not read or modify code to implement this requirement yourself, and do not rerun tests for verification — implementation, QA and reporting are handled by the pipeline stages. Just tell the user the pipeline has started, wait for the official completion report, and relay its result. Use teamflow_status to check progress/stage tokens; the backlog is persisted under $DSH_HOME/teamflow.\n[Reply language] Reply to the user in English.',
     'tool.start.paused': 'teamflow is paused for the current session. Call teamflow_resume_session to resume, or just write the code directly.',
     'tool.start.noTeam': 'Pick a team via the 🏭 button next to the input box before sending the requirement. Without a team, teamflow is not used.',
@@ -134,6 +157,15 @@ export const TOOLS_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'branch.opt.commitNewChild': 'Commit the current changes and create a child branch',
     'branch.decisionNote': 'Custom input beyond these options is allowed (e.g. a specific branch name). After the user confirms, call this tool again with teamflow_start\'s branchPolicy (pass back the chosen option value, e.g. new/keep) plus branchName/preAction/commitMessage.',
 
+    /* ── Change-archiving decision (non-git workspace, 2026-09-17; plan A: ask once, remember, plain words) ── */
+    'git.q.noRepo': 'This folder ({path}) does not have change archiving enabled yet. With it on: this run\'s changes are archived separately, can be undone as a whole at any time, and you can see exactly what changed. Without it: changes are written straight into the folder and cannot be undone in one step later. Enable it?',
+    'git.opt.init': 'Enable change archiving (recommended) — the version archive will be initialized{baseline}, then the run starts',
+    'git.opt.initBaseline': ', with the {n} existing files recorded as the initial state',
+    'git.opt.initNoBaseline': ' (this folder has many files: archiving is enabled but existing content is NOT recorded as the initial state)',
+    'git.opt.keep': 'Do not enable — modify directly (this run\'s changes cannot be undone in one step and will not be recorded)',
+    'git.q.danger': 'This location ({path}) is not suitable for change archiving — it is too close to the disk root or a system directory; enabling it would sweep in many unrelated files and has been disallowed.',
+    'git.opt.keepOnly': 'Do not enable — modify directly (suggestion: put the project in its own folder and run again, then archiving can be enabled)',
+
     /* ── 工具返回（其余工具） ──────────────────────────────── */
     'tool.status.reminder': 'The pipeline is still running in the background: do not modify code for this requirement or rerun verification yourself; wait for the completion report.',
     'tool.merge.command': 'Ask the user to run the following command in the project directory to complete the merge (afterwards they can delete the feature branch with git branch -d {branch}):\ngit checkout main && git merge --no-ff {branch}',
@@ -151,7 +183,7 @@ export const TOOLS_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'tool.cancel.fail': 'Cancel failed',
     'tool.resume.ok': 'Pipeline {runId} resumed from checkpoint "{phase}"',
     'tool.resume.fail': 'Resume failed: {error}',
-    'tool.ctx.team': '[TeamFlow context] The user selected the "{icon} {name}" team. Call teamflow_start with teamId="{teamId}" only for a clear development requirement (new feature / iteration / refactor / bug fix / code change request), and transcribe the user\'s own words faithfully into the requirement argument (do not expand it, do not invent file paths or technical details). For feedback, discussion, small talk or UI opinions, do not call teamflow_start — just reply normally. After calling teamflow_start the pipeline runs in the background: do not read or modify code for this requirement and do not rerun verification yourself — just tell the user the pipeline has started and answer them after the pipeline reports completion. [Reply language] Reply to the user in English (this session uses the English UI language).',
+    'tool.ctx.team': '[TeamFlow context] The user selected the "{icon} {name}" team. Call teamflow_start with teamId="{teamId}" only for a clear development requirement (new feature / iteration / refactor / bug fix / code change request), and transcribe the user\'s own words faithfully into the requirement argument (do not expand it, do not invent file paths or technical details). For feedback, discussion, small talk or UI opinions, do not call teamflow_start — just reply normally. [Clarify first, do not jump the gun] When the requirement is exploratory or vague ("I want to build some kind of X", "help me make a Y"), align with the user first: offer 2-4 concrete direction options (one line each on what it does and when it is used) and ask only the must-know points you cannot check yourself and whose wrong guess would cause rework; do not ask what you can find in the code or docs. [After clarifying, come back to the pipeline] Once aligned you MUST call teamflow_start to start the work: keep the user\'s own words in requirement and put the clarifications into requirementSupplement — do not stop at the conversation. If teamflow_start returns needs-clarification, keep asking the user about the blockers it lists and re-call with requirementSupplement; do not silently assume on the user\'s behalf. After calling teamflow_start the pipeline runs in the background: do not read or modify code for this requirement and do not rerun verification yourself — just tell the user the pipeline has started and answer them after the pipeline reports completion. [Reply language] Reply to the user in English (this session uses the English UI language).',
 
     /* ── 工具入参错误 ──────────────────────────────────────── */
     'err.tool.missingKindId': 'missing kind/id',

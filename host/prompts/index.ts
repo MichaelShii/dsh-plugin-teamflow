@@ -32,6 +32,9 @@
  */
 import { clip } from '../util.ts'
 import { stateSliceFor, STATE_BLOCK_INSTRUCTION } from '../core/state.ts'
+// 形态契约的**参考样本**表（纯数据；core/triage.ts 不 import prompts → 无循环依赖）。
+// 只取样本路径给 PM 去读，**不引入任何判定逻辑**：字段名随宿主版本演进，必须读样本核实。
+import { ARTIFACT_REFERENCE_SAMPLES, LOCAL_PLUGIN_SAMPLES_HINT } from '../core/triage.ts'
 import { langDirective, t, type HostLocale } from '../locales.ts'
 
 /** 产品层文档根（memory.md 等跨任务资产；任务产物在其中的任务夹内）。 */
@@ -272,6 +275,7 @@ Before starting: read ${base}/AGENTS.md (team rules & doc index — read the sum
 [AGENTS.md boundary · policy] AGENTS.md is team property (injected unconditionally — consensus/index/managed zone only): **do NOT append changelog-style sections during iterations (product memory / todos / change log)** — such data belongs in ${TF_DOCS}/memory.md and task folders; besides the <!-- teamflow:begin/end --> managed zone, no stage may rewrite, reorder, or overwrite any other part of AGENTS.md.
 [Reply language · policy] Write your **final reply** (the summary handed back to the host, plus the state block) in ${replyName} — the artifact language above governs the FILES you write, this governs the TEXT you write back. Never mix languages inside one run: your reply becomes this stage's stored result and is shown in the workbench.
 Backlog (req/task/bug) source of truth is the persisted mirror $DSH_HOME/teamflow/<workspace>/ under ${base}/backlog/: single rotating task card model (${t(locale, 'doc.statusChain')}); devAssign/qaAssign live on the task card.
+[Env unavailable · policy] Command tools run inside the host's sandbox. If the SAME command keeps failing with the SAME error (sandbox/ACL denial, permission, not found, unavailable), **STOP at once**: do NOT retry it, do NOT switch to another command to work around it, and do NOT replace execution with reasoning or guesswork. Reply with the tool name, the RAW error text, what you finished and what is left undone — then end the turn. The host aborts a stage after repeated identical failures and names the environment as the cause; reporting it yourself is far cheaper and keeps the real reason visible.
 `
 }
 
@@ -337,20 +341,81 @@ export const ONCE_DISCIPLINE = `[ONE-SHOT WRITE · policy] The most important ef
 - Always end output with a state block so the host can index and the next run needn't re-read.
 `
 
+/**
+ * **本机安装环境注入块**（2026-09-21 用户实锤，勿写死路径）。
+ *
+ * 契约原来写死 `dsh plugin --profile web add`——用户是源码运行（`pnpm dsh`，`dsh` 不在 PATH），
+ * 那条命令在他机器上跑不通；profile 名也可能不是 `web`。现在路径/命令**全部由 host 运行时探测**
+ * （`$DSH_HOME` + 插件自身所在路径反推 profile + `dsh` 是否在 PATH），这里只把结论转述给 PM。
+ * 探测失败 → 明确要求"问用户"，**不许猜**。
+ * 同时点明**执行者**：流水线子代理权限被钉死在工作区、**装不了**（会话原文：
+ * `permission scope was fixed ... cannot be widened`）；**主 agent 能**——它的 profile 写入被拒后
+ * 宿主给出 `escalation available`，`approval/policy: ask` 下经用户批准即可。故 PRD 必须把「安装」
+ * 写成一个**给主 agent 执行的步骤**，而不是"请用户手动测试"。
+ */
+function installBlock(en: boolean, rc: Record<string, unknown>): string {
+  const env = (rc && rc.installEnv) as { ok?: boolean; profile?: string; profileDir?: string; cliOnPath?: boolean; dshHome?: string } | undefined
+  if (!env) return ''
+  const ok = env.ok === true
+  const p = env.profile || '?'
+  const dir = env.profileDir || '?'
+  const cli = env.cliOnPath === true
+  if (en) {
+    return ok
+      ? `\n   [THIS MACHINE · install environment, probed at run start — never assume a profile name or path] DSH_HOME=\`${env.dshHome}\`; profile=\`${p}\`; profile dir=\`${dir}\`; \`dsh\` on PATH: ${cli ? 'yes (use the CLI)' : 'NO (source-run — use the equivalent manual steps)'}.\n   **Who installs**: pipeline subagents CANNOT write outside the workspace (their permission scope is fixed) — so the PRD must specify the install as a step **for the main agent to execute** (it can request a one-shot escalation, which the user approves), not as "please test it manually". Write the concrete command for THIS machine (CLI form, or \`pnpm add\` inside the profile dir + the \`dsh.profile.bundles\` entry, which is auto-derived from the package's \`dsh.bundle.patch\`), plus the exact rollback.`
+      : `\n   [THIS MACHINE · install environment] Could NOT be probed (DSH_HOME / profile name unavailable) → the PRD must instruct the main agent to **ASK THE USER** for the profile location; never invent a path. Subagents cannot install (their permission scope is fixed); the install step is for the main agent.`
+  }
+  return ok
+    ? `\n   【本机环境 · 起跑时探测，禁止假设 profile 名或路径】DSH_HOME=\`${env.dshHome}\`；profile=\`${p}\`；profile 目录=\`${dir}\`；\`dsh\` 在 PATH：${cli ? '是（用 CLI）' : '**否**（源码运行 → 走等价手动步骤）'}。\n   **谁执行安装**：流水线子代理**写不了**工作区之外（权限启动即固定）——所以 PRD 必须把安装写成**给主 agent 执行的步骤**（主 agent 可申请一次性升级授权，由用户批准），而不是"请用户手动测试"。请按**本机**实际情况给出可照做的命令（CLI 形式，或在 profile 目录内 \`pnpm add\` + \`dsh.profile.bundles\` 条目——后者由包的 \`dsh.bundle.patch\` 声明自动推导），并给出精确回滚。`
+    : `\n   【本机环境】探测失败（DSH_HOME / profile 名不可得）→ PRD 必须指示主 agent **先问用户** profile 位置，**绝不许编路径**。子代理装不了（权限固定）；安装步骤归主 agent。`
+}
+
 export const prdPrompt = (requirement, root, runId, state) => {
-  const en = LOCALE(state) === 'en'
-  /** PRD 头部声明模板：zh 逐字不变；en 为新增英文契约（仅 en 分支出现，AC-4③）。 */
+  const en = LOCALE(state) === 'en'  /** PRD 头部声明模板：zh 逐字不变；en 为新增英文契约（仅 en 分支出现，AC-4③）。 */
   const hdrBaseline = en
     ? '`Baseline dependency: <prior task folder this requirement depends on> (its established behavior must not regress)`; write `Baseline dependency: none` if no dependency.'
     : '`基线依赖：<prior task folder this requirement depends on>（its established behavior must not regress）`; write `基线依赖：无` if no dependency.'
   const hdrSupersede = en
     ? '`Supersedes: <task folder>#<AC number>: <one sentence>` (only when this requirement explicitly changes existing behavior; omit otherwise).'
     : '`取代：<task folder>#<AC number>：<one sentence>` (only when this requirement explicitly changes existing behavior; omit otherwise).'
+  // 交付形态契约（2026-09-17 实测：dddd 的插件"看着完整"却装不进 profile，因为"能被宿主加载"从未进过 AC）：
+  // 形态与契约清单由 host 的数据表给出（triage.artifact + ARTIFACT_CONTRACTS），**不靠正则识别、不硬编码字段名**。
+  const contract = (() => {
+    try {
+      const rc = (state && state.__runCtx) || {}
+      const items = Array.isArray(rc.artifactContracts) ? rc.artifactContracts : []
+      if (!items.length) return ''
+      const kind = String(rc.artifact || 'other')
+      const inst = rc.installable === true
+      const lines = items.map((it, i) => `   ${i + 1}. ${it.requirement} — ${it.criteria}`).join('\n')
+      // 样本来源（2026-09-21 用户实锤修正）：**首选项 = 本机已安装的 dsh 插件**（任何开发机都有），
+      // 本仓样本降为次选（用户机器上不存在——npm 包不发源码，实测 pack 只有 10 个文件）。
+      const repo = (ARTIFACT_REFERENCE_SAMPLES[kind] || []).join(en ? ', ' : '、')
+      const where = en
+        ? `**first look at the dsh plugins already installed on THIS machine** — \`${LOCAL_PLUGIN_SAMPLES_HINT}\`: their \`package.json\` (\`dsh\` block) and \`cordis.patch.yml\` are the authoritative, version-current samples of how the declarations are really written${repo ? `; if the workspace happens to sit inside this repo you may also read \`${repo}\`` : ''}; if neither exists, read the host docs or ask the user — **never write them from memory**`
+        : `**先读本机已安装的 dsh 插件**——\`${LOCAL_PLUGIN_SAMPLES_HINT}\`：它们的 \`package.json\`（\`dsh\` 块）与 \`cordis.patch.yml\` 就是"声明到底怎么写"的**权威且与宿主版本同步**的样本${repo ? `；若工作区恰好在本仓内，也可就近读 \`${repo}\`` : ''}；两者都没有就去读宿主文档或问用户——**禁止凭记忆写**`
+      return en
+        ? `\n[DELIVERABLE SHAPE · mandatory ACs] Triage judged this deliverable as \`${kind}\`${inst ? ' and it must be **installable/loadable by its host**' : ''}. The following are **objective delivery contracts of that shape** — every item MUST become a testable AC in this PRD (not prose, not a "notes" section), because downstream QA/acceptance only verify what is in the AC table:\n${lines}\n   Field names / file names vary with the host version, so ${where}.${installBlock(en, rc)}`
+        : `\n[交付形态契约 · 必填 AC] 分诊判定本次交付物形态为 \`${kind}\`${inst ? '，且**必须可被宿主安装/加载**' : ''}。以下是该形态的**客观交付契约**——每一条都**必须落成 PRD 里可测的 AC**（不是正文说明、不是"备注"小节），因为下游 QA/验收只验 AC 表里的东西：\n${lines}\n   字段名/文件名随宿主版本演进，所以${where}。${installBlock(en, rc)}`
+    } catch (e) { return '' }
+  })()
+  // **宿主契约调研（2026-09-18 用户实锤，硬门禁）**：交付物要被**非 dsh 宿主**加载时（openclaw / hermes /
+  // pi / 判不出），本仓的 dsh 契约一条都不适用 —— 但也不能凭记忆编那家的字段名（dddd 事故的成因）。
+  // 故强制 PM **先去调研**目标宿主自己的加载/注册契约，并把结论写成 PRD 的独立段（缺段 → PRD 阶段失败）。
+  const hostResearchBlock = (() => {
+    const rc = (state && state.__runCtx) || {}
+    if (rc.hostResearch !== true) return ''
+    const host = String(rc.host || 'unknown')
+    const kind = String(rc.artifact || 'other')
+    return en
+      ? `\n[HOST CONTRACT RESEARCH · mandatory section] Triage judged this deliverable as \`${kind}\` targeting a host that is **NOT this project's own host** (\`${host}\`). The hard contracts of this repo's host **do not apply** to it — do NOT carry over its profile entry declaration, bundle patch, client block or \`files\` whitelist. Instead, FIRST research the target host's own plugin/extension loading contract and write the findings into a dedicated section titled exactly "Host contract research" containing, at minimum: (a) which host framework and version this targets; (b) where its plugin/extension loading contract is documented (URL or file path you actually read); (c) the concrete requirements it imposes (entry declaration, packaging, install/load command, any safety or rollback requirement); (d) anything you could NOT verify and how the dev stage should resolve it. **Never invent field names from memory** — cite what you read. This section is a hard gate: a PRD without it fails the stage.`
+      : `\n[宿主契约调研 · 必填段] 分诊判定本次交付物形态为 \`${kind}\`，其目标宿主**不是本项目自身的宿主**（\`${host}\`）。本仓宿主的那些硬契约（profile 层入口声明 / bundle patch / client 声明块 / files 白名单）**对它一条都不适用**，不得照搬。正确做法：**先去调研目标宿主自己的插件/扩展加载契约**，把结论写进一个标题恰为「宿主契约调研」的独立段，至少包含：(a) 目标是哪个宿主框架及其版本；(b) 它的插件/扩展加载契约**在哪儿有据可查**（你真读过的 URL 或文件路径）；(c) 它实际要求什么（入口声明 / 打包 / 安装加载命令 / 有无安全与回滚要求）；(d) 你**没能核实**的点，以及 dev 阶段该怎么解决。**禁止凭记忆写字段名**——写明你读过什么。这一段是硬门禁：PRD 缺它 → 阶段失败。`
+  })()
   return `You are a senior Product Manager. The current workspace IS the target project (empty = project not yet created).
 ${productCtx(root, LOCALE(state))}${stateSliceFor(state, 'pm')}
 ${ONCE_DISCIPLINE}[REQUIREMENT]
 ${requirement}
-[ARTIFACT LOCATION] ${RUN(state)}/PRD.md (write once; create dirs if missing).
+[ARTIFACT LOCATION] ${RUN(state)}/PRD.md (write once; create dirs if missing).${contract}${hostResearchBlock}
 [REQUIREMENTS]
 1. First look at the state index above and the AGENTS.md doc index to decide whether this is an iterative requirement and which prior task folders relate (folder names carry date+theme; reverse date order = evolution). Do not full-read historical docs.
 2. [AC numbering] Number ACs from AC-1 within THIS folder only — ACs belong to this requirement, no global numbering.
@@ -361,8 +426,10 @@ ${requirement}
 4. Output the full PRD (${langDirective(LOCALE(state))}): background & goals, user stories (each with testable acceptance criteria), scope & non-goals, interaction flow summary, priority (P0/P1/P2), dependencies & risks, milestone suggestions. ACs must be testable/quantifiable; prefer precision & brevity. ${L(state, 'doc.noRevisionTable')} (the folder IS the archive; its name carries the identity).
 5. [Memory write-back · convention changes ONLY] Update docs/teamflow/memory.md ONLY if this requirement introduces new team conventions / tech-stack decisions (replace the same-topic line, idempotent, no changelog-style appending); otherwise do not touch memory.
 6. [Engineering actions carried verbatim] Engineering instructions in the raw requirement (create/switch branch, commit, tag...) MUST be preserved verbatim into the "${L(state, 'doc.engConstraints')}" section of the PRD: specify the action, timing, and baseline (e.g. "branch from latest main, then implement"). If the workspace already has uncommitted changes, note how to handle them. Never silently drop or reword engineering instructions.
+6b. [Version-control hygiene · mandatory when the workspace is versioned] If the workspace has (or will get, per the host log "改动存档/git init") version control: audit the existing/potential \`.gitignore\` **for THIS project's stack** — build outputs, dependency/tool caches, IDE files, local env secrets — and put "complete/extend .gitignore" into the engineering-constraints section as a dev-stage action (file names must match this project's real tooling: a Python project needs __pycache__/.venv, a Rust one target/, a pnpm monorepo .pnpm-store — read the project, don't guess from a generic list). Rationale: the closing commit stages the whole tree; noise that slips into it becomes permanent history.
 ${ARTIFACT_DELIVERY(RUN(state))}
-7. [State] End with a state block (phase="prd"): summary covers the AC highlights + one-sentence product semantics; extra contains { "acIndex": {...}, "summary": "<product one-liner>", "techStack": "..." }.${STATE_BLOCK_INSTRUCTION}`
+7. [State] End with a state block (phase="prd"): summary covers the AC highlights + one-sentence product semantics; extra contains { "acIndex": {...}, "summary": "<product one-liner>", "techStack": "...", "openQuestions": [{ "q": "...", "why": "...", "changes": "...", "default": "..." }] }.${STATE_BLOCK_INSTRUCTION}
+8. [Assumptions · mandatory] If ANY part of the requirement is under-specified, do NOT silently decide on the user's behalf: write a dedicated section titled exactly "${L(state, 'doc.assumptionsQ')}" and list every assumption / open question as one bullet — what you assumed, why, and what would change if the user decides otherwise. If nothing is under-specified, still write the section with a single line stating there are no open questions. This section is what lets a human tell whether the PRD is what they actually wanted; the host surfaces it to the user verbatim.`
 }
 
 export const designPrompt = (prd, root, runId, state) => `You are a senior UI/UX designer. The current workspace IS the target project.
@@ -499,6 +566,11 @@ ${clip(devSummary, 15000)}
    - If the injected blueprint JSON ("<!-- blueprint -->") is present, verify the implementation follows it (was the to-be-extracted module extracted? deps/assembly per blueprint? any deviations?).
    - Check for **duplicated implementations** (e.g. multiple security wrappers/storage/adapter utilities drifting), **abstraction not extracted where it should be**, **obviously broken existing structure**.
    - Report architecture findings in the defect table format (severity P1, module =${L(state, 'doc.archModuleQ')}). This is part of the delivery quality gate, not just functional bugs.
+0b. [Deliverable-shape verification · mandatory when injected] If the state slice carries ${LOCALE(state) === 'en' ? '"Deliverable-shape contracts"' : '「交付形态契约」'}, treat every item as a **required probe** (this is exactly the class of failure where a delivery "looks complete" but cannot be installed/loaded, or a stale build artifact crashes the host on startup):
+    - Run each executable criterion and record command + exit code in QA-REPORT.md (sandbox-legal ones: file/field presence, dependency protocol scan, build-freshness, load-safety via \`node -e "require(...)"\`).
+    - **Install rollback discipline**: before any profile/publish install, write down the exact uninstall command (e.g. remove the package from profile deps + bundles, or \`dsh plugin remove <name>\`); if a post-install verification fails, roll back FIRST, then report — never leave the host unbootable.
+    - Environment-blocked items (e.g. needs a host restart to verify real loading) → list them in the ${L(state, 'doc.manualChecklistQ')} with method + tool, for human review. Never silently skip.
+0c. [Commit-surface hygiene probe · when the workspace is versioned] If version control is in play (host log mentions 改动存档/git, or a .gitignore exists): before signing off, run \`git status --porcelain\` and verify it contains **no dependency dirs, build outputs, tool caches, IDE files or local secrets** (per this project's stack — e.g. node_modules/, .pnpm-store/, __pycache__/, target/, dist/, .idea/, .env). Missing/incorrect .gitignore coverage → file it as a P1 defect (module = 版本控制), because the closing commit stages the whole tree and noise becomes permanent history.
 1. [Environment limits · dynamic by model capability]${VISUAL_POLICY(!!vision, LOCALE(state))}
    - Always-available sandbox-legal paths: build/assembly checks, unit tests, DOM-level E2E (jsdom or equivalent), static audit, adversarial spot-checks.
 2. [${t(LOCALE(state), 'doc.manualChecklist')}] Items that cannot be auto-verified (audio output / real-device: 100dvh dynamic toolbar, safe-area, multi-touch / FPS performance / screen-reader): do NOT fail them — instead list each in the report's ${L(state, 'doc.manualChecklistQ')} section (acceptance criteria + method + tool), note ${L(state, 'doc.envLimitQ')}, for human review.
@@ -629,9 +701,14 @@ ${langNote}
 3. hotfix/single-point/pure numeric/pure docs → patch; clear "add feature X" → pick lite/medium/full by size.
 4. Focused change (even with tests/regression) → lite/tech by nature; not necessarily full.
 5. [M1 ARCHITECTURE CRITERION (important)] **Architecture-level changes** — persistence/localStorage/database/standalone module/abstraction/cross-many-files without an existing reusable wrapper (like a localStorage wrapper, storage layer, state management) — even if they look like "small features", go **at least medium** (must pass the architecture stage and produce a blueprint, avoiding scattered local implementations by dev); such changes collapse under a light "micro feature" tier. Tech-driven rework (refactor/optimize/arch upgrade) is itself tech (tech also runs the lightweight blueprint now).${enExamples}
+6. [INTENT — decide before mode] \`intent\` = \`"requirement"\` **only** when this is a settled development ask. Use \`"exploration"\` for still-thinking-out-loud phrasing ("I've been wondering about adding X", "test this out", "I want to build some kind of plugin") and \`"feedback"\` for opinions/questions about existing behavior — **neither may start a pipeline**; the caller will ask the user first. When unsure between requirement and exploration, prefer \`"exploration"\` (a wasted prompt is cheaper than a wasted pipeline).
+7. [BLOCKERS — must-know gaps only] \`blockers\` = what you **cannot** settle yourself from the repo/state index **and** whose wrong guess causes rework. Each entry needs all five fields: \`settles\` (\`"installable"\` | \`"artifact"\` | \`"host"\` | \`"scope"\` | \`"ui"\` | \`"data"\` | \`"other"\` — **which verdict field the answer will decide**; use \`"other"\` when it decides no field), \`question\` (one sentence to ask the user), \`readings\` (≥2 concrete **competing** interpretations), \`changes\` (which artifact / AC / scope it changes), \`rework\` (what gets redone if guessed wrong). Anything you can self-check, or whose wrong guess costs nothing, or that has only one sensible reading → **do not list**. No such gap → \`[]\`. Never invent questions to look thorough: unqualified entries are dropped by the caller and counted against you. **Never file a gap your own verdict already answers** — the caller checks \`settles\` against your own fields and drops contradictions: with \`installable: true\` (or a requirement that already states the delivery form) the delivery-form blocker is self-contradictory and must not appear; with a settled \`host\` the "which host" blocker is likewise dropped. Real case: a requirement ending in "${en ? 'install and actually work in my dsh web profile' : '装进我的 dsh web profile 里真实可用'}" still produced that blocker → one wasted clarification round (3 questions to the user) plus a second triage call for the same requirement.
+   **One gap is must-ask whenever it applies**: a **new deliverable** (\`artifact\` ∈ plugin-host / plugin-client / plugin-full / cli / lib) whose **delivery form** the requirement does not state — must it actually be **installed/published** (真能被宿主装入 / 发 npm), or is "source in the repo" enough? These give different contract sets and different ACs, and guessing wrong means redoing the packaging work at the very end (real case: a plugin shipped without its host-load entry file and bundle declaration, because "can it be installed" was never settled). Ask it as ONE blocker (\`settles: "installable"\`) with the concrete readings (e.g. "installable into the profile & verified by a real load" vs "source-only, no packaging"), then set \`installable\` from the answer. **Do not** ask it when the requirement already states the form, or when the repo already settles it (existing conventions/scripts/docs), or when you have already set \`installable: true\`.
+8. [ARTIFACT — what kind of deliverable, and does it have to install] \`artifact\` describes the **deliverable's shape**, which decides which hard contracts the PRD must turn into ACs: \`"app"\` (end-user application) / \`"plugin-host"\` (host-side plugin: service/tools/events) / \`"plugin-client"\` (browser-side UI plugin) / \`"plugin-full"\` (both halves) / \`"cli"\` / \`"lib"\` (library/module) / \`"docs"\` / \`"data"\` / \`"other"\` (a change inside an existing product rather than a new deliverable). \`installable\` = does "done" mean the artifact must be **installable/loadable by its host** (e.g. a plugin that must actually load in a profile) rather than merely "source in a directory"? Judge from the requirement's own words ("做插件""能装上""发布") plus the repo's conventions — do NOT guess \`true\` for ordinary in-repo changes. Wrong shape is expensive: a plugin that "looks complete" but cannot be loaded fails at the very end (real case: a plugin shipped without its profile-load entry file and bundle declaration passed every functional AC because "can it be loaded" was never an AC).
+9. [HOST — which framework will load this deliverable] \`host\` says **whose plugin/extension mechanism this deliverable must satisfy**; it is a DIFFERENT axis from \`artifact\` and it decides whether this project's own hard contracts even apply: \`"dsh"\` = this DeepSeek-Harness host (the project this pipeline lives in — profile entry declaration, bundle patch, \`dsh.client\` block, \`files\` whitelist); \`"other"\` = a **different** host framework (openclaw / hermes-agent / pi-agent / any other agent framework with its own plugin or extension API); \`"unknown"\` = you cannot tell from the requirement and the repo. ${en ? 'A plugin built for another host must NOT be given this host\'s contracts — those mechanisms do not exist there, and applying them causes rework in the wrong direction.' : ''} For \`"other"\`/\`"unknown"\` with a plugin-shaped deliverable, the PRD is additionally required to carry a **host-contract research** section (which host, where its plugin/extension loading contract is documented, what it actually requires) — a run without it fails the PRD stage. If the host is a **new deliverable for an unspecified host** and getting it wrong would rework everything, file it as a blocker with \`settles: "host"\`.
 
 [OUTPUT] JSON object ONLY — no commentary, no preface, no closing text. The FIRST character of your reply must be '{'. Do NOT say anything like "here is the JSON" or "Let me output the JSON" — output the object itself:
-{ "mode": "patch|lite|tech|medium|full", "slug": "<topic words> (3-24 lowercase letters/digits/hyphens, e.g. wallkick-toggle, 7bag-random; used to name the task folder)", "kind": "one-word nature", "needDesign": true|false, "complexity": "small|medium|large", "rationale": ["key argument 1","key argument 2"], "confidence": "high|medium|low" }`
+{ "mode": "patch|lite|tech|medium|full", "slug": "<topic words> (3-24 lowercase letters/digits/hyphens, e.g. wallkick-toggle, 7bag-random; used to name the task folder)", "kind": "one-word nature", "needDesign": true|false, "complexity": "small|medium|large", "rationale": ["key argument 1","key argument 2"], "confidence": "high|medium|low", "intent": "requirement|exploration|feedback", "artifact": "app|plugin-host|plugin-client|plugin-full|cli|lib|docs|data|other", "installable": true|false, "host": "dsh|other|unknown", "blockers": [{ "settles": "installable|artifact|host|scope|ui|data|other", "question": "...", "readings": ["competing reading A","competing reading B"], "changes": "which artifact/AC/scope it changes", "rework": "what gets redone if guessed wrong" }] }`
 }
 
 /** tech 档 PRD：技术变更单（无功能 AC，重范围/目标/改动面/回归）。 */
@@ -643,7 +720,7 @@ ${requirement}
 1. Produce the ${L(state, 'doc.techChangeQ')} (Markdown), write to ${RUN(state)}/TECH-CHANGE.md — **do NOT rewrite any functional ACs in prior task-folder PRDs** (tech-driven rework adds no user-visible acceptance items in principle; if there IS a sliver of user-visible behavior change, state it explicitly in that section).
 2. Change sheet content: background & goal (one sentence), impact scope (files/modules), tech approach (key points), behavior-compatibility impact (any user-visible change), regression & verification plan (which verify commands, regression floor), risks & rollback.
 3. Sync the change's key points into docs/teamflow/memory.md (only when new conventions/todos change; same-topic line replace, idempotent); don't touch AGENTS.md beyond the teamflow managed zone.
-4. Tight (this is a contract for dev/QA, ≤120 lines), ${langDirective(LOCALE(state))}. [Boundary] only under ${TF_DOCS}/.
+4. Tight (this is a contract for dev/QA, ≤120 lines), ${langDirective(LOCALE(state))}. [Boundary] only under ${TF_DOCS}/. Also add a short "${L(state, 'doc.assumptionsQ')}" section: every place the requirement was under-specified and you decided for the user, with what would change if they decide otherwise (single line if none).
 5. [State] End with a state block (phase="tech"), extra = { "verifyScripts": [...], "scopedFiles": [...] }.${STATE_BLOCK_INSTRUCTION}`
 
 /** patch 档 PRD：单点修复快速确认（不产 PRD 文档）。 */
@@ -654,6 +731,6 @@ ${requirement}
 [REQUIREMENTS]
 1. Judge whether it truly is a single-point/hotfix: yes → output the ${L(state, 'doc.confirmSheetQ')} (confirmation sheet); no → explicitly say "suggest upgrading pipeline mode (e.g. tech/lite/full)", don't force it.
 2. [Requirement vs reality] **First verify the requirement description matches the workspace reality**: matches → produce the sheet per the outline below; mismatches → explicitly note ${L(state, 'doc.mismatchNoteQ')} in the sheet, **no fabricated changes**.
-3. Sheet content: fix point (file/location), change outline, regression impact (tiny / which verify commands to run), whether to bump version along the way.
+3. Sheet content: fix point (file/location), change outline, regression impact (tiny / which verify commands to run), whether to bump version along the way, plus a one-line "${L(state, 'doc.assumptionsQ')}" note (what you had to assume; "none" if nothing).
 4. Output the confirmation sheet text ONLY (${langDirective(LOCALE(state))}) — **do not touch any product docs** (no PRD this time; memory write-back belongs to acceptance stage).
 5. [State] End with a state block (phase="patch"), summary = confirmation conclusion.${STATE_BLOCK_INSTRUCTION}`

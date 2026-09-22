@@ -70,6 +70,18 @@ export const GUARD_SILENCE_MS = 10 * 60_000
 /** 空转判定：会话仍在产出事件但连续这么久没有任何工具调用（纯推理打转/改写式循环）→ stalled。要求已见过至少一次工具调用。 */
 export const GUARD_NO_TOOL_MS = 15 * 60_000
 /**
+ * **环境不可用**判定（2026-09-23 probe-v4 实锤）：同一工具**以完全相同错误**持续失败的次数。
+ * 实锤：`pwsh` 因 Windows 沙箱 ACL provision 失败（`SetNamedSecurityInfoW failed (Win32 5)`）每次同样报错，
+ * 架构师重试 7 次 + 90k 字符推理后撞 max-tokens 被截断 —— 白烧 52.6k 输出，且汇报把真因写成 `max-tokens`。
+ * 命令工具不可用是**环境故障**：重试、换命令、用推理代替执行都修不好它，必须在烧钱之前停下并说清原因。
+ */
+export const GUARD_TOOL_FAIL_WARN = 2
+/** 同一工具相同失败的**中止**阈值（达到即 dispose；outcome='env-unavailable'，不自动重试）。
+ * 取 3 而非更大的值：**实测模型第 2 次就以「按策略停止重试」放弃 shell、改用文件工具绕道**
+ * （probe-v4 第二次实机：它手写 13 个文件 / 69.8k 输出，其中一个 18.7KB 自测脚本从没跑过），
+ * 所以提醒要早于它放弃（2 次），中止也要在它绕道成规模之前（3 次）。 */
+export const GUARD_TOOL_FAIL_ABORT = 3
+/**
  * 拒绝/放弃措辞词表（诊断信号 + 兜底判据，**不再是唯一的交付门禁**）。
  *
  * 2026-09-11 信号换轨：旧实现把它当交付门禁全文扫描，实锤 assetd tf-mtwvwpxa-p3vw08 的 T5

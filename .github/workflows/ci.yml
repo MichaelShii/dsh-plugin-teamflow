@@ -9,13 +9,15 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      # action 一律用 v5：v4 的 action runtime 是 node20（GitHub 已弃用，会被强制切到 node24 并告警），
+      # v5 起改用 node24（实测：checkout/setup-node/pnpm-action-setup 的 v4 = node20，v5 = node24）。
+      - uses: actions/checkout@v5
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         with:
           version: 11
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22.18
           cache: pnpm

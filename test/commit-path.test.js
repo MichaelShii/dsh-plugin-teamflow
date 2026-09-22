@@ -16,10 +16,10 @@
  * 环境要求：git 可执行且**能被本进程 spawn**。DSH 文件沙箱下 piped-stdio spawn 会 `EPERM`
  * （`spawnSync git EPERM`），此时打印 SKIP 并**不算失败**——在普通终端里跑 `pnpm test` 才是真实门禁。
  */
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { gitRun, tfAddArgs, tfUnstageArgs, tfDocAddArgs, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR } from '../host/core/sanity.ts'
+import { gitRun, tfAddArgs, tfUnstageArgs, tfDocAddArgs, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from '../host/core/sanity.ts'
 import { mergeGitignore } from '../host/util.ts'
 
 let failed = 0
@@ -124,6 +124,43 @@ ok(clean.ok && clean.out === '', '提交后已无待提交内容（--untracked-f
 const again = gitRun(secRepo, ['commit', '-m', 'chore: nothing left'])
 ok(again.ok === false, '再来一次 commit 确实失败（无事可做）')
 ok(GIT_NOTHING_TO_COMMIT.test(again.error || ''), `失败文本被 GIT_NOTHING_TO_COMMIT 兜底认成「无事可做」（实测措辞：${String(again.error || '').split('\n').filter(Boolean).slice(-1)[0].slice(0, 70)}）`)
+
+console.log('── ④ 基线排除（2026-09-18 方案 B）：索引层排除噪音 + 绝不写用户 .gitignore ──')
+// 这一组锁死两件事：
+//  ① 「未被忽略的路径 + :(exclude)」= exit 0 且目标不进索引（**方案 B 的立论基础**，temp 仓库实测）；
+//  ② 排除项若**已被 .gitignore 忽略**，`tfExcludePathspecs` 的自检必须不下发它——否则点名被忽略路径
+//     立刻复现 2026-09-11→09-15 那个 exit 1（4 天没有任何 run 提交过）。
+const baseRepo = newRepo('baseline-exclude')
+seedProject(baseRepo, false)
+mkdirSync(join(baseRepo, '.pnpm-store', 'v3'), { recursive: true })
+writeFileSync(join(baseRepo, '.pnpm-store', 'v3', 'blob.bin'), 'x'.repeat(2048), 'utf8')
+mkdirSync(join(baseRepo, 'node_modules', 'dep'), { recursive: true })
+writeFileSync(join(baseRepo, 'node_modules', 'dep', 'index.js'), 'module.exports = 1\n', 'utf8')
+// 基线提交那一刻 .gitignore 只有自有日志规则（= ensureLogGitignore 刚写过的状态），
+// **没有** .pnpm-store/node_modules —— 正是冷启动的真实起点。
+writeFileSync(join(baseRepo, '.gitignore'), mergeGitignore(null, [`${TF_LOG_DIR}/`]).text, 'utf8')
+const gitignoreBefore = readFileSync(join(baseRepo, '.gitignore'), 'utf8')
+const baseAdd = gitRun(baseRepo, tfAddArgs(BASELINE_NOISE_EXCLUDES, baseRepo), 120000)
+ok(baseAdd.ok, `基线 add 带索引层排除时 exit 0（未忽略路径 + :(exclude) 是安全的）${baseAdd.ok ? '' : `：${baseAdd.error}`}`)
+const basePaths = stagedPaths(baseRepo)
+ok(!basePaths.some((p) => p.startsWith('.pnpm-store')), `.pnpm-store 未进索引（实测暂存 ${basePaths.length} 个文件）`)
+ok(!basePaths.some((p) => p.startsWith('node_modules')), 'node_modules 未进索引')
+ok(basePaths.includes('src/a.mjs'), '真交付仍在提交面内（排除是精确的，不是一刀切）')
+expect(readFileSync(join(baseRepo, '.gitignore'), 'utf8'), gitignoreBefore, '**用户 .gitignore 一个字节都没被改**（方案 B 的核心承诺：不替项目决定该忽略什么）')
+const baseCommit = gitRun(baseRepo, ['commit', '-m', 'chore: baseline before teamflow run'], 120000)
+ok(baseCommit.ok, '基线提交成功（这就是 probe-clock 那次被超时杀掉、现在能跑通的那一步）')
+const baseTree = gitRun(baseRepo, ['ls-tree', '-r', '--name-only', 'HEAD'])
+ok(baseTree.ok && !baseTree.out.includes('.pnpm-store') && !baseTree.out.includes('node_modules'), '基线的提交树里没有噪音目录')
+
+// ② 自检：排除项已被 .gitignore 忽略时，必须**不下发**该排除项（否则 exit 1）
+const dupRepo = newRepo('baseline-exclude-dup')
+seedProject(dupRepo, false)
+mkdirSync(join(dupRepo, '.pnpm-store'), { recursive: true })
+writeFileSync(join(dupRepo, '.pnpm-store', 'blob.bin'), 'x', 'utf8')
+writeFileSync(join(dupRepo, '.gitignore'), mergeGitignore(mergeGitignore(null, [`${TF_LOG_DIR}/`]).text, ['.pnpm-store/']).text, 'utf8')
+const dupAdd = gitRun(dupRepo, tfAddArgs(BASELINE_NOISE_EXCLUDES, dupRepo), 120000)
+ok(dupAdd.ok, `排除项已被 .gitignore 忽略时仍 exit 0（自检拦下了点名：${dupAdd.ok ? '安全降级' : `FAILED：${dupAdd.error}`}）`)
+ok(!stagedPaths(dupRepo).some((p) => p.startsWith('.pnpm-store')), '该噪音仍被 .gitignore 挡在索引外（自检没削弱保护）')
 
 cleanup()
 if (failed) { console.error(`\n❌ commit-path 失败 ${failed} 项`); process.exit(1) }

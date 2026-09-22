@@ -3,7 +3,7 @@
  * 背景：withRetry 原样重试 = 盲试——子代理不知道上次为什么失败（拒绝词？过短？stopReason？护栏？）。
  * 修复：重试 prompt 附诊断块（失败分类/详情/护栏原因/产出尾部），insubstantial 细分拒绝词命中点。
  */
-import { refusalHit, buildRetryDiagnostic, judgeDeliverable } from '../host/util.ts'
+import { refusalHit, buildRetryDiagnostic, judgeDeliverable, toolResultText, isToolErrorResult, toolFailureSignature, toolFailureAction } from '../host/util.ts'
 
 let failed = 0
 const expect = (actual, expected, msg) => {
@@ -120,6 +120,38 @@ ok(diagEn.includes('[/Retry diagnostic end]') && diagEn.endsWith('[/Retry diagno
 ok(diagEn.length < 2000, 'en 诊断包产出尾部同样截断（块长受控）')
 ok(buildRetryDiagnostic(3, { outcome: 'stalled', output: '', guardReason: 'spin' }, 'en').includes('Guard abort reason: spin'), 'en 护栏原因入块')
 ok(!buildRetryDiagnostic(3, { outcome: 'stalled', output: '' }, 'en').includes('End of the previous output'), 'en 无产出时不带产出尾部段')
+
+console.log('── 环境不可用检测（工具持续同一错误失败；2026-09-23 probe-v4 实锤）──')
+// 形状复刻：宿主 tool/result 的 message 带**结构化 `isError`** + content[0].text（probe-v4 架构师会话逐字）。
+const failResult = { message: { role: 'tool', toolCallId: 'call_1', isError: true, content: [{ type: 'text', text: 'Error: SetNamedSecurityInfoW failed (Win32 5): grantWrite(E:\\tmp\\probe-v4)' }] } }
+const okResult = { message: { role: 'tool', toolCallId: 'call_2', isError: false, content: [{ type: 'text', text: 'ok' }] } }
+ok(isToolErrorResult(failResult), 'isError=true → 判失败（结构化字段，不猜文本）')
+ok(!isToolErrorResult(okResult), 'isError=false → 不判失败（哪怕文本里有别的输错）')
+ok(isToolErrorResult({ message: { content: [{ type: 'text', text: 'Error: boom' }] } }), '缺 isError 字段（老宿主/裁剪事件）→ 按行首 Error 前缀兜底')
+ok(!isToolErrorResult({ message: { content: [{ type: 'text', text: 'no error here' }] } }), '句中 error 不算失败（宁严勿松）')
+ok(!isToolErrorResult(null) && !isToolErrorResult({}) && !isToolErrorResult({ message: {} }), 'null/空/无 message → 不判失败且不抛')
+expect(toolResultText(failResult).startsWith('Error: SetNamedSecurityInfoW'), true, 'toolResultText 拼接 content 的 text 块')
+expect(toolResultText(null), '', 'toolResultText(null) → 空串（不抛）')
+// 指纹：同一工具 + 同一错误 = 同一信号；工具不同或错误不同 = 不同信号（这是"环境坏了"而非"模型波动"的判据）
+const sigA = toolFailureSignature('pwsh', 'Error: SetNamedSecurityInfoW failed (Win32 5): grantWrite(E:\\tmp\\probe-v4)')
+const sigB = toolFailureSignature('pwsh', 'Error:   SetNamedSecurityInfoW  failed (Win32 5): grantWrite(E:\\tmp\\probe-v4)')
+const sigC = toolFailureSignature('read', 'Error: SetNamedSecurityInfoW failed (Win32 5): grantWrite(E:\\tmp\\probe-v4)')
+expect(sigA, sigB, '同工具同错误（仅空白差异）→ 同一指纹')
+ok(sigA !== sigC, '工具不同 → 指纹不同')
+ok(toolFailureSignature('pwsh', 'x'.repeat(500)).length < 200, '指纹截断（错误文本取前 160 字符，日志不爆）')
+expect(toolFailureSignature(null, null), 'tool::', '缺工具名/错误 → 不抛（降级为 tool::）')
+// 阈值真值表（纯函数，动作可测）
+expect(toolFailureAction(1, 3, 5), 'none', '1 次 → none（继续观察）')
+expect(toolFailureAction(2, 3, 5), 'none', '2 次 → none')
+expect(toolFailureAction(3, 3, 5), 'warn', '3 次（WARN 阈值）→ warn（注入提醒，请模型停手）')
+expect(toolFailureAction(4, 3, 5), 'warn', '4 次 → warn')
+expect(toolFailureAction(5, 3, 5), 'abort', '5 次（ABORT 阈值）→ abort（dispose，outcome=env-unavailable）')
+expect(toolFailureAction(99, 3, 5), 'abort', '远超阈值仍 abort')
+expect(toolFailureAction(undefined, 3, 5), 'none', '未计数 → none（不抛）')
+// 生产阈值（constants 的 GUARD_TOOL_FAIL_WARN/ABORT = 2/3；2026-09-23 按实机校准：模型第 2 次就放弃 shell）
+expect(toolFailureAction(1, 2, 3), 'none', '生产阈值：1 次 → none')
+expect(toolFailureAction(2, 2, 3), 'warn', '生产阈值：2 次 → warn（提醒要早于模型放弃）')
+expect(toolFailureAction(3, 2, 3), 'abort', '生产阈值：3 次 → abort（赶在它绕道成规模之前）')
 
 console.log(failed === 0 ? '\n✅ diagnostic 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

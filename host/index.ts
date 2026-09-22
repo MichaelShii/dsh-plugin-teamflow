@@ -24,29 +24,117 @@ import type {
   Journal, BacklogItem, PipelineOptions, ResumeContext, SubagentRunLike, ParentAgentLike, UsageBuckets,
 } from './types.ts'
 import { RETRY_LIMIT, STATUS, PHASE_ORDER, PHASE_KEY_OF, PHASE_KEY_BY_NAME, phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER } from './constants.ts'
-import { toText, clip, extractText, normalizeRoot, normalizeTasks, sanitizeSnapOptions, normalizeSignal, isUnretryable, handoffBrief } from './util.ts'
+import { toText, clip, extractText, normalizeRoot, normalizeTasks, sanitizeSnapOptions, normalizeSignal, isUnretryable, handoffBrief, runPool } from './util.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, devPrompt, qaPrompt, acceptancePrompt } from './prompts/index.ts'
-import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, setSessionProjections, workspaceScopeOf } from './core/context.ts'
+import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, setSessionProjections, setInstallCtx, workspaceScopeOf } from './core/context.ts'
 import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/backlog.ts'
 import { runsFor, runAddress, productKeyOf, runVisibleIn, runBrief, productMetaOf, listProducts } from './core/products.ts'
 import { loadTeams, findTeam, teamNameOf, teamDescOf, type TeamConfig } from './core/teams.ts'
-import { runPool, runAgent, withRetry } from './core/runner.ts'
+import { runAgent, withRetry } from './core/runner.ts'
 import { deliverCompletion } from './core/report.ts'
 import { runSanityCheck, gitCmd } from './core/sanity.ts'
+import { loadState } from './core/state.ts'
+import { isDangerousVcsRoot, dirTooLargeForBaseline } from './util.ts'
 import { join } from 'node:path'
-import { mkdirSync, readdirSync } from 'node:fs'
-import { executePipeline, summarizeTimeline, startPipeline, cancelRun, resumeRun } from './core/pipeline.ts'
-import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, normalizeMode, runTriage } from './core/triage.ts'
+import { homedir } from 'node:os'
+import { mkdirSync, readdirSync, statSync } from 'node:fs'
+
+/** 有界计数（决策问句里的"现有 N 个文件"；不精确——只采样，超阈值即停）。 */
+function countFilesBounded(dir: string, cap = 1000): number {
+  let n = 0
+  const walk = (d, depth) => {
+    if (depth > 12 || n > cap) return
+    let es = []
+    try { es = readdirSync(d, { withFileTypes: true }) } catch (e) { return }
+    for (const e of es) {
+      if (e.name === '.git' || e.name === 'node_modules') continue
+      if (e.isDirectory()) walk(d + '\\' + e.name, depth + 1)
+      else { n++; if (n > cap) return }
+    }
+  }
+  walk(dir, 0)
+  return n
+}
+import { executePipeline, summarizeTimeline, startPipeline, resumeRun } from './core/pipeline.ts'
+import { cancelRun } from './core/context.ts'
+import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, MODE_RANK, normalizeMode, runTriage, guardrailUpgrade, triageCacheKey, triageCacheGet, triageCachePut, triageCacheMarkPending, triageCacheSettle, type TriageVerdict } from './core/triage.ts'
 import { t, modeDesc } from './locales.ts'
 import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.ts'
 
 /* BacklogStore / storeFor 见 core/backlog.ts（数据层与状态机）。 */
 
+/**
+ * 需求澄清闸门 · 启动前预检（2026-09-16 Phase 1，**快路径**）。
+ *
+ * 分诊本来就是一次模型调用——这里把它**前移到建 run 之前**，用同一份裁决判两件事：
+ * ① `intent` 是否「明确需求」（`exploration` = 还在探讨、`feedback` = 对现状的反馈）；② 有没有 **must-know**
+ * 缺口（`blockers`，已过 host 合格线：≥2 互斥读法 + 改变哪个产物/AC + 猜错返工什么）。命中任一 → 返回
+ * `needs-clarification`，**不建 run**——实锤：社区讨论 #6405 用户说「我想开发一个 dsh 插件」→ 直接跑完整条
+ * 流水线（他本人：「我都不知道自己想要啥」）。
+ *
+ * ⚠️ **正确性不依赖本函数**（2026-09-16 实测教训，`tf-mu35oza7-wmuckz`）：它在**工具调用内**跑，模型分诊
+ * 一旦在此失败（那次 0.4s 返回 `source=fallback`，因为漏传 `signal`）就会静默降级成正则兜底 —— 所以
+ * **权威判定在 pipeline 内**：pipeline 对「没有透传裁决」的启动一律自己再跑一次分诊，并据此做闸门与
+ * 架构护栏。这里失败只把原因放进 `__triageError`，由 pipeline 记 warn（不静默）。
+ *
+ * 边界：**只有 `patch` 档豁免**——其余一律（含显式 `lite`/`mode`）都要过闸门与架构护栏；原因：实测模型
+ * **系统性**自选档位（33 次启动 14 次显式传入、0 次先 `teamflow_triage` 预览；根因是旧 `lite` 描述里的
+ * "(recommended)" 被逐字引用）→ 若继续豁免，闸门与 ADR-0006 护栏会在 42% 的启动上静默失效。
+ */
+async function clarificationPreflight(
+  requirement: string,
+  options: Record<string, unknown>,
+  parent: unknown,
+  signal: unknown,
+  locale: ReturnType<typeof ambientLocale>,
+): Promise<
+  | { needsClarification: { intent: string; blockers: TriageVerdict['blockers'] }; cacheKey: string }
+  | { verdict: TriageVerdict | null; error?: string; cacheKey: string }
+> {
+  if (options.mode === 'patch') return { verdict: null, cacheKey: '' }
+  // 分诊输入 = 需求原文 + 澄清答复（`[CLARIFIED]`）：否则答复不会被分诊看到 —— 实测 dddd：用户已逐项答复
+  // （supplement 涨到 1012 字符），分诊却只看到那句「我想开发一个 dsh 插件」，同一个问题反复问了 6 轮、零 run。
+  const triageInput = options.requirementSupplement
+    ? `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-ask]\n${String(options.requirementSupplement)}`
+    : requirement
+  // **分诊结果缓存**（2026-09-18 实锤新增，二次修正见 triage.ts）：决策返回路径会让同一条需求被分诊两次。
+  // 键只含「需求 + 澄清答复」，**不含任何决策字段**（preAction/branchPolicy 正是导致重调的原因，进键就永远命不中）。
+  // 有效性由 `pendingDecision` 状态决定（"还在等用户回答同一个问题"），**不看时间**——实测用户隔 55 分钟才点选。
+  // 调用方在返回 needs-decision/needs-clarification 时置"待决策"、在建 run 成功后 `triageCacheSettle`。
+  const cacheKey = triageCacheKey(requirement, options.requirementSupplement)
+  const cached = triageCacheGet(cacheKey)
+  let verdict: TriageVerdict | null = cached
+  let error = ''
+  if (verdict) {
+    // 命中留痕：否则"为什么这次没跑分诊"又会变成黑盒（同 `log.triageFallbackReason` 的教训）。
+    // 此处 run 尚未建立（工具预检阶段），故记为**进程级诊断**（stderr），pipeline 侧另有权威判定与日志。
+    try { console.error(`[teamflow] ${t(locale, 'diag.triageCacheHit')}`) } catch (e) { /* 诊断失败不影响功能 */ }
+  } else {
+    try {
+      verdict = await runTriage(triageInput, { needDesign: options.needDesign === true }, parent, signal, locale)
+      triageCachePut(cacheKey, verdict) // 仅 model 裁决入缓存（fallback 不缓存，见 triage.ts）
+    } catch (e) {
+      error = String((e && (e as { message?: string }).message) || e)
+      verdict = null
+    }
+  }
+  if (!verdict) return { verdict: null, error, cacheKey }
+  // **收敛规则**（2026-09-16 dddd 实测）：调用方**还没给过**澄清答复时才拦；已给过（说明用户已澄清一轮）
+  // → 不再拦，残余 blocker 当作假设开工（PRD 写进「假设与待澄清」段、完成汇报高亮）。否则同一个问题会被
+  // 反复问、永不收敛（实测 6 轮、零 run）。
+  const alreadyClarified = !!String(options.requirementSupplement || '').trim()
+  if ((verdict.intent !== 'requirement' || verdict.blockers.length > 0) && !alreadyClarified) {
+    return { needsClarification: { intent: verdict.intent, blockers: verdict.blockers }, cacheKey }
+  }
+  if (alreadyClarified && verdict.blockers.length > 0) (verdict as unknown as Record<string, unknown>).__clarifyProceeded = verdict.blockers.length
+  return { verdict, cacheKey }
+}
+
 /* 阶段/模板提示词见 prompts/（AGENTS_TEMPLATE / MEMORY_TEMPLATE / productCtx / TOKEN_HYGIENE / *Prompt）。 */
 
 /* 阶段提示词 prd/design/scaffold/tech/dev/qa/acceptancePrompt 见 prompts/。 */
 
-/* 并发池/单阶段执行/重试熔断见 core/runner.ts（runPool/runAgent/withRetry）。 */
+/* 并发池见 util.ts（runPool）；单阶段执行/重试熔断见 core/runner.ts（runAgent/withRetry）。 */
 
 /* 缺陷解析 / 立项建卡 / 任务流转见 core/backlog.ts（parseDefects / initPipelineBacklog / advanceTask）。 */
 
@@ -54,7 +142,7 @@ import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.
 
 /* 流水线编排/入口/取消/续跑与 resume 辅助见 core/pipeline.ts（buildResumeProducts/interruptedPhaseOf/executePipeline/summarizeTimeline）。 */
 
-/* 流水线入口/取消/断点续跑见 core/pipeline.ts（startPipeline/cancelRun/resumeRun）。 */
+/* 流水线入口/断点续跑见 core/pipeline.ts（startPipeline/resumeRun）；取消见 core/context.ts（cancelRun）。 */
 
 /** 按工作区作用域过滤运行见 core/products.ts（runsFor；全局面板与远程面共用）。 */
 
@@ -74,7 +162,12 @@ function snapshotOf(j) {
     ownerSession: j.ownerSession || null,
     requirement: clip(j.requirement, 2000), options: sanitizeSnapOptions(j.options), agentsStarted: j.agentsStarted,
     humanIntervention: j.humanIntervention === true,
-    stages: j.stages.map((s) => ({ seq: s.seq, label: s.label, phase: s.phase, status: s.status, outcome: s.outcome, childId: s.childId, startedAt: s.startedAt, endedAt: s.endedAt, usage: s.usage, summary: clip(s.summary || '', 3000) })),
+    // ⚠️ `taskKey` 必须在投影里（2026-09-16 回归修正）：client 的 `stageLabelOf` 靠它区分「任务级阶段
+    // （dev 子卡，保留任务名）」与「其余阶段（走 phase 词表本地化）」。此前漏了它 → 所有 dev 卡片退化成
+    // 只显示阶段名「开发」（实锤：截图里的 tf-mtr9mi37-m9zx1u 三张卡片，journal 里标题完好，UI 却只剩「开发」）。
+    // `taskIds` 一并投影（2026-09-18）：它是 dev 任务的身份，右栏详情/诊断要能看到
+    // 「这个子代理实际上干了哪几个任务」（合并执行时是数组）——排查重复补跑时这一眼最有用。
+    stages: j.stages.map((s) => ({ seq: s.seq, label: s.label, phase: s.phase, taskKey: s.taskKey || null, taskIds: (Array.isArray(s.taskIds) && s.taskIds.length) ? s.taskIds : null, status: s.status, outcome: s.outcome, childId: s.childId, startedAt: s.startedAt, endedAt: s.endedAt, usage: s.usage, summary: clip(s.summary || '', 3000) })),
     logs: j.logs.slice(-200).map((l) => ({ t: l.t, level: l.level, message: clip(l.message, 500) })),
     error: j.error, resultPreview: j.result ? clip(JSON.stringify(j.result), 6000) : null,
   }
@@ -102,20 +195,21 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_start',
-    description: 'Start the team R&D pipeline (background async): runs the stages per team config (PRD→design→tech→dev→QA→acceptance). Specify teamId (matches teams.json) or pick a team via the UI "+" button first so messages auto-match. Stage failures auto-retry; beyond threshold → rework/human intervention; per-stage token usage recorded. NOTE: after calling, the implementation work is done by pipeline subagents — the main thread MUST NOT write code or run verifications for it. requirement must be a faithful transcription of the user\'s words; do not invent file paths / tech claims without code verification (downstream stages build the PRD from it). Branch decision: when the return status is "needs-decision", ASK THE USER to pick one of the options (or take their custom input, e.g. a branch name), then RE-CALL this tool passing the CHOSEN OPTION VALUE as branchPolicy ("new" = confirmed create branch, "keep" = stay), optionally combined with preAction / branchName / commitMessage. Pass branchPolicy="keep" when the user chooses to stay on the current branch.',
+    description: 'Start the team R&D pipeline (background async): runs the stages per team config (PRD→design→tech→dev→QA→acceptance). Specify teamId (matches teams.json) or pick a team via the UI "+" button first so messages auto-match. Stage failures auto-retry; beyond threshold → rework/human intervention; per-stage token usage recorded. NOTE: after calling, the implementation work is done by pipeline subagents — the main thread MUST NOT write code or run verifications for it. Routing: omit `mode`/`lite` and let auto-triage decide the tier (it applies the architecture guardrails); pass them only when the user explicitly asked for that tier. requirement must be a faithful transcription of the user\'s words; do not invent file paths / tech claims without code verification (downstream stages build the PRD from it). Clarification gate: if the return status is "needs-clarification", this is NOT a settled requirement yet (or it has must-know gaps) — do NOT retry blindly: discuss it with the user in your own words (the returned blockers list what is missing and why), then RE-CALL this tool with the original requirement plus requirementSupplement = the user\'s answers. Branch decision: when the return status is "needs-decision", ASK THE USER to pick one of the options (or take their custom input, e.g. a branch name), then RE-CALL this tool passing the CHOSEN OPTION VALUE as branchPolicy ("new" = confirmed create branch, "keep" = stay), optionally combined with preAction / branchName / commitMessage. Pass branchPolicy="keep" when the user chooses to stay on the current branch.',
     parameters: {
       requirement: { type: 'string', required: true, description: 'The user requirement — faithful transcription of the user\'s words; no fabricated file paths, tech designs, or unverified claims' },
       teamId: { type: 'string', description: 'Team id (matches teams.json; defaults to the currently selected team of this session)' },
       needDesign: { type: 'boolean', description: 'Set true when the change involves UI' },
       needScaffold: { type: 'boolean', description: 'Set true when the project does not exist yet' },
-      lite: { type: 'boolean', description: 'Lightweight mode for small changes (recommended): still runs the lightweight architecture stage (blueprint for dev, no full TECHNICAL.md), then dev → QA → acceptance; if needDesign=true the UI/UX design stage stays (saves tokens/time, traceability preserved)' },
-      mode: { type: 'string', description: 'Route mode: full / medium / lite / tech / patch (auto-triage by default; use teamflow_triage to preview)' },
+      lite: { type: 'boolean', description: 'Lightweight mode for genuinely small single-module changes. **Do NOT pick the tier yourself by default**: omit both `mode` and `lite` and let auto-triage decide — it applies the architecture guardrails (persistence/abstraction/cross-module → at least medium) that a hand-picked tier bypasses. Set `lite=true` only when the USER explicitly asked for a lightweight/fast run, or the change is a proven single-module micro change.' },
+      mode: { type: 'string', description: 'Route mode: full / medium / lite / tech / patch. **Do NOT pick the tier yourself by default** — omit it and let auto-triage decide (recommended), or preview with teamflow_triage and pass what it returns. A hand-picked lighter tier is subject to the architecture guardrail: if triage judges the requirement architectural it is upgraded (logged), so the guardrail can never be bypassed.' },
       productRoot: { type: 'string', description: 'Product line directory (e.g. products/tetris)' },
       maxConcurrency: { type: 'integer', description: 'Dev task concurrency (default 3, max 8)' },
       branchPolicy: { type: 'string', description: 'Branch policy: "auto" (default, triggers needs-decision when not yet confirmed) — create a feature branch feat/<branchName|slug> from the current HEAD; "keep" — stay on current branch; "new" — the confirmed value returned by needs-decision options (user already picked "create branch"), pass it back as-is to proceed. When auto and a decision is needed (dirty workspace / on main etc.), the tool returns needs-decision for you to ask the user first.' },
       branchName: { type: 'string', description: 'Custom branch name (used when branchPolicy=auto; defaults to the triage slug; [a-z0-9-_])' },
       preAction: { type: 'string', description: 'Pre-start handling of dirty workspace: "stash" (stash changes, restore later via git stash pop), "commit" (commit existing changes, custom commitMessage), omit = leave as-is (changes mix into this run)' },
       commitMessage: { type: 'string', description: 'Custom commit message when preAction=commit' },
+      requirementSupplement: { type: 'string', description: 'Extra context the user gave during a clarification round (after a "needs-clarification" return). Kept separate from the original requirement (which stays a faithful transcription of the user\'s words) and handed to the PRD stage as authoritative input.' },
       tasks: {
         type: 'array',
         description: 'Optional splittable dev task list',
@@ -129,14 +223,32 @@ function registerTools(ctx) {
       },
     },
     output: {
-      schema: { type: 'object', additionalProperties: false, required: ['status'], properties: { runId: { type: 'string' }, status: { type: 'string' }, question: { type: 'string' }, options: { type: 'array' }, note: { type: 'string' } } },
+      // ⚠️ execute 的**每一条**返回路径都必须在这里有声明（additionalProperties: false → 多余字段会让
+      // 宿主输出校验直接拒绝、run 都建不了——实锤 probe-clock：git-init 决策带 `kind` 未声明 → 两次
+      // start 全部失败、零 run，而全套测试因为没覆盖"返回形状 vs schema"照样全绿）。
+      schema: { type: 'object', additionalProperties: false, required: ['status'], properties: { runId: { type: 'string' }, status: { type: 'string' }, kind: { type: 'string' }, question: { type: 'string' }, options: { type: 'array' }, note: { type: 'string' }, intent: { type: 'string' }, blockers: { type: 'array' }, message: { type: 'string' } } },
       render: (args, value) => {
         if (value && value.status === 'needs-decision') {
           const opts = Array.isArray(value.options) ? value.options.map((o, i) => `${i + 1}. ${o.label}`).join('\n') : ''
+          // git-init 决策复用同一渲染骨架（问句/选项措辞不同），但必须用**它自己的**注入键——
+          // 否则主线程会按分支决策的 branchPolicy 语义去回传（init 要带 preAction='init'）。
+          if (value.kind === 'git-init') return [{ type: 'text', text: t(ambientLocale(), 'tool.start.gitDecisionNote', { question: value.question, options: opts, note: value.note || '' }) }]
           return [{ type: 'text', text: t(ambientLocale(), 'tool.start.decision', { question: value.question, options: opts }) }]
         }
         if (value && value.status === 'needs-confirmation') {
           return [{ type: 'text', text: t(ambientLocale(), 'tool.start.needsConfirm', { question: value.question, note: value.note || '' }) }]
+        }
+        if (value && value.status === 'needs-clarification') {
+          // 闸门文本由 host 组好交给主线程：它必须**先问用户**，拿到答复后带 requirementSupplement 重调。
+          const list = Array.isArray(value.blockers)
+            ? value.blockers.map((b, i) => `${i + 1}. ${b.question}\n   · ${t(ambientLocale(), 'tool.start.blockerReadings')}: ${(b.readings || []).join(' / ')}\n   · ${t(ambientLocale(), 'tool.start.blockerChanges')}: ${b.changes}\n   · ${t(ambientLocale(), 'tool.start.blockerRework')}: ${b.rework}`).join('\n')
+            : ''
+          return [{ type: 'text', text: t(ambientLocale(), 'tool.start.needsClarification', { intent: String(value.intent || 'requirement'), blockers: list }) }]
+        }
+        // paused / no-team：带 message 的拒绝路径（schema 已声明 message）——之前 schema 没这字段，
+        // 这两条分支的返回会被宿主校验整条拒掉（实锤抽取发现），render 也从未覆盖 → 主线程只见裸错误。
+        if (value && value.message && !value.runId) {
+          return [{ type: 'text', text: String(value.message) }]
         }
         return [{ type: 'text', text: t(ambientLocale(), 'tool.start.started', { runId: value.runId, status: value.status }) }]
       },
@@ -181,8 +293,38 @@ function registerTools(ctx) {
           maxConcurrency: args.maxConcurrency,
           branchPolicy: (args.branchPolicy === 'keep' ? 'keep' : 'auto') as 'auto' | 'keep',
           branchName: typeof args.branchName === 'string' && args.branchName.trim() ? args.branchName.trim() : null,
-          preAction: (args.preAction === 'stash' || args.preAction === 'commit') ? args.preAction : null,
+          // ⚠️ 四个合法值都要放行（2026-09-17 probe-clock 实锤：这里只认 stash/commit，把改动存档决策
+          // 正确回传的 preAction='init' 丢成 null → git init 静默没执行）。'new' 是 branchPolicy 的已确认
+          // 信号（needs-decision 回传值），在下方 branchConfirmed 处消费，此处只透传不篡改。
+          preAction: (args.preAction === 'stash' || args.preAction === 'commit' || args.preAction === 'init' || args.preAction === 'keep-nogit') ? args.preAction : null,
           commitMessage: typeof args.commitMessage === 'string' && args.commitMessage.trim() ? args.commitMessage.trim() : null,
+          requirementSupplement: typeof args.requirementSupplement === 'string' && args.requirementSupplement.trim() ? args.requirementSupplement.trim() : null,
+        }
+        // 需求澄清闸门（快路径）：分支决策之前先过闸门/护栏。**权威判定在 pipeline 内**——这里失败不致命，
+        // 原因记进 `__triageError` 由 pipeline 记 warn（实测：漏传 signal 会让工具内分诊秒退 fallback）。
+        const pre = await clarificationPreflight(requirement, options as unknown as Record<string, unknown>, parent, exec && exec.signal, ambientLocale())
+        // 缓存键在**两条返回分支**上都有（pendingDecision 状态机要用；见 core/triage.ts 的缓存注释）
+        const triageKey = pre.cacheKey
+        if ('needsClarification' in pre) {
+          // 返回 needs-clarification = 仍在等用户回答 → 标「待决策」（下次同键调用直接复用，隔多久都行）
+          triageCacheMarkPending(triageKey)
+          return { status: 'needs-clarification', intent: pre.needsClarification.intent, blockers: pre.needsClarification.blockers }
+        }
+        if (pre.verdict) {
+          const explicit = options.mode as typeof options.mode
+          const up = guardrailUpgrade(explicit, !!options.lite, pre.verdict.mode, { needDesign: options.needDesign === true })
+          if (up) {
+            // 「原本是谁提的档位」：调用方给过档位就用调用方的，否则记分诊自己的裁决（needDesign 下限路径）；
+            // 只在真的从更轻的档位升上来时记（自动路径没有"被升"一说，别记成 from=full）。
+            const fromMode = (explicit !== undefined || options.lite) ? (explicit || 'lite') : pre.verdict.mode
+            if (MODE_RANK[fromMode] < MODE_RANK[up]) (pre.verdict as unknown as Record<string, unknown>).__upgradedFrom = fromMode
+            options.mode = up
+            options.lite = up === 'lite' || up === 'tech' || up === 'patch' ? !!options.lite : false
+          }
+          if (pre.verdict.needDesign) options.needDesign = true
+          ;(options as unknown as Record<string, unknown>).__triage = pre.verdict
+        } else if (pre.error) {
+          ;(options as unknown as Record<string, unknown>).__triageError = pre.error
         }
         // 分支策略决策（ADR-2026-08-27 基调：启动前由用户决定，选项+自定义兜底）。
         // 四种情况（main+干净 / main+脏 / feature+干净 / feature+脏）在 auto 策略下全部返回 needs-decision，
@@ -195,7 +337,43 @@ function registerTools(ctx) {
           if (sc.path) {
             try {
               const s = runSanityCheck(sc.path)
-              if (s.ok && s.inRepo) {
+              if (!s.inRepo) {
+                // **改动存档决策**（2026-09-17，方案 A：问一次、记住、人话）：非 git 工作区原先**静默跳过**
+                // 全部分支决策（实锤 dddd 两条 run 的产物从未进任何版本库，用户全程不知道）。现在：
+                // 探测"不是仓库"→ 问一次（init=git init +（内容少时）基线提交；keep=不用版本控制），
+                // 答案写进该工作区 state.json 的 gitMode，后续 run 不再打扰。
+                // 危险路径（盘根/家目录祖先/系统目录/浅层目录）**不给 init 选项**（git add -A 会扫全盘）。
+                const st = loadState(sc.path)
+                if (st.gitMode === 'none' || options.preAction === 'keep-nogit') {
+                  // 用户此前已选"不用版本控制" → 不再问，按 keep 走（出口也不尝试提交）
+                  ;(options as Record<string, unknown>).preAction = 'keep-nogit'
+                  options.branchPolicy = 'keep'
+                } else {
+                  const home = homedir()
+                  const danger = isDangerousVcsRoot(sc.path, home)
+                  const tooLarge = danger ? false : dirTooLargeForBaseline(sc.path)
+                  const baseline = danger
+                    ? ''
+                    : t(ambientLocale(), tooLarge ? 'git.opt.initNoBaseline' : 'git.opt.initBaseline', { n: countFilesBounded(sc.path) })
+                  const q = danger ? t(ambientLocale(), 'git.q.danger', { path: sc.path }) : t(ambientLocale(), 'git.q.noRepo', { path: sc.path })
+                  const optsList = danger
+                    ? [{ label: t(ambientLocale(), 'git.opt.keepOnly'), value: 'keep' }]
+                    : [
+                      { label: t(ambientLocale(), 'git.opt.init', { baseline }), value: 'init' },
+                      { label: t(ambientLocale(), 'git.opt.keep'), value: 'keep' },
+                    ]
+                  // 仍在等用户决策 → 标「待决策」：下次同键调用（用户点选后重调）直接复用分诊裁决，
+                  // **不看间隔多久**（实测用户隔 55 分钟才点选，TTL 方案必然失手）
+                  triageCacheMarkPending(triageKey)
+                  return {
+                    status: 'needs-decision',
+                    kind: 'git-init',
+                    question: q,
+                    options: optsList,
+                    note: t(ambientLocale(), danger ? 'tool.start.gitDecisionDanger' : 'tool.start.gitDecision'),
+                  }
+                }
+              } else if (s.ok && s.inRepo) {
                 const onMain = !!s.branch && s.branch.trim().toLowerCase() === 'main'
                 const dirty = s.hasDirty
                 const dirtyN = s.dirty.split(/\r?\n/).filter((l) => l.trim()).length
@@ -229,6 +407,8 @@ function registerTools(ctx) {
                     { label: t(ambientLocale(), 'branch.opt.commitNewChild'), value: 'commit+auto' },
                   ]
                 }
+                // 同上：分支决策也是「仍在等用户回答」→ 标待决策，点选后重调时复用分诊裁决
+                triageCacheMarkPending(triageKey)
                 return {
                   status: 'needs-decision',
                   question,
@@ -239,6 +419,9 @@ function registerTools(ctx) {
             } catch (e) { /* 分支检查失败：放行，由 sanity 注入 git 现状 */ }
           }
         }
+        // 走到这里 = 所有启动前决策都已用完 → 清除「待决策」（裁决本身降级为普通短期缓存，仍可被
+        // 快速重试命中，但不再无限期复用）
+        triageCacheSettle(triageKey)
         const runId = startPipeline(parent, requirement, options, exec && exec.signal)
         return { runId, status: 'running' }
       } catch (e) {
@@ -437,7 +620,7 @@ function registerTools(ctx) {
     output: { schema: { type: 'object', additionalProperties: false, properties: { ok: { type: 'boolean' } } }, render: (args, value) => [{ type: 'text', text: value.ok ? t(ambientLocale(), 'tool.cancel.ok', { runId: args.runId }) : t(ambientLocale(), 'tool.cancel.fail') }] },
     async execute(args) {
       const id = args && typeof args.runId === 'string' ? args.runId : null
-      return { ok: id ? cancelRun(id) : false }
+      return { ok: id ? cancelRun(id, 'tool') : false }
     },
   })
 
@@ -508,7 +691,7 @@ function tryFlushPendingInjections(sessionId: string): void {
     // 裸 payload 落盘后加载即「lacks an identified message」（实锤 session-8c3f9888 seq 10））
     agent.inject(createUserMessage({
       content: [{ type: 'text', text: teamflowContextText(pending.teamIcon, pending.teamName, pending.teamId) }],
-      source: { kind: 'plugin', plugin: 'dsh-plugin-teamflow', form: 'instructions' },
+      source: { kind: 'plugin:dsh-plugin-teamflow', form: 'instructions' },
     }))
     pendingInjections.delete(sessionId)
   } catch (e) { /* inject 失败静默 */ }
@@ -521,6 +704,9 @@ export class TeamflowService extends TypertRemoteService {
     super(ctx, 'teamflow')
     // 注：曾硬注入 tokenMeter 但全仓从未使用（2026-09-10 清理）——计量走 sessionProjections 投影。
     setRuntime(ctx.get('agents'), ctx.get('subagents'), ctx.get('workspaceRegistry'), ctx.get('agentDefaultModel'), ctx.get('llm'))
+    // 宿主锚点：ctx.baseUrl = 当前 profile 目录（宿主挂载插件树前设好）→ 安装环境探测的主源。
+    // 不读 process.env.DSH_HOME（它不是"装了 dsh 就自带"，默认安装下为 undefined）。
+    setInstallCtx(ctx)
     // 可选能力：官方 Session 投影注册表（计量首选来源 tokenUsage/sessionStats）。
     // 走 ctx.inject 而非 static inject——服务缺失（最小 profile）时插件仍加载，计量回退事件扫描。
     ctx.inject(['sessionProjections'], (projectionCtx) => {
@@ -772,7 +958,9 @@ export class TeamflowService extends TypertRemoteService {
     return this.itemDetail(kind, id, sessionId, key)
   }
 
-  start(sessionId, requirement, options) {
+  // 注：本方法 async 只因为澄清预检需要 await 一次分诊模型调用（宿主 Remote 支持 async 方法，
+  // 见官方 SubagentRuntime.prompt）；返回形状不变（成功 {ok,runId,...}，被拦下 {ok:false,status:...}）。
+  async start(sessionId, requirement, options) {
     const sid = typeof sessionId === 'string' ? sessionId : null
     const req = typeof requirement === 'string' && requirement.trim() ? requirement.trim() : null
     if (!sid || !req) return { ok: false, error: t(ambientLocale(), 'err.tool.missingSessionReq') }
@@ -782,6 +970,28 @@ export class TeamflowService extends TypertRemoteService {
     tryFlushPendingInjections(sid)
     try {
       const opts = (options && typeof options === 'object') ? options : {}
+      // 需求澄清闸门（与 tool 路径同一条；权威判定在 pipeline 内）
+      const pre = await clarificationPreflight(req, opts as Record<string, unknown>, agent, undefined, ambientLocale())
+      if ('needsClarification' in pre) {
+        // 仍在等用户回答 → 标「待决策」（Remote 路径没有 git/分支决策，这是它唯一会"不建 run"的出口）
+        triageCacheMarkPending(pre.cacheKey)
+        return { ok: false, status: 'needs-clarification', intent: pre.needsClarification.intent, blockers: pre.needsClarification.blockers }
+      }
+      if (pre.verdict) {
+        const explicit = opts.mode as typeof opts.mode
+        const up = guardrailUpgrade(explicit, !!(opts as Record<string, unknown>).lite, pre.verdict.mode, { needDesign: (opts as Record<string, unknown>).needDesign === true })
+        if (up) {
+          const fromMode = (explicit !== undefined || (opts as Record<string, unknown>).lite) ? (explicit || 'lite') : pre.verdict.mode
+          if (MODE_RANK[fromMode] < MODE_RANK[up]) (pre.verdict as unknown as Record<string, unknown>).__upgradedFrom = fromMode
+          opts.mode = up
+          if (up !== 'lite' && up !== 'tech' && up !== 'patch') (opts as Record<string, unknown>).lite = false
+        }
+        if (pre.verdict.needDesign) opts.needDesign = true
+        ;(opts as Record<string, unknown>).__triage = pre.verdict
+      } else if (pre.error) {
+        ;(opts as Record<string, unknown>).__triageError = pre.error
+      }
+      triageCacheSettle(pre.cacheKey) // 决策已用完 → 清除「待决策」
       const runId = startPipeline(agent, req, opts, undefined)
       const sc = workspaceScopeOf(agent)
       return { ok: true, runId, workspace: sc, product: opts.productRoot ? normalizeRoot(opts.productRoot) : null }
@@ -793,7 +1003,8 @@ export class TeamflowService extends TypertRemoteService {
   cancel(runId) {
     const id = typeof runId === 'string' ? runId : null
     if (!id) return { ok: false, error: t(ambientLocale(), 'err.tool.missingRunId') }
-    return { ok: cancelRun(id) }
+    // 来源=界面（人工点击）——与模型工具 teamflow_cancel 区分：主线程据此知道「是人停的，不是别人在自动续跑」
+    return { ok: cancelRun(id, 'ui') }
   }
 
   /** 工作区级 backlog 视图（自动按当前会话 workspace 隔离）。productOverride：全局面板按产品线 key 寻址。 */
@@ -876,7 +1087,7 @@ export class TeamflowService extends TypertRemoteService {
     // 必须经 createUserMessage（同上：裸 payload 缺 id/role → 宿主 v2 加载校验失败）
     const injectPayload = createUserMessage({
       content: [{ type: 'text', text: teamflowContextText(team.icon, teamNameOf(ambientLocale(), team), tid) }],
-      source: { kind: 'plugin', plugin: 'dsh-plugin-teamflow', form: 'instructions' },
+      source: { kind: 'plugin:dsh-plugin-teamflow', form: 'instructions' },
     })
     if (agent && typeof agent.inject === 'function') {
       try { agent.inject(injectPayload) } catch (e) { /* inject 失败不影响主流程 */ }

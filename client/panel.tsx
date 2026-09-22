@@ -13,9 +13,9 @@
  */
 import React from 'react'
 import {
-  T, h, MONO, SANS, flexRow, chip, FoldableText, stColor, stText,
+  T, h, MONO, SANS, flexRow, chip, FoldableText, CancelButton, stColor, stText,
   fmtTime, fmtDur, fmtTokens, totalTokens, hitRate, phaseIconOf,
-  COLUMNS, byRoleLine, stageUsageLine, runStatusText, kindTitle, stageLabelOf, t,
+  COLUMNS, byRoleLine, stageUsageLine, runStatusText, kindTitle, stageLabelOf, stageStatusText, t,
 } from './shared.js'
 
 /* ── 右栏 run tab 的类型标识（host 生成地址，client 只解析） ────────── */
@@ -146,7 +146,7 @@ function ProductRail({ products, current, loadingKey, onSelect, onRefresh, busy 
 }
 
 /* ── run 列表 ───────────────────────────────────────────────────── */
-function RunList({ runs, activeRunId, onOpenRun, onInlineRun }) {
+function RunList({ runs, activeRunId, onOpenRun, onInlineRun, onCancel }) {
   if (!runs.length) return muted(t('runList.empty'), { padding: '2px 2px 8px' })
   return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 } },
     runs.map((r) => {
@@ -173,6 +173,13 @@ function RunList({ runs, activeRunId, onOpenRun, onInlineRun }) {
             h('span', null, t('runList.stageProgress', { done: r.doneStages, total: r.stageCount })),
             h('span', null, runUsageText(r.usage)),
             h('span', null, `${fmtTime(r.startedAt)}${r.endedAt ? ` → ${fmtTime(r.endedAt)}` : ''} ${fmtDur(r.startedAt, r.endedAt)}`))),
+        /* 中断入口：与「右栏打开」并排（行整行可点开详情，按钮自己 stopPropagation） */
+        r.status === 'running' && onCancel ? h(CancelButton, {
+          runId: r.id,
+          title: t('cancel.tip', { id: r.id }),
+          onConfirm: onCancel,
+          style: { fontSize: 11, padding: '2px 9px' },
+        }) : null,
         h('button', {
           style: brandBtn,
           title: t('runList.openRightBarTip'),
@@ -354,7 +361,7 @@ function ItemDetailPane({ det, openArtifact, onClose }) {
 }
 
 /* ── run 详情（右栏 tab 正文 + 面板内联降级共用） ────────────────── */
-function RunDetailPane({ snap, product, api }) {
+function RunDetailPane({ snap, product, api, onCancel }) {
   const [sel, setSel] = React.useState(null)     // 选中的阶段详情
   const [err, setErr] = React.useState(null)
   React.useEffect(() => { setSel(null); setErr(null) }, [snap && snap.id])
@@ -377,7 +384,13 @@ function RunDetailPane({ snap, product, api }) {
       chip(runStatusText(snap.status), stColor(snap.status), { dot: true }),
       snap.options && snap.options.mode ? chip(String(snap.options.mode), T.text2) : null,
       h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2 } }, snap.id),
-      product ? h('span', { style: { fontSize: 10, color: T.text2, fontFamily: MONO } }, product) : null),
+      product ? h('span', { style: { fontSize: 10, color: T.text2, fontFamily: MONO } }, product) : null,
+      snap.status === 'running' && onCancel ? h(CancelButton, {
+        runId: snap.id,
+        title: t('cancel.tip', { id: snap.id }),
+        onConfirm: onCancel,
+        style: { marginLeft: 'auto', fontSize: 10.5, padding: '2px 9px' },
+      }) : null),
     h('div', { style: { fontSize: 12, color: T.text, lineHeight: 1.5 } }, snap.requirement || t('runList.noRequirement')),
     h('div', { style: { ...flexRow, gap: 12, fontSize: 10.5, color: T.text2, fontFamily: MONO } },
       h('span', null, `${fmtTime(snap.startedAt)}${snap.endedAt ? ` → ${fmtTime(snap.endedAt)}` : ' → ' + t('detail.endedRunning')} · ${fmtDur(snap.startedAt, snap.endedAt)}`),
@@ -407,8 +420,10 @@ function RunDetailPane({ snap, product, api }) {
             h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2 } }, `#${s.seq}`),
             h('span', null, phaseIconOf(s.phase)),
             h('span', { style: { fontSize: 11.5, color: T.text, fontWeight: 500 } }, stageLabelOf(s)),
-            chip(stText(s.status), color, { dot: true }),
-            s.outcome && s.outcome !== 'completed' ? chip(String(s.outcome), stColor(s.outcome)) : null,
+            chip(stageStatusText(s.status), color, { dot: true }),
+            /* outcome 是**机器词**（degenerated/stalled/insubstantial…），原文透出是刻意的诊断信息；
+               但 `cancelled` 已被左侧阶段状态说清（已中止/Stopped），再来一个原文 chip 就是同义重复。 */
+            s.outcome && s.outcome !== 'completed' && s.outcome !== 'cancelled' ? chip(String(s.outcome), stColor(s.outcome)) : null,
             h('span', { style: { marginLeft: 'auto', fontFamily: MONO, fontSize: 10, color: T.text2 } }, `${fmtTime(s.startedAt)}${s.endedAt ? ` · ${fmtDur(s.startedAt, s.endedAt)}` : ''}`)),
           h('div', { style: { ...flexRow, gap: 10, marginTop: 3, fontFamily: MONO, fontSize: 10, color: T.text2 } },
             h('span', null, stageUsageLine(s) || t('common.noUsage')),
@@ -420,7 +435,7 @@ function RunDetailPane({ snap, product, api }) {
       h('div', { style: { ...flexRow, justifyContent: 'space-between' } },
         h('div', { style: { ...flexRow, gap: 6 } },
           h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text } }, t('detail.stageTitle', { seq: sel.seq })),
-          chip(stText(sel.status), stColor(sel.status))),
+          chip(stageStatusText(sel.status), stColor(sel.status))),
         h('button', { style: panelBtn, onClick: () => setSel(null) }, t('common.collapse'))),
       h('div', { style: { fontSize: 10.5, color: T.text2, fontFamily: MONO } }, t('token.stageLine', { v: stageUsageLine(sel) || t('common.none') })),
       sel.verifyEvidence
@@ -437,7 +452,7 @@ function RunDetailPane({ snap, product, api }) {
           h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } }, sel.attempts.map((a) => h('div', {
             key: a.seq, style: { ...flexRow, gap: 6, fontSize: 10.5, fontFamily: MONO, color: T.text2 },
           },
-            h('span', null, `#${a.seq}`), chip(stText(a.status), stColor(a.status)), a.outcome ? h('span', null, a.outcome) : null,
+            h('span', null, `#${a.seq}`), chip(stageStatusText(a.status), stColor(a.status)), a.outcome && a.outcome !== 'cancelled' ? h('span', null, a.outcome) : null,
             h('span', { style: { marginLeft: 'auto' } }, `${fmtTime(a.startedAt)} · ${fmtDur(a.startedAt, a.endedAt)}`)))))
         : null)
       : null,
@@ -497,6 +512,12 @@ export function RunDetailTab(props) {
     }, 5000)
     return () => { alive = false; clearInterval(timer) }
   }, [api, runId, address, nonce, readTab])
+  /** 中断后重新拉快照（nonce 触发上面那个 effect 重跑；右栏 tab 是会话级地址，与产品线选择无关）。 */
+  const onCancel = async (rid) => {
+    if (!api) return
+    try { await api.cancel(rid); setNonce((n) => n + 1) }
+    catch (e) { setErr(String((e && e.message) || e)) }
+  }
   if (err && !snap) {
     // 「地址还没就绪」不是错误态：tab 刚挂载的那一帧宿主可能尚未提交记录，等下一次渲染即可
     const pending = !address && !!readTab
@@ -505,7 +526,7 @@ export function RunDetailTab(props) {
       pending ? null : h('button', { style: panelBtn, onClick: () => { setErr(null); setNonce((n) => n + 1) } }, t('common.retry')))
   }
   if (!snap) return muted(t('tab.readingRun'), { padding: 12 })
-  return h(RunDetailPane, { snap, product, api })
+  return h(RunDetailPane, { snap, product, api, onCancel })
 }
 
 /* ── 产品线 API 适配（按产品线 key 寻址的 remote 面） ─────────────── */
@@ -515,6 +536,12 @@ export function productApi(remote, product) {
     runDetail: async (runId) => unwrap(await remote.productRunDetail(product, runId), 'productRunDetail'),
     stageDetail: async (runId, seq) => unwrap(await remote.productStageDetail(product, runId, seq), 'productStageDetail'),
     itemDetail: async (kind, id, sessionId) => unwrap(await remote.productItemDetail(product, kind, id, sessionId), 'productItemDetail'),
+    /** 中断运行：runId 全局寻址（与产品线无关），放这里是为了让面板行/详情/右栏共用同一处解包与报错。 */
+    cancel: async (runId) => {
+      const r = unwrap(await remote.cancel(runId), 'cancel')
+      if (!r || r.ok !== true) throw new Error(t('cancel.failed'))
+      return true
+    },
   }
 }
 
@@ -563,8 +590,10 @@ export function GlobalPanel(props) {
   /**
    * **跳到资源所属的会话，再在那个会话的右栏打开**（全局面板的正确语义）。
    * 右侧栏是会话级的：从全局面板看 tetris 的 run 却把 tab 挂到"用户当前所在会话"上没有意义
-   * （用户 2026-09-11 提出）。所以先 `sessions.open(ownerSession)`，等当前会话真的切过去、
-   * 且对话 seat 挂载 bind 之后再 openResource（两者都要等，故小步重试 + 就绪判据）。
+   * （用户 2026-09-11 提出）。所以先 `uiWorkspace.openSession(ownerSession)`，再小步重试等右栏 seat 就绪后 openResource。
+   * **2026-09-23 迁移（宿主 0.1.7-alpha.1）**：`sessions.open` 与 `sessions.openSubagent` 同批被移除，
+   * 跳会话唯一入口改为 `uiWorkspace.openSession(target)`；同时 `SessionListState` 已无 `current` 字段，
+   * 故原先"等当前会话真的切过去"的判据删除（契约变更后它恒为 undefined，等于死代码），只留时间维度的重试。
    * @param target.ownerSession - 资源所属会话（run 的发起会话 / 产物地址里的会话）
    * @param target.address - host 生成的 dsh-resource 地址
    * @param target.label - 提示用的名字
@@ -572,13 +601,13 @@ export function GlobalPanel(props) {
    */
   const goOwnerSessionAndOpen = (target) => {
     const { ownerSession, address, label, fallback } = target || {}
-    const sessions = props.sessions
-    if (!ownerSession || !sessions || typeof sessions.open !== 'function') {
-      // 老数据没有 ownerSession / 会话服务不可用 → 退回"在当前会话右栏打开"
+    const ws = props.uiWorkspace
+    if (!ownerSession || !ws || typeof ws.openSession !== 'function') {
+      // 老数据没有 ownerSession / 工作区导航服务不可用 → 退回"在当前会话右栏打开"
       openInConversationRightbar(address, label, fallback)
       return
     }
-    try { sessions.open(ownerSession) } catch (e) {
+    try { ws.openSession(ownerSession) } catch (e) {
       setHint(t('panel.hintSessionGone', { sid: String(ownerSession).slice(0, 8) }))
       if (fallback) fallback()
       return
@@ -587,11 +616,8 @@ export function GlobalPanel(props) {
     let tries = 0
     const tick = () => {
       tries += 1
-      let nowCurrent = null
-      try { nowCurrent = sessions.list && sessions.list.getSnapshot ? sessions.list.getSnapshot().current : null } catch (e) { nowCurrent = null }
-      // 等目标会话成为当前会话（最多等 6 次），再尝试打开右栏 tab
-      const sessionReady = nowCurrent === ownerSession || tries >= 6
-      if (sessionReady && props.openResource && address && props.openResource(address, label, tries < 6)) return
+      // openSession 同步完成导航；右栏 seat 还要等新一轮渲染挂载 → 前 6 次静默重试，之后给提示
+      if (props.openResource && address && props.openResource(address, label, tries < 6)) return
       if (tries < 14) { setTimeout(tick, 130); return }
       setHint(t('panel.hintSwitchedNoRightbar', { label }))
     }
@@ -666,6 +692,18 @@ export function GlobalPanel(props) {
     } catch (e) { setState((s) => ({ ...s, err: String((e && e.message) || e) })) }
   }
   const closeDetail = () => setDetail(null)
+  /** 中断运行（面板内两个入口共用）：成功后刷新产品线视图；详情浮层开着就顺手把快照也换新。 */
+  const cancelRun = async (runId) => {
+    if (!api) return
+    try {
+      await api.cancel(runId)
+      loadView(state.current, true)
+      if (detail && detail.kind === 'run' && detail.data && detail.data.id === runId) {
+        setDetail({ kind: 'run', data: await api.runDetail(runId), run: detail.run })
+      }
+      setHint(t('cancel.sent'))
+    } catch (e) { setState((s) => ({ ...s, err: String((e && e.message) || e) })) }
+  }
   const openRun = (r) => { goOwnerSessionAndOpen({ ownerSession: r.ownerSession, address: r.address, label: r.id, fallback: () => { void showInline(r) } }) }
   const openArtifactInPanel = (address, name, ownerSession) => {
     goOwnerSessionAndOpen({ ownerSession, address, label: name })
@@ -763,7 +801,7 @@ export function GlobalPanel(props) {
                         }, t('panel.filtered', { sel: runSel.length, shown: runsMatched.length, total: runs.length }))
                         : null),
                     visibleRuns.length
-                      ? h(RunList, { runs: visibleRuns, activeRunId: detail && detail.kind === 'run' && detail.run ? detail.run.id : null, onOpenRun: openRun, onInlineRun: showInline })
+                      ? h(RunList, { runs: visibleRuns, activeRunId: detail && detail.kind === 'run' && detail.run ? detail.run.id : null, onOpenRun: openRun, onInlineRun: showInline, onCancel: cancelRun })
                       : muted(t('panel.emptyRunFilter'), { fontSize: 10.5 }),
                     muted(t('panel.runHint'), { fontSize: 10, marginTop: 8 }))
                   : h(React.Fragment, null,
@@ -799,7 +837,7 @@ export function GlobalPanel(props) {
                     }, t('panel.goOwnerSession'))
                     : null,
                   h('button', { style: panelBtn, onClick: closeDetail }, t('common.close')))),
-              h(RunDetailPane, { snap: detail && detail.data, product: state.current, api })))
+              h(RunDetailPane, { snap: detail && detail.data, product: state.current, api, onCancel: cancelRun })))
         : null,
     ),
   )

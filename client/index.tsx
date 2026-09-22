@@ -16,15 +16,16 @@ import React from 'react'
 import { TEAMFLOW_REMOTE_CONTRIBUTION } from '../descriptors.js'
 import {
   T, STATUS_COLOR, PHASE_ICON, phaseNameOf, phaseIconOf, phaseKeyOf,
-  COLUMNS, h, MONO, SANS, flexRow, chip, FoldableText,
+  COLUMNS, h, MONO, SANS, flexRow, chip, FoldableText, CancelButton,
   fmtTime, fmtDur, fmtTokens, totalTokens, hitRate, usageDetail, stageUsageLine,
-  roleUsage, byRoleLine, totalUsage, stText, stColor, runStatusText, kindTitle, roleChip, stageLabelOf,
+  roleUsage, byRoleLine, totalUsage, stText, stColor, runStatusText, kindTitle, roleChip, stageLabelOf, stageStatusText,
   t, setTranslator, localeTag,
 } from './shared.js'
 import { NS, zh, en } from './locales.js'
 import { GlobalPanel, TeamflowPanelIcon, RunDetailTab, runTabDefinition, RUN_TAB_ID } from './panel.js'
 
-export const inject = ['remote', 'slots', 'sessions', 'locale']
+// uiWorkspace：跳会话唯一入口（0.1.7-alpha.1 起 `uiWorkspace.openSession(target)` 取代已移除的 `sessions.openSubagent` / `sessions.open`）
+export const inject = ['remote', 'slots', 'uiWorkspace', 'locale']
 
 /* 主题 token / 状态词表 / 格式化等共享展示层见 client/shared.tsx（与全局面板共用）。 */
 
@@ -51,7 +52,12 @@ function layoutFlow(groups, viewW) {
   let maxH = 0
   groups.forEach((g, i) => {
     const anyRun = g.stages.some((s) => s.status === 'running')
-    const anyFail = g.stages.some((s) => s.status === 'failed' || s.status === 'needs-human' || s.status === 'cancelled')
+    // `cancelled` **不算失败**（2026-09-16 实测截图修正）：中断是用户主动动作，不是 run 的失败态。
+    // 旧写法把它与 failed/needs-human 并列 → 被中断的相位组头取错误色（红），而同一节点里阶段卡的
+    // 竖条与「已中止」chip 是灰的（STATUS_COLOR.cancelled = text2）→ 红头灰身自相矛盾。
+    // 删掉后该组落到兜底 T.text2（灰，与 chip 同色）；真失败（failed/needs-human）仍为红。
+    // 注意不会误变绿：allDone 要求每个阶段都 done，被中断的阶段不满足。
+    const anyFail = g.stages.some((s) => s.status === 'failed' || s.status === 'needs-human')
     const allDone = g.stages.length > 0 && g.stages.every((s) => s.status === 'done')
     const headColor = anyRun ? T.brand : anyFail ? T.error : allDone ? T.success : T.text2
     const h = HEAD_H + 10 + g.stages.reduce((a, s) => a + cardH(s), 0) + Math.max(0, g.stages.length - 1) * 7
@@ -103,7 +109,7 @@ function FlowStageCard(s, key, onOpen) {
         : h('span', { style: { width: 6, height: 6, borderRadius: 2, background: color } }),
       h('span', { title: s.label, style: { flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, stageLabelOf(s)),
       (s.attempts && s.attempts.length > 1) ? h('span', { title: t('stage.retryTip', { n: s.attempts.length - 1, m: s.attempts.length }), style: { fontFamily: MONO, fontSize: 10, fontWeight: 800, color: T.warn, background: `color-mix(in srgb, ${T.warn} 14%, transparent)`, borderRadius: 999, padding: '0 6px', lineHeight: '15px', flex: '0 0 auto' } }, `↻${s.attempts.length - 1}`) : null,
-      chip(stText(s.status), color, { dot: true }),
+      chip(stageStatusText(s.status), color, { dot: true }),
       h('span', { style: { color: T.text2, fontSize: 11, opacity: 0.5 } }, '↗'),
     ),
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 13, fontSize: 10.5, color: T.text2, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' } },
@@ -159,7 +165,7 @@ function FlowNode(node, onOpen) {
 /** 阶段详情抽屉（卡片点击打开；浮于画布右侧，不参与拖动/缩放）。
  * 2026-09-06 状态机化：同任务多次尝试 → 顶部尝试时间线 + 选中展开（默认最新）；
  * 单次尝试保持现状（不渲染时间线）。 */
-function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
+function StageDetailDrawer({ det, onClose, sessionId, uiWorkspace }) {
   const [sel, setSel] = React.useState(null)
   const st = det.stage
   const d = det.data
@@ -171,10 +177,13 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
   const ownerSession = (d && d.ownerSession) ? String(d.ownerSession) : null
   const mySession = sessionId ? String(sessionId) : null
   const crossSession = !!ownerSession && !!mySession && ownerSession !== mySession
-  const hasChild = !!(!crossSession && cur && cur.childId && sessions && typeof sessions.openSubagent === 'function')
+  // 2026-09-23 迁移：宿主 0.1.7-alpha.1 移除了 `sessions.openSubagent`，旧守卫
+  // `typeof sessions.openSubagent === 'function'` 恒为 false → 按钮长期灰着。改走 `uiWorkspace.openSession`
+  // （宿主自家 ui-workflow-run 面板同款调用，且是真跳转：替换 mainView 并让主区回到 Conversation）。
+  const hasChild = !!(!crossSession && cur && cur.childId && uiWorkspace && typeof uiWorkspace.openSession === 'function')
   const openChild = () => {
     if (crossSession || !hasChild) return
-    try { sessions.openSubagent({ parentSessionId: (ownerSession || sessionId), childSessionId: cur.childId, mode: 'one-shot' }) } catch (e) { /* 会话跳转失败忽略 */ }
+    try { uiWorkspace.openSession({ parentSessionId: (ownerSession || sessionId), childSessionId: cur.childId, mode: 'one-shot' }) } catch (e) { /* 会话跳转失败忽略 */ }
   }
   const outText = cur && cur.output ? cur.output
     : cur && cur.summary ? t('stage.summaryFallback', { summary: cur.summary })
@@ -212,7 +221,7 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
         h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 1, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' } },
           `${st ? `#${st.seq} · ${st.phase}` : ''}${(st && (st.startedAt || st.endedAt)) ? ` · ${fmtDur(st.startedAt, st.endedAt)}` : ''}`),
       ),
-      st ? chip(stText(st.status), color, { dot: true }) : null,
+      st ? chip(stageStatusText(st.status), color, { dot: true }) : null,
       h('button', { onClick: onClose, style: closeBtn, title: t('common.close') }, '✕'),
     ),
     /* 内容 */
@@ -239,7 +248,7 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
               },
             },
               h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2, flex: '0 0 52px' } }, `#${a.seq}`),
-              h('span', { style: { fontSize: 11, color: aColor, flex: '0 0 64px', fontWeight: 700 } }, a.status === 'done' ? t('stage.attemptDone') : a.status === 'failed' ? t('stage.attemptFailed', { outcome: a.outcome || t('common.failed') }) : t('stage.attemptRunning')),
+              h('span', { style: { fontSize: 11, color: aColor, flex: '0 0 64px', fontWeight: 700 } }, a.status === 'done' ? t('stage.attemptDone') : a.status === 'failed' ? t('stage.attemptFailed', { outcome: a.outcome || t('common.failed') }) : a.status === 'cancelled' ? t('stageStatus.cancelled') : t('stage.attemptRunning')),
               h('span', { style: { flex: 1, minWidth: 0, fontSize: 10.5, color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, (a.summary || a.outcome || t('common.noSummary')).slice(0, 80)),
               h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2, flex: '0 0 auto' } }, a.startedAt ? fmtDur(a.startedAt, a.endedAt) : '—'),
               h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2, flex: '0 0 auto' } }, a.usage ? fmtTokens(totalTokens(a.usage)) : ''),
@@ -287,7 +296,7 @@ function StageDetailDrawer({ det, onClose, sessionId, sessions }) {
   )
 }
 
-function PipelinePanel({ active, api, runId, sessionId, sessions }) {
+function PipelinePanel({ active, api, runId, sessionId, uiWorkspace }) {
   if (!active) return h('div', { style: { color: T.text2, fontSize: 13, padding: '28px 20px', textAlign: 'center' } },
     h('div', { style: { fontSize: 28, marginBottom: 8 } }, '🏭'),
     t('pipeline.empty'))
@@ -451,7 +460,7 @@ function PipelinePanel({ active, api, runId, sessionId, sessions }) {
       h('span', { style: { fontSize: 10.5, color: T.text2, paddingRight: 4, opacity: 0.85 } }, t('pipeline.canvasHint')),
     ),
     /* 阶段详情浮层：悬浮于画布右上，不挤占画布宽度；浮层内滚轮只滚正文（原生 stopPropagation），不触发画布缩放 */
-    det ? h(StageDetailDrawer, { det, onClose: closeDet, sessionId, sessions }) : null,
+    det ? h(StageDetailDrawer, { det, onClose: closeDet, sessionId, uiWorkspace }) : null,
   )
 }
 
@@ -928,6 +937,8 @@ interface TeamflowRemote {
   backlog(sessionId?: string | null): Promise<RpcEnvelope>
   backlogUpdate(kind: string, id: string, to: string, sessionId?: string | null, reason?: string, meta?: Record<string, unknown>): Promise<RpcEnvelope>
   resume(runId: string, sessionId: string): Promise<RpcEnvelope>
+  /** 中断运行（只对正在跑的 run 有效；host 返回 `{ ok }`，false = 已不在运行中）。 */
+  cancel(runId: string): Promise<RpcEnvelope>
   stageDetail(runId: string, seq: number, sessionId?: string | null): Promise<RpcEnvelope>
   itemDetail(kind: string, id: string, sessionId?: string | null): Promise<RpcEnvelope>
 }
@@ -939,8 +950,10 @@ interface TeamFlowViewProps {
   openArtifact?: (address: string, name: string) => void
   /** 通用右侧栏打开（run 详情 tab 等）；返回 false 表示右侧栏不可用，调用方自行降级。 */
   openResource?: (address: string, label: string) => boolean
-  sessions?: {
-    openSubagent?: (a: { parentSessionId: string; childSessionId: string; mode?: string }) => void
+  /** 跳会话唯一入口：宿主 0.1.7-alpha.1 起用 `uiWorkspace.openSession(target)` 取代已移除的 `sessions.openSubagent` / `sessions.open`。
+   *  target 可以是会话 id，也可以是持久子代理地址 `{ parentSessionId, childSessionId, mode }` —— 一次真跳转。 */
+  uiWorkspace?: {
+    openSession?: (target: string | { parentSessionId: string; childSessionId: string; mode?: 'one-shot' | 'continuable' | 'unknown' }) => void
   } | null
 }
 
@@ -992,6 +1005,22 @@ function TeamFlowView(props: TeamFlowViewProps) {
     setBusy(false)
   }
   const anyRunning = runs.some((r) => r.status === 'running' || r.status === 'pending')
+  // 只有 running 是 host 侧的真实活动态（其余历史态 cancel 会被 host 拒绝，故不显示按钮）
+  const runningRun = !!(activeRun && activeRun.status === 'running')
+  /** 中断请求已发出：按钮先隐藏，等 2s 轮询把状态刷成 cancelled（避免重复点出「未生效」提示）。 */
+  const [cancelSentFor, setCancelSentFor] = React.useState<string | null>(null)
+  React.useEffect(() => { setCancelSentFor(null) }, [activeRun && activeRun.id, activeRun && activeRun.status])
+  const onCancel = async (id) => {
+    if (!api) return
+    try {
+      const r = unwrap(await api.cancel(id), 'cancel') as { ok?: boolean } | null
+      if (!r || r.ok !== true) throw new Error(t('cancel.failed'))
+      setCancelSentFor(id)
+      refresh()
+    } catch (e) {
+      setState((s) => ({ ...s, err: String((e && e.message) || e) }))
+    }
+  }
 
   const btn = {
     font: 'inherit', fontSize: 12, padding: '4px 12px', borderRadius: 8, cursor: 'pointer',
@@ -1037,6 +1066,12 @@ function TeamFlowView(props: TeamFlowViewProps) {
         ),
       ),
       h('button', { onClick: refresh, style: { ...btn, marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5 } }, t('workbench.refresh')),
+      runningRun && cancelSentFor !== activeRun.id ? h(CancelButton, {
+        runId: activeRun.id,
+        label: t('cancel.btnWithId', { id: String(activeRun.id).slice(-6) }),
+        title: t('cancel.tip', { id: activeRun.id }),
+        onConfirm: onCancel,
+      }) : null,
       canResume ? h('button', {
         onClick: onResume, disabled: busy,
         title: t('workbench.resumeTip', { id: activeRun.id, status: runStatusText(activeRun.status) }),
@@ -1130,7 +1165,7 @@ function TeamFlowView(props: TeamFlowViewProps) {
     /* 内容区：占满剩余高度并自行滚动——宿主 `.viewArea` 是 flex:1/min-height:0 且不滚动，
        根容器不约束高度就会顶出可视区（外层多出一条页面滚动条，2026-09-11 用户实测） */
     h('div', { style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } },
-      tab === 'pipeline' ? h(PipelinePanel, { active, api, runId: activeRun ? activeRun.id : null, sessionId: props.sessionId, sessions: props.sessions }) : h(BoardPanel, { backlog, api, onRefresh: refresh, sessionId: props.sessionId, openArtifact: props.openArtifact, onShowRun: (rid) => { setTab('pipeline'); setRunId(rid) } })),
+      tab === 'pipeline' ? h(PipelinePanel, { active, api, runId: activeRun ? activeRun.id : null, sessionId: props.sessionId, uiWorkspace: props.uiWorkspace }) : h(BoardPanel, { backlog, api, onRefresh: refresh, sessionId: props.sessionId, openArtifact: props.openArtifact, onShowRun: (rid) => { setTab('pipeline'); setRunId(rid) } })),
   )
 }
 
@@ -1211,7 +1246,7 @@ export async function apply(ctx) {
     locale: NS,
     inject: () => ({
       remote: teamflow,
-      sessions: ctx.get('sessions'),
+      uiWorkspace: ctx.get('uiWorkspace'),
       layout: ctx.get('layout'),
       openResource: openResourceSafe,
       openArtifact,
@@ -1239,7 +1274,7 @@ export async function apply(ctx) {
     order: 20,
     locale: NS,
     label: () => `🏭 ${t('workbench.title')}`,
-    inject: (sessionId) => ({ sessionId, remote: teamflow, sessions: ctx.get('sessions'), openArtifact, openResource: openResourceSafe }),
+    inject: (sessionId) => ({ sessionId, remote: teamflow, uiWorkspace: ctx.get('uiWorkspace'), openArtifact, openResource: openResourceSafe }),
   }, TeamFlowView))
   // 注册输入框旁的团队选择按钮
   ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
