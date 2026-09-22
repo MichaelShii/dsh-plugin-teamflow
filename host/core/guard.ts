@@ -124,7 +124,7 @@ function injectReminder(run: SubagentRunLike, text: string, locale: HostLocale):
     agent.inject(createUserMessage({
       content: [{ type: 'text', text }],
       // form:'notice' 必须带 summary（宿主 ContextFormed 判别式要求一行说明）
-      source: { kind: 'plugin', plugin: 'dsh-plugin-teamflow', form: 'notice', summary: t(locale, 'guard.noticeSummary') },
+      source: { kind: 'plugin:dsh-plugin-teamflow', form: 'notice', summary: t(locale, 'guard.noticeSummary') },
     }))
   } catch (e) { /* 注入失败静默 */ }
 }

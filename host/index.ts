@@ -691,7 +691,7 @@ function tryFlushPendingInjections(sessionId: string): void {
     // 裸 payload 落盘后加载即「lacks an identified message」（实锤 session-8c3f9888 seq 10））
     agent.inject(createUserMessage({
       content: [{ type: 'text', text: teamflowContextText(pending.teamIcon, pending.teamName, pending.teamId) }],
-      source: { kind: 'plugin', plugin: 'dsh-plugin-teamflow', form: 'instructions' },
+      source: { kind: 'plugin:dsh-plugin-teamflow', form: 'instructions' },
     }))
     pendingInjections.delete(sessionId)
   } catch (e) { /* inject 失败静默 */ }
@@ -1087,7 +1087,7 @@ export class TeamflowService extends TypertRemoteService {
     // 必须经 createUserMessage（同上：裸 payload 缺 id/role → 宿主 v2 加载校验失败）
     const injectPayload = createUserMessage({
       content: [{ type: 'text', text: teamflowContextText(team.icon, teamNameOf(ambientLocale(), team), tid) }],
-      source: { kind: 'plugin', plugin: 'dsh-plugin-teamflow', form: 'instructions' },
+      source: { kind: 'plugin:dsh-plugin-teamflow', form: 'instructions' },
     })
     if (agent && typeof agent.inject === 'function') {
       try { agent.inject(injectPayload) } catch (e) { /* inject 失败不影响主流程 */ }

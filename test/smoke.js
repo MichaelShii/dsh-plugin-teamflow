@@ -28,7 +28,8 @@ for (const d of TEAMFLOW_DESCRIPTORS) {
   assert(/^[A-Za-z0-9_$.-]+$/.test(d.namespace), `namespace 合法: ${d.namespace}`)
   assert(/^[A-Za-z0-9_$.-]+$/.test(d.method), `method 合法: ${d.method}`)
   assert(d.invocation && d.invocation.kind === 'direct', `direct invocation: ${d.method}`)
-  assert(d.result && d.result.mode === 'strict' && typeof d.result.schema.parse === 'function', `strict result codec: ${d.method}`)
+  // create() 是 dsh 0.1.6-alpha.2 起 typert validateCodec 的硬要求（缺则注册抛错）
+  assert(d.result && d.result.mode === 'strict' && typeof d.result.create === 'function' && typeof d.result.create().parse === 'function', `strict result codec 带 create(): ${d.method}`)
   const endpoint = `${d.namespace}/${d.method}`
   assert(!endpoints.has(endpoint), `endpoint 唯一: ${endpoint}`)
   assert(!ids.has(d.id), `id 唯一: ${d.id}`)
@@ -40,7 +41,7 @@ for (const d of TEAMFLOW_DESCRIPTORS) {
     assert(!wires.has(p.wire), `wire 不重复: ${p.wire}`)
     wires.add(p.wire)
     assert(p.source === 'json', `参数为 json: ${p.name}`)
-    assert(p.codec && p.codec.mode === 'strict' && typeof p.codec.schema.parse === 'function', `参数 codec strict: ${p.name}`)
+    assert(p.codec && p.codec.mode === 'strict' && typeof p.codec.create === 'function' && typeof p.codec.create().parse === 'function', `参数 codec strict 带 create(): ${p.name}`)
   }
 }
 ok(true, `${TEAMFLOW_DESCRIPTORS.length} 个描述符全部通过规则校验`)
@@ -182,7 +183,7 @@ ok(/from '@deepseek-ai\/dsh-llm'/.test(hostSrc), 'import createUserMessage（dsh
 ok(/function deliverCompletion/.test(hostSrc), 'deliverCompletion 函数')
 ok(/parent\.status === 'idle'\) parent\.followup\(message\)/.test(hostSrc), 'idle → followup 唤醒')
 ok(/else parent\.inject\(message\)/.test(hostSrc), 'running → inject 注入')
-ok(/kind: 'plugin',[\s\S]*plugin: 'dsh-plugin-teamflow',[\s\S]*form: 'notice'/.test(hostSrc), 'notice 来源标记（与 tool-jobs 同款）')
+ok(/kind: 'plugin:dsh-plugin-teamflow',[\s\S]*form: 'notice'/.test(hostSrc), 'notice 来源标记走 v4 producer-owned（plugin:dsh-plugin-teamflow，不再用退役的 kind:\'plugin\' wrapper）')
 ok(/deliverCompletion\(journal, parent\)/.test(hostSrc), 'finally 中投递')
 ok(/teamflow_resume/.test(hostSrc), '汇报文本引导断点重跑')
 
@@ -283,6 +284,12 @@ ok(/repairBlueprintJson/.test(utilSrc), 'util：蓝图 JSON 提前闭合抢救�
 ok(/TECHNICAL\.md.*extractBlueprint|extractBlueprint\(readFileSync/.test(pipelineSrc), 'pipeline：蓝图提取回退任务夹 TECHNICAL.md（模型写进文档而非回复输出时 M2 拆卡不退化，实锤 r13 单任务整体开发）')
 ok(/token 观测/.test(guardSrc) && /重复 read|验证脚本重复执行/.test(hostSrc) && /observeToolCalls/.test(guardSrc), 'guard：token 观测信号（重复读/验证循环只记 warning 不中止）')
 ok(/蓝图块解析失败/.test(hostSrc) && /devAssign: \(mainTask && mainTask\.devAssign\) \|\| null/.test(backlogSrc), 'pipeline/backlog：蓝图解析失败告警 + 子卡继承 devAssign')
+
+console.log('── 3j) 会话事件 source 走 v4 producer-owned 命名空间（producer-owned source kind 校验）──')
+// 宿主 session-format-v4 的 assertV4MessageSources 拒绝 kind==='plugin' 的退役 wrapper：
+// 插件 inject/append 的事件必须写成 'plugin:<name>'，否则新 run 在事件采纳阶段直接抛错失败（实锤 probe-v3）。
+ok(/kind: 'plugin:dsh-plugin-teamflow'/.test(hostSrc), 'inject 事件 source 全部走 plugin:dsh-plugin-teamflow（v4 producer-owned，index/report/guard/runner 同池）')
+ok(!/kind: 'plugin', plugin: 'dsh-plugin-teamflow'/.test(hostSrc), 'host-pool 无退役 wrapper kind:\'plugin\', plugin: 写法')
 
 console.log('── 3i) 任务夹文档制（ADR-0008：活文档版本制 → 需求级任务夹收口）──')
 ok(/runFolderName/.test(utilSrc) && /runFolderName\(new Date\(\), journal\.reqId/.test(pipelineSrc), 'util/pipeline：任务夹命名 <yyyyMMdd>-r<N>[-<slug>]，host 建夹')
@@ -466,7 +473,7 @@ ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjectio
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
 ok(/"version": "0\.2\.0"/.test(pkgSrc), 'package.json：版本 0.2.0（release-v0.2.0 开发线）')
-ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.1\.5-rc\.2 <0\.2\.0"/.test(pkgSrc), 'package.json：声明 dsh.manifestVersion 与 engines.dsh 兼容窗口')
+ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.1\.7-alpha\.1 <0\.2\.0"/.test(pkgSrc), 'package.json：声明 dsh.manifestVersion 与 engines.dsh 兼容窗口（下限 = v4 宿主 0.1.7-alpha.1）')
 
 console.log('── 3p2) 引擎留痕：provider/model 必须落 journal（排查「是不是模型的锅」不该翻会话文件）──')
 ok(/stage\.provider = route\.provider \|\| providerName\(\) \|\| null/.test(runnerSrc) && /stage\.model = route\.model \|\| null/.test(runnerSrc), 'runner：逐阶段记**实际生效**的 provider/model（子代理路由可被改道，与 run 起始默认可能不同）')

@@ -109,9 +109,15 @@ dsh-plugin-teamflow/
 
 ### 版本锚定（dsh 宿主兼容性）
 
-本插件开发与验证基于 **dsh v0.1.5-rc.2**；`package.json` 声明兼容窗口 **`engines.dsh: ">=0.1.5-rc.2 <0.2.0"`** 与 `dsh.manifestVersion: 1`（当前宿主不读取/校验这两个字段，属作者声明性元数据）。装 dsh 时以 **`next`** 为准——`latest` 常滞后于 `next`，不要用 `latest` 判断发布线。
+本插件开发与验证基于 **dsh v0.1.7-alpha.1**（session 格式 v4）。**这也是「能跑流水线」的宿主下限**：插件注入的每条 message 必须带 producer-owned 的 `source.kind`（`plugin:dsh-plugin-teamflow`），而 v3 宿主把 `source.kind` 校验为**封闭词表**（`SOURCE_KINDS` 不含 `plugin:*`）——旧写法 `{kind:'plugin', plugin:…}` 在 v4 宿主当场被拒，新写法在 v3 宿主同样非法，两种形态**互不兼容**，故不再声称可回退到 v0.1.5-rc.2 运行。Remote 描述符仍同时提供 `schema` 与 `create()` 两个字段（供不同代际的宿主读取），见下「typert 描述符契约」。`package.json` 的 `engines.dsh: ">=0.1.7-alpha.1 <0.2.0"`（**已随本次下限收窄**，见下条实测）与 `dsh.manifestVersion: 1` 是作者声明性元数据（宿主不读取/校验）。
 
-升级 dsh 后若行为异常，先核对两处：① 插件注入的 session 事件（`tool-workflow/agent-start`、`user/message` + `source.kind='plugin'`）必须落在宿主事件词表内，**新增自定义事件类型要带 `ignorable: true`**、已知类型不要加词表外的键；② 计量读的是**宿主投影 key**（`tokenUsage` / `sessionStats`），宿主改 key 或 state 版本时需同步 `host/core/metering.ts`。历次兼容核对结论与待跟进项见 `CHANGELOG.md`（0.1.6–0.1.9 段）与 `docs/TODO.md`（例如复读检测仍读已弃用的事件读取器）。
+⚠️ **预发布 tuple 规则与本次区间的实测关系**（2026-09-23 用 semver 7.7.4 的 `satisfies` 实测）：受「预发布版本只匹配同 `[major,minor,patch]` tuple 的区间」规则约束——`>=0.1.7-alpha.1 <0.2.0` 对 **`0.1.7-alpha.1` / `0.1.7-alpha.2` / `0.1.7` / `0.1.8` / `0.1.9` 判 PASS**，对 **`0.1.6-alpha.2` / `0.1.6` / `0.2.0-rc.1` / `0.2.0` 判 fail**（与上条 v4 下限恰好一致）。注意旧区间 `>=0.1.5-rc.2 <0.2.0` 在同一 rule 下连**当时正在用的 `0.1.6-alpha.2` 都判 false**，所以这类字段只表达**对正式版的兼容声明**；宿主既不校验它，日常应以 **`next`** 为准——`latest` 常滞后于 `next`，不要用 `latest` 判断发布线。
+
+**v0.1.7-alpha.1 的 breaking 面（本次核对）**：session 事件格式升到 **v4**——宿主在事件被 Session 采纳前校验每条 message 的 `source.kind`，**拒绝 v3 退役的 plugin wrapper**（`{kind:'plugin', plugin:…}` → 抛 `format v4 message requires a producer-owned source kind`），要求 `kind:'plugin:<name>'`。插件原先四处注入（团队上下文 ×2 / 完成汇报 / 护栏提醒）写的都是旧 wrapper → 新 run 在写入阶段即失败（journal 都落不了盘）。现已全部改为 `plugin:dsh-plugin-teamflow`。全量核对其余面（typert 严格描述符仍要 `create()`、`subagents.start`/`SubagentRun`、`tokenUsage` 四桶 + `sessionStats.steps`、`agent.inject/followup/steer`、`settings.locale` 只读端口、`remote.$mount`、`sessions.openSubagent`、`sidebarRight.openResource`）**均无破坏**。
+
+**v0.1.6-alpha.2 的 breaking 面（上次核对）**：typert strict codec 由 `{ mode, typeSymbol, schema }` 变为 `{ mode, typeSymbol, create: () => Schema }`（懒物化，`materializeSchema` 里 `record.value ??= record.create()`）；`validateCodec` 对缺 `create()` 的 strict codec **注册即抛** `"strict codec has no create() factory"`。叠加 dsh-app-boot 的策略（required 插件 activate 失败 → 整个 profile `startup failed`），表现为**插件一挂就是「dsh 起不来」**（`web boot: N entries did not activate`）。全量 diff 其余面（client-modules / subagent / agent runtime / manifest / tools 的 llm 投影）对本插件无破坏，三个 UI slot 包的 `src/index.ts` 零变更 → slot 名安全。
+
+升级 dsh 后若行为异常，先核对两处：① 插件注入的 session 事件（`tool-workflow/agent-start`、`user/message` + `source.kind='plugin:dsh-plugin-teamflow'`）必须落在宿主事件词表内——**v4 宿主只收 producer-owned 的 source kind（`plugin` 这个 v3 wrapper 已退役）**，而 v3 宿主的封闭词表也不收 `plugin:*`（因此下限是 v4 宿主）；`tool-workflow/agent-start` 不带 message/source 槽位，不在该校验范围内。**新增自定义事件类型要带 `ignorable: true`**、已知类型不要加词表外的键；② 计量读的是**宿主投影 key**（`tokenUsage` / `sessionStats`），宿主改 key 或 state 版本时需同步 `host/core/metering.ts`。历次兼容核对结论与待跟进项见 `CHANGELOG.md`（0.1.6–0.1.9 段）与 `docs/TODO.md`（例如复读检测仍读已弃用的事件读取器）。
 
 
 ## 安装（对使用者）

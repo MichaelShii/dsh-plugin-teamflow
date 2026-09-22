@@ -188,8 +188,7 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
     const message = createUserMessage({
       content: [{ type: 'text', text }],
       source: {
-        kind: 'plugin',
-        plugin: 'dsh-plugin-teamflow',
+        kind: 'plugin:dsh-plugin-teamflow',
         form: 'notice',
         // 状态词走词典（未知状态回落原始 status 字面量）
         summary: t(locale, 'report.notice', { status: noticeStatus, id: journal.id }),

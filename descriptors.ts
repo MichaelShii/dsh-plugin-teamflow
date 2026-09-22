@@ -12,6 +12,12 @@
  * （requireStrictDescriptor），src-json 会被拒（"field has no strict codec"）。
  * 本插件载荷本就是自由 JSON，因此 strict schema 用恒等 parse（不做形状校验；
  * host 侧 decode 仍会做 JSON 安全性检查，参数缺省语义与 src-json 一致）。
+ *
+ * ⚠️ create() 是 dsh 0.1.6-alpha.2 起的**硬要求**（宿主 breaking change）：
+ * typert registry 的 validateCodec 对 strict codec 强制校验
+ * `typeof codec.create === 'function'`，缺失则注册即抛
+ * "strict codec has no create() factory" → 插件 activate 失败（表现为
+ * "2 entries did not activate"）。schema 字段保留仅为兼容旧宿主与既有测试。
  */
 
 import type { InvocationDescriptor } from '@deepseek-ai/dsh-typert-protocol'
@@ -23,6 +29,8 @@ const strict = {
   mode: 'strict' as const,
   typeSymbol: 'dsh-plugin-teamflow/types#Json',
   schema: JSON_SCHEMA,
+  /** 首次跨边界使用时物化 schema（宿主按需调用，只调一次并缓存）。 */
+  create: () => JSON_SCHEMA,
 }
 type StrictCodec = typeof strict
 
