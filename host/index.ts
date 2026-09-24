@@ -218,6 +218,11 @@ function registerTools(ctx) {
           properties: {
             title: { type: 'string', required: true, description: 'Task title' },
             spec: { type: 'string', description: 'Task description & acceptance points' },
+            files: {
+              type: 'array',
+              description: 'Files this task will MODIFY (ownership boundary). Two tasks may only run in parallel when their `files` sets are disjoint — tasks sharing a file are merged and serialized automatically. **Omitting `files` means the boundary is unknown: the whole batch runs sequentially instead** (safe but slower), so declare it when the tasks are genuinely separable.',
+              items: { type: 'string' },
+            },
           },
         },
       },
