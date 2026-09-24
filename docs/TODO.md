@@ -54,6 +54,17 @@
 
 ## 优化候选（2026-09-10 四路调研 + 自查，按收益/成本排序）
 
+- 🔜 **dev 末尾「QA 独立验证」任务：先攒拦截率数据，再决定收不收/怎么收（2026-09-25 观点已定，待数据）**：
+  tech 蓝图模型会自发把「验证自查」拆成 dev 任务——实测 `tf-mufssxpv-o3cb3m` T7「QA 独立验证（补跑）」、
+  `tf-mufvwupp-uiukmu` 第 5 任务「QA 独立验证（QA-REPORT）」（`files:[]` → 分波规则正确送入末波独占串行；
+  产出 `QA-REPORT.md` 与 QA 阶段产物同名同职责）。**观点**：保留（dev 自查是全链路唯一「发现问题→当场修」的
+  环节，QA 只读、打回一轮 = qa-fix + 重测 ≥2 个子代理），但改定位为「交付自检」：发现问题当场修（不越 files
+  边界）、只记结论不写 QA-REPORT.md（证据链留给 QA）、措辞与 QA 解耦防「预演 QA」式全量重验。改动 =
+  tech prompt 蓝图指引一句话（须过 `prompt-contract` + `conformance` 评测门禁）。**决策依据**：攒 3~5 条
+  流水线看 ① 自查任务的实际拦截率（拦下过本会走到 QA 打回的缺陷吗）② 是否系统性拆任务倾向；样本不足不动。
+  **数据点 1（2026-09-25 `tf-mufvwupp-uiukmu`）**：dev 自查任务正常完成后，QA 第 1 轮仍发现 **2 个阻断缺陷**
+  （打回修复 1 轮 + 复验通过）——自查拦截率 **0/1**，暂支持「自查验证质量有限」的担心；继续攒。
+
 - **按阶段下发 `reasoningEffort`（token 大杠杆）**：✅ v0.1.7 已落地两处机械阶段降档（patch 单点确认 + scaffold → `low`；重试回升 high；先经 `resolveModelInfo` 探测能力再下发），链路正确性已证（降档日志只在 low 臂出现）。**A/B（n=3/臂，同需求同档位，只比「单点确认」阶段）**：均值 output 8,774 → 5,047（−42.5%）、每次调用 output 1,211 → 612（−49.5%）、耗时 96.4s → 42.9s，但 **计费总量只 −12.8%**，且**区间大量重叠**（low 的 L4 自己探索 13 次调用，反比 high 的 H6 更贵）——**n=3 下差异统计上不可分**，因此**不宣称节约百分比**。**剩余**：① 要可信数字需要更大任务样本或固定调用数的评测场（本任务 run 间方差压倒 effort 效应）；② 是否把 `dev` 的机械改动也纳入降档（当前保守不动——判据型阶段，需更多证据）。
 - **产物可见性（客户端）**：✅ v0.1.8 已做完（v0.1.7 的 present 交付卡 + 工作台 `openResource` 预览 + v0.1.8 的 `main`+`sidebar.panellist` 全局面板 + 右栏 run 详情 tab）。**剩余**：run tab 的 `sidebar.right.pane.tab.title` seat（chip 标题现取 `definition.title`）；全局面板**只读**——没有 backlog 流转写路径（缺 product-keyed 的 `productBacklogUpdate`；补写要带审计 reason 且服务端仍有状态机守卫）。
 - **客户端渲染组件分叉**：`client/shared.tsx` 只统一了主题/词表/格式化，`TeamFlowView`/`PipelinePanel`（会话内）与 `panel.tsx` 的 `RunList`/`BacklogGroups`/`RunDetailPane`（全局 + 右栏）仍是两套渲染实现——收敛成一个组件族（数据源差异用 adapter 表达：sessionId 寻址 vs 产品线寻址），否则后续每加一个字段都要改两处。
