@@ -12,7 +12,7 @@
 - **产品**：`dsh-plugin-teamflow` —— DeepSeek Harness 可分发插件，把「一句话需求 → 多 Agent 团队研发流水线」做成宿主能力。
 - **形态**：host（Cordis service `teamflow`，node 侧）+ client（Web「🏭 团队工作台」tab）+ 模型工具（`teamflow_*`）。
 - **运行环境**：web profile 宿主组合真实 Node 进程；`file:` 安装 + 从 profile 副本加载。
-- **当前状态**（v0.2.0 开发线）：
+- **当前状态**（v0.2.1 开发线）：
   - ✅ **领域化重构完成**：1418 行单文件 → 11 个领域文件（见 §3）
   - ✅ **token 官方口径计量**（usage = 输入未命中/命中/写缓存/输出/调用数 + 缓存命中率，ADR-0003）
   - ✅ **lite 模式 / mode 5 档 + 模型驱动 triage**（ADR-0004，`teamflow_triage`）
@@ -31,7 +31,7 @@
 | 决策记录 | `docs/adr/0001~0009` | 自研 journal(不引 LangGraph) / AGENTS 最小侵入 / 部署+token 口径 / triage+共享状态 / 需求无效→验收「需求不适用」拦截 / 认知前置+架构落地重构(质量优先) / QA 打回修复有界闭环(ADR-0007) / 任务夹文档制(ADR-0008) / **不做插件级用户记忆层——已否决(ADR-0009)** |
 | 开发日志 | `docs/devlog.md` | 迭代变更流水 + 功能演进史（历史；不注入会话，按需查阅） |
 | 待办 | `docs/TODO.md` | 未完成事项（需人决策；不注入会话——agent 不主动做产品改进） |
-| 测试 | `test/smoke.js` `test/locale.test.js` `test/stages.test.js` `test/verdict.test.js` `test/journal.test.js` `test/runlogs.test.js` `test/cancel.test.js` `test/diagnostic.test.js` `test/evidence.test.js` `test/metering.test.js` `test/gitignore.test.js` `test/commit-path.test.js` `test/product-scope.test.js` `test/state.test.js` `test/dev-task-id.test.js` `test/triage-gate.test.js` `test/instruction-budget.test.js` `test/client-host-api.test.js` | `smoke` 结构/描述符/源码断言 · `locale` 语言层 · `stages` 档位阶段集 · `verdict` 验收结论 · `journal` journal 行为 · `runlogs` 日志生命周期 · `cancel` 中断语义 · `diagnostic` 重试/交付判定 · `evidence` 证据块 · `metering` token 计量 · `gitignore`+`commit-path` 收口提交 · `product-scope` 产品线数据面 · `state`/`dev-task-id`/`triage-gate` 状态与分诊 · `instruction-budget` 本文件体积守门（体积/§5 行长/禁写历史/指针双向） · `client-host-api` 宿主服务 API 面（成员白名单 + 禁已移除成员 + inject/桥接一致） · **L1 `prompt-contract` + L2 `conformance`**（改 prompt/注入必跑）→ 覆盖明细见 `anchors/tests-coverage.md` |
+| 测试 | `test/smoke.js` `test/locale.test.js` `test/stages.test.js` `test/verdict.test.js` `test/journal.test.js` `test/runlogs.test.js` `test/cancel.test.js` `test/diagnostic.test.js` `test/evidence.test.js` `test/metering.test.js` `test/gitignore.test.js` `test/commit-path.test.js` `test/product-scope.test.js` `test/state.test.js` `test/dev-task-id.test.js` `test/overlap-merge.test.js` `test/triage-gate.test.js` `test/instruction-budget.test.js` `test/client-host-api.test.js` | `smoke` 结构/描述符/源码断言 · `locale` 语言层 · `stages` 档位阶段集 · `verdict` 验收结论 · `journal` journal 行为 · `runlogs` 日志生命周期 · `cancel` 中断语义 · `diagnostic` 重试/交付判定 · `evidence` 证据块 · `metering` token 计量 · `gitignore`+`commit-path` 收口提交 · `product-scope` 产品线数据面 · `state`/`dev-task-id`/`triage-gate` 状态与分诊 · `overlap-merge` dev 文件交集合并护栏（`util.mergeFileOverlaps` 不变量 + resume 补跑路径必须共用同一函数） · `instruction-budget` 本文件体积守门（体积/§5 行长/禁写历史/指针双向） · `client-host-api` 宿主服务 API 面（成员白名单 + 禁已移除成员 + inject/桥接一致） · **L1 `prompt-contract` + L2 `conformance`**（改 prompt/注入必跑）→ 覆盖明细见 `anchors/tests-coverage.md` |
 | 评测层（L1+L2） | `test/prompt-contract.test.js` `test/conformance.test.js` `docs/benchmarks/corpus/` | **评测 prompt/注入改动**：L1 行为级契约（工厂产出锚点，含 HOST-ENFORCED/policy 分级，改 prompt 必跑）+ L2 回放语料一致性（冻结真实产物喂宿主解析器，golden corpus 门禁，零 LLM 成本）；语料/清单只增不改 |
 
 ## 3. 工程结构（领域划分，单向依赖）

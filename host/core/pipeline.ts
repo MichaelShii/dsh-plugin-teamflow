@@ -9,7 +9,7 @@ import { initPipelineBacklog, advanceTask, storeFor, parseDefectRows, syncQaDefe
 import { withRetry, resolveChildRoute } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
-import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, devTaskIdAt, backfillDevTaskIds, artifactText, detectInstallEnv } from '../util.ts'
+import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, devTaskIdAt, backfillDevTaskIds, artifactText, detectInstallEnv, mergeFileOverlaps, concurrentWriteConflicts, planDevWaves } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, FIX_GATE_PATTERN } from '../constants.ts'
 import { persistJournal, readJsonAny, journalFile, dshHome } from '../../store.ts'
@@ -37,6 +37,7 @@ function cliOnPath(): boolean {
 import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddArgs, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from './sanity.ts'
 import type { GitResult } from './sanity.ts'
 import { archiveRunLogs, sweepWorkspaceLogs } from './runlogs.ts'
+import { preflightWorkspaceAcl } from './acl-preflight.ts'
 import { currentModelSupportsVision } from './context.ts'
 import { modeLabel, parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
 import { ambientLocale, localeForMissingSnapshot, runLocaleOf } from './locale.ts'
@@ -292,20 +293,28 @@ function devTaskDefsWithBackfill(journal, tasks, locale: HostLocale): DevTaskDef
  *  `taskIds=['dt-1','dt-7','dt-8']`，resume 时三个 id 各自命中「已做」。
  *  **禁止回退为「按 title 匹配」或「按分隔符切分 title」**——那是拿文本长相当身份，同型的错已犯过两次
  *  （per-plugin 正则、固定 .gitignore 词表）。 */
-export interface DevTaskDef { id: string; title: string; spec: string; files: string[] }
+/** dev 任务定义。`files` = 可写（owns，并发互斥判据）；`reads` = 只读依赖（不互斥）。 */
+export interface DevTaskDef { id: string; title: string; spec: string; files: string[]; reads: string[] }
 
 function buildDevTaskDefs(journal, tasks, locale: HostLocale = 'zh'): DevTaskDef[] {
+  // 蓝图任务：`files` = 可写（owns），`reads` = 只读依赖（不参与并发互斥判定）。
+  // `reads` 是 2026-09-24 新增的可选字段，存量蓝图没有它 → 缺省空数组 ⇒ 行为与旧实现一致（安全默认）。
   const blueprintTasks = (journal.blueprint && Array.isArray(journal.blueprint.tasks) && journal.blueprint.tasks.length)
-    ? journal.blueprint.tasks.map((t) => ({ title: t.title || t(locale, 'dev.blueprintTask'), files: Array.isArray(t.files) ? t.files : [], spec: t.spec || '' }))
+    ? journal.blueprint.tasks.map((t) => ({
+      title: t.title || t(locale, 'dev.blueprintTask'),
+      files: Array.isArray(t.files) ? t.files : [],
+      reads: Array.isArray(t.reads) ? t.reads : [],
+      spec: t.spec || '',
+    }))
     : []
   const base = blueprintTasks.length
     ? blueprintTasks
     : tasks.length > 0
-      ? tasks.map((t) => ({ title: t.title, spec: t.spec, files: [] as string[] }))
-      : [{ title: t(locale, 'dev.overall'), spec: t(locale, 'dev.overallSpec'), files: [] as string[] }]
+      ? tasks.map((t) => ({ title: t.title, spec: t.spec, files: t.files || ([] as string[]), reads: [] as string[] }))
+      : [{ title: t(locale, 'dev.overall'), spec: t(locale, 'dev.overallSpec'), files: [] as string[], reads: [] as string[] }]
   // id 按定义顺序生成 —— 同一份蓝图（journal.blueprint 落盘后不变）必然产生同一组 id，
   // 故 resume 重新调用本函数时 id 稳定可对齐（这正是 title 做不到的）。
-  return base.map((d, i) => ({ id: devTaskIdAt(i), title: d.title, spec: d.spec, files: d.files || [] }))
+  return base.map((d, i) => ({ id: devTaskIdAt(i), title: d.title, spec: d.spec, files: d.files || [], reads: d.reads || [] }))
 }
 /**
  * 执行流水线。resume = null 全新运行；resume = { phase, products } 从断点续跑：
@@ -350,6 +359,26 @@ export async function executePipeline(
   // 日志生命周期（B 方案 2026-09-15）：先把上次崩溃/中断残留在工作区的暂存日志归档走（自愈），
   // 再淘汰超额归档。清扫尽力而为，绝不阻断起跑。
   try { sweepWorkspaceLogs(journal, locale) } catch (e) { /* 清扫失败不影响起跑 */ }
+  // Windows ACL 预检（2026-09-25，产品级根治）：宿主 sandbox 的 grantWrite 写 mandatory label
+  // 需要 WRITE_OWNER，而数据盘上新建的目录（继承 DACL 无用户显式 ACE）拿不到 → 子代理必 env-unavailable、
+  // 主会话被迫逐轮排查。这里在任何阶段/任何模型调用之前用宿主自己的包按**同一 workspace SID** 把
+  // standing grant 物化掉（修复 ACE 只需 WRITE_DAC，owner 隐式足够 → 无需提权）；救不回来 → 立即
+  // 判失败并给一条可复制的 icacls 命令。resume 同样过这道闸（幂等，宿主 exact-ACE skip O(1)）。
+  try {
+    const acl = await preflightWorkspaceAcl(journal.workspacePath)
+    if (acl.status === 'fixed') {
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.aclPreflightFixed') })
+    } else if (acl.status === 'failed') {
+      const fix = acl.fix || ''
+      journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.aclPreflightFail', { fix }) })
+      journal.status = 'failed'
+      journal.error = t(locale, 'run.aclPreflightFailed', { err: clip(acl.err || '', 300), fix })
+      journal.endedAt = Date.now()
+      persistJournal(journal)
+      activeProducts.delete(scopeKey)
+      return
+    }
+  } catch (e) { /* 预检自身异常绝不阻断起跑（preflightWorkspaceAcl 理论上不抛，防御性兜底） */ }
   // 自动分诊（对调用方透明）：除 `patch` 与**断点续跑**外一律跑一次——含显式 `lite`/`mode`。判据来自实测：
   // ① 模型系统性自选档位（33 次启动 14 次显式传入、0 次先预览 `teamflow_triage`），若跳过 triage，
   //    澄清闸门与 ADR-0006 架构护栏会在 42% 的启动上静默失效；
@@ -805,6 +834,51 @@ export async function executePipeline(
     }
 
     /* ── 开发阶段（并发池；resume 到 QA/验收时复用旧结果） ── */
+    /* 并发写的**事后记账**（issue #4 第三道防线）：前两道护栏都可能被绕过——
+       ① 任务没声明 files ⇒ mergeFileOverlaps 无从判定；② agent 越界写别人的文件（prompt 只软约束）；
+       ③ agent 用 shell 改写文件 ⇒ 宿主 CAS（FS_STALE_VERSION）完全看不见。
+       唯一绕不过去的事实是「这一舞台最终动了哪些文件」（state block 的 touched），
+       所以各 dev 舞台结束时连同真实执行窗口记一笔，收尾统一求并发窗口内的文件交集。 */
+    const devTouchEntries: Array<{ key: string; startedAt: number; endedAt: number; files: string[] }> = []
+    const trackDevTouched = (key: string, startedAt: number, endedAt: number, text: unknown) => {
+      const block = extractStateBlock(text)
+      const files = Array.isArray(block && block.touched)
+        ? (block!.touched || []).map((f) => String(f || '').trim()).filter(Boolean)
+        : []
+      if (files.length) devTouchEntries.push({ key, startedAt, endedAt, files })
+    }
+    /** 合并结果 + 波次的留痕（两条 dev 路径共用）。**必须区分「没声明 files」与「共享可写文件」**——
+     *  两者补救方式完全不同（前者要声明 files，后者是真的改同一文件）。
+     *  2026-09-24 r1b 实锤第一版两条路径各打一半：resume 分支只用了 overlap 文案，三个**无 files** 的任务
+     *  被合并后日志却说"共享文件"；r3 又发现 `devNoBoundary` 的 {n} 传的是**总数**，5 个任务里只有 1 个
+     *  没声明 files 却写成"5 个任务未声明"。日志一旦与事实不符，排查就会被带偏——这里两个数字都给全。 */
+    const logDevPlan = (defs: Array<{ files?: string[] }>, plan: ReturnType<typeof planDevWaves>) => {
+      const missing = plan.missingBoundary.length
+      if (missing > 0 && defs.length > 1) {
+        journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devNoBoundary', { m: missing, n: defs.length }) })
+      } else if (plan.merged > 0) {
+        journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devOverlapMerged', { n: defs.length, m: plan.groups.length - (missing ? 1 : 0) }) })
+      }
+      if (plan.dropped > 0) {
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.devPlanCycle', { n: plan.dropped }) })
+      }
+      if (plan.waves.length > 0 && plan.groups.length > 1) {
+        journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devWaves', { g: plan.groups.length, w: plan.waves.length, lanes: plan.waves.map((w) => w.length).join('+') }) })
+      }
+    }
+    const reportDevWriteConflicts = () => {
+      const hits = concurrentWriteConflicts(devTouchEntries)
+      for (const c of hits.slice(0, 5)) {
+        journal.logs.push({
+          t: Date.now(), level: 'warn',
+          message: t(locale, 'log.devWriteConflict', {
+            a: clip(c.a, 40), b: clip(c.b, 40), files: c.files.slice(0, 6).join(', '),
+            min: Math.max(1, Math.round(c.overlapMs / 60000)),
+          }),
+        })
+      }
+      return hits.length
+    }
     let devResults = null
     if (resume) {
       // resume 场景（状态机 2026-09-06）：无论起点在开发之前还是开发本身——
@@ -815,37 +889,61 @@ export async function executePipeline(
       // 会全部 Miss → 补跑 8 个（实测）。补算后判定只在一个键空间（id）内进行。
       const devDefs = devTaskDefsWithBackfill(journal, tasks, locale)
       const taskStatuses = devTaskStatuses(journal.stages || [])
-      const todo = devDefs.filter((d) => {
+      const todoDefs = devDefs.filter((d) => {
         const st = taskStatuses.get(d.id)
         return !st || !st.done
       })
-      if (todo.length === 0) {
+      if (todoDefs.length === 0) {
         timeline.dev = devResults
         logSkip('dev')
       } else {
-        const reused = devResults.filter((r) => r && !todo.some((d) => d.title === r.title))
-        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.resumeDev', { reused: reused.length, todo: todo.length }) })
-        const rerun = await runPool(todo, maxConcurrency, async (task) => {          // resume 补跑诊断（缺口修复 2026-09-04）：resume 是全新子代理会话，不拼诊断=盲试
+        const reused = devResults.filter((r) => r && !todoDefs.some((d) => d.title === r.title))
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.resumeDev', { reused: reused.length, todo: todoDefs.length }) })
+        // **补跑同样要过冲突护栏**（2026-09-24 issue #4 实锤修复）：补跑任务是从
+        // `devDefs` 过滤出来的**原始**任务（未合并），直接喂 runPool 会让共享文件的任务并发执行——
+        // 首次开发有护栏、补跑反而没有，是最容易被忽略的一半。复用结果仍按原始 title 判定，
+        // 合并/分波只作用于「这次要起几个子代理」。
+        const todoPlan = planDevWaves(todoDefs)
+        logDevPlan(todoDefs, todoPlan)
+        const rerun: Array<{ title: string; spec?: string; dtId: string | null; failed: boolean; output: string } | undefined> = []
+        for (let w = 0; w < todoPlan.waves.length; w++) {
+          if (journal.cancelled) break
+          const waveRes = await runPool(todoPlan.waves[w], maxConcurrency, async (task) => {          // resume 补跑诊断（缺口修复 2026-09-04）：resume 是全新子代理会话，不拼诊断=盲试
           // （与 withRetry 自动重试同构的问题——模型不知道上次为何失败，会重复踩同一坑）。
-          // 找该任务上次失败 stage（**按 taskIds 含本任务 id** 的最近失败；存量无 taskIds 时回退 title 匹配），
+          // 找该任务上次失败 stage（**按 taskIds 与本组任务 id 有交集**的最近失败；存量无 taskIds 时回退 title 匹配），
           // 附 buildRetryDiagnostic（outcome/summary/产出尾部）。
           const prevStage = [...journal.stages].reverse().find((s) => phaseKeyOf(s.phase) === 'dev' && s.status !== 'done'
             && (Array.isArray(s.taskIds) && s.taskIds.length
-              ? s.taskIds.includes(task.id)
-              : ((s.taskKey && s.taskKey === String(task.title || '')) || (!s.taskKey && (s.label || '').includes(String(task.title || ''))))))
+              ? task.ids.some((id) => s.taskIds.includes(id))
+              : ((s.taskKey && task.ids.some((id) => s.taskKey === String(id))) || (!s.taskKey && task.title && (s.label || '').includes(String(task.title))))))
+          const t0 = Date.now()
           const resumePrompt = devPrompt(task, tech, prd, root, journal.id, state) + (prevStage ? buildRetryDiagnostic(2, prevStage) : '')
-          const devR = await withRetry(journal, parent, t(locale, 'dev.taskRerun', { title: task.title }), 'dev', resumePrompt, signal, task.title, null, [task.id])
+          const devR = await withRetry(journal, parent, t(locale, 'dev.taskRerun', { title: task.title }), 'dev', resumePrompt, signal, task.title, null, task.ids)
           const rerunText = stageTextOf(devR)
+          trackDevTouched(task.title, t0, Date.now(), rerunText)
           noteVerifyEvidence(devR.stage, rerunText)
           const ok = !!devR.text
-          return { title: task.title, dtId: task.id, failed: !ok, output: rerunText || t(locale, 'dev.failedPlaceholder') }
-        }, () => journal.cancelled)
+          return { title: task.title, spec: task.spec, dtId: task.ids[0], failed: !ok, output: rerunText || t(locale, 'dev.failedPlaceholder') }
+          }, () => journal.cancelled)
+          rerun.push(...waveRes)
+          // 失败传播（AC3）：本波有失败 ⇒ 后续波的组在拿半成品往下做，直接记账跳过（resume 会按未完成补跑）
+          const failedHere = waveRes.filter((r) => r && r.failed).length
+          if (failedHere > 0 && w + 1 < todoPlan.waves.length) {
+            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.devDepBlocked', { wave: w + 1, failed: failedHere, rest: todoPlan.groups.length - rerun.length }) })
+            for (let gi = rerun.length; gi < todoPlan.groups.length; gi++) {
+              const g = todoPlan.groups[gi]
+              rerun.push({ title: g.title, spec: g.spec, dtId: g.ids[0], failed: true, output: t(locale, 'dev.depBlocked') })
+            }
+            break
+          }
+        }
         for (const t of rerun) {
           if (!t) continue // 取消后并发池不再取新任务 → 未启动的条目是 undefined（时间线里留空位）
           // 子卡同步：createSubtask 同任务复用（业务任务实体一张卡）+ completeSubtask 更新状态
           const sub = createSubtask(journal, t.title, t.spec || '', t.dtId)
           if (sub) completeSubtask(journal, sub.id, t.failed, t.output ? snippet(t.output, 1000) : null, null)
         }
+        reportDevWriteConflicts()
         devResults = [...reused, ...rerun]
         timeline.dev = devResults
       }
@@ -855,38 +953,45 @@ export async function executePipeline(
       // M2「认知前置 + 架构落地」：架构师（tech/architect 阶段）已按文件边界拆好蓝图 tasks，
       // dev 继承蓝图在既有架构上实现；无蓝图时退化为整体开发或调用方 tasks。
       const devTaskDefs = buildDevTaskDefs(journal, tasks, locale)
-      // 冲突检测：蓝图任务文件有交集 → 合并（保证并发不写同一文件）；无交集才可并行
+      // 冲突护栏 = 合并（write∩write，保证并发不写同一文件）+ 分波（依赖边靠排序，不再拖累无关任务）。
+      // 共用实现在 `util.planDevWaves`（内部用 `mergeFileOverlaps`，不变量与 resume 路径事故的说明见其头注释）。
       // **合并时 ids 一并累加**（2026-09-18）：title 拼接是给人看的，id 数组才是身份——
       // 少了这一步，"一个子代理干了三个任务"就无法被 resume 正确识别（probe-cache 实锤）。
-      const mergedDefs: Array<{ ids: string[]; title: string; files: string[]; spec: string }> = []
-      for (const t of devTaskDefs) {
-        const hit = t.files && t.files.length
-          ? mergedDefs.find((m) => m.files.some((f) => t.files.includes(f)))
-          : undefined
-        if (hit) {
-          hit.ids.push(t.id)
-          hit.title = `${hit.title} + ${t.title}`
-          hit.spec = `${hit.spec}${t.spec ? `；${t.spec}` : ''}`
-          for (const f of (t.files || [])) if (!hit.files.includes(f)) hit.files.push(f)
-        } else {
-          mergedDefs.push({ ids: [t.id], title: t.title, files: t.files || [], spec: t.spec || '' })
+      // 2026-09-25（Run 3 实证后）：从「任一无 files ⇒ 整批合并串行」升级为「未知写集 ⇒ 独占最后一波」——
+      // 一个收尾任务不再把 4 个本可并行的任务拖下水；reads/dependsOn 变成真实的执行顺序（AC3）。
+      const devPlan = planDevWaves(devTaskDefs)
+      logDevPlan(devTaskDefs, devPlan)
+      // 只读声明的收益留痕：把 reads 也算冲突的话会被合并成几组？差值 = 这一轮多保住的并发路数。
+      // 只对**已知边界**的任务算（未知写集本来就独占一波，混进来只会把差值抹成 0——r3 实测）。
+      // 目的不是优化，而是**可观测**：模型到底有没有用 reads，看这条日志即可（不需要跑几十条流水线做统计）。
+      const knownGroups = devPlan.groups.filter((g) => g.files.length)
+      if (devTaskDefs.some((d) => d.reads && d.reads.length) && knownGroups.length > 1) {
+        const legacy = mergeFileOverlaps(devTaskDefs.filter((d) => d.files && d.files.length).map((d) => ({ ...d, files: [...d.files, ...(d.reads || [])] })))
+        if (legacy.length < knownGroups.length) {
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devParallelKept', { n: legacy.length, m: knownGroups.length, d: knownGroups.length - legacy.length }) })
         }
       }
-      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devStart', { n: mergedDefs.length, concurrency: maxConcurrency, fromBlueprint: journal.blueprint && Array.isArray(journal.blueprint.tasks) && journal.blueprint.tasks.length ? t(locale, 'log.devFromBlueprint') : '' }) })
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devStart', { n: devPlan.groups.length, concurrency: maxConcurrency, fromBlueprint: journal.blueprint && Array.isArray(journal.blueprint.tasks) && journal.blueprint.tasks.length ? t(locale, 'log.devFromBlueprint') : '' }) })
       advanceTask(journal, 'running', null, t(locale, 'event.devStart'), { by: 'dev' })
       // 为每个 dev 子任务建一张子卡（并行 agent 各自独立跟踪）
       // 传 ids[0] 作 dtId：合并任务的子卡归属其**首个**任务 id（保底唯一、稳定；合并语义在 stage.taskIds 里完整保留）
-      const subCards = mergedDefs.map((dt) => createSubtask(journal, dt.title, dt.spec, dt.ids[0]))
-      devResults = await runPool(mergedDefs, maxConcurrency, async (task, idx) => {
-        const sub = subCards[idx]
+      const subCards = devPlan.groups.map((dt) => createSubtask(journal, dt.title, dt.spec, dt.ids[0]))
+      devResults = []
+      for (let w = 0; w < devPlan.waves.length; w++) {
+        if (journal.cancelled) break
+        const offset = devResults.length // 波次展开 = 扁平顺序，偏移量正好是已产出的结果数（含取消产生的空位）
+        const waveRes = await runPool(devPlan.waves[w], maxConcurrency, async (task, idx) => {
+        const sub = subCards[offset + idx]
         if (sub) {
           completeSubtask(journal, sub.id, false, null, null) // 先标记 running（end 由 complete 设）
           const store = storeFor(scopeKey)
           const subLive = store.find('task', sub.id)
           if (subLive) { subLive.status = 'running'; subLive.startedAt = Date.now(); store.persist(); persistJournal(journal) }
         }
+        const t0 = Date.now()
         const devR = await withRetry(journal, parent, t(locale, 'dev.task', { title: task.title }), 'dev', devPrompt(task, tech, prd, root, journal.id, state), signal, task.title, null, task.ids)
         const devText = stageTextOf(devR)
+        trackDevTouched(task.title, t0, Date.now(), devText)
         noteVerifyEvidence(devR.stage, devText)
         const ok = !!devR.text
         // 完成子卡：记录状态 + childId + 摘要
@@ -897,7 +1002,23 @@ export async function executePipeline(
           if (devR.stage) noteSubtaskUsage(journal, sub.id, devR.stage)
         }
         return { title: task.title, failed: !ok, output: devText || t(locale, 'dev.failedPlaceholder') }
-      }, () => journal.cancelled)
+        }, () => journal.cancelled)
+        devResults.push(...waveRes)
+        // 失败传播（AC3）：本波有失败 ⇒ 后续波的组是在拿半成品往下做，直接记账跳过（提测门禁会拦住；
+        // resume 按未完成补跑）。这里只**止损**，不做新的语义——不改变「有失败 → 转人工」的门禁行为。
+        const failedHere = waveRes.filter((r) => r && r.failed).length
+        if (failedHere > 0 && w + 1 < devPlan.waves.length) {
+          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.devDepBlocked', { wave: w + 1, failed: failedHere, rest: devPlan.groups.length - devResults.length }) })
+          for (let gi = devResults.length; gi < devPlan.groups.length; gi++) {
+            const g = devPlan.groups[gi]
+            const sub = subCards[gi]
+            if (sub) completeSubtask(journal, sub.id, true, snippet(t(locale, 'dev.depBlocked'), 1000), null)
+            devResults.push({ title: g.title, failed: true, output: t(locale, 'dev.depBlocked') })
+          }
+          break
+        }
+      }
+      reportDevWriteConflicts()
       timeline.dev = devResults
       // dev 阶段 state 沉淀：汇总各 dev 产出中提取的 state 块
       for (const r of devResults) {

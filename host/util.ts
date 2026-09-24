@@ -215,17 +215,39 @@ export function normalizeRoot(v: unknown): string | null {
   }
   return segments.join('/')
 }
-export function normalizeTasks(tasks: unknown): Array<{ title: string; spec: string }> {
+/** 单任务允许声明的**可写**文件上限（防御：别让一个任务把半仓都圈成自己的）。 */
+export const TASK_FILES_LIMIT = 20
+
+/**
+ * 调用方给出的 dev 任务归一化。
+ *
+ * **files = 该任务会改的文件（owns）**，是并发互斥的唯一判据：
+ *  - 声明了 → 走 `mergeFileOverlaps`，与其它任务的 owns 无交集即可并行；
+ *  - 没声明 → 边界未知，`mergeFileOverlaps` 会把这一批任务**全部合并串行**（宁可慢，不可抢写）。
+ * 只读依赖请走 `reads`（蓝图路径支持；调用方路径暂不开放，未声明等于保守）。
+ *
+ * 清洗规则与既有字段一致（字符串化、去空、去重、限量）；脏值一律忽略而不是抛错——
+ * 调用方是模型，格式不整齐是常态，抛错只会让整条流水线白跑。
+ */
+export function normalizeTasks(tasks: unknown): Array<{ title: string; spec: string; files: string[] }> {
   if (!Array.isArray(tasks)) return []
   const out = []
   for (const t of tasks) {
     if (t === null || t === undefined) continue
+    const files: string[] = []
+    if (typeof t === 'object' && Array.isArray(t.files)) {
+      for (const f of t.files) {
+        const s = typeof f === 'string' ? f.trim() : ''
+        if (s && !files.includes(s)) files.push(s)
+        if (files.length >= TASK_FILES_LIMIT) break
+      }
+    }
     if (typeof t === 'string') {
       const s = t.trim()
-      if (s) out.push({ title: s, spec: '' })
+      if (s) out.push({ title: s, spec: '', files })
     } else if (typeof t === 'object') {
       const title = typeof t.title === 'string' && t.title.trim() ? t.title.trim() : null
-      if (title) out.push({ title, spec: typeof t.spec === 'string' ? t.spec : '' })
+      if (title) out.push({ title, spec: typeof t.spec === 'string' ? t.spec : '', files })
     }
     if (out.length >= 8) break
   }
@@ -769,6 +791,291 @@ export function extractBlueprint(text: string | null | undefined, locale?: HostL
     ? '[Architecture blueprint (produced by the tech stage; implement on the existing architecture, do not rebuild)]'
     : '【架构蓝图（tech 阶段产出，dev 须在既有架构上实现，勿重建）】'
   return { summary, modules, duplications, tasks, render: `${head}\n${parts.join('\n')}` }
+}
+
+/**
+ * 文件交集冲突合并（GitHub issue #4 护栏的**共用实现**）。
+ *
+ * 语义：如果两个 dev 任务声明的**可写**文件集有交集，它们会被合成**一个**任务交给一个子代理串行执行，
+ * 从而保证「任意两个并发子代理的可写文件集互斥」——这是本插件对「并行开发不抢同一文件」的
+ * 唯一硬护栏（另有 prompt 软约束与宿主 CAS 兜底，不可依赖）。
+ *
+ * **owns / reads（2026-09-24）**：`files` = 该任务**会改**的文件（owns，判定只看它）；
+ * `reads` = 只读依赖（读接口/调用关系，不改，如 types.ts、既有模块）。
+ * 只读接触不产生互斥：两个任务都读 types.ts 却都要改各自的文件，本可以并行——
+ * 旧谓词（把"接触过的文件"一律当冲突）会把它们强行串行。实测这部分代价：158 任务 → 137 组（损失 13%），
+ * 而**真并发双写 0 次**（199 对可观测并发舞台）⇒ 旧谓词明显偏保守。
+ * **安全默认**：`reads` 必须显式声明才有，缺省一律当 owns ⇒ 模型不标/标错时行为与旧实现一致（零风险）。
+ *
+ * **不变量（测试锁死，勿改）**：
+ *  - 返回的分组两两之间文件集**不相交**（并查集式的传递闭包：A∩B、B∩C ⇒ A/B/C 同组，即使 A∩C 为空）；
+ *  - `ids` 是身份累加，合并前各任务的 id 全部保留——丢失会让 resume 判定「没做过」而重复补跑
+ *    （同型事故见 `test/dev-task-id.test.js` 头部注释）；
+ *  - `files` 为空的任务**不参与合并**（无边界可判），独立成组；调用方知道这组没有护栏。
+ *
+ * 抽成 util 纯函数的原因：首次实现只写在了正常路径里（`pipeline.ts` executePipeline 的 dev 分支），
+ * **resume 补跑分支直接把未合并的 task list 丢进了 runPool** —— 于是「首次执行有护栏、补跑没有护栏」，
+ * 实锤 run `tf-mu6tb281-4n43oc` 第三轮里 T0/T5/T6 同时起跑且共享 package.json/tsdown.config.ts/README.md。
+ * 两条路径必须共用这一个函数，否则同样的洞会再开一次。
+ *
+ * ⚠️ **一个已修的实现坑（2026-09-24，随机用例实锤）**：初版写成「找**第一个**有交集的组就往里塞」，
+ *   不变量是不成立的。反例：G1={A,B} 先建、G2={C} 后建（当时确实与 G1 不相交），第三个任务
+ *   X={B,C} 同时命中两组，只并进 G1 → G1 变成 {A,B,C}，此刻 **G1∩G2={C}** —— 护栏失效，
+ *   两个子代理又能并发写 C。正确做法是「把所有命中组连同本任务**一起并成一个组**」（下面这段）。
+ */
+export function mergeFileOverlaps(
+  defs: Array<{ id: string; title: string; spec?: string; files?: string[]; reads?: string[] }>,
+): Array<{ ids: string[]; title: string; spec: string; files: string[] }> {
+  const list = defs || []
+  /** ① 未知边界：任一任务没声明 `files` ⇒ 它可能写任何地方 ⇒ 与**所有**任务互斥（B1 严格版）。
+   *  现状下调用方没地方声明（工具 schema 里 tasks 只有 title/spec），所以多任务一律全合并串行——
+   *  慢，但不会抢写；想并行就声明 files（见 `normalizeTasks`）。单任务场景（整体开发兜底）不受影响。 */
+  if (list.some((t) => !(Array.isArray(t.files) && t.files.length))) {
+    return [list.reduce((acc, t, i) => {
+      if (i > 0) { acc.title = `${acc.title} + ${t.title}`; acc.spec = `${acc.spec}${t.spec ? `；${t.spec}` : ''}` }
+      else { acc.title = t.title; acc.spec = t.spec || '' }
+      acc.ids.push(t.id)
+      for (const f of (Array.isArray(t.files) ? t.files : [])) if (!acc.files.includes(f)) acc.files.push(f)
+      return acc
+    }, { ids: [] as string[], title: '', spec: '', files: [] as string[] })]
+  }
+  /** ② 判定谓词是 **owns ∩ owns**（`files`），**不是** "接触过的文件"：
+   *  `reads`（只读依赖，如 types.ts / 既有模块接口）不产生任何互斥——见函数头注释。 */
+  let groups: Array<{ ids: string[]; title: string; spec: string; files: string[] }> = []
+  for (const t of list) {
+    const files = Array.isArray(t.files) ? t.files : []
+    const hits = files.length ? groups.filter((g) => g.files.some((f) => files.includes(f))) : []
+    if (!hits.length) {
+      groups.push({ ids: [t.id], title: t.title, spec: t.spec || '', files: [...files] })
+      continue
+    }
+    // 命中多个组 ⇒ 本任务把它们「桥接」起来了，必须一次并成一个组（不变量要求）
+    const head = hits[0]
+    for (const g of hits.slice(1)) {
+      head.ids.push(...g.ids)
+      head.title = `${head.title} + ${g.title}`
+      head.spec = `${head.spec}${g.spec ? `；${g.spec}` : ''}`
+      for (const f of g.files) if (!head.files.includes(f)) head.files.push(f)
+    }
+    groups = groups.filter((g) => g === head || !hits.includes(g))
+    head.ids.push(t.id)
+    head.title = `${head.title} + ${t.title}`
+    head.spec = `${head.spec}${t.spec ? `；${t.spec}` : ''}`
+    for (const f of files) if (!head.files.includes(f)) head.files.push(f)
+  }
+  return groups
+}
+
+/**
+ * **依赖分波调度**（GitHub issue #4 的第三/AC3 答案；2026-09-24 Run 3 实证后引入）。
+ *
+ * 「合并」解决了 AC1（不并发写同一文件），代价是**整批串行**：Run 3 实锤——
+ * 5 个任务里有 1 个（提交任务）声明了空的 `files`，严格规则就把另外 4 个本可并行的任务也拖下水。
+ * 本函数把两种手段分开，各管一段：
+ *
+ *  - **write ∩ write（可写文件相交）→ 仍然合并**。为什么不用"先后两波"代替合并：两个 agent 先后改同一个
+ *    文件是 last-writer-wins，后写的可能把前写的语义推翻；合并成一个 agent 至少是**一个上下文里调和**。
+ *  - **依赖边 → 排序而不是合并**。依赖边有三类来源（都是**已有声明**，不新增契约）：
+ *    ① `reads` 命中别人的 `files`（读刚被改写的接口）⇒ 读方排在写方之后；
+ *    ② `dependsOn`（任务级 id 或"被依赖方的某个 owns 文件"）⇒ 显式顺序；
+ *    ③ **未声明 `files`**（写集未知 ⇒ 与一切互斥）⇒ 独占最后一波，其余任务的并行度不受影响。
+ *
+ * **执行模型**：`waves[i]` 内的组**可以并行**，`waves[i]` 整体结束才启动 `waves[i+1]`。
+ * 所以同一波内的组必须两两写集互斥（由 `mergeFileOverlaps` 的不变量保证），
+ * 跨波则天然不存在并发 ⇒ **AC1 依然成立**，与「全合并串行」等价安全、却拿回了并行度。
+ *
+ * **失败传播（AC3）**：调用方按波推进，某波出现失败即不再启动后续波（未执行的组记账为失败，resume 会补跑）。
+ * 声明出来的依赖如果被跳过，下游拿到的就是半成品——跑下去只是烧 token。
+ *
+ * **环的处理（Run 3 实锤的形状）**：模型可能标出互相矛盾的依赖——r3 蓝图里 T2 reads T3 的 owns、
+ * T3 又 reads T2 的 owns。若把环上的组各自降级成独占一波，r3 会退化成 5 波全串行（比合并还差）。
+ * 所以按**软依赖**处理：边按声明顺序增量插入 DAG，**会成环的边直接丢弃**并在 `dropped` 里计数供日志暴露。
+ * 丢弃的代价是「读方可能与写方同波，读到改写前的状态」（波是同步屏障，不存在读到半写状态）——
+ * 比起挂死或全串行，这是可接受的降级，且日志会点名（值得回看蓝图，而不是静默吞掉）。
+ *
+ * **安全默认不变**：不声明 `reads` ⇒ 没有依赖边 ⇒ 与分波前完全一致；声明了才可能更慢（排序）或更快（不再被拖累）。
+ *
+ * @returns `groups` 是波次展开后的**扁平顺序**（调用方用它对齐子卡/结果与 resume 判定）
+ */
+export interface DevPlanGroup {
+  ids: string[]
+  title: string
+  spec: string
+  files: string[]
+  reads: string[]
+  /** 本组必须排在 `after` 中每个扁平下标对应的组之后 */
+  after: number[]
+}
+export interface DevPlan {
+  waves: DevPlanGroup[][]
+  groups: DevPlanGroup[]
+  missingBoundary: string[]
+  deps: Array<{ from: number; to: number; via: string }>
+  /** 因会成环而被丢弃的依赖边数（reads 按软依赖处理；0 = 声明无矛盾） */
+  dropped: number
+  /** 因 write∩write 被吸收掉的任务数（= 合并损失的任务粒度）= 已知边界任务数 − 写互斥组数 */
+  merged: number
+}
+export function planDevWaves(
+  defs: Array<{ id: string; title: string; spec?: string; files?: string[]; reads?: string[]; dependsOn?: string[] }>,
+): DevPlan {
+  const list = Array.isArray(defs) ? defs : []
+  const blank: DevPlan = { waves: [], groups: [], missingBoundary: [], deps: [], dropped: 0, merged: 0 }
+  if (!list.length) return blank
+  const declared = (t) => Array.isArray(t.files) && t.files.length > 0
+  const known = list.filter(declared)
+  const unknown = list.filter((t) => !declared(t))
+
+  /** ① 写互斥：仍然靠合并（`mergeFileOverlaps` 的不变量 = 组内串行、组间 files 不相交）。 */
+  const writeGroups = known.length ? mergeFileOverlaps(known) : []
+  const byId = new Map(list.map((t) => [t.id, t]))
+  const groupOfTask = new Map()
+  writeGroups.forEach((g, i) => { for (const id of g.ids) groupOfTask.set(id, i) })
+
+  const groups: DevPlanGroup[] = writeGroups.map((g) => {
+    const reads: string[] = []
+    for (const id of g.ids) {
+      const m = byId.get(id)
+      if (!m) continue
+      for (const f of Array.isArray(m.reads) ? m.reads : []) {
+        const s = String(f || '').trim()
+        if (s && !reads.includes(s)) reads.push(s)
+      }
+    }
+    return { ids: g.ids, title: g.title, spec: g.spec, files: g.files, reads, after: [] }
+  })
+
+  /** ② 未知写集 ⇒ 独占最后一波：它可能写任何文件，所以必须排在**所有**已知组之后（边见 ③）。 */
+  const unknownIdx = groups.length
+  if (unknown.length) {
+    groups.push({
+      ids: unknown.map((t) => t.id),
+      title: unknown.map((t) => t.title).join(' + '),
+      spec: unknown.map((t) => t.spec || '').filter(Boolean).join('；'),
+      files: [],
+      reads: [],
+      after: [],
+    })
+  }
+
+  /** ③ 依赖边（环安全增量插入）：
+   *  - `dependsOn`：任务 id 或"对方的 owns 文件"（显式声明，优先插入）；
+   *  - `reads` 命中别人的 `files` ⇒ 读方排在写方之后（软依赖，按组的声明顺序插入）；
+   *  - 未知写集组 ⇒ 排在所有已知组之后。
+   *  插入时若 `to` 已能到达 `from`（会成环）⇒ **丢弃这条边**并计数。 */
+  const fileOwners = new Map()
+  writeGroups.forEach((g, i) => {
+    for (const f of g.files) {
+      let a = fileOwners.get(f)
+      if (!a) { a = []; fileOwners.set(f, a) }
+      a.push(i)
+    }
+  })
+  const deps: Array<{ from: number; to: number; via: string }> = []
+  const seen = new Set()
+  const adj = groups.map(() => [] as number[])
+  let dropped = 0
+  const reaches = (from: number, to: number): boolean => {
+    const stack = [from]
+    const visited = new Set()
+    while (stack.length) {
+      const x = stack.pop()
+      if (x === to) return true
+      if (visited.has(x)) continue
+      visited.add(x)
+      for (const y of adj[x]) stack.push(y)
+    }
+    return false
+  }
+  const addEdge = (from: number, to: number, via: string) => {
+    if (from < 0 || to < 0 || from === to) return // 同组 ⇒ 已由「合并成同一子节点」解决，无需排序
+    const key = from + '>' + to
+    if (seen.has(key)) return
+    if (reaches(to, from)) { dropped += 1; return } // 会成环 ⇒ 丢这条边（软依赖可丢，流水线不能挂）
+    seen.add(key)
+    adj[from].push(to)
+    deps.push({ from, to, via })
+  }
+  groups.forEach((g, to) => {
+    for (const r of g.reads) {
+      const owners = fileOwners.get(r)
+      if (owners) for (const from of owners) addEdge(from, to, r)
+    }
+  })
+  for (const t of list) {
+    const to = groupOfTask.get(t.id)
+    if (to === undefined) continue // 未知写集组恒在最后，其成员的 dependsOn 不再参与（顺序已由 after 边决定）
+    for (const d of Array.isArray(t.dependsOn) ? t.dependsOn : []) {
+      const key = String(d || '').trim()
+      if (!key) continue
+      const direct = groupOfTask.get(key)
+      if (direct !== undefined) { addEdge(direct, to, key); continue }
+      const viaFile = fileOwners.get(key)
+      if (viaFile) for (const from of viaFile) addEdge(from, to, key)
+    }
+  }
+  if (unknown.length) for (let i = 0; i < unknownIdx; i++) addEdge(i, unknownIdx, '(write set unknown)')
+  for (const d of deps) groups[d.to].after.push(d.from)
+
+  /** ④ Kahn 分层（同一层内并行）。边已环安全 ⇒ 必然排空，不存在 leftovers。 */
+  const n = groups.length
+  const indeg = new Array(n).fill(0)
+  const succ = Array.from({ length: n }, () => [] as number[])
+  for (const d of deps) { succ[d.from].push(d.to); indeg[d.to] += 1 }
+  const waves: DevPlanGroup[][] = []
+  let front: number[] = []
+  for (let i = 0; i < n; i++) if (indeg[i] === 0) front.push(i)
+  while (front.length) {
+    waves.push(front.map((i) => groups[i]))
+    const next: number[] = []
+    for (const i of front) for (const j of succ[i]) if (--indeg[j] === 0) next.push(j)
+    front = next
+  }
+  /** ⑤ 统一下标空间：`after`/`deps` 以**建组顺序**记下标，但对外契约是**波次展开的扁平顺序**——
+   *  两个空间在排序后通常不一致（环安全丢边会改变次序）。不换算的话，调用方拿 after 查 groups
+   *  会查到错的组（测试 [10] 实锤）。 */
+  const flat = waves.flat()
+  const remap = new Array(n)
+  flat.forEach((g, i) => { remap[groups.indexOf(g)] = i })
+  for (const g of flat) {
+    g.after = g.after.map((a) => remap[a]).filter((x) => x !== undefined && x >= 0)
+  }
+  return {
+    waves,
+    groups: flat,
+    missingBoundary: unknown.map((t) => t.id),
+    deps: deps.map((d) => ({ from: remap[d.from], to: remap[d.to], via: d.via })),
+    dropped,
+    merged: known.length - writeGroups.length,
+  }
+}
+
+/**
+ * 并发写冲突**事后检测**（issue #4 的第三道防线）。
+ *
+ * 为什么还需要它：`mergeFileOverlaps` 只在**声明**了 `files` 时有效，宿主 CAS（`FS_STALE_VERSION`）
+ * 也只覆盖走文件编辑工具的写入。任务没声明边界、或 agent 越界用 shell 改写文件时，两者都看不到。
+ * 本函数拿各 dev 舞台**自报**的 `touched`（state block 里的变更文件），在时间窗相交的任务之间求文件交集——
+ * 命中即「确实发生了并发抢写」，无论它是怎么绕过前两道防线的。
+ *
+ * 纯函数、无宿主依赖：可以在行为级测试里直接喂时间戳与文件清单断言（见 `test/overlap-merge.test.js`）。
+ *
+ * @param entries 每个 dev 舞台的实际执行窗口与自报改动文件
+ * @returns 冲突列表（两两一对），按重叠时长降序
+ */
+export function concurrentWriteConflicts(
+  entries: Array<{ key: string; startedAt: number; endedAt: number; files: string[] }>,
+): Array<{ a: string; b: string; files: string[]; overlapMs: number }> {
+  const out: Array<{ a: string; b: string; files: string[]; overlapMs: number }> = []
+  for (let i = 0; i < entries.length; i++) for (let k = i + 1; k < entries.length; k++) {
+    const A = entries[i], B = entries[k]
+    if (!(Array.isArray(A.files) && Array.isArray(B.files))) continue
+    const overlapMs = Math.min(A.endedAt, B.endedAt) - Math.max(A.startedAt, B.startedAt)
+    if (overlapMs <= 0) continue // 时间上没交集 → 串行执行，不可能抢写
+    const files = A.files.filter((f) => B.files.includes(f))
+    if (files.length) out.push({ a: A.key, b: B.key, files, overlapMs })
+  }
+  return out.sort((x, y) => y.overlapMs - x.overlapMs)
 }
 
 /**

@@ -3,6 +3,9 @@
      其后 dsh 与插件均已演进（当前：dsh v0.1.7-alpha.1，下限 `>=0.1.7-alpha.1 <0.2.0`，见 README「版本锚定」段），
      此处**不再追改**——改它就等于把一份历史发言改成今天的话。
      ➜ 要发新通稿请**另建文件**，并写当时的锚定版本；本文件只作历史留存。
+     **实际投放**：`deepseek-ai/deepseek-harness` Discussions [#6405](https://github.com/deepseek-ai/deepseek-harness/discussions/6405)（2026-09-12 07:26 UTC / 北京 15:26）；当时标题「dsh-plugin-teamflow：把「一句话需求」跑成一条带质量门禁的多 Agent 研发流水线」。
+     该帖三条评论（2026-09-14，`gh api graphql` 实测）：@tongwoojun「需求不明确…我都不知道自己想要啥，它就做完了」+ @zweix123「意图澄清要与人对话，子代理形态怎么做」→ 第十二批「需求澄清闸门」（新稿 ②）；@boshk0「Is there English translation?」→ 新稿默认发英文版。
+     ➜ v0.2.0 新通稿（2026-09-23）：`show-your-plugin-v0.2.0.zh.md` / `show-your-plugin-v0.2.0.en.md` —— 中英各一份完整正文，投放平台待定。
      （原「发布前检查」清单已随发布完成退休，如需查阅见 git 历史提交 5989395。） -->
 
 > `dsh plugin --profile web add dsh-plugin-teamflow` → 重启 `dsh --profile web` 即可使用

@@ -45,6 +45,7 @@ const FILES = [
   'host/core/triage.ts',
   'host/core/sanity.ts',
   'host/core/runlogs.ts',
+  'host/core/acl-preflight.ts',
   'host/core/products.ts',
   'host/core/state.ts',
   'host/core/teams.ts',

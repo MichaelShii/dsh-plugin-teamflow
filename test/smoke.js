@@ -134,7 +134,7 @@ ok(/phaseKeyOf\(s\.phase\) === 'dev' && raw/.test(sharedSrc), 'shared：stageLab
 console.log('── 3) host 模块结构 ──')
 // host/core 领域文件清单（聚合进 hostSrc 供源码断言；新增领域文件必须加进来，否则断言读不到它）。
 // 完整性由下面「清单完整性门禁」用真实目录校验——不靠人记（此前实测漏过 sanity.ts）。
-const CORE_FILES = ['context', 'backlog', 'metering', 'runner', 'guard', 'report', 'pipeline', 'teams', 'state', 'products', 'triage', 'locale', 'runlogs', 'sanity']
+const CORE_FILES = ['context', 'backlog', 'metering', 'runner', 'guard', 'report', 'pipeline', 'teams', 'state', 'products', 'triage', 'locale', 'runlogs', 'sanity', 'acl-preflight']
 const hostSrc = [
   readFileSync(join(here, '../host/index.ts'), 'utf8'),
   readFileSync(join(here, '../host/util.ts'), 'utf8'),
@@ -359,7 +359,8 @@ ok(/export function devTaskStatuses/.test(utilSrc) && /有 done stage = 该任�
 // "T0 + T6 + T7"，resume 拿未合并的 title 去查必然落空 → 重复执行已成功的 T0/T6/T7）
 ok(/return `dt-\$\{index \+ 1\}`/.test(utilSrc), 'util：dev 任务 id 由 **host 按定义顺序生成**（dt-N，与 title 彻底解耦——禁止拿文本长相当身份）')
 ok(/export interface DevTaskDef \{ id: string/.test(pipelineSrc), 'pipeline：DevTaskDef 带 id（任务身份的结构化载体）')
-ok(/hit\.ids\.push\(t\.id\)/.test(pipelineSrc), 'pipeline：**合并任务时 ids 数组累加**（title 拼接只给人看，id 数组才是身份——少了这步合并过的任务无法被 resume 识别）')
+// 2026-09-24：合并逻辑从 pipeline 内联块抽到 `util.mergeFileOverlaps`（两条路径共用——见 test/overlap-merge.test.js）
+ok(/head\.ids\.push\(t\.id\)/.test(utilSrc) && /export function mergeFileOverlaps/.test(utilSrc), 'util：**合并任务时 ids 数组累加**（title 拼接只给人看，id 数组才是身份——少了这步合并过的任务无法被 resume 识别）')
 ok(/taskIds: \(Array\.isArray\(taskIds\) && taskIds\.length\) \? \[\.\.\.taskIds\] : null/.test(runnerSrc), 'runner：stage 落 taskIds（数组，合并任务时为多项）')
 ok(/taskIds\?: string\[\] \| null/.test(storeSrc) && /taskIds: \(Array\.isArray\(s\.taskIds\)/.test(storeSrc), 'store：serializeJournal 序列化 taskIds')
 ok(/存量兼容/.test(utilSrc), 'util：存量 stage 无 taskIds → 由 backfillDevTaskIds 补算（只增不改，历史 run 判定不受影响）')
@@ -377,7 +378,7 @@ ok(/String\(d\.title \|\| ''\)\.trim\(\) && key\.includes\(/.test(utilSrc), 'uti
 ok(/if \(Array\.isArray\(s\.taskIds\) && s\.taskIds\.length\) continue/.test(utilSrc), 'util：已有 taskIds 的 stage 不重复补算（幂等，补算结果写回后下次直接读）')
 ok(/log\.devIdsBackfilled/.test(pipelineSrc), 'pipeline：补算留痕（日志可见「已为 N 个历史阶段补算编号」）')
 ok(/backfillDevTaskIds\(journal\.stages \|\| \[\], defs\)/.test(pipelineSrc), 'pipeline：resume 判定**前**先补算存量 id（否则历史 title stage 被当成没做过 → 全量补跑）')
-ok(/const todo = devDefs\.filter/.test(pipelineSrc) && /!st \|\| !st\.done/.test(pipelineSrc), 'pipeline：resume 开发分支统一补跑「未成功任务」+ 复用已完成产物（json-parse r1 实锤根治——不再读 backlog 子卡）')
+ok(/const todoDefs = devDefs\.filter/.test(pipelineSrc) && /!st \|\| !st\.done/.test(pipelineSrc), 'pipeline：resume 开发分支统一补跑「未成功任务」+ 复用已完成产物（json-parse r1 实锤根治——不再读 backlog 子卡）')
 ok(/if \(phase === 'dev'\)/.test(pipelineSrc) && /\[\.\.\.statuses\.values\(\)\]\.some\(\(st\) => !st\.done\)/.test(pipelineSrc), 'pipeline：interruptedPhaseOf 任务级聚合——任务全 done = 阶段完成（部分成功阶段 resume 起点回开发补跑）')
 ok(/同任务复用（2026-09-06/.test(backlogSrc) && /store\.tasks\.find\(\(t\) => t\.reqId === journal\.reqId/.test(backlogSrc), 'backlog：createSubtask 同任务复用（业务任务实体一张卡 + retries 计数；执行历史在 journal）')
 // 子卡匹配键 = dtId（2026-09-18）：旧实现按 title 匹配，合并任务把 title 拼接后，resume 补跑的单任务
@@ -479,7 +480,7 @@ ok(/!verdict\.ok && text && stop === 'completed'/.test(runnerSrc), 'runner：**�
 ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
-ok(/"version": "0\.2\.0"/.test(pkgSrc), 'package.json：版本 0.2.0（release-v0.2.0 开发线）')
+ok(/"version": "0\.2\.1"/.test(pkgSrc), 'package.json：版本 0.2.1（release-v0.2.1 开发线）')
 ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.1\.7-alpha\.1 <0\.2\.0"/.test(pkgSrc), 'package.json：声明 dsh.manifestVersion 与 engines.dsh 兼容窗口（下限 = v4 宿主 0.1.7-alpha.1）')
 // 手工枚举的清单必须配门禁（同型教训：journal 字段 / execOptions / loadState / triageRecordOf）。
 // deploy.mjs FILES 与上面的 CORE_FILES 都是手写清单，领域化拆分后两者都漂移过——实测 FILES 漏了
