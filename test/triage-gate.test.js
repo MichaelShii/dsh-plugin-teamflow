@@ -394,7 +394,7 @@ console.log('     `dsh plugin --profile web add` 在他机器上跑不通；故�
   // ── profileFromModulePath：从插件自身路径反推（纯函数）──
   const win = profileFromModulePath('C:\\Users\\u\\.dsh\\profiles\\web\\node_modules\\dsh-plugin-teamflow\\lib\\host.mjs')
   ok(!!win && win.profile === 'web', 'Windows 形态反推出 profile 名（web）')
-  ok(!!win && /profiles\\web$/.test(win.dir), 'Windows 形态反推出 profile 目录')
+  ok(!!win && win.dir.endsWith('profiles\\web'), 'Windows 形态反推出 profile 目录')
   ok(!!win && win.home === 'C:\\Users\\u\\.dsh', 'Windows 形态反推出 DSH_HOME')
   const nix = profileFromModulePath('/home/u/.dsh/profiles/tui/node_modules/pkg/lib/host.mjs')
   ok(!!nix && nix.profile === 'tui' && nix.home === '/home/u/.dsh', 'Unix 形态同样成立（跨平台）')

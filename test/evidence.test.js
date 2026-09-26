@@ -4,14 +4,14 @@
  */
 import { extractVerificationEvidence } from '../host/util.ts'
 
-let passed = 0, failed = 0
+let failed = 0
 function expect(actual, expected, label) {
   const ok = actual === expected
-  if (ok) { passed++; console.log(`  ✓ ${label}`) }
+  if (ok) { console.log(`  ✓ ${label}`) }
   else { failed++; console.log(`  ✗ ${label}\n    expected: ${JSON.stringify(expected)}\n    actual:   ${JSON.stringify(actual)}`) }
 }
 function expectTruthy(actual, label) {
-  if (actual) { passed++; console.log(`  ✓ ${label}`) }
+  if (actual) { console.log(`  ✓ ${label}`) }
   else { failed++; console.log(`  ✗ ${label}`) }
 }
 

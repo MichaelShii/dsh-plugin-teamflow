@@ -202,7 +202,7 @@ ok(/FRESH_TOKEN_BUDGET = 200000/.test(constantsSrc), '熔断预算=新增 token 
 ok(/function isUnretryable/.test(utilSrc), 'context-limit 类失败不重试')
 ok(/activeProducts/.test(hostSrc) && /已有流水线/.test(hostSrc), '产品级并发限制（防 req 状态互踩）')
 ok(/summarizeTimeline\(/.test(hostSrc) && !/delete s\.output/.test(hostSrc), '终态 checkpoint 不再删 stage.output —— 保留全文供 detail 抽屉/断点续跑读取')
-ok(/readJsonAny\(journalFile\(id\)/.test(hostSrc), 'resume 从磁盘加载完整 journal')
+ok(/loadJournalById\(id\)/.test(hostSrc) && /export function loadJournalById/.test(storeSrc), 'resume 从磁盘加载完整 journal（双路径：per-project + 全局）')
 
 console.log('── 3e) 工作区隔离 + 单任务模型 + 真实 token（v0.9）──')
 const contextSrc = readFileSync(join(here, '../host/core/context.ts'), 'utf8')
@@ -480,7 +480,7 @@ ok(/!verdict\.ok && text && stop === 'completed'/.test(runnerSrc), 'runner：**�
 ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
-ok(/"version": "0\.2\.1"/.test(pkgSrc), 'package.json：版本 0.2.1（release-v0.2.1 开发线）')
+ok(/"version": "0\.2\.2"/.test(pkgSrc), 'package.json：版本 0.2.2（release-v0.2.2 开发线）')
 ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.1\.7-alpha\.1 <0\.2\.0"/.test(pkgSrc), 'package.json：声明 dsh.manifestVersion 与 engines.dsh 兼容窗口（下限 = v4 宿主 0.1.7-alpha.1）')
 // 手工枚举的清单必须配门禁（同型教训：journal 字段 / execOptions / loadState / triageRecordOf）。
 // deploy.mjs FILES 与上面的 CORE_FILES 都是手写清单，领域化拆分后两者都漂移过——实测 FILES 漏了
@@ -556,7 +556,7 @@ ok(/if \(cols === null\) \{ cols = defectHeaderCols\(cells\); continue \}/.test(
 ok(!/const sev = \(cells\[1\]/.test(backlogSrc), 'backlog：已删除「第 2 格即严重级」的位置式判定（旧写法 = 每轮复验重生一个 P2）')
 ok(/const mergeEligible = journal\.status === 'completed' && !journal\.humanIntervention && acceptanceDone/.test(reportSrc), 'report：合回邀请需「已完成 + 无人工介入 + 验收阶段真的 done」（未验收不得邀请合回）')
 ok(/report\.needsHumanNoAcceptance/.test(reportSrc) && /const needsHumanNotice = journal\.humanIntervention && !acceptanceDone/.test(reportSrc), 'report：验收未跑 + 需人工介入时显式提示「不要据此合回 main」')
-ok(/const RETRY_SUFFIX = \/\(\?:（\(\?:第 \\d\+ 次重试\|补跑\)）\| \\\(\?:retry \\d\+\|attempt \\d\+\|follow-up run\)\\\)\)\$\/|attempt \\d\+/.test(pipelineSrc), 'pipeline：RETRY_SUFFIX 覆盖词典实际产出「(attempt N)」（R3-2，无 taskKey 的 label 兜底路径）')
+ok(/RETRY_SUFFIX_LOCAL/.test(utilSrc) && /attempt \\d\+/.test(utilSrc), 'taskKey 归一正则覆盖词典实际产出「(attempt N)」（R3-2，无 taskKey 的 label 兜底路径）')
 ok(/'diag\.colon'/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')) && /t\(locale, 'diag\.colon'\)/.test(runnerSrc), 'runner：护栏中止摘要的连接符走词典（en 出半角冒号，不再硬编码全角「：」）')
 ok(/journal\.locale === 'en' \? `# TeamFlow run log/.test(storeSrc), 'store：运行日志文件头随 run 语言（持久化层不引 host 词典，只本地化这一行）')
 ok(!/✅ Pass ／ / .test(promptsSrc) && /Acceptance verdict: ✅ Pass \/ /.test(promptsSrc), 'prompts：en 验收档位行用半角斜杠（zh 侧 ／ 逐字不变）')

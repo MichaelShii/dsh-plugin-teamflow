@@ -6,13 +6,11 @@
  * 3) 已完成阶段产物保留（output）→ 断点续跑重建可用
  * 4) 损坏自愈仍生效（.bak 恢复）
  */
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, readdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import {
-  journalFile, runsDir, persistJournal, loadJournals, serializeJournal, readJson, slugPath, runLogFile, runLogArchiveDir,
-} from '../store.ts'
+import { journalFile, runsDir, persistJournal, loadJournals, serializeJournal, slugPath, runLogFile, runLogArchiveDir } from '../store.ts'
 
 let failed = 0
 const ok = (cond, msg) => {

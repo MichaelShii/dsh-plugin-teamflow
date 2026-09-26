@@ -14,30 +14,25 @@ import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { parameterSchemaSpecToJsonSchema } from '@deepseek-ai/dsh-tools'
 import { TEAMFLOW_DESCRIPTORS } from '../descriptors.ts'
-import {
-  dshHome, teamflowRoot, productDir, fileFor,
-  readJson, readJsonAny, writeJson, persistJournal, loadJournals, journalFile,
-} from '../store.ts'
-import type { JournalRecord, JournalStage } from '../store.ts'
+import { teamflowRoot, readJsonAny, writeJson, persistJournal, loadJournals } from '../store.ts'
+import type { JournalRecord } from '../store.ts'
 import { fileAddressFor } from '@deepseek-ai/dsh-util-workspace-path'
-import type {
-  Journal, BacklogItem, PipelineOptions, ResumeContext, SubagentRunLike, ParentAgentLike, UsageBuckets,
-} from './types.ts'
-import { RETRY_LIMIT, STATUS, PHASE_ORDER, PHASE_KEY_OF, PHASE_KEY_BY_NAME, phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER } from './constants.ts'
-import { toText, clip, extractText, normalizeRoot, normalizeTasks, sanitizeSnapOptions, normalizeSignal, isUnretryable, handoffBrief, runPool } from './util.ts'
-import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, devPrompt, qaPrompt, acceptancePrompt } from './prompts/index.ts'
-import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, setSessionProjections, setInstallCtx, workspaceScopeOf } from './core/context.ts'
+
+import { phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER } from './constants.ts'
+import { toText, clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions } from './util.ts'
+
+import { runtime, runs, setRuntime, setSessionProjections, setInstallCtx, workspaceScopeOf, getRun } from './core/context.ts'
 import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/backlog.ts'
 import { runsFor, runAddress, productKeyOf, runVisibleIn, runBrief, productMetaOf, listProducts } from './core/products.ts'
 import { loadTeams, findTeam, teamNameOf, teamDescOf, type TeamConfig } from './core/teams.ts'
-import { runAgent, withRetry } from './core/runner.ts'
-import { deliverCompletion } from './core/report.ts'
+
+
 import { runSanityCheck, gitCmd } from './core/sanity.ts'
 import { loadState } from './core/state.ts'
 import { isDangerousVcsRoot, dirTooLargeForBaseline } from './util.ts'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { mkdirSync, readdirSync, statSync } from 'node:fs'
+import { mkdirSync, readdirSync } from 'node:fs'
 
 /** 有界计数（决策问句里的"现有 N 个文件"；不精确——只采样，超阈值即停）。 */
 function countFilesBounded(dir: string, cap = 1000): number {
@@ -55,9 +50,9 @@ function countFilesBounded(dir: string, cap = 1000): number {
   walk(dir, 0)
   return n
 }
-import { executePipeline, summarizeTimeline, startPipeline, resumeRun } from './core/pipeline.ts'
+import { startPipeline, resumeRun } from './core/pipeline.ts'
 import { cancelRun } from './core/context.ts'
-import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, MODE_RANK, normalizeMode, runTriage, guardrailUpgrade, triageCacheKey, triageCacheGet, triageCachePut, triageCacheMarkPending, triageCacheSettle, type TriageVerdict } from './core/triage.ts'
+import { MODE_REGISTRY, PIPELINE_MODES, MODE_RANK, normalizeMode, runTriage, guardrailUpgrade, triageCacheKey, triageCacheGet, triageCachePut, triageCacheMarkPending, triageCacheSettle, type TriageVerdict } from './core/triage.ts'
 import { t, modeDesc } from './locales.ts'
 import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.ts'
 
@@ -452,7 +447,7 @@ function registerTools(ctx) {
       const sc = workspaceScopeOf(exec && exec.agent)
       if (!sc.path) throw new Error(t(ambientLocale(), 'err.tool.noWorkspace'))
       const key = sc.projectKey
-      const target = (typeof args.runId === 'string' && args.runId) ? runs.get(args.runId)
+      const target = (typeof args.runId === 'string' && args.runId) ? getRun(args.runId)
         : [...runs.values()].filter((j) => j.workspace === key && j.status === 'completed').sort((a, b) => (b.endedAt || 0) - (a.endedAt || 0))[0]
       if (!target) throw new Error(t(ambientLocale(), 'err.tool.noCompletedRun'))
       const branch = gitCmd(sc.path, ['rev-parse', '--abbrev-ref', 'HEAD'])
@@ -512,7 +507,7 @@ function registerTools(ctx) {
     async execute(args, exec) {
       const id = args && typeof args.runId === 'string' ? args.runId : null
       if (id) {
-        const j = runs.get(id)
+        const j = getRun(id)
         if (!j) return { error: t(ambientLocale(), 'err.tool.runNotFound', { id }) }
         const running = j.status === 'running'
         return { runId: j.id, status: j.status, workspace: j.workspace || null, reminder: running ? t(ambientLocale(), 'tool.status.reminder') : null, snapshot: snapshotOf(j) }
@@ -776,7 +771,7 @@ export class TeamflowService extends TypertRemoteService {
     const key = productOverride ? productKeyOf(productOverride) : sessionScope(sessionId).projectKey
     if (!key) return null
     if (runId && typeof runId === 'string') {
-      const j = runs.get(runId)
+      const j = getRun(runId)
       if (!j) return null
       // 跨 workspace 的 run 不可见（除无工作区会话的 default 兜底）
       if (!runVisibleIn(j, key)) return null
@@ -784,7 +779,7 @@ export class TeamflowService extends TypertRemoteService {
     }
     const latest = runsFor(key)[0]
     if (!latest) return null
-    const j = runs.get(latest.id)
+    const j = getRun(latest.id)
     return j ? snapshotOf(j) : null
   }
 
@@ -795,7 +790,7 @@ export class TeamflowService extends TypertRemoteService {
     if (typeof runId !== 'string' || !runId || seq === undefined || seq === null) return null
     const key = productOverride ? productKeyOf(productOverride) : sessionScope(sessionId).projectKey
     if (!key) return null
-    const j = runs.get(runId)
+    const j = getRun(runId)
     if (!j) return null
     // 跨 workspace 的 run 不可见（同 snapshot 守卫）
     if (!runVisibleIn(j, key)) return null

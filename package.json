@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-teamflow",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "TeamFlow 团队研发流水线（TypeScript）：需求→PRD→设计→架构→技术方案→并行开发→QA→验收；backlog 持久化 + 断点续跑 + 完成汇报 + 防假交付；Web 团队工作台（conversation.view tab + 拖拽看板）",
   "type": "module",
   "main": "./lib/host.mjs",
@@ -41,7 +41,8 @@
     "watch": "tsdown --watch",
     "deploy": "node deploy.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node test/smoke.js && node test/locale.test.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/runlogs.test.js && node test/cancel.test.js && node test/diagnostic.test.js && node test/evidence.test.js && node test/metering.test.js && node test/overlap-merge.test.js && node test/acl-preflight.test.js && node test/gitignore.test.js && node test/commit-path.test.js && node test/product-scope.test.js && node test/state.test.js && node test/dev-task-id.test.js && node test/triage-gate.test.js && node test/instruction-budget.test.js && node test/prompt-contract.test.js && node test/conformance.test.js && node test/changelog.test.js && node test/client-host-api.test.js",
+    "lint": "oxlint --deny-warnings",
+    "test": "node test/smoke.js && node test/locale.test.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/runlogs.test.js && node test/cancel.test.js && node test/diagnostic.test.js && node test/evidence.test.js && node test/metering.test.js && node test/overlap-merge.test.js && node test/acl-preflight.test.js && node test/gitignore.test.js && node test/commit-path.test.js && node test/product-scope.test.js && node test/state.test.js && node test/dev-task-id.test.js && node test/triage-gate.test.js && node test/instruction-budget.test.js && node test/prompt-contract.test.js && node test/conformance.test.js && node test/changelog.test.js && node test/client-host-api.test.js && node test/runs-eviction.test.js",
     "prepublishOnly": "npx tsdown && npx tsdown -c tsdown.host.config.ts && node test/smoke.js && node test/locale.test.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/runlogs.test.js && node test/cancel.test.js && node test/diagnostic.test.js && node test/evidence.test.js && node test/metering.test.js && node test/overlap-merge.test.js && node test/acl-preflight.test.js && node test/gitignore.test.js && node test/commit-path.test.js && node test/product-scope.test.js && node test/state.test.js && node test/dev-task-id.test.js && node test/triage-gate.test.js && node test/instruction-budget.test.js && node test/prompt-contract.test.js && node test/conformance.test.js && node test/changelog.test.js && node test/client-host-api.test.js"
   },
   "files": [
@@ -63,15 +64,14 @@
     "kanban",
     "coding-agent"
   ],
-  "dependencies": {},
   "devDependencies": {
     "@types/node": "^26.2.0",
     "@types/react": "^18.3.31",
+    "oxlint": "^1.85.0",
     "tsdown": "^0.22.2",
     "typescript": "^6.0.3"
   },
   "peerDependencies": {
-    "react": "^18.2.0",
     "@deepseek-ai/dsh-base": "*",
     "@deepseek-ai/dsh-client-locale": "*",
     "@deepseek-ai/dsh-client-modules": "*",
@@ -80,10 +80,11 @@
     "@deepseek-ai/dsh-client-ui-sidebar": "*",
     "@deepseek-ai/dsh-client-ui-sidebar-right": "*",
     "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-sandbox-windows-acl": "*",
     "@deepseek-ai/dsh-tools": "*",
     "@deepseek-ai/dsh-typert-protocol": "*",
     "@deepseek-ai/dsh-util-workspace-path": "*",
-    "@deepseek-ai/dsh-sandbox-windows-acl": "*"
+    "react": "^18.2.0"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-base": {

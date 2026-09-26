@@ -1,0 +1,20 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error"
+  },
+  "rules": {
+    "no-unused-vars": [
+      "warn",
+      {
+        "caughtErrors": "none",
+        "argsIgnorePattern": "^_",
+        "varsIgnorePattern": "^_"
+      }
+    ],
+    "no-constant-condition": "off",
+    "no-useless-fallback-in-spread": "off",
+    "no-new-array": "off"
+  },
+  "ignorePatterns": ["lib/**", "node_modules/**", "docs/**"]
+}

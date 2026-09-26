@@ -617,6 +617,7 @@ export async function runTriage(
   let lastReason = ''
   for (let attempt = 1; attempt <= 2; attempt++) {
     let run: { result: Promise<{ output?: unknown; stopReason?: string }>; dispose?: () => Promise<void> | void } | null = null
+    let timeoutTimer: ReturnType<typeof setTimeout> | null = null
     try {
       const hint = attempt > 1
         ? 'Your previous reply contained only a preface (e.g. "Let me output the JSON.") with NO JSON object — that is a failed reply. Reply now with the JSON object ITSELF as the first and only content, starting with {.'
@@ -629,7 +630,9 @@ export async function runTriage(
       })
       const result = await Promise.race([
         run.result,
-        new Promise<never>((_, rej) => setTimeout(() => rej(new Error(t(locale, 'err.triageTimeout') + ` (${Math.round(TRIAGE_TIMEOUT_MS / 1000)}s)`)), TRIAGE_TIMEOUT_MS)),
+        new Promise<never>((_, rej) => {
+          timeoutTimer = setTimeout(() => rej(new Error(t(locale, 'err.triageTimeout') + ` (${Math.round(TRIAGE_TIMEOUT_MS / 1000)}s)`)), TRIAGE_TIMEOUT_MS)
+        }),
       ]) as { output?: unknown; stopReason?: string }
       const parsed = parseVerdictText(extractText(result && result.output), requirement)
       if (parsed) return parsed
@@ -638,6 +641,7 @@ export async function runTriage(
       lastReason = String((e && e.message) || e)
       if (attempt === 2) { /* 超时/失败 → 走兜底（原因已在 lastReason） */ }
     } finally {
+      if (timeoutTimer) clearTimeout(timeoutTimer) // race 结算即清（无论输赢），不留 240s 悬挂定时器占住事件循环
       if (run && run.dispose) { try { await run.dispose() } catch (e) { /* ignore */ } }
     }
   }

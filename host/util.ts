@@ -1,7 +1,7 @@
 /**
  * dsh-plugin-teamflow — 通用纯工具（底座；依赖 constants.ts，无其他依赖）。
  */
-import { REFUSAL_PATTERN, STAGE_MIN_LENGTH, DELIVERY_EVIDENCE_PATTERN } from './constants.ts'
+import { REFUSAL_PATTERN, STAGE_MIN_LENGTH, DELIVERY_EVIDENCE_PATTERN, DEV_MAX_CONCURRENCY } from './constants.ts'
 import { readdirSync, statSync, existsSync, readFileSync } from 'node:fs'
 import { t } from './locales.ts'
 import type { HostLocale } from './locales.ts'
@@ -152,7 +152,7 @@ export function detectInstallEnv(opts: { baseUrl?: string; modulePath?: string; 
 /** 绝对路径判据（跨平台，纯字符串）：POSIX `/x`、Windows `C:\x`/`C:/x`、UNC `\\srv\share`。 */
 export function isAbsolutePath(p: unknown): boolean {
   const s = String(p || '')
-  return /^\//.test(s) || /^[a-zA-Z]:[\\/]/.test(s) || /^\\\\/.test(s)
+  return s.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(s) || s.startsWith('\\\\')
 }
 
 /** 安装入口文案：**以探测结果为准**，不写死任何 profile 名/路径；探测失败 → 明确要求"问用户"，不猜。 */
@@ -261,7 +261,7 @@ export function sanitizeSnapOptions(o) {
     lite: opts.lite === true,
     mode: (typeof opts.mode === 'string' && opts.mode) ? opts.mode : undefined,
     productRoot: typeof opts.productRoot === 'string' ? opts.productRoot : null,
-    maxConcurrency: (Number.isFinite(opts.maxConcurrency) && opts.maxConcurrency > 0) ? Math.min(opts.maxConcurrency, 8) : null,
+    maxConcurrency: (Number.isFinite(opts.maxConcurrency) && opts.maxConcurrency > 0) ? Math.min(opts.maxConcurrency, DEV_MAX_CONCURRENCY) : null,
     tasks: Array.isArray(opts.tasks) ? opts.tasks.map((t) => ({ title: String((t && t.title) || ''), spec: String((t && t.spec) || '') })) : [],
   }
 }
@@ -1019,7 +1019,7 @@ export function planDevWaves(
 
   /** ④ Kahn 分层（同一层内并行）。边已环安全 ⇒ 必然排空，不存在 leftovers。 */
   const n = groups.length
-  const indeg = new Array(n).fill(0)
+  const indeg = Array.from({ length: n }, () => 0)
   const succ = Array.from({ length: n }, () => [] as number[])
   for (const d of deps) { succ[d.from].push(d.to); indeg[d.to] += 1 }
   const waves: DevPlanGroup[][] = []
@@ -1089,6 +1089,8 @@ export function concurrentWriteConflicts(
  * （取消变成了队列补位）。放在 util（无宿主私有依赖）而非 runner，是为了让行为级测试能直接喂 items 断言。
  */
 export async function runPool(items, max, fn, shouldStop?: (() => boolean) | null) {
+  // new Array 而非 Array.from：strict:false 下前者推断 any[]（results 承载各阶段异构返回值），
+  // 后者是 unknown[]，会让 runPool 的每个消费点类型劣化（2026-09-26 实测 tsc 3 错）。
   const results = new Array(items.length)
   let cursor = 0
   const workers = Array.from({ length: Math.min(Math.max(1, max), items.length) }, async () => {

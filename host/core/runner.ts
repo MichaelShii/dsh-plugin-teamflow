@@ -268,7 +268,10 @@ export async function runAgent(
     stage.usage = accumulateSessionUsage(run)
     stage.handoff = stageText ? handoffBrief(stageText) : null
     stage.endedAt = Date.now()
-    untrackInFlight(journal.id, stage) // 只注销自己这一路（并发 dev 同 run 多路在飞，见 context.inFlight）    if (run) { try { await run.dispose() } catch (e2) { /* ignore */ } }
+    untrackInFlight(journal.id, stage) // 只注销自己这一路（并发 dev 同 run 多路在飞，见 context.inFlight）
+    // 结算后释放子代理资源（对齐宿主规范结算 dsh-subagent settleRun：result 后必 dispose）。
+    // ⚠️ 2026-09-26 实锤修复：此语句曾被行注释吞掉（与上一句同行）→ 正常结算路径 dispose 从未执行。
+    if (run) { try { await run.dispose() } catch (e2) { /* ignore */ } }
   }
 }
 

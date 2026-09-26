@@ -147,7 +147,7 @@ function main() {
       verdict = 'MIXED'
       note = `目录内混了 ${s.paths.size} 个不同来源路径`
     } else {
-      const [n, meta] = ps[0]
+      const [, meta] = ps[0]
       const want = slugPath(meta.raw)
       if (want === key) { verdict = 'OK'; note = 'key 与路径自洽' }
       else { verdict = 'DRIFT'; note = `期望 key \`${want}\`（路径写法变了）` }
@@ -162,7 +162,7 @@ function main() {
   for (const s of scanned) {
     const ps = [...s.paths.keys()]
     if (s.key !== 'default' && !CURRENT_KEY_RE.test(s.key)) legacy++
-    else if (ps.length === 1) { slugPath([...s.paths.values()][0].raw) === s.key ? ok++ : drift++ }
+    else if (ps.length === 1) { if (slugPath([...s.paths.values()][0].raw) === s.key) ok++; else drift++ }
     else if (s.paths.size === 0 && s.runCount === 0) empty++
   }
   say('## 二、结论')
@@ -186,7 +186,7 @@ function main() {
   say('## 三、合并计划（按规范化路径分组）')
   say('')
   let mergeCount = 0
-  for (const [n, list] of [...groups.entries()].sort()) {
+  for (const [, list] of [...groups.entries()].sort()) {
     if (list.length < 2) continue
     mergeCount++
     // 规范化写法取「任一 journal 里出现过的原始写法」，用它算期望 key

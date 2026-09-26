@@ -130,7 +130,7 @@ export const chip = (text, color, opts: { style?: Record<string, string>; dot?: 
     padding: '1px 8px', borderRadius: 999, fontSize: 11, fontWeight: 500, lineHeight: '16px',
     background: `color-mix(in srgb, ${color} 14%, transparent)`, color,
     whiteSpace: 'nowrap', maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis',
-    ...(opts.style || {}),
+    ...opts.style,
   },
 }, opts.dot ? h('span', { style: { width: 5, height: 5, borderRadius: 999, background: color, display: 'inline-block', flex: '0 0 auto' } }) : null, text)
 
@@ -141,7 +141,7 @@ export function FoldableText({ text, charLimit = 280, lineLimit = 5, style }: { 
   const s = String(text)
   const lines = s.split('\n')
   const compact = lines.length <= lineLimit && s.length <= charLimit
-  const body = (txt) => h('div', { style: { fontSize: 11.5, color: T.text, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', ...(style || {}) } }, txt)
+  const body = (txt) => h('div', { style: { fontSize: 11.5, color: T.text, lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word', ...style } }, txt)
   if (compact) return body(s)
   if (open) return h('div', null,
     body(s),
@@ -209,7 +209,7 @@ export function CancelButton({ runId, label, title, onConfirm, style }: {
       font: 'inherit', fontSize: 12, padding: '4px 12px', borderRadius: 8, cursor: 'pointer',
       border: `1px solid ${T.error}`, background: 'transparent', color: T.error, fontWeight: 600,
       transition: 'background .12s ease, color .12s ease',
-      ...(style || {}), ...(tone || {}),
+      ...style, ...tone,
     },
   }, busy ? t('cancel.busy') : arm ? t('cancel.arm') : (label || t('cancel.btn')))
 }

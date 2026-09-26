@@ -14,13 +14,7 @@
  */
 import React from 'react'
 import { TEAMFLOW_REMOTE_CONTRIBUTION } from '../descriptors.js'
-import {
-  T, STATUS_COLOR, PHASE_ICON, phaseNameOf, phaseIconOf, phaseKeyOf,
-  COLUMNS, h, MONO, SANS, flexRow, chip, FoldableText, CancelButton,
-  fmtTime, fmtDur, fmtTokens, totalTokens, hitRate, usageDetail, stageUsageLine,
-  roleUsage, byRoleLine, totalUsage, stText, stColor, runStatusText, kindTitle, roleChip, stageLabelOf, stageStatusText,
-  t, setTranslator, localeTag,
-} from './shared.js'
+import { T, phaseNameOf, phaseIconOf, phaseKeyOf, COLUMNS, h, MONO, SANS, flexRow, chip, FoldableText, CancelButton, fmtDur, fmtTokens, totalTokens, usageDetail, stageUsageLine, byRoleLine, totalUsage, stText, stColor, runStatusText, kindTitle, roleChip, stageLabelOf, stageStatusText, t, setTranslator, localeTag } from './shared.js'
 import { NS, zh, en } from './locales.js'
 import { GlobalPanel, TeamflowPanelIcon, RunDetailTab, runTabDefinition, RUN_TAB_ID } from './panel.js'
 
@@ -46,7 +40,7 @@ const cardH = (s) => (s.status === 'running' ? CARD_H_RUN : CARD_H)
 
 /** 横向布局：相位从左至右一排，上下轻微波浪错位（弧线自然成形）+ 绝对定位节点 + 连接锚点。
  *  返回 nodes/conns/worldW/worldH。 */
-function layoutFlow(groups, viewW) {
+function layoutFlow(groups, _viewW) {
   const nodes = []
   const conns = []
   let maxH = 0

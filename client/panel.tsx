@@ -12,11 +12,7 @@
  *   全局面板占着中央区时它依然挂载（唯一失败态是"没有挂载会话"，此时降级为面板内联详情）。
  */
 import React from 'react'
-import {
-  T, h, MONO, SANS, flexRow, chip, FoldableText, CancelButton, stColor, stText,
-  fmtTime, fmtDur, fmtTokens, totalTokens, hitRate, phaseIconOf,
-  COLUMNS, byRoleLine, stageUsageLine, runStatusText, kindTitle, stageLabelOf, stageStatusText, t,
-} from './shared.js'
+import { T, h, MONO, SANS, flexRow, chip, FoldableText, CancelButton, stColor, stText, fmtTime, fmtDur, fmtTokens, totalTokens, hitRate, phaseIconOf, byRoleLine, stageUsageLine, runStatusText, kindTitle, stageLabelOf, stageStatusText, t } from './shared.js'
 
 /* ── 右栏 run tab 的类型标识（host 生成地址，client 只解析） ────────── */
 export const RUN_TAB_ID = 'dsh-plugin-teamflow/run'

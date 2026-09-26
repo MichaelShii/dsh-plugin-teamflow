@@ -62,18 +62,25 @@ expect(tfAddArgs([]).length, 4, '空清单 → 退回 4 参数（收口提交路
 expect(tfAddArgs().length, 4, '省略参数 → 同空清单（向后兼容，存量调用点零改动）')
 ok(!tfAddArgs().some((a) => a.includes(':(')), '收口提交**不带**任何排除（自有日志靠 .gitignore + 索引兜底，见下）')
 // 正向验证（真 git 仓库、噪音未被忽略 → 必须下发；已忽略 → 必须不下发）。两个方向都锁，杜绝"读了别人 cwd"。
+// 环境要求 = git 可被**本进程** spawn（DSH 文件沙箱 piped-stdio 限制会 EPERM）——与 commit-path 同款
+// SKIP 口径（2026-09-26 补）：git 不可用时只跳过本块，形状/纯函数断言照跑；普通终端跑 pnpm test 才是真实门禁。
 {
   const tmp = mkdtempSync(join(tmpdir(), 'tf-gi-'))
-  gitRunForTest(tmp, ['init', '-q'])
-  mkdirSync(join(tmp, '.pnpm-store'), { recursive: true })
-  writeFileSync(join(tmp, '.pnpm-store', 'b.bin'), 'x', 'utf8')
-  mkdirSync(join(tmp, '.ignored-dir'), { recursive: true })
-  writeFileSync(join(tmp, '.ignored-dir', 'b.bin'), 'x', 'utf8')
-  writeFileSync(join(tmp, '.gitignore'), '.ignored-dir/\n', 'utf8')
-  const sent = tfAddArgs(['.pnpm-store', '.ignored-dir'], tmp)
-  ok(sent.includes(':(exclude).pnpm-store'), '未被忽略的噪音 → 下发 :(exclude)（排除生效）')
-  ok(!sent.includes(':(exclude).ignored-dir'), '**已被忽略**的项 → **不**下发（点名被忽略路径会让 add exit 1）')
-  ok(tfAddArgs(['node_modules'], tmp).includes(':(exclude)node_modules'), '同一仓内逐项独立判定（不是一刀切）')
+  const probe = gitRunForTest(tmp, ['--version'])
+  if (!probe.ok) {
+    console.log(`  ⏭ SKIP 正向验证：本进程无法 spawn git（${probe.error}）——普通终端下本块才是真实门禁`)
+  } else {
+    gitRunForTest(tmp, ['init', '-q'])
+    mkdirSync(join(tmp, '.pnpm-store'), { recursive: true })
+    writeFileSync(join(tmp, '.pnpm-store', 'b.bin'), 'x', 'utf8')
+    mkdirSync(join(tmp, '.ignored-dir'), { recursive: true })
+    writeFileSync(join(tmp, '.ignored-dir', 'b.bin'), 'x', 'utf8')
+    writeFileSync(join(tmp, '.gitignore'), '.ignored-dir/\n', 'utf8')
+    const sent = tfAddArgs(['.pnpm-store', '.ignored-dir'], tmp)
+    ok(sent.includes(':(exclude).pnpm-store'), '未被忽略的噪音 → 下发 :(exclude)（排除生效）')
+    ok(!sent.includes(':(exclude).ignored-dir'), '**已被忽略**的项 → **不**下发（点名被忽略路径会让 add exit 1）')
+    ok(tfAddArgs(['node_modules'], tmp).includes(':(exclude)node_modules'), '同一仓内逐项独立判定（不是一刀切）')
+  }
   rmSync(tmp, { recursive: true, force: true })
 }
 
