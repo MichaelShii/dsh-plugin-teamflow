@@ -358,6 +358,7 @@ ok(/verifyEvidence: s\.verifyEvidence \? clip\(s\.verifyEvidence, 8000\) : null/
 ok(/t\('stage\.evidenceTitle'\)/.test(clientSrc) && /phaseKeyOf\(st\.phase\) === 'dev'/.test(clientSrc), 'client：阶段详情抽屉渲染验证证据块（有值展示 / 缺失置灰提示——契约未兑现可见）')
 ok(/export function blockShape/.test(utilSrc), 'util：响应块构成纯函数（诊断用：text/reasoning 带长度、重复块压成 xN）')
 ok(/const shape = blockShape\(result && result\.output\)/.test(runnerSrc) && /\? t\(locale, 'diag\.emptyTurn', \{ stop: stop \|\| 'unknown', shape \}\)/.test(runnerSrc), 'runner：空收尾诊断带上响应块构成（一眼区分「只有 reasoning」与宿主中断 aborted / 预算截断 max-tokens）')
+ok(/let emptyTurnDoc/.test(runnerSrc) && /if \(emptyTurnDoc\) \{[\s\S]{0,400}diag\.emptyTurnDelivered/.test(runnerSrc) && /stageText = emptyTurnDoc\.text/.test(runnerSrc), 'runner：空收尾 + 任务夹产物已合格 → 按文件判交付不再重跑（A 档止损；返回值用文件内容顶替空回复，state 合并走宽容语义）')
 ok(/响应块构成：\{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')) && /response blocks: \{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')), 'locales：diag.emptyTurn 带块构成占位（zh/en 齐备——诊断必须自证，2026-09-26 tf-muigy5eq r12 实踩）')
 ok(/const beforeLen = journal\.stages\.length/.test(runnerSrc) && /lastStage = journal\.stages\[beforeLen\] \|\| null/.test(runnerSrc), 'runner：withRetry 按调用前长度取本次尝试 stage——并发安全（防证据/重试诊断/usage 累计串位）')
 ok(/stage: JournalStage \| null/.test(runnerSrc), 'runner：withRetry 返回携带 stage 引用')

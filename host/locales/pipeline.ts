@@ -211,6 +211,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'diag.breaker': '{label} 累计新增 token {fresh}k（input+cacheWrite+output，不含缓存命中）超出预算 {budget}k，熔断，需人工介入',
     'diag.breakerUncached': '{label} 累计新增 token {fresh}k 超出预算 {budget}k（**该 provider 无 prompt 缓存**：命中率 {ratio}%、{calls} 次调用——每轮调用都要重付 system+工具定义，预算已按 {budget}k 计），熔断，需人工介入',
     'diag.docDelivered': '{label} 回复过短（{length} 字符 < {min} 下限），但任务夹产物 {name} 已落盘（{docLen} 字符）→ 判交付（doc 类阶段的产物是文件，回复只是摘要）',
+    // 2026-09-27（A 档空收尾止损）：completed + 空正文 + 任务夹产物已合格 → 直接收口，不再整轮重跑。
+    'diag.emptyTurnDelivered': '{label} 回复为空（空收尾），但任务夹产物 {name} 已落盘且达下限（{length} 字符 ≥ {min}）→ 按文件判交付，不再重跑',
     'diag.retry': '{label} 第 {n} 次尝试未成功（{outcome}），自动重试（重试 prompt 已附上一轮失败诊断）…',
     'diag.retryExhausted': '{label} 连续 {n} 次尝试失败，超出重试阈值，需人工介入',
     'diag.externalBackoff': '{label} 疑似外部供应商不可用（限流/额度/上游故障）→ 第 {n} 次退避 {sec}s 后重试（等待不计 token；命中原文：{detail}）',
@@ -595,6 +597,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'diag.breaker': '{label} cumulative fresh tokens {fresh}k (input+cacheWrite+output, excluding cache hits) exceed the {budget}k budget; circuit broken, human intervention required',
     'diag.breakerUncached': '{label} cumulative fresh tokens {fresh}k exceed the {budget}k budget (**this provider has no prompt cache**: {ratio}% hit rate over {calls} calls — every call re-pays the system prompt + tool definitions, so the budget was scaled to {budget}k); circuit broken, human intervention required',
     'diag.docDelivered': '{label} reply was too short ({length} chars < {min} minimum), but the task-folder artifact {name} is on disk ({docLen} chars) → judged delivered (for doc stages the artifact IS the file; the reply is only a summary)',
+    'diag.emptyTurnDelivered': '{label} reply was empty (empty finish), but the task-folder artifact {name} is on disk and meets the minimum ({length} chars ≥ {min}) → judged delivered by the file, no rerun',
     'diag.retry': '{label} attempt {n} did not succeed ({outcome}); retrying automatically (the retry prompt carries the previous failure diagnosis)…',
     'diag.retryExhausted': '{label} failed {n} consecutive attempts, exceeding the retry threshold; human intervention required',
     'diag.externalBackoff': '{label} looks like an external provider outage (rate limit / quota / upstream failure) → backoff #{n} for {sec}s before retrying (waiting costs no tokens; matched text: {detail})',

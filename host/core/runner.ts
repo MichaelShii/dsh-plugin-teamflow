@@ -185,11 +185,23 @@ export async function runAgent(
     // **doc 类阶段的产物兜底**（2026-09-18 probe-v2 实锤，见 util.DOC_STAGE_FILES）：这些阶段的产物
     // 是任务夹文件，回复只是摘要 —— 回复过短不等于没干活（实锤：PRD.md 4894 字节已落盘、还调了
     // `present` 声明交付物，却因回复只有 284 字符的 state 块被判「未交付」）。回读文件，达下限即判交付。
-    // 前提仍是**回复非空**：pipeline 要用回复合并 state 块，空回复是真的没交付。
+    // 前提仍是**回复非空**：pipeline 要用回复合并 state 块；空回复另走下方 emptyTurnDoc 兜底（A 档）。
     let docFallback: { name: string; length: number } | null = null
     if (!verdict.ok && text && stop === 'completed') {
       const doc = stageDocText(journal, phase)
       if (doc && doc.length >= verdict.min) docFallback = { name: doc.name, length: doc.length }
+    }
+    // **空收尾的文件兜底**（2026-09-27，A 档止损）：`completed` + 0 字符 = 推理模型空收尾（DeepSeek 实测：
+    // reasoning 之后、正文之前被服务端收尾）。doc 类阶段「文件即产物」——若任务夹产物已落盘且达下限，
+    // 没理由因「没说话」整轮重跑（重跑 ≈ 150 万 token）。⚠️ 边界（tf-muigy5eq r12 实测）：这次空收尾
+    // 死在写报告**之前**（全程只写了验证脚本），文件不存在 → 兜底不命中 → 照旧重跑。它救的是
+    // 「文件已合格、只差说话」的变体；「干到一半死掉」要 continuable 续跑（docs/TODO.md 立项）。
+    // 返回值用**文件内容**顶替空回复：timeline 存产物全文（与 resume 复用同构）；state 块不在文件里
+    // 则 mergeStageState 自然跳过（宽容语义），不破坏下游。
+    let emptyTurnDoc: { name: string; text: string; length: number } | null = null
+    if (!text && stop === 'completed') {
+      const doc = stageDocText(journal, phase)
+      if (doc && doc.length >= verdict.min) emptyTurnDoc = doc
     }
     if (journal.cancelled) {
       stage.status = 'cancelled'; stage.outcome = 'cancelled'
@@ -221,6 +233,14 @@ export async function runAgent(
         journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.refusalWithEvidence', { label, phrase: verdict.refusal.phrase, context: verdict.refusal.context }) })
       }
       return text
+    }
+    // 空收尾兜底判交付（放在 envUnavailable 之后：环境不可用优先，防假交付）
+    if (emptyTurnDoc) {
+      stage.status = 'done'; stage.outcome = 'completed'
+      stage.output = clip(emptyTurnDoc.text, 50000)
+      stageText = emptyTurnDoc.text // handoff/state 合并用文件内容，不再拿空串
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.emptyTurnDelivered', { label, name: emptyTurnDoc.name, length: emptyTurnDoc.length, min: verdict.min }) })
+      return emptyTurnDoc.text
     }
     if (stage.guardReason) {
       // 护栏中止优先于通用失败分类（成功产出已在上方抢救）；
