@@ -711,34 +711,56 @@ export async function executePipeline(
      */
     const stageTextOf = (r) => r.text || ((r.stage && r.stage.output) || null)
 
+    /**
+     * 同形阶段执行器（2026-09-26 收敛；纯结构重构，**零行为变化**）。
+     * `prd` / `design` / `scaffold` / `tech` 四阶段形状完全同构——「resume 复用产物 → enterStage 留痕 →
+     * withRetry → 空产出抛 stageFailError → 写 timeline + mergeStageState + 累计任务卡用量 → 取消检查」，
+     * 原先四处各抄一遍（每处 25–35 行）。抄写的代价已有实据：**tech 的失败错误传的是本地化 label 文本而非
+     * phase key**（另三处都传 key）→ `stageFailError` 内 `phaseKeyOf(s.phase) === label` 恒不匹配 →
+     * 详情恒退化为「无上次记录」。**本次刻意用 failLabel 原样保留该差异**，修它是独立的语义决策，见 docs/TODO.md。
+     * @returns text 阶段产物（resume 复用时为存档产物，可能为空）；cancelled 为真时调用方须整体 return
+     */
+    const runSimpleStage = async (
+      phase: string,
+      prompt: string,
+      label: string,
+      opts?: { enterLabel?: string; effort?: string | null; failLabel?: string },
+    ): Promise<{ text: string | null; cancelled: boolean; skipped: boolean }> => {
+      if (resumed(phase)) {
+        const saved = (resume as { products: Record<string, unknown> }).products[phase] as string | null
+        timeline[phase] = saved
+        logSkip(phase)
+        return { text: saved, cancelled: false, skipped: true }
+      }
+      journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: opts && opts.enterLabel ? opts.enterLabel : phaseLabel(locale, phase) }) })
+      const r = await withRetry(journal, parent, label, phase, prompt, signal, undefined, opts && opts.effort ? opts.effort : null)
+      if (!r.text) throw stageFailError(opts && opts.failLabel ? opts.failLabel : phase, r)
+      timeline[phase] = r.text
+      mergeStageState(phase, r.text)
+      noteTaskStageUsage(journal)
+      return { text: r.text, cancelled: !!journal.cancelled, skipped: false }
+    }
+
     /* ── PRD 阶段 ── */
     let prd = null
-    if (resumed('prd')) {
-      prd = resume.products.prd
-      timeline.prd = prd
-      logSkip('prd')
-    } else {
-      journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'prd') }) })
-      const pForm = options.mode === 'tech'
-        ? { label: t(locale, 'dev.prdTechChange'), fn: techChangePrompt }
-        : options.mode === 'patch'
-          ? { label: t(locale, 'dev.prdPatch'), fn: patchConfirmPrompt }
-          : { label: t(locale, 'dev.prdFull'), fn: prdPrompt }
-      // 澄清答复（2026-09-16 需求澄清闸门）：用户在澄清轮补充的说明是**权威输入**——拼在需求之后并显式声明
-      // 「不得再自行假设」，否则 PM 会把自己的旧猜测再填一遍。原始 requirement 保持逐字不变（可审计）。
-      const supplement = journal.requirementSupplement
-      const prdInput = supplement
-        ? `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-assume]\n${supplement}`
-        : requirement
-      // patch 档的「单点确认」是机械阶段（核对现状 + 给直改指令，不做架构判断）→ 降档省 token
-      const prdR = await withRetry(journal, parent, pForm.label, 'prd', pForm.fn(prdInput, root, journal.id, state), signal, undefined, options.mode === 'patch' ? MECHANICAL_STAGE_EFFORT : null)
-      if (!prdR.text) { throw stageFailError('prd', prdR) }
-      prd = prdR.text
-      timeline.prd = prd
-      mergeStageState('prd', prd)
-      noteTaskStageUsage(journal) // PRD 角色的真实 token 累计到任务卡
-      if (journal.cancelled) return
-    }
+    // PRD 是唯一不做 enabled() 检查的阶段（任何档位都跑）；patch / tech 档只是换 prompt 形态，不是跳过。
+    const pForm = options.mode === 'tech'
+      ? { label: t(locale, 'dev.prdTechChange'), fn: techChangePrompt }
+      : options.mode === 'patch'
+        ? { label: t(locale, 'dev.prdPatch'), fn: patchConfirmPrompt }
+        : { label: t(locale, 'dev.prdFull'), fn: prdPrompt }
+    // 澄清答复（2026-09-16 需求澄清闸门）：用户在澄清轮补充的说明是**权威输入**——拼在需求之后并显式声明
+    // 「不得再自行假设」，否则 PM 会把自己的旧猜测再填一遍。原始 requirement 保持逐字不变（可审计）。
+    const supplement = journal.requirementSupplement
+    const prdInput = supplement
+      ? `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-assume]\n${supplement}`
+      : requirement
+    // patch 档的「单点确认」是机械阶段（核对现状 + 给直改指令，不做架构判断）→ 降档省 token
+    const prdStage = await runSimpleStage('prd', pForm.fn(prdInput, root, journal.id, state), pForm.label, {
+      effort: options.mode === 'patch' ? MECHANICAL_STAGE_EFFORT : null,
+    })
+    if (prdStage.cancelled) return
+    prd = prdStage.text
     // PRD 收口（2026-09-16 需求澄清闸门 Phase 1）：把「假设 / 待澄清」段读出来落 journal，
     // 让完成汇报能显式提示「本次基于以下假设启动」——今天的缺口是**假设完全不可见**
     // （实测 12/12、39/39 份 PRD 都没这一段），验收人无从知道 agent 替他决定了什么。
@@ -750,85 +772,63 @@ export async function executePipeline(
     /* ── UI/UX 设计阶段（档位阶段集启用；lite+needDesign 也保留，显式要求的 UI 需求不被吞） ── */
     let design = null
     if (enabled('design')) {
-      if (resumed('design')) {
-        design = resume.products.design
-        timeline.design = design
-        logSkip('design')
-      } else {
-        journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'design') }) })
-        const designR = await withRetry(journal, parent, t(locale, 'dev.design'), 'design', designPrompt(prd, root, journal.id, state), signal)
-        if (!designR.text) { throw stageFailError('design', designR) }
-        design = designR.text
-        timeline.design = design
-        mergeStageState('design', design)
-        noteTaskStageUsage(journal)
-        if (journal.cancelled) return
-      }
+      const designStage = await runSimpleStage('design', designPrompt(prd, root, journal.id, state), t(locale, 'dev.design'))
+      if (designStage.cancelled) return
+      design = designStage.text
     }
 
     /* ── 架构规划阶段（档位阶段集启用：显式 needScaffold 才含，见 STAGE_POLICY） ── */
     let scaffold = null
     if (enabled('scaffold')) {
-      if (resumed('scaffold')) {
-        scaffold = resume.products.scaffold
-        timeline.scaffold = scaffold
-        logSkip('scaffold')
-      } else {
-        journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'scaffold') }) })
-        // 脚手架落地是机械阶段（按蓝图建骨架/搬文件，不做判据）→ 降档省 token
-        const scR = await withRetry(journal, parent, t(locale, 'dev.scaffold'), 'scaffold', scaffoldPrompt(requirement, design, root, journal.id, state), signal, undefined, MECHANICAL_STAGE_EFFORT)
-        if (!scR.text) { throw stageFailError('scaffold', scR) }
-        scaffold = scR.text
-        timeline.scaffold = scaffold
-        mergeStageState('scaffold', scaffold)
-        noteTaskStageUsage(journal)
-        if (journal.cancelled) return
-      }
+      // 脚手架落地是机械阶段（按蓝图建骨架/搬文件，不做判据）→ 降档省 token
+      const scStage = await runSimpleStage('scaffold', scaffoldPrompt(requirement, design, root, journal.id, state), t(locale, 'dev.scaffold'), { effort: MECHANICAL_STAGE_EFFORT })
+      if (scStage.cancelled) return
+      scaffold = scStage.text
     }
 
     /* ── 技术方案/架构阶段（按档位阶段集；lite/tech 轻量产架构蓝图；patch 无 tech——单 agent 直改，见 STAGE_POLICY） ── */
     let tech = null
     if (enabled('tech')) {
-      if (resumed('tech')) {
-        tech = resume.products.tech
-        timeline.tech = tech
-        logSkip('tech')
-      } else {
       const isHeavy = !options.lite && options.mode !== 'tech' && options.mode !== 'patch'
-      journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: isHeavy ? phaseLabel(locale, 'tech') : t(locale, 'stageLabel.blueprint') }) })
-      const label = isHeavy ? t(locale, 'dev.techHeavy') : t(locale, 'dev.techLite')
-      const prompt = isHeavy
-        ? techPrompt(prd, design, scaffold, tasks, root, journal.id, state)
-        : architectPrompt(prd, root, journal.id, state)
-      const techR = await withRetry(journal, parent, label, 'tech', prompt, signal)
-      if (!techR.text) { throw stageFailError(label, techR) }
-      tech = techR.text
-      timeline.tech = tech
-      mergeStageState('tech', tech)
-      // 提取架构蓝图 JSON → 注入后续阶段（dev 继承蓝图）并用于自动拆任务。
-      // 优先取 stage 回复输出；模型可能把蓝图写进任务夹 TECHNICAL.md（ADR-0008 收口约定）——回退读文件提取，绝不静默丢蓝图（实锤 r13：蓝图只在文档里，dev 退化为单任务整体开发、M2 拆卡失效）。
-      let bd = extractBlueprint(tech)
-      if (!bd || bd.summary === undefined) {
-        try {
-          const techFile = journal.runDocs && journal.workspacePath
-            ? `${journal.workspacePath}/${journal.runDocs}/TECHNICAL.md`
-            : null
-          if (techFile && existsSync(techFile)) bd = extractBlueprint(readFileSync(techFile, 'utf8'))
-          if (bd) journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintFromFile') })
-        } catch (e) { /* 回退失败走既有告警 */ }
-      }
-      if (bd && bd.summary !== undefined) {
-        try {
-          state.__runCtx = state.__runCtx || {}
-          state.__runCtx.blueprint = bd.render
-          journal.blueprint = { modules: bd.modules, tasks: bd.tasks }
-        } catch (e) { /* 蓝图注入失败不影响 */ }
-      } else if (/<!-- blueprint -->/.test(String(tech))) {
-        // 蓝图块存在但解析失败：显式告警（否则静默回退整体开发，并行度丢失难排查）
-        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.blueprintParseFail') })
-      }
-      noteTaskStageUsage(journal)
-      if (journal.cancelled) return
+      const techLabel = isHeavy ? t(locale, 'dev.techHeavy') : t(locale, 'dev.techLite')
+      const techStage = await runSimpleStage(
+        'tech',
+        isHeavy
+          ? techPrompt(prd, design, scaffold, tasks, root, journal.id, state)
+          : architectPrompt(prd, root, journal.id, state),
+        techLabel,
+        // ⚠️ enterLabel / failLabel 差异是**原样保留的历史行为**（见 runSimpleStage 注释）：
+        // ① 轻量档的进阶段文案是「架构蓝图」而非「技术方案」；② 失败错误传本地化 label 而非 phase key。
+        { enterLabel: isHeavy ? phaseLabel(locale, 'tech') : t(locale, 'stageLabel.blueprint'), failLabel: techLabel },
+      )
+      if (techStage.cancelled) return
+      tech = techStage.text
+      // ⚠️ 原样保留的历史行为：resume 复用 tech 产物时**不**跑蓝图提取。这看着像缺陷——
+      // 续跑时 `state.__runCtx.blueprint` 不注入 → dev 继承不到蓝图（正是 r13 那种退化为整体开发的路径）——
+      // 但改它会动到 resume 语义，本次纯结构重构不动，已记 docs/TODO.md 待单独决策。
+      if (!techStage.skipped) {
+        // 提取架构蓝图 JSON → 注入后续阶段（dev 继承蓝图）并用于自动拆任务。
+        // 优先取 stage 回复输出；模型可能把蓝图写进任务夹 TECHNICAL.md（ADR-0008 收口约定）——回退读文件提取，绝不静默丢蓝图（实锤 r13：蓝图只在文档里，dev 退化为单任务整体开发、M2 拆卡失效）。
+        let bd = extractBlueprint(tech)
+        if (!bd || bd.summary === undefined) {
+          try {
+            const techFile = journal.runDocs && journal.workspacePath
+              ? `${journal.workspacePath}/${journal.runDocs}/TECHNICAL.md`
+              : null
+            if (techFile && existsSync(techFile)) bd = extractBlueprint(readFileSync(techFile, 'utf8'))
+            if (bd) journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintFromFile') })
+          } catch (e) { /* 回退失败走既有告警 */ }
+        }
+        if (bd && bd.summary !== undefined) {
+          try {
+            state.__runCtx = state.__runCtx || {}
+            state.__runCtx.blueprint = bd.render
+            journal.blueprint = { modules: bd.modules, tasks: bd.tasks }
+          } catch (e) { /* 蓝图注入失败不影响 */ }
+        } else if (/<!-- blueprint -->/.test(String(tech))) {
+          // 蓝图块存在但解析失败：显式告警（否则静默回退整体开发，并行度丢失难排查）
+          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.blueprintParseFail') })
+        }
       }
     }
 

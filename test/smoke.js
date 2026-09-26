@@ -524,7 +524,11 @@ ok(/async function resolveStageEffort/.test(runnerSrc) && /attempt > 1 \? 'high'
 ok(/\(e as \{ id\?: unknown \}\)\.id === 'string'/.test(runnerSrc), 'runner：efforts 取对象数组的 id（宿主 LlmReasoningEffortInfo 是 {id,name}，非字符串数组——2026-09-11 实锤静默失效）')
 ok(/推理强度未降档/.test(hostSrc), 'runner：探测失败/档位不支持时记 warn（静默失败可见化）')
 ok(/reasoningEffort: effort/.test(runnerSrc) && /effortHint/.test(runnerSrc) && /attempt, effortHint, taskIds\)/.test(runnerSrc), 'runner：agentOptions 带 reasoningEffort（effortHint/taskIds 参数链穿透到 runAgent）')
-ok(/options\.mode === 'patch' \? MECHANICAL_STAGE_EFFORT : null/.test(pipelineSrc) && /'scaffold', scaffoldPrompt\([\s\S]{0,140}MECHANICAL_STAGE_EFFORT\)/.test(pipelineSrc), 'pipeline：仅 patch 单点确认 + scaffold 两处降档（判据类阶段保持宿主默认 high）')
+// ⚠️ 后半正则 2026-09-26 放宽：四阶段收敛进 `runSimpleStage(phase, prompt, label, opts)` 后，
+// scaffold 的降档不再直接写在 withRetry 的第 8 参上，而是经 `{ effort: MECHANICAL_STAGE_EFFORT }` 传入
+// → 原文 `MECHANICAL_STAGE_EFFORT\)`（紧贴右括号）必然失配。**锁定语义不变**：scaffold 阶段的调用语句里
+// 必须带降档常量（判据类阶段保持宿主默认 high）；窗口 140→200 是因为多了一层 opts 对象。
+ok(/options\.mode === 'patch' \? MECHANICAL_STAGE_EFFORT : null/.test(pipelineSrc) && /'scaffold', scaffoldPrompt\([\s\S]{0,200}MECHANICAL_STAGE_EFFORT/.test(pipelineSrc), 'pipeline：仅 patch 单点确认 + scaffold 两处降档（判据类阶段保持宿主默认 high）')
 
 console.log('── 3t) 收口提交面：插件自有日志不进提交（2026-09-11 实锤 assetd 92% 噪音）──')
 const sanitySrc = readFileSync(join(here, '../host/core/sanity.ts'), 'utf8')
