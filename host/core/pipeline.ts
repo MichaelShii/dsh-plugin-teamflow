@@ -830,6 +830,16 @@ export async function executePipeline(
       }
     }
 
+    /**
+     * 开发阶段（并发池 + 依赖分波 + resume 补跑 + 收口提测门禁）——2026-09-26 从 executePipeline
+     * 主流程里**包成命名单元**（第 ② 步收敛的第一步）。原 1,078 行线性函数里 dev 独占约 220 行，
+     * 读代码时它与前后阶段块混在一起、边界只能靠注释认。先只做「命名 + 隔离」、不搬家：函数体一字未改，
+     * 闭包依赖全部照旧，因此行为不变有**结构性保证**（唯一语义差异是下面把 `return` 改成带 cancelled 的
+     * 返回，语义等价）。等 dev / qa / acceptance 都成块后再整体外移——那时依赖面已经看清楚了，不必提前猜接口。
+     * **缩进暂保持原样**：整块重排会让 diff 变成 200+ 行全量改动，反而掩盖真正的语义差异。
+     * @returns cancelled 为真表示 dev 期间被取消，调用方须整体 return（原 `if (journal.cancelled) return`）
+     */
+    const runDevStage = async (): Promise<{ cancelled: boolean }> => {
     /* ── 开发阶段（并发池；resume 到 QA/验收时复用旧结果） ── */
     /* 并发写的**事后记账**（issue #4 第三道防线）：前两道护栏都可能被绕过——
        ① 任务没声明 files ⇒ mergeFileOverlaps 无从判定；② agent 越界写别人的文件（prompt 只软约束）；
@@ -1031,7 +1041,7 @@ export async function executePipeline(
      * 「新开发」分支里，resume 补跑分支没有 → 取消/resume 失败都会径直进入 QA（QA 检查轮必然重复报告
      * 已知缺口，实锤 r26：T2 failed → QA 450k 白烧）。顺序也重要：**先取消检查后门禁**——取消时 dev 任务
      * 的 failed 只是「没跑完」，不该被记成提测失败转人工。 */
-    if (journal.cancelled) return
+    if (journal.cancelled) return { cancelled: true }
     {
       const failedCount = (devResults || []).filter((r) => r && r.failed).length
       if (failedCount > 0) {
@@ -1049,7 +1059,18 @@ export async function executePipeline(
       }
     }
     persistJournal(journal)
+    return { cancelled: false }
+    }
+    const devStage = await runDevStage()
+    if (devStage.cancelled) return
 
+    /**
+     * QA 测试阶段（打回闭环：QA → 开发修复 → 复验；超 QA_REWORK_LIMIT 转人工）——2026-09-26 同 dev 一样
+     * 包成命名单元（第 ② 步收敛）。函数体一字未改，**唯一语义差异**是把两处 `return` 改成带 `cancelled`
+     * 的返回；`qa` / `qaBlocked` 要交给验收阶段，故一并回传（原来是外层 let，现在是返回值）。
+     * 缩进同 dev：暂保持原样，避免 100+ 行的全量 diff 掩盖语义差异。
+     */
+    const runQaStage = async (): Promise<{ cancelled: boolean; qa: string | null; qaBlocked: boolean }> => {
     /* ── QA 测试阶段（档位阶段集启用：patch 档不含 qa，见 STAGE_POLICY） ── */
     let qa = null
     let qaBlocked = false
@@ -1144,7 +1165,7 @@ export async function executePipeline(
         qaRoundEntry.fixCalls = fixR.stage && fixR.stage.usage ? fixR.stage.usage.calls : null
         qaRoundEntry.gate = fixGate
         noteTaskStageUsage(journal) // 修复子代理真实 usage 累计到任务卡
-        if (journal.cancelled) return
+        if (journal.cancelled) return { cancelled: true, qa, qaBlocked }
       } while (true) // oxlint-disable-line no-constant-condition -- 有界循环：round > QA_REWORK_LIMIT → break（勿改 while 形态，见评估「未发现无界循环」）
       if (!qaBlocked && qaClean) {
         verifyReqBugs(journal) // 复验通过 → 关闭全部 open 缺陷
@@ -1153,10 +1174,23 @@ export async function executePipeline(
       } else {
         journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.qaBlocked') })
       }
-      if (journal.cancelled) return
+      if (journal.cancelled) return { cancelled: true, qa, qaBlocked }
     }
     persistJournal(journal)
+    return { cancelled: false, qa, qaBlocked }
+    }
+    const qaStage = await runQaStage()
+    if (qaStage.cancelled) return
+    // qa / qaBlocked 交接给验收阶段（原先是 executePipeline 里的外层 let，现由 runQaStage 返回）
+    let qa = qaStage.qa
+    let qaBlocked = qaStage.qaBlocked
 
+    /**
+     * 产品验收阶段（交付判定 + 统一收口提交；QA 打回未超限才执行）——2026-09-26 同 dev / qa 一样包成命名
+     * 单元（第 ② 步收敛）。**本块零语义差异**：段内没有任何顶层 `return`（已逐行核对），函数体一字未改，
+     * 因此包进函数后控制流完全等价。缩进同样暂保持原样（理由见 runDevStage 注释）。
+     */
+    const runAcceptanceStage = async (): Promise<void> => {
     /* ── 产品验收阶段（QA 打回未超限才执行；超限时需求已置 needs-human，跳过验收） ── */
     if (!enabled('acceptance')) {
       // patch 档：单 agent 直改 + 自测即交付（无独立 QA/验收，STAGE_POLICY 兑现 desc）——
@@ -1282,6 +1316,9 @@ export async function executePipeline(
       journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.allDone') })
       journal.status = 'completed'
     }
+    }
+    // 调用点必须留在**大 try 之内**（原代码就在 try 里，异常要落到下面的 catch 做终态归一）
+    await runAcceptanceStage()
   } catch (e) {
     if (journal.cancelled) {
       journal.status = 'cancelled'

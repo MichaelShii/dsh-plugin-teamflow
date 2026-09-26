@@ -53,6 +53,15 @@
 - 🔜 **宿主 0.1.7-alpha.1 事件 source v4 适配缺直接断言**：目前只有间接证据（整条流水线跑通、20 阶段无事件格式报错、`agentsStarted=20`）。建议补一条 L2 conformance 语料（把 v4 `kind: 'plugin:dsh-plugin-teamflow'` 的 source 形态冻结进 `docs/benchmarks/corpus/` 回放），避免宿主下次再改 source 形态时又是「用起来才发现」。
 - 🔜 **`host/core/pipeline.ts` 巨型函数收敛（评估改进 #1，2026-09-26 实测定拆法）**：文件 1,559 行的表象不重要，**真问题是 `executePipeline` 单函数 322→1401 = 1080 行**（占文件 69%），不可单测、不可局部回归。
   **内部形态实测**：`prd`/`design`/`scaffold`/`tech` **四阶段完全同构**——`enabled(X)` → `resumed(X)?logSkip` → `log.enterStage` → `withRetry(...)` → `!R.text?stageFailError` → `mergeStageState(X)`，各占 25–35 行；`dev`（分波并发 + 任务重跑分支）、`qa`（打回循环 + `hasOpenBlockingBugs`）、`acceptance`（交付判定）**各自特殊**，不是同构体。
+  ✅ **② 已落地（2026-09-26）：三个异形阶段包成命名单元**——`runDevStage()` / `runQaStage()` / `runAcceptanceStage()`
+  （executePipeline 内闭包）。做法是**命名 + 隔离而非搬家**：函数体一字未改、连缩进都不重排（否则 diff 变 400+ 行
+  全量改动、掩盖语义差异）；dev/qa 的顶层 `return` 改返回 `{cancelled:true}`；qa 的 `qa`/`qaBlocked` 由返回值交给
+  验收段。**A/B 6 场景全等**（新增 `devmulti` 场景把 dev 的并发分波主路径纳入验证：3 任务 + 依赖边 → 实测
+  「依赖分波：3 组任务排成 1 波（每波路数 3）」）。
+  **仍未做的部分**：① 三块**外移**到独立文件（依赖面尚未收敛，外移要显式化约 20 个闭包变量，风险高于收益，
+  等真有第二个消费方再动）；② 真正的 **STAGES 表驱动**（现在仍是顺序调用，不是数据驱动的表）——
+  评估价值有限：阶段间有产物依赖链（prd→design→scaffold→tech→dev→qa→acceptance），表只能表达「顺序 + enabled」，
+  真正的差异逻辑仍在各 runner 内部，**表本身不减复杂度**，故暂不做。
   **建议两级走法（反对一步上 StageRunner registry）**：① **先做同形阶段收敛**——抽 `runSimpleStage(phase, prompt, label, opts)`，4×30 行 → 1 helper + 4 处 2–4 行调用；② **registry 表驱动留到 dev/qa 也收敛之后**——现在硬把 7 个阶段套进统一 `StageRunner` 接口，dev 的分波与 qa 的循环会逼出「接口里塞可选钩子」，可读性反而劣化（评估提的 registry 是终态，不是第一步）。
   ✅ **① 已落地（2026-09-26）**：`executePipeline` 内闭包 helper `runSimpleStage`（`pipeline.ts` PRD 阶段之前），四阶段各缩到 2–4 行；**A/B 验等价通过**（pre=`git archive HEAD` vs post=工作树，4 场景 × 11 个对比字段全等：`patch` / `full`（四阶段全跑）/ `fail`（空产出抛 stageFailError）/ `resume`（四阶段全走复用分支）），详见 `.workbuddy/verify-2026-09-26/REPORT-h5.md`。**副产物**：该 harness（`h5-stage-convergence.mjs` + `diff-ab.cjs` + `make-stubs.cjs`）可升正式 e2e 测试。
   ✅ **两处历史行为缺陷已随收敛一并修掉（2026-09-26，同一 release 周期）**：
