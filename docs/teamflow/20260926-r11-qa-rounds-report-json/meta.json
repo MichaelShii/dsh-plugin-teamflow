@@ -1,7 +1,0 @@
-{
-  "reqId": "req-11",
-  "runId": "tf-muie9t3q-fjcl96",
-  "title": "在 scripts/ 下给 qa-rounds-report.mjs 增加一个 --json 输出选项：默认输出格式保持不变，加 --json 时输出结构化 J",
-  "mode": "full",
-  "createdAt": 1790427443688
-}

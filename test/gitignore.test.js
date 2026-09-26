@@ -16,7 +16,7 @@
  * 真 git 行为矩阵在 `test/commit-path.test.js`（这里只锁参数形状）。
  */
 import { mergeGitignore } from '../host/util.ts'
-import { tfAddArgs, tfUnstageArgs, tfDocAddArgs, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from '../host/core/sanity.ts'
+import { tfAddArgs, tfUnstageArgs, tfDocAddPlan, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from '../host/core/sanity.ts'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -93,17 +93,20 @@ ok(un.includes('--ignore-unmatch'), '未命中不报错（幂等、可无条件�
 expect(un[un.length - 1], TF_LOG_DIR, `兜底目标 = 自有日志目录（${TF_LOG_DIR}）`)
 ok(!un.includes('--quiet'), '不带 --quiet：真摘出东西时 stdout 非空，调用方据此记 warn 留痕')
 
-console.log('── 交付文档强制入库（QA-7：目标仓库忽略 docs/teamflow/ 时交付物不被静默吞掉）──')
+console.log('── 交付文档入库（2026-09-26 改：尊重 .gitignore，不再无条件 add -f）──')
 expect(TF_DOCS_DIR, 'docs/teamflow', '任务夹命名空间与 prompts 同址')
-expect(tfDocAddArgs([]).length, 0, '无交付文档 → 空参数（不做无意义 git 调用）')
-expect(tfDocAddArgs([null, '', undefined]).length, 0, '全空值 → 空参数')
-const docs = tfDocAddArgs([`${TF_DOCS_DIR}/20260915-r9-host-i18n-locale`, `${TF_DOCS_DIR}/memory.md`])
-expect(docs[0], 'add', '子命令 = add')
-expect(docs[1], '-f', '强制入库（目标仓库 .gitignore 忽略 docs/teamflow/ 时仍交付）')
-expect(docs[2], '--', 'pathspec 与选项分隔')
-expect(docs.length, 5, '只带本次 run 的夹 + memory.md 两个路径')
-ok(docs[3].startsWith(`${TF_DOCS_DIR}/`), '限定在 docs/teamflow/ 内（不放开全树）')
-ok(!docs.includes('-A') && !docs.includes('.'), '绝不放宽为 add -f -A（否则 ignored 的 node_modules/lib 会被拖进提交）')
+expect(tfDocAddPlan([]).args.length, 0, '无交付文档 → 空参数（不做无意义 git 调用）')
+expect(tfDocAddPlan([null, '', undefined]).args.length, 0, '全空值 → 空参数')
+// 不传 cwd = 无法判定（判据必须以目标仓库为根；生产调用方必传 workspacePath）→ 按未忽略处理
+const docs = tfDocAddPlan([`${TF_DOCS_DIR}/20260915-r9-host-i18n-locale`, `${TF_DOCS_DIR}/memory.md`])
+expect(docs.args[0], 'add', '子命令 = add')
+ok(!docs.args.includes('-f'), '不再强制：是否被忽略由**目标仓库的 .gitignore** 说了算（用户在 .gitignore 里写的就是意图）')
+expect(docs.args[1], '--', 'pathspec 与选项分隔')
+expect(docs.args.length, 4, '只带本次 run 的夹 + memory.md 两个路径')
+ok(docs.args[3].startsWith(`${TF_DOCS_DIR}/`), '限定在 docs/teamflow/ 内（不放开全树）')
+ok(!docs.args.includes('-A') && !docs.args.includes('.'), '绝不放宽为 add -A（否则 ignored 的 node_modules/lib 会被拖进提交）')
+expect(docs.ignored.length, 0, '未给目标仓库 → 判据不可用 → **不算「被忽略」**（不许谎称用户在 .gitignore 里写了它）')
+expect(docs.unknown.length, 2, '判据不可用 → 进 unknown，且**仍按入库处理**（「没查到」不等于「用户不想提交」，丢弃交付物的方向从严）')
 
 console.log('── .gitignore 幂等合并（mergeGitignore）──')
 const created = mergeGitignore(null, ['logs/teamflow/'])

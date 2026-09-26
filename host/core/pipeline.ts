@@ -34,7 +34,7 @@ function cliOnPath(): boolean {
     return r.status === 0
   } catch (e) { return false }
 }
-import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddArgs, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from './sanity.ts'
+import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddPlan, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from './sanity.ts'
 import type { GitResult } from './sanity.ts'
 import { archiveRunLogs, sweepWorkspaceLogs } from './runlogs.ts'
 import { preflightWorkspaceAcl } from './acl-preflight.ts'
@@ -1363,9 +1363,16 @@ export async function executePipeline(
       try {
         const reqHead = String(journal.requirement || '').replace(/\s+/g, ' ').trim().slice(0, 80)
         ensureLogGitignore(journal.workspacePath, journal, locale) // 自有日志先写进 .gitignore（幂等）
-        // 交付文档强制入库（QA-7）：任务夹/memory.md 是交付物，目标仓库 .gitignore 可能忽略 docs/teamflow/
-        const docAdd = tfDocAddArgs([journal.runDocs, `${TF_DOCS_DIR}/memory.md`].filter((p) => existsSync(`${journal.workspacePath}/${p}`)))
-        if (docAdd.length) gitRun(journal.workspacePath, docAdd)
+        // 交付文档入库（2026-09-26 改：尊重目标仓库的 .gitignore，不再 -f 强加——用户在 .gitignore 里
+        // 写「docs/teamflow/ 勿提交」就是不想让它进仓库，插件无权绕过；忽略时文件仍在工作区，交付物不丢）。
+        const docPlan = tfDocAddPlan([journal.runDocs, `${TF_DOCS_DIR}/memory.md`].filter((p) => existsSync(`${journal.workspacePath}/${p}`)), journal.workspacePath)
+        if (docPlan.ignored.length) {
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.docsIgnored', { list: docPlan.ignored.join(', ') }) })
+        }
+        if (docPlan.args.length) {
+          gitRun(journal.workspacePath, docPlan.args)
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.docsAdded', { list: docPlan.args.slice(2).join(', ') }) })
+        }
         const addR = gitRun(journal.workspacePath, tfAddArgs())
         noteLogsUnstaged(journal, gitRun(journal.workspacePath, tfUnstageArgs()), locale) // 索引兜底（幂等）
         // ③（2026-09-15 修复）：add 的结果**不再决定要不要提交**——旧写法 `add === null ? null : git commit(...)`
