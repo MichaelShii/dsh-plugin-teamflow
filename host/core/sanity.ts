@@ -137,6 +137,26 @@ function tfExcludePathspecs(excludes: readonly string[], cwd?: string): string[]
   return out
 }
 
+/**
+ * `git check-ignore` **三态**判定：`0`=被忽略 / `1`=未忽略 / `-1`=无法判定（git 缺失、不在仓库、超时、
+ * 或本机的 spawn 限制）。与 `isIgnoredByGit` 同一判据，但**不把「无法判定」冒充成「被忽略」**——
+ * 那正是 2026-09-26 踩到的坑：进程 spawn 不到 git 时 `status` 为 `null`（非 1），布尔版会一律返回 true，
+ * 于是「尊重 .gitignore」的实现在判据不可用的环境里退化成「所有交付文档都不入库」，且日志还谎称
+ * 「被 .gitignore 忽略」。凡是**丢弃用户东西**的方向，都必须先分清「确实如此」与「没查到」。
+ */
+function ignoredStateByGit(rel: string, cwd?: string): 0 | 1 | -1 {
+  try {
+    execFileSync('git', ['check-ignore', '-q', '--', rel], {
+      cwd: cwd || process.cwd(), encoding: 'utf8', timeout: 4000, windowsHide: true,
+    })
+    return 0 // exit 0 = 被忽略
+  } catch (e) {
+    const code = (e as { status?: number }).status
+    if (code === 1) return 1 // 明确未被忽略
+    return -1 // 无法判定
+  }
+}
+
 /** `git check-ignore` 判定（0=被忽略／1=未忽略／其它=无法判定）。无法判定时按「被忽略」处理＝不下发 pathspec。 */
 function isIgnoredByGit(rel: string, cwd?: string): boolean {
   try {
@@ -175,20 +195,44 @@ export const GIT_NOTHING_TO_COMMIT = /nothing to commit|nothing added to commit|
 /** 任务夹命名空间（ADR-0008：docs/teamflow/<yyyyMMdd-rN-slug>/ 与 memory.md）。 */export const TF_DOCS_DIR = 'docs/teamflow'
 
 /**
- * **交付文档强制入库**参数（QA-7：`add -A` 会被目标仓库的 `.gitignore` 静默吞掉交付物）。
+ * 交付文档的**入库计划**（2026-09-26 改造：**尊重目标仓库的 `.gitignore`，不再无条件 `-f` 强加**）。
  *
- * 为什么需要：任务夹（PRD/TECHNICAL/QA-REPORT/ACCEPTANCE）与 `memory.md` 是**交付物**
- * （AGENTS §5 收口提交面 / PRD §9），但目标仓库完全可能把 `docs/teamflow/` 写进 `.gitignore`
- * （本插件自身仓库即如此，为开源就绪化）——此时 `tfAddArgs()` 的整树 add **一个文档都不会入库**。
- * 只对**本次 run 自己的夹 + memory.md** 用 `-f` 限定路径强制入库；
- * **绝不**放宽为 `add -f -A`（那会把 ignored 的 node_modules/lib/*.tgz 一并拖进提交）。
- * 空列表返回 `[]`（调用方按长度判空，不做无意义 git 调用）。
+ * 历史：原 `tfDocAddArgs` 对任务夹与 `memory.md` 一律 `add -f`（QA-7：`add -A` 会被目标仓库的
+ * `.gitignore` 静默吞掉交付物）。范围控制本身是对的——`-f` 只点名这两个路径，从不会波及别的文件
+ * （实测：被忽略的 `.env` 不会被带进提交）。但 `-f` 的语义是「无视用户用 `.gitignore` 表达的意图」，
+ * 而本插件自己的仓库忽略 `docs/teamflow/` 的理由恰恰是「含潜在项目信息，勿提交」——
+ * 于是**用户在仓库里唯一能表达「别提交」的手段被插件绕过了**，且全程静默（无任何日志）。
+ * 这与 `sanity.ts` 已有的纪律同源（「该忽略什么属于用户，host 不该越界」，见 BASELINE_NOISE_EXCLUDES 注释）。
+ *
+ * 现在：逐路径用 `git check-ignore`（与 `tfExcludePathspecs` 同一判据、同一「以目标仓库为根」的正确性）判断：
+ *   - 未被忽略 → 普通 `add --`（不需要 `-f`，本就能进）；
+ *   - 已被忽略 → **不入库**，路径进 `ignored`，由调用方记日志（文件仍在工作区，交付物不丢，
+ *     QA 的「文件即产物」契约读的是磁盘文件，不依赖 git）。
+ * **绝不**放宽为 `add -A` / `add -f -A`（那会把 ignored 的 node_modules/lib/*.tgz 一并拖进提交）。
+ *
+ * @param cwd 目标仓库根。**不传 = 无法判定**（判据必须以仓库为根，用宿主进程 cwd 会误判，
+ *            这正是 2026-09-18 修掉的那个坑）。
+ * @returns ignored 只在**确实被 .gitignore 忽略**时非空（可据此如实记日志）；判据不可用时进 `unknown`，
+ *          并**仍按入库处理**——「没查到」不等于「用户不想提交」，丢弃交付物的方向必须从严。
  */
-export function tfDocAddArgs(docPaths: Array<string | null | undefined>): string[] {
+export function tfDocAddPlan(
+  docPaths: Array<string | null | undefined>,
+  cwd?: string,
+): { args: string[]; ignored: string[]; unknown: string[] } {
   const paths = docPaths
     .filter((p): p is string => typeof p === 'string' && !!p.trim())
     .map((p) => p.replace(/\\/g, '/').replace(/\/+$/, ''))
-  return paths.length ? ['add', '-f', '--', ...paths] : []
+  if (!paths.length) return { args: [], ignored: [], unknown: [] }
+  const add: string[] = []
+  const ignored: string[] = []
+  const unknown: string[] = []
+  for (const p of paths) {
+    const st = cwd ? ignoredStateByGit(p, cwd) : -1
+    if (st === 0) { ignored.push(p); continue }
+    if (st === -1) unknown.push(p)
+    add.push(p)
+  }
+  return { args: add.length ? ['add', '--', ...add] : [], ignored, unknown }
 }
 
 /** 状态核对结果。 */

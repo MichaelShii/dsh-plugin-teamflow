@@ -4,10 +4,12 @@ node_modules/
 # 构建产物
 lib/
 dist/
+coverage/
 *.tsbuildinfo
 
 # 日志与临时文件
 *.log
+pnpm-debug.log*
 .tmp-*/
 .DS_Store
 
@@ -20,6 +22,13 @@ dist/
 package-lock.json
 npm-debug.log*
 *.tgz
+
+# pnpm
+.pnpm-store/
+
+# 环境变量（含潜在密钥，勿提交 / 勿发布）
+.env
+.env.*
 
 # WorkBuddy 工作区数据
 .workbuddy/

@@ -34,7 +34,7 @@ function cliOnPath(): boolean {
     return r.status === 0
   } catch (e) { return false }
 }
-import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddArgs, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from './sanity.ts'
+import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddPlan, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from './sanity.ts'
 import type { GitResult } from './sanity.ts'
 import { archiveRunLogs, sweepWorkspaceLogs } from './runlogs.ts'
 import { preflightWorkspaceAcl } from './acl-preflight.ts'
@@ -46,6 +46,8 @@ import { ambientLocale, localeForMissingSnapshot, runLocaleOf } from './locale.t
  *  en 侧必须覆盖词典 `dev.taskRetry` 的实际产出 `(attempt N)`（R3-2 实锤：只写 retry \d+ 时，
  *  无 taskKey 的存量/异常数据走 label 兜底会漏剥离，任务标题归一失效）——**只增不改 zh 分支**。 */
 const DEV_TITLE_PREFIX = /^(?:开发|Dev) · /
+/** 收口提交前「待提交清单」预览条数（只做可见性，超出的用省略号，不刷屏）。 */
+const COMMIT_SCOPE_PREVIEW = 12
 
 /** 从 journal 已完成阶段重建断点续跑产物（prd/design/scaffold/tech/qa/acceptance/dev）。 */
 export function buildResumeProducts(journal) {
@@ -711,34 +713,57 @@ export async function executePipeline(
      */
     const stageTextOf = (r) => r.text || ((r.stage && r.stage.output) || null)
 
+    /**
+     * 同形阶段执行器（2026-09-26 收敛）。
+     * `prd` / `design` / `scaffold` / `tech` 四阶段形状完全同构——「resume 复用产物 → enterStage 留痕 →
+     * withRetry → 空产出抛 stageFailError → 写 timeline + mergeStageState + 累计任务卡用量 → 取消检查」，
+     * 原先四处各抄一遍（每处 25–35 行）。抄写的代价曾有实据：**tech 的失败错误传的是本地化 label 文本而非
+     * phase key**（另三处都传 key）→ `stageFailError` 内 `phaseKeyOf(s.phase) === label` 恒不匹配 →
+     * 详情恒退化为「无上次记录」、末次 outcome/summary 全丢。**该差异已随本次收敛一并修掉**（统一传 phase key，
+     * 2026-09-26）——错误文案因此会带上「末次 completed / 摘要」，属有意的语义修复，A/B 可观测。
+     * @returns text 阶段产物（resume 复用时为存档产物，可能为空）；cancelled 为真时调用方须整体 return
+     */
+    const runSimpleStage = async (
+      phase: string,
+      prompt: string,
+      label: string,
+      opts?: { enterLabel?: string; effort?: string | null },
+    ): Promise<{ text: string | null; cancelled: boolean; skipped: boolean }> => {
+      if (resumed(phase)) {
+        const saved = (resume as { products: Record<string, unknown> }).products[phase] as string | null
+        timeline[phase] = saved
+        logSkip(phase)
+        return { text: saved, cancelled: false, skipped: true }
+      }
+      journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: opts && opts.enterLabel ? opts.enterLabel : phaseLabel(locale, phase) }) })
+      const r = await withRetry(journal, parent, label, phase, prompt, signal, undefined, opts && opts.effort ? opts.effort : null)
+      if (!r.text) throw stageFailError(phase, r)
+      timeline[phase] = r.text
+      mergeStageState(phase, r.text)
+      noteTaskStageUsage(journal)
+      return { text: r.text, cancelled: !!journal.cancelled, skipped: false }
+    }
+
     /* ── PRD 阶段 ── */
     let prd = null
-    if (resumed('prd')) {
-      prd = resume.products.prd
-      timeline.prd = prd
-      logSkip('prd')
-    } else {
-      journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'prd') }) })
-      const pForm = options.mode === 'tech'
-        ? { label: t(locale, 'dev.prdTechChange'), fn: techChangePrompt }
-        : options.mode === 'patch'
-          ? { label: t(locale, 'dev.prdPatch'), fn: patchConfirmPrompt }
-          : { label: t(locale, 'dev.prdFull'), fn: prdPrompt }
-      // 澄清答复（2026-09-16 需求澄清闸门）：用户在澄清轮补充的说明是**权威输入**——拼在需求之后并显式声明
-      // 「不得再自行假设」，否则 PM 会把自己的旧猜测再填一遍。原始 requirement 保持逐字不变（可审计）。
-      const supplement = journal.requirementSupplement
-      const prdInput = supplement
-        ? `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-assume]\n${supplement}`
-        : requirement
-      // patch 档的「单点确认」是机械阶段（核对现状 + 给直改指令，不做架构判断）→ 降档省 token
-      const prdR = await withRetry(journal, parent, pForm.label, 'prd', pForm.fn(prdInput, root, journal.id, state), signal, undefined, options.mode === 'patch' ? MECHANICAL_STAGE_EFFORT : null)
-      if (!prdR.text) { throw stageFailError('prd', prdR) }
-      prd = prdR.text
-      timeline.prd = prd
-      mergeStageState('prd', prd)
-      noteTaskStageUsage(journal) // PRD 角色的真实 token 累计到任务卡
-      if (journal.cancelled) return
-    }
+    // PRD 是唯一不做 enabled() 检查的阶段（任何档位都跑）；patch / tech 档只是换 prompt 形态，不是跳过。
+    const pForm = options.mode === 'tech'
+      ? { label: t(locale, 'dev.prdTechChange'), fn: techChangePrompt }
+      : options.mode === 'patch'
+        ? { label: t(locale, 'dev.prdPatch'), fn: patchConfirmPrompt }
+        : { label: t(locale, 'dev.prdFull'), fn: prdPrompt }
+    // 澄清答复（2026-09-16 需求澄清闸门）：用户在澄清轮补充的说明是**权威输入**——拼在需求之后并显式声明
+    // 「不得再自行假设」，否则 PM 会把自己的旧猜测再填一遍。原始 requirement 保持逐字不变（可审计）。
+    const supplement = journal.requirementSupplement
+    const prdInput = supplement
+      ? `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-assume]\n${supplement}`
+      : requirement
+    // patch 档的「单点确认」是机械阶段（核对现状 + 给直改指令，不做架构判断）→ 降档省 token
+    const prdStage = await runSimpleStage('prd', pForm.fn(prdInput, root, journal.id, state), pForm.label, {
+      effort: options.mode === 'patch' ? MECHANICAL_STAGE_EFFORT : null,
+    })
+    if (prdStage.cancelled) return
+    prd = prdStage.text
     // PRD 收口（2026-09-16 需求澄清闸门 Phase 1）：把「假设 / 待澄清」段读出来落 journal，
     // 让完成汇报能显式提示「本次基于以下假设启动」——今天的缺口是**假设完全不可见**
     // （实测 12/12、39/39 份 PRD 都没这一段），验收人无从知道 agent 替他决定了什么。
@@ -750,62 +775,40 @@ export async function executePipeline(
     /* ── UI/UX 设计阶段（档位阶段集启用；lite+needDesign 也保留，显式要求的 UI 需求不被吞） ── */
     let design = null
     if (enabled('design')) {
-      if (resumed('design')) {
-        design = resume.products.design
-        timeline.design = design
-        logSkip('design')
-      } else {
-        journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'design') }) })
-        const designR = await withRetry(journal, parent, t(locale, 'dev.design'), 'design', designPrompt(prd, root, journal.id, state), signal)
-        if (!designR.text) { throw stageFailError('design', designR) }
-        design = designR.text
-        timeline.design = design
-        mergeStageState('design', design)
-        noteTaskStageUsage(journal)
-        if (journal.cancelled) return
-      }
+      const designStage = await runSimpleStage('design', designPrompt(prd, root, journal.id, state), t(locale, 'dev.design'))
+      if (designStage.cancelled) return
+      design = designStage.text
     }
 
     /* ── 架构规划阶段（档位阶段集启用：显式 needScaffold 才含，见 STAGE_POLICY） ── */
     let scaffold = null
     if (enabled('scaffold')) {
-      if (resumed('scaffold')) {
-        scaffold = resume.products.scaffold
-        timeline.scaffold = scaffold
-        logSkip('scaffold')
-      } else {
-        journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'scaffold') }) })
-        // 脚手架落地是机械阶段（按蓝图建骨架/搬文件，不做判据）→ 降档省 token
-        const scR = await withRetry(journal, parent, t(locale, 'dev.scaffold'), 'scaffold', scaffoldPrompt(requirement, design, root, journal.id, state), signal, undefined, MECHANICAL_STAGE_EFFORT)
-        if (!scR.text) { throw stageFailError('scaffold', scR) }
-        scaffold = scR.text
-        timeline.scaffold = scaffold
-        mergeStageState('scaffold', scaffold)
-        noteTaskStageUsage(journal)
-        if (journal.cancelled) return
-      }
+      // 脚手架落地是机械阶段（按蓝图建骨架/搬文件，不做判据）→ 降档省 token
+      const scStage = await runSimpleStage('scaffold', scaffoldPrompt(requirement, design, root, journal.id, state), t(locale, 'dev.scaffold'), { effort: MECHANICAL_STAGE_EFFORT })
+      if (scStage.cancelled) return
+      scaffold = scStage.text
     }
 
     /* ── 技术方案/架构阶段（按档位阶段集；lite/tech 轻量产架构蓝图；patch 无 tech——单 agent 直改，见 STAGE_POLICY） ── */
     let tech = null
     if (enabled('tech')) {
-      if (resumed('tech')) {
-        tech = resume.products.tech
-        timeline.tech = tech
-        logSkip('tech')
-      } else {
       const isHeavy = !options.lite && options.mode !== 'tech' && options.mode !== 'patch'
-      journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: isHeavy ? phaseLabel(locale, 'tech') : t(locale, 'stageLabel.blueprint') }) })
-      const label = isHeavy ? t(locale, 'dev.techHeavy') : t(locale, 'dev.techLite')
-      const prompt = isHeavy
-        ? techPrompt(prd, design, scaffold, tasks, root, journal.id, state)
-        : architectPrompt(prd, root, journal.id, state)
-      const techR = await withRetry(journal, parent, label, 'tech', prompt, signal)
-      if (!techR.text) { throw stageFailError(label, techR) }
-      tech = techR.text
-      timeline.tech = tech
-      mergeStageState('tech', tech)
+      const techLabel = isHeavy ? t(locale, 'dev.techHeavy') : t(locale, 'dev.techLite')
+      const techStage = await runSimpleStage(
+        'tech',
+        isHeavy
+          ? techPrompt(prd, design, scaffold, tasks, root, journal.id, state)
+          : architectPrompt(prd, root, journal.id, state),
+        techLabel,
+        // enterLabel：轻量档的进阶段文案是「架构蓝图」而非「技术方案」。
+        { enterLabel: isHeavy ? phaseLabel(locale, 'tech') : t(locale, 'stageLabel.blueprint') },
+      )
+      if (techStage.cancelled) return
+      tech = techStage.text
       // 提取架构蓝图 JSON → 注入后续阶段（dev 继承蓝图）并用于自动拆任务。
+      // ⚠️ 2026-09-26 修复：原先这段只在「本次真跑」分支里（抄写的 else 块内）→ **resume 复用 tech 产物时
+      // 不跑蓝图提取**，`state.__runCtx.blueprint` 不注入 → dev 继承不到蓝图，退化成单任务整体开发
+      // （r13 同款症状）。现在 resume 复用时也照样提取（存档 tech 文本里没有蓝图块 → 解析为 null，无副作用）。
       // 优先取 stage 回复输出；模型可能把蓝图写进任务夹 TECHNICAL.md（ADR-0008 收口约定）——回退读文件提取，绝不静默丢蓝图（实锤 r13：蓝图只在文档里，dev 退化为单任务整体开发、M2 拆卡失效）。
       let bd = extractBlueprint(tech)
       if (!bd || bd.summary === undefined) {
@@ -827,11 +830,18 @@ export async function executePipeline(
         // 蓝图块存在但解析失败：显式告警（否则静默回退整体开发，并行度丢失难排查）
         journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.blueprintParseFail') })
       }
-      noteTaskStageUsage(journal)
-      if (journal.cancelled) return
-      }
     }
 
+    /**
+     * 开发阶段（并发池 + 依赖分波 + resume 补跑 + 收口提测门禁）——2026-09-26 从 executePipeline
+     * 主流程里**包成命名单元**（第 ② 步收敛的第一步）。原 1,078 行线性函数里 dev 独占约 220 行，
+     * 读代码时它与前后阶段块混在一起、边界只能靠注释认。先只做「命名 + 隔离」、不搬家：函数体一字未改，
+     * 闭包依赖全部照旧，因此行为不变有**结构性保证**（唯一语义差异是下面把 `return` 改成带 cancelled 的
+     * 返回，语义等价）。等 dev / qa / acceptance 都成块后再整体外移——那时依赖面已经看清楚了，不必提前猜接口。
+     * **缩进暂保持原样**：整块重排会让 diff 变成 200+ 行全量改动，反而掩盖真正的语义差异。
+     * @returns cancelled 为真表示 dev 期间被取消，调用方须整体 return（原 `if (journal.cancelled) return`）
+     */
+    const runDevStage = async (): Promise<{ cancelled: boolean }> => {
     /* ── 开发阶段（并发池；resume 到 QA/验收时复用旧结果） ── */
     /* 并发写的**事后记账**（issue #4 第三道防线）：前两道护栏都可能被绕过——
        ① 任务没声明 files ⇒ mergeFileOverlaps 无从判定；② agent 越界写别人的文件（prompt 只软约束）；
@@ -1033,7 +1043,7 @@ export async function executePipeline(
      * 「新开发」分支里，resume 补跑分支没有 → 取消/resume 失败都会径直进入 QA（QA 检查轮必然重复报告
      * 已知缺口，实锤 r26：T2 failed → QA 450k 白烧）。顺序也重要：**先取消检查后门禁**——取消时 dev 任务
      * 的 failed 只是「没跑完」，不该被记成提测失败转人工。 */
-    if (journal.cancelled) return
+    if (journal.cancelled) return { cancelled: true }
     {
       const failedCount = (devResults || []).filter((r) => r && r.failed).length
       if (failedCount > 0) {
@@ -1051,7 +1061,18 @@ export async function executePipeline(
       }
     }
     persistJournal(journal)
+    return { cancelled: false }
+    }
+    const devStage = await runDevStage()
+    if (devStage.cancelled) return
 
+    /**
+     * QA 测试阶段（打回闭环：QA → 开发修复 → 复验；超 QA_REWORK_LIMIT 转人工）——2026-09-26 同 dev 一样
+     * 包成命名单元（第 ② 步收敛）。函数体一字未改，**唯一语义差异**是把两处 `return` 改成带 `cancelled`
+     * 的返回；`qa` / `qaBlocked` 要交给验收阶段，故一并回传（原来是外层 let，现在是返回值）。
+     * 缩进同 dev：暂保持原样，避免 100+ 行的全量 diff 掩盖语义差异。
+     */
+    const runQaStage = async (): Promise<{ cancelled: boolean; qa: string | null; qaBlocked: boolean }> => {
     /* ── QA 测试阶段（档位阶段集启用：patch 档不含 qa，见 STAGE_POLICY） ── */
     let qa = null
     let qaBlocked = false
@@ -1146,7 +1167,7 @@ export async function executePipeline(
         qaRoundEntry.fixCalls = fixR.stage && fixR.stage.usage ? fixR.stage.usage.calls : null
         qaRoundEntry.gate = fixGate
         noteTaskStageUsage(journal) // 修复子代理真实 usage 累计到任务卡
-        if (journal.cancelled) return
+        if (journal.cancelled) return { cancelled: true, qa, qaBlocked }
       } while (true) // oxlint-disable-line no-constant-condition -- 有界循环：round > QA_REWORK_LIMIT → break（勿改 while 形态，见评估「未发现无界循环」）
       if (!qaBlocked && qaClean) {
         verifyReqBugs(journal) // 复验通过 → 关闭全部 open 缺陷
@@ -1155,10 +1176,23 @@ export async function executePipeline(
       } else {
         journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.qaBlocked') })
       }
-      if (journal.cancelled) return
+      if (journal.cancelled) return { cancelled: true, qa, qaBlocked }
     }
     persistJournal(journal)
+    return { cancelled: false, qa, qaBlocked }
+    }
+    const qaStage = await runQaStage()
+    if (qaStage.cancelled) return
+    // qa / qaBlocked 交接给验收阶段（原先是 executePipeline 里的外层 let，现由 runQaStage 返回）
+    let qa = qaStage.qa
+    let qaBlocked = qaStage.qaBlocked
 
+    /**
+     * 产品验收阶段（交付判定 + 统一收口提交；QA 打回未超限才执行）——2026-09-26 同 dev / qa 一样包成命名
+     * 单元（第 ② 步收敛）。**本块零语义差异**：段内没有任何顶层 `return`（已逐行核对），函数体一字未改，
+     * 因此包进函数后控制流完全等价。缩进同样暂保持原样（理由见 runDevStage 注释）。
+     */
+    const runAcceptanceStage = async (): Promise<void> => {
     /* ── 产品验收阶段（QA 打回未超限才执行；超限时需求已置 needs-human，跳过验收） ── */
     if (!enabled('acceptance')) {
       // patch 档：单 agent 直改 + 自测即交付（无独立 QA/验收，STAGE_POLICY 兑现 desc）——
@@ -1284,6 +1318,9 @@ export async function executePipeline(
       journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.allDone') })
       journal.status = 'completed'
     }
+    }
+    // 调用点必须留在**大 try 之内**（原代码就在 try 里，异常要落到下面的 catch 做终态归一）
+    await runAcceptanceStage()
   } catch (e) {
     if (journal.cancelled) {
       journal.status = 'cancelled'
@@ -1328,9 +1365,20 @@ export async function executePipeline(
       try {
         const reqHead = String(journal.requirement || '').replace(/\s+/g, ' ').trim().slice(0, 80)
         ensureLogGitignore(journal.workspacePath, journal, locale) // 自有日志先写进 .gitignore（幂等）
-        // 交付文档强制入库（QA-7）：任务夹/memory.md 是交付物，目标仓库 .gitignore 可能忽略 docs/teamflow/
-        const docAdd = tfDocAddArgs([journal.runDocs, `${TF_DOCS_DIR}/memory.md`].filter((p) => existsSync(`${journal.workspacePath}/${p}`)))
-        if (docAdd.length) gitRun(journal.workspacePath, docAdd)
+        // 交付文档入库（2026-09-26 改：尊重目标仓库的 .gitignore，不再 -f 强加——用户在 .gitignore 里
+        // 写「docs/teamflow/ 勿提交」就是不想让它进仓库，插件无权绕过；忽略时文件仍在工作区，交付物不丢）。
+        const docPlan = tfDocAddPlan([journal.runDocs, `${TF_DOCS_DIR}/memory.md`].filter((p) => existsSync(`${journal.workspacePath}/${p}`)), journal.workspacePath)
+        if (docPlan.ignored.length) {
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.docsIgnored', { list: docPlan.ignored.join(', ') }) })
+        }
+        if (docPlan.args.length) {
+          // 结果必须可见（2026-09-26）：未知状态下我们照常尝试入库，git 若以「被忽略」拒绝，
+          // 这里转述 git 的原话并降级为 warn——绝不能在 add 失败时仍写「已入库」。
+          const docAdd = gitRun(journal.workspacePath, docPlan.args)
+          const list = docPlan.args.slice(2).join(', ')
+          if (docAdd.ok) journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.docsAdded', { list }) })
+          else journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.docsAddFail', { list, msg: docAdd.error || 'git add failed' }) })
+        }
         const addR = gitRun(journal.workspacePath, tfAddArgs())
         noteLogsUnstaged(journal, gitRun(journal.workspacePath, tfUnstageArgs()), locale) // 索引兜底（幂等）
         // ③（2026-09-15 修复）：add 的结果**不再决定要不要提交**——旧写法 `add === null ? null : git commit(...)`
@@ -1338,6 +1386,16 @@ export async function executePipeline(
         // 由提交结果决定日志级别；add 的错误与提交错误一并写进 commitFail，故障不再不可见。
         // 「无事可做」优先用状态判定（确定性，不依赖 git 措辞）：索引为空 = 这次没有内容要提交。
         const pend = gitRun(journal.workspacePath, ['status', '--porcelain'])
+        if (pend.ok && pend.out) {
+          // 提交面可见（2026-09-26 方案 C，只加可见性、不动行为）：收口提交是整树 `add -A -- .`，
+          // 工作区里**未被 .gitignore 忽略**的其它未提交改动（WIP、已跟踪文件的修改）会被一并带入，
+          // 用户事先无从知道 → 提交前如实列出清单（被忽略的文件进不了索引，本就不在其中）。
+          const lines = pend.out.split('\n').filter(Boolean)
+          const list =
+            lines.slice(0, COMMIT_SCOPE_PREVIEW).map((l) => l.slice(3).replace(/^"|"$/g, '')).join(', ') +
+            (lines.length > COMMIT_SCOPE_PREVIEW ? ' …' : '')
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.commitScope', { n: lines.length, list }) })
+        }
         if (pend.ok && pend.out === '') {
           journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.commitSkip') })
         } else {

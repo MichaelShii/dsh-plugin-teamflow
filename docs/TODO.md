@@ -5,6 +5,8 @@
 
 ## 真待办（需人决策/行动）
 
+- 🔜 **空收尾续跑（B 档，continuable 换轨）——2026-09-27 立项，实测依据 tf-muigy5eq-dw5dv0**：推理模型空收尾（DeepSeek `deepseek-flash`：`finish kind=stop`，reasoning 之后、正文之前被服务端收尾，非宿主动手——宿主中断走 `aborted`、预算截断走 `max-tokens`，均有源码锚点）当前只能整轮重跑自愈，QA 一次实测浪费 **112 万 token + 2 分钟**（重跑那次又花 147 万）。已落地的 A 档（runner 文件兜底判交付）只救「文件已合格、只差说话」的变体；**「干到一半死掉」（实锤：attempt3 死在第 19 步，只写了验证脚本、QA-REPORT.md 未动）只有续跑能救**。宿主能力已查实：`sendMessage`/`coldResume`（`dsh-subagent/lib/types/continuation.js`）可对已持久化的子会话投消息再跑一轮，**但只覆盖 `startContinuable` 创建的驻留子代理；one-shot（`subagents.start`）在 `run.dispose()` 后不可续**。改造内容 = 子代理生命周期从 one-shot 换轨 continuable：驻留占 `maxActiveSubagents=8` 配额、管线收口须主动 drain 防泄漏、`withRetry` 的 `run.result` 语义改 inbox/turn 模型、父代理须处 admitting 态。**先定判据再动**（回滚成本高）：预计空收尾在 dev 阶段的频率（本轮 4 dev 0 命中）攒到实测样本后再排期。
+
 - 🔜 **v0.2.0 对外通稿投放（本次默认发英文稿）**：两份完整正文已定稿于 `docs/announcement/show-your-plugin-v0.2.0.{zh,en}.md`（2026-09-23，锚定 v0.2.0），**投放平台仍待定**——上一版（v0.1.8）发在上游 `deepseek-ai/deepseek-harness` Discussions [#6405](https://github.com/deepseek-ai/deepseek-harness/discussions/6405)（2026-09-12），该帖评论里的「有英文版吗」正是本次默认发英文稿的依据。待办动作：① 选定平台并发布；② **发布后把英文稿正文第一行的相对路径换成中文版帖子 URL**（`[中文](<URL>) | English`；文件头注释已写模板与理由——相对路径贴进 Discussion / 站外即死链）；③ 两个帖子 URL 与投放日期回填 `docs/devlog.md`。
 
 - 🔜 **D（QA 轮次改成收敛判据）——先埋点再定**：52 个历史 run 实测——发生打回 **7/52**（每次至多 1 轮，唯一 2 轮那次是幻影）、**触达复验上限 1/52**、验收未跑 1/52，即「真正需要第 3 轮修复」**从未真实发生**；且「同一缺陷原样复现就早停」**按缺陷 id 判不出来**（QA 每轮重新编号：r9 三轮分别是 `QA-*` → `R2-*` → `R3-*`），稳定身份键只有 B 方案刚加的「检测命令」。**待定**：是否先在 QA 循环里埋点、把每轮阻断集合（id + 检测命令 + 类别命中数）记进 journal，等攒到若干真实复验轮数据，再决定要不要把 `QA_REWORK_LIMIT` 的硬上限换成收敛判据（阻断数严格下降且缺陷不重复 → 允许再来一轮；停滞 → 立即转人工）。**先定判据再动状态机**（ADR-0007 语义，回滚成本高）。**E 已落地**（超限时以「已知问题」只读模式跑验收，结论强制需人工裁定）。**D 埋点已落地（2026-09-15）**：QA 循环每轮把阻断集合的稳定身份与增/减/停滞计数写进 `journal.qaRounds`（`{round, seq, blocking, p3, defects:[{id,sev,module,fp}], withCheck, withCriterion, qaCalls, fixCalls, gate, newFps, repeats, resolved, outcome}`，留最近 12 轮），配只读读侧 **`node scripts/qa-rounds-report.mjs`**（每 run 轮次表 + 聚合：收敛 vs 停滞次数、检测命令可用率、门禁落地率、单轮成本）。**待定**：等攒到若干真实复验轮（最好含至少一次 `repeats > 0` 的停滞样本）后再决定要不要动 `QA_REWORK_LIMIT` 的语义。
@@ -51,6 +53,25 @@
 - 🔜 **AGENTS.md §5 余量很浅**：`test/instruction-budget.test.js` 实测 §5 **5,907 B / 上限 6,144 B（余量 237 B）**、全文 **20,297 B / 22 KiB**。注意门禁读的是**工作树原样字节**，Windows 下 `core.autocrlf` 交付 CRLF（同一份内容为 LF 时是 5,881 / 20,177 B，差 ~26 / ~120 B），所以余量随 checkout 波动。下一条不变量锚点加入前**必须先压缩**（把某行的论证再迁 `docs/anchors/`），否则门禁直接红。
 - 🔜 **宿主 Windows 沙箱 ACL provision 失败（已上报，跟踪上游）**：`SetNamedSecurityInfoW failed (Win32 5): grantWrite(E:\tmp\probe-v4)` —— 工作区里 `pwsh`/`shell` 任何命令都失败，用户视角就是「插件完全不可用」。`tf-mucx3sq1-53262i` 实测：两次触发我们的 `env-unavailable` 早停（01:38:48 / 01:51:00，日志 + 阶段 `outcome` 均可查），之后**自行恢复**（seq6 子代理报告 "shell 恢复可用"），run 完整跑完。上报件：`docs/reports/2026-09-23-dsh-windows-sandbox-acl-provision-failure.md`；**已提交上游**：`deepseek-ai/deepseek-harness` Discussions [#7538](https://github.com/deepseek-ai/deepseek-harness/discussions/7538)（2026-09-23；该仓 public 但 **issues 关闭**，官方通道是 Discussions，见其 `CONTRIBUTING.md:11`）。待观察：上游是否采纳；是否与「非系统盘工作区 + 首次 ACL 授予」相关、能否稳定复现。
 - 🔜 **宿主 0.1.7-alpha.1 事件 source v4 适配缺直接断言**：目前只有间接证据（整条流水线跑通、20 阶段无事件格式报错、`agentsStarted=20`）。建议补一条 L2 conformance 语料（把 v4 `kind: 'plugin:dsh-plugin-teamflow'` 的 source 形态冻结进 `docs/benchmarks/corpus/` 回放），避免宿主下次再改 source 形态时又是「用起来才发现」。
+- 🔜 **`host/core/pipeline.ts` 巨型函数收敛（评估改进 #1，2026-09-26 实测定拆法）**：文件 1,559 行的表象不重要，**真问题是 `executePipeline` 单函数 322→1401 = 1080 行**（占文件 69%），不可单测、不可局部回归。
+  **内部形态实测**：`prd`/`design`/`scaffold`/`tech` **四阶段完全同构**——`enabled(X)` → `resumed(X)?logSkip` → `log.enterStage` → `withRetry(...)` → `!R.text?stageFailError` → `mergeStageState(X)`，各占 25–35 行；`dev`（分波并发 + 任务重跑分支）、`qa`（打回循环 + `hasOpenBlockingBugs`）、`acceptance`（交付判定）**各自特殊**，不是同构体。
+  ✅ **② 已落地（2026-09-26）：三个异形阶段包成命名单元**——`runDevStage()` / `runQaStage()` / `runAcceptanceStage()`
+  （executePipeline 内闭包）。做法是**命名 + 隔离而非搬家**：函数体一字未改、连缩进都不重排（否则 diff 变 400+ 行
+  全量改动、掩盖语义差异）；dev/qa 的顶层 `return` 改返回 `{cancelled:true}`；qa 的 `qa`/`qaBlocked` 由返回值交给
+  验收段。**A/B 6 场景全等**（新增 `devmulti` 场景把 dev 的并发分波主路径纳入验证：3 任务 + 依赖边 → 实测
+  「依赖分波：3 组任务排成 1 波（每波路数 3）」）。
+  **仍未做的部分**：① 三块**外移**到独立文件（依赖面尚未收敛，外移要显式化约 20 个闭包变量，风险高于收益，
+  等真有第二个消费方再动）；② 真正的 **STAGES 表驱动**（现在仍是顺序调用，不是数据驱动的表）——
+  评估价值有限：阶段间有产物依赖链（prd→design→scaffold→tech→dev→qa→acceptance），表只能表达「顺序 + enabled」，
+  真正的差异逻辑仍在各 runner 内部，**表本身不减复杂度**，故暂不做。
+  **建议两级走法（反对一步上 StageRunner registry）**：① **先做同形阶段收敛**——抽 `runSimpleStage(phase, prompt, label, opts)`，4×30 行 → 1 helper + 4 处 2–4 行调用；② **registry 表驱动留到 dev/qa 也收敛之后**——现在硬把 7 个阶段套进统一 `StageRunner` 接口，dev 的分波与 qa 的循环会逼出「接口里塞可选钩子」，可读性反而劣化（评估提的 registry 是终态，不是第一步）。
+  ✅ **① 已落地（2026-09-26）**：`executePipeline` 内闭包 helper `runSimpleStage`（`pipeline.ts` PRD 阶段之前），四阶段各缩到 2–4 行；**A/B 验等价通过**（pre=`git archive HEAD` vs post=工作树，4 场景 × 11 个对比字段全等：`patch` / `full`（四阶段全跑）/ `fail`（空产出抛 stageFailError）/ `resume`（四阶段全走复用分支）），详见 `.workbuddy/verify-2026-09-26/REPORT-h5.md`。**副产物**：该 harness（`h5-stage-convergence.mjs` + `diff-ab.cjs` + `make-stubs.cjs`）可升正式 e2e 测试。
+  ✅ **两处历史行为缺陷已随收敛一并修掉（2026-09-26，同一 release 周期）**：
+  - **`tech` 阶段失败错误传本地化 label 而非 phase key** → 现统一传 phase key。A/B 实测：错误文案从「…2 次尝试未交付，**无阶段记录**」变为「…未交付，**末次 completed（未产出有效结果（stopReason=completed））**」，`outcome/summary` 不再丢。
+  - **`resume` 复用 tech 产物时不跑蓝图提取** → 现 resume 也照样提取（存档文本无蓝图块则解析为 null，无副作用）。A/B 实测：resume 场景下 `journal.blueprint` 从 `null` 变为注入成功，dev 子代理 label 从「开发 · **整体开发**（补跑）」变为「开发 · **任务一**（补跑）」——即续跑时 dev 不再退化成单任务整体开发（r13 同款症状消除）。
+  - 回归面：`patch` / `full` / `fail` 三场景 A/B 仍**全部一致**，修复未波及其它路径。
+- 🔜 **成本从「量」到「钱」（评估改进 #5，阻塞在价格口径）**：现计量只到 token 三桶（input/cacheRead/cacheWrite）+ 命中率，汇报与工作台均无量纲金额。要出金额需 `pricing.json`（per-model 每百万单价），**未做的原因是价格数据源未定**：① 官方 provider 无价格 API（宿主 `dsh-llm` 只给 usage）；② 手抄价目表会随上游调价腐化且无校验。待决策：价格从哪来（手工维护 + 版本号 / 用户 settings 覆盖 / 只按 cacheRead 折算「省了多少」的相对口径）。
+- 🔜 **`catch (e) {}` 分类 lint 规则（oxlint 现行配置未覆盖）**：全仓大量空 catch（起跑清扫 / 状态记忆 / 资源释放等"失败不影响主流程"处有正当理由，但也可能吞掉真错误）。现 `.oxlintrc.json` 关掉了 `no-empty`（未启用），无分类手段。待做：给正当空 catch 统一加 `// ignore: <理由>` 注释前缀 + 自定义规则/脚本统计无注释空 catch 数量并设上限；**实测基线（2026-09-26，57 文件 / 133 个 catch）**：裸空 `catch (e) {}` **0 个**；注释-only 静默 **81 个**（top：`pipeline.ts` 14、`guard.ts` 13、`index.ts` 7、`panel.tsx` 6、`runlogs.ts` 5），真处理 52 个。**结论：现有纪律已达标（静默处均写了理由，如 `/* 清扫失败不影响起跑 */`）→ 本条降为低优先级**，真要做也不是加规则，而是给这 81 处静默加**可选 warn 级日志**（排障时能看到被吞的异常），不是门禁。
 
 ## 优化候选（2026-09-10 四路调研 + 自查，按收益/成本排序）
 

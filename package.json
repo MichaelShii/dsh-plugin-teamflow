@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-teamflow",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "TeamFlow 团队研发流水线（TypeScript）：需求→PRD→设计→架构→技术方案→并行开发→QA→验收；backlog 持久化 + 断点续跑 + 完成汇报 + 防假交付；Web 团队工作台（conversation.view tab + 拖拽看板）",
   "type": "module",
   "main": "./lib/host.mjs",
@@ -11,6 +11,9 @@
     "./store": "./lib/store.mjs",
     "./descriptors": "./lib/descriptors.mjs",
     "./package.json": "./package.json"
+  },
+  "bin": {
+    "dsh-teamflow-run-inspect": "scripts/run-inspect.mjs"
   },
   "engines": {
     "node": ">=22.18",
@@ -42,11 +45,12 @@
     "deploy": "node deploy.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --deny-warnings",
-    "test": "node test/smoke.js && node test/locale.test.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/runlogs.test.js && node test/cancel.test.js && node test/diagnostic.test.js && node test/evidence.test.js && node test/metering.test.js && node test/overlap-merge.test.js && node test/acl-preflight.test.js && node test/gitignore.test.js && node test/commit-path.test.js && node test/product-scope.test.js && node test/state.test.js && node test/dev-task-id.test.js && node test/triage-gate.test.js && node test/instruction-budget.test.js && node test/prompt-contract.test.js && node test/conformance.test.js && node test/changelog.test.js && node test/client-host-api.test.js && node test/runs-eviction.test.js",
-    "prepublishOnly": "npx tsdown && npx tsdown -c tsdown.host.config.ts && node test/smoke.js && node test/locale.test.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/runlogs.test.js && node test/cancel.test.js && node test/diagnostic.test.js && node test/evidence.test.js && node test/metering.test.js && node test/overlap-merge.test.js && node test/acl-preflight.test.js && node test/gitignore.test.js && node test/commit-path.test.js && node test/product-scope.test.js && node test/state.test.js && node test/dev-task-id.test.js && node test/triage-gate.test.js && node test/instruction-budget.test.js && node test/prompt-contract.test.js && node test/conformance.test.js && node test/changelog.test.js && node test/client-host-api.test.js"
+    "test": "node test/smoke.js && node test/locale.test.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/runlogs.test.js && node test/cancel.test.js && node test/diagnostic.test.js && node test/empty-turn.test.js && node test/evidence.test.js && node test/metering.test.js && node test/overlap-merge.test.js && node test/acl-preflight.test.js && node test/gitignore.test.js && node test/commit-path.test.js && node test/product-scope.test.js && node test/state.test.js && node test/dev-task-id.test.js && node test/triage-gate.test.js && node test/instruction-budget.test.js && node test/prompt-contract.test.js && node test/conformance.test.js && node test/changelog.test.js && node test/client-host-api.test.js && node test/runs-eviction.test.js && node test/qa-rounds-report.test.js && node test/run-inspect.test.js",
+    "prepublishOnly": "npx tsdown && npx tsdown -c tsdown.host.config.ts && node test/smoke.js && node test/locale.test.js && node test/verdict.test.js && node test/stages.test.js && node test/journal.test.js && node test/runlogs.test.js && node test/cancel.test.js && node test/diagnostic.test.js && node test/empty-turn.test.js && node test/evidence.test.js && node test/metering.test.js && node test/overlap-merge.test.js && node test/acl-preflight.test.js && node test/gitignore.test.js && node test/commit-path.test.js && node test/product-scope.test.js && node test/state.test.js && node test/dev-task-id.test.js && node test/triage-gate.test.js && node test/instruction-budget.test.js && node test/prompt-contract.test.js && node test/conformance.test.js && node test/changelog.test.js && node test/client-host-api.test.js && node test/qa-rounds-report.test.js && node test/run-inspect.test.js"
   },
   "files": [
     "lib",
+    "scripts/run-inspect.mjs",
     "cordis.patch.yml",
     "README.md",
     "README.en.md",

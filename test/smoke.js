@@ -222,6 +222,12 @@ ok(/LOG_LIFECYCLE/.test(promptsSrc) && /TRANSIENT scratch inside the project/.te
 ok(/persistRunLog/.test(storeSrc) && /runLogFile/.test(storeSrc), 'host 端 run 日志落归档位')
 ok(/runLogArchiveDir\(journal\)/.test(storeSrc) && /logsArchiveRoot/.test(storeSrc), 'store：归档落点 = $DSH_HOME/teamflow/<workspace>/logs/<runId>（日志根离开用户项目）')
 ok(/archiveRunLogs\(journal, locale\)/.test(pipelineSrc) && /sweepWorkspaceLogs\(journal, locale\)/.test(pipelineSrc), 'pipeline：终态归档 + 起跑清扫残留（自愈）')
+// 交付文档入库：尊重 .gitignore（不 -f）+ add 结果必须可见（2026-09-26 两条锁，缺一就会回到「静默」）
+// ① plan 侧永不出现 -f/-A；② 调用侧必须读 docAdd.ok——否则 add 失败仍写「已入库」，日志说谎比不写更糟。
+ok(/tfDocAddPlan\(/.test(pipelineSrc) && !/tfDocAddArgs/.test(pipelineSrc), 'pipeline：交付文档入库走 tfDocAddPlan（逐路径查忽略状态，不再 -f 强加）')
+ok(/const docAdd = gitRun\(journal\.workspacePath, docPlan\.args\)/.test(pipelineSrc) && /if \(docAdd\.ok\)[\s\S]{0,200}log\.docsAdded[\s\S]{0,200}log\.docsAddFail/.test(pipelineSrc), 'pipeline：文档 add 结果可见（失败降级 warn 转述 git 原话，不谎报已入库）')
+// 提交面可见（方案 C）：整树 add 会连带工作区其它未提交改动，用户必须能看见被带走了什么。
+ok(/'log\.commitScope'/.test(pipelineSrc) && /COMMIT_SCOPE_PREVIEW/.test(pipelineSrc) && /pend\.ok && pend\.out\)[\s\S]{0,700}log\.commitScope/.test(pipelineSrc), 'pipeline：收口提交前如实列出待提交清单（项数 + 路径预览）')
 ok(/LOG_ARCHIVE_KEEP/.test(constantsSrc) && /LOG_ARCHIVE_KEEP/.test(hostSrc), 'constants：归档保留 K 次 run 的淘汰口径')
 ok(/function keepInArchive/.test(hostSrc) && /KEEP_EXT = \/\\\.\(mjs\|cjs\|js\|md\|sh\|ps1\|py\)\$\/i/.test(hostSrc) && /KEEP_NAME = 'captures\.json'/.test(hostSrc), 'runlogs：归档白名单（只留检查脚本/笔记 + captures.json）')
 ok(/keepInArchive\(rel\)/.test(hostSrc) && /are DROPPED|KEEP_EXT/.test(promptsSrc), 'runlogs/prompts：过滤语义与 prompt 声明一致（dump 不留存）')
@@ -350,6 +356,12 @@ ok(/缺少 \[Verification evidence\] 块（契约未兑现，已记录不中断�
 ok(/verifyEvidence: s\.verifyEvidence \|\| null/.test(hostSrc), 'host：stageDetail 返回 verifyEvidence（审计可见）')
 ok(/verifyEvidence: s\.verifyEvidence \? clip\(s\.verifyEvidence, 8000\) : null/.test(storeSrc), 'store：serializeJournal 序列化 verifyEvidence（r33 实测缺失 root cause——字段白名单漏 pick，内存写入被落盘丢弃）')
 ok(/t\('stage\.evidenceTitle'\)/.test(clientSrc) && /phaseKeyOf\(st\.phase\) === 'dev'/.test(clientSrc), 'client：阶段详情抽屉渲染验证证据块（有值展示 / 缺失置灰提示——契约未兑现可见）')
+ok(/export function blockShape/.test(utilSrc), 'util：响应块构成纯函数（诊断用：text/reasoning 带长度、重复块压成 xN）')
+ok(/const shape = blockShape\(result && result\.output\)/.test(runnerSrc) && /\? t\(locale, 'diag\.emptyTurn', \{ stop: stop \|\| 'unknown', shape \}\)/.test(runnerSrc), 'runner：空收尾诊断带上响应块构成（一眼区分「只有 reasoning」与宿主中断 aborted / 预算截断 max-tokens）')
+ok(/let emptyTurnDoc/.test(runnerSrc) && /if \(emptyTurnDoc\) \{[\s\S]{0,400}diag\.emptyTurnDelivered/.test(runnerSrc) && /stageText = emptyTurnDoc\.text/.test(runnerSrc), 'runner：空收尾 + 任务夹产物已合格 → 按文件判交付不再重跑（A 档止损；返回值用文件内容顶替空回复，state 合并走宽容语义）')
+ok(/export function emptyTurnDocVerdict/.test(utilSrc) && /emptyTurnDocVerdict\(stop, text, verdict\.min, stageDocText\(journal, phase\)\)/.test(runnerSrc), 'runner/util：空收尾兜底判定抽纯函数（runner 链宿主私有 peer 不可 import，行为级测试走 util——cancel.test.js 头注释纪律）')
+ok(/empty-turn\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：empty-turn 行为级套件已登记 test/prepublishOnly 双链')
+ok(/响应块构成：\{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')) && /response blocks: \{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')), 'locales：diag.emptyTurn 带块构成占位（zh/en 齐备——诊断必须自证，2026-09-26 tf-muigy5eq r12 实踩）')
 ok(/const beforeLen = journal\.stages\.length/.test(runnerSrc) && /lastStage = journal\.stages\[beforeLen\] \|\| null/.test(runnerSrc), 'runner：withRetry 按调用前长度取本次尝试 stage——并发安全（防证据/重试诊断/usage 累计串位）')
 ok(/stage: JournalStage \| null/.test(runnerSrc), 'runner：withRetry 返回携带 stage 引用')
 ok(/resumePrompt = devPrompt\(task, tech, prd, root, journal\.id, state\) \+ \(prevStage \? buildRetryDiagnostic\(2, prevStage\) : ''\)/.test(pipelineSrc), 'pipeline：resume 补跑附上次失败诊断（全新会话不再盲试——r37 实证 PowerShell 坑第三次踩）')
@@ -480,7 +492,7 @@ ok(/!verdict\.ok && text && stop === 'completed'/.test(runnerSrc), 'runner：**�
 ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
-ok(/"version": "0\.2\.2"/.test(pkgSrc), 'package.json：版本 0.2.2（release-v0.2.2 开发线）')
+ok(/"version": "0\.2\.3"/.test(pkgSrc), 'package.json：版本 0.2.3（release-v0.2.3 开发线）')
 ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.1\.7-alpha\.1 <0\.2\.0"/.test(pkgSrc), 'package.json：声明 dsh.manifestVersion 与 engines.dsh 兼容窗口（下限 = v4 宿主 0.1.7-alpha.1）')
 // 手工枚举的清单必须配门禁（同型教训：journal 字段 / execOptions / loadState / triageRecordOf）。
 // deploy.mjs FILES 与上面的 CORE_FILES 都是手写清单，领域化拆分后两者都漂移过——实测 FILES 漏了
@@ -524,7 +536,11 @@ ok(/async function resolveStageEffort/.test(runnerSrc) && /attempt > 1 \? 'high'
 ok(/\(e as \{ id\?: unknown \}\)\.id === 'string'/.test(runnerSrc), 'runner：efforts 取对象数组的 id（宿主 LlmReasoningEffortInfo 是 {id,name}，非字符串数组——2026-09-11 实锤静默失效）')
 ok(/推理强度未降档/.test(hostSrc), 'runner：探测失败/档位不支持时记 warn（静默失败可见化）')
 ok(/reasoningEffort: effort/.test(runnerSrc) && /effortHint/.test(runnerSrc) && /attempt, effortHint, taskIds\)/.test(runnerSrc), 'runner：agentOptions 带 reasoningEffort（effortHint/taskIds 参数链穿透到 runAgent）')
-ok(/options\.mode === 'patch' \? MECHANICAL_STAGE_EFFORT : null/.test(pipelineSrc) && /'scaffold', scaffoldPrompt\([\s\S]{0,140}MECHANICAL_STAGE_EFFORT\)/.test(pipelineSrc), 'pipeline：仅 patch 单点确认 + scaffold 两处降档（判据类阶段保持宿主默认 high）')
+// ⚠️ 后半正则 2026-09-26 放宽：四阶段收敛进 `runSimpleStage(phase, prompt, label, opts)` 后，
+// scaffold 的降档不再直接写在 withRetry 的第 8 参上，而是经 `{ effort: MECHANICAL_STAGE_EFFORT }` 传入
+// → 原文 `MECHANICAL_STAGE_EFFORT\)`（紧贴右括号）必然失配。**锁定语义不变**：scaffold 阶段的调用语句里
+// 必须带降档常量（判据类阶段保持宿主默认 high）；窗口 140→200 是因为多了一层 opts 对象。
+ok(/options\.mode === 'patch' \? MECHANICAL_STAGE_EFFORT : null/.test(pipelineSrc) && /'scaffold', scaffoldPrompt\([\s\S]{0,200}MECHANICAL_STAGE_EFFORT/.test(pipelineSrc), 'pipeline：仅 patch 单点确认 + scaffold 两处降档（判据类阶段保持宿主默认 high）')
 
 console.log('── 3t) 收口提交面：插件自有日志不进提交（2026-09-11 实锤 assetd 92% 噪音）──')
 const sanitySrc = readFileSync(join(here, '../host/core/sanity.ts'), 'utf8')

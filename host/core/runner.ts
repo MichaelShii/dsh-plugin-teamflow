@@ -5,7 +5,7 @@
 import { runtime, providerName, trackInFlight, untrackInFlight } from './context.ts'
 import { accumulateSessionUsage, freshTokensOf, effectiveFreshBudget } from './metering.ts'
 import { startStageGuard } from './guard.ts'
-import { clip, extractText, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs, stageDocText } from '../util.ts'
+import { clip, extractText, blockShape, emptyTurnDocVerdict, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs, stageDocText } from '../util.ts'
 import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../constants.ts'
 import { t, type HostLocale } from '../locales.ts'
 import { runLocaleOf } from './locale.ts'
@@ -185,11 +185,23 @@ export async function runAgent(
     // **doc 类阶段的产物兜底**（2026-09-18 probe-v2 实锤，见 util.DOC_STAGE_FILES）：这些阶段的产物
     // 是任务夹文件，回复只是摘要 —— 回复过短不等于没干活（实锤：PRD.md 4894 字节已落盘、还调了
     // `present` 声明交付物，却因回复只有 284 字符的 state 块被判「未交付」）。回读文件，达下限即判交付。
-    // 前提仍是**回复非空**：pipeline 要用回复合并 state 块，空回复是真的没交付。
+    // 前提仍是**回复非空**：pipeline 要用回复合并 state 块；空回复另走下方 emptyTurnDoc 兜底（A 档）。
     let docFallback: { name: string; length: number } | null = null
     if (!verdict.ok && text && stop === 'completed') {
       const doc = stageDocText(journal, phase)
       if (doc && doc.length >= verdict.min) docFallback = { name: doc.name, length: doc.length }
+    }
+    // **空收尾的文件兜底**（2026-09-27，A 档止损）：`completed` + 0 字符 = 推理模型空收尾（DeepSeek 实测：
+    // reasoning 之后、正文之前被服务端收尾）。doc 类阶段「文件即产物」——若任务夹产物已落盘且达下限，
+    // 没理由因「没说话」整轮重跑（重跑 ≈ 150 万 token）。判定核心在 util.emptyTurnDocVerdict（纯函数，
+    // 行为级测试锁得住——runner 链宿主私有 peer 不可 import）。⚠️ 边界（tf-muigy5eq r12 实测）：空收尾
+    // 死在写报告**之前**（全程只写了验证脚本）时不命中 → 照旧重跑。它救的是「文件已合格、只差说话」的
+    // 变体；「干到一半死掉」要 continuable 续跑（docs/TODO.md 立项）。
+    // 返回值用**文件内容**顶替空回复：timeline 存产物全文（与 resume 复用同构）；state 块不在文件里
+    // 则 mergeStageState 自然跳过（宽容语义），不破坏下游。
+    let emptyTurnDoc: { name: string; text: string; length: number } | null = null
+    if (!text && stop === 'completed') {
+      emptyTurnDoc = emptyTurnDocVerdict(stop, text, verdict.min, stageDocText(journal, phase))
     }
     if (journal.cancelled) {
       stage.status = 'cancelled'; stage.outcome = 'cancelled'
@@ -222,6 +234,14 @@ export async function runAgent(
       }
       return text
     }
+    // 空收尾兜底判交付（放在 envUnavailable 之后：环境不可用优先，防假交付）
+    if (emptyTurnDoc) {
+      stage.status = 'done'; stage.outcome = 'completed'
+      stage.output = clip(emptyTurnDoc.text, 50000)
+      stageText = emptyTurnDoc.text // handoff/state 合并用文件内容，不再拿空串
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.emptyTurnDelivered', { label, name: emptyTurnDoc.name, length: emptyTurnDoc.length, min: verdict.min }) })
+      return emptyTurnDoc.text
+    }
     if (stage.guardReason) {
       // 护栏中止优先于通用失败分类（成功产出已在上方抢救）；
       // 复读=degenerated（可干净重试），挂死/空转=stalled（走预算门转人工）
@@ -247,7 +267,17 @@ export async function runAgent(
       }
       if (text) stage.output = clip(text, 4000)
     } else {
-      stage.summary = t(locale, 'diag.noResult', { stop: stop || 'unknown', error: errDetail ? t(locale, 'diag.noResultError', { error: String(errDetail).slice(0, 200) }) : '' })
+      // 诊断必须能自证（2026-09-26 tf-muigy5eq r12 实踩）：此前只报 stopReason，
+      // 「正文为空」与「provider 报错」长得一模一样，排查只能跳子代理会话原始记录。
+      // 现在带上正文长度 + **响应块构成**；且 `completed` + 0 字符 = 推理模型空收尾，给专属措辞（一眼可认）。
+      // 块构成是判断「谁收的尾」的关键：空收尾形状 = 只有 reasoning、无 text、无 tool-call；
+      // 宿主中断会带 aborted、预算截断会带 max-tokens，都不会是 stop（见 util.blockShape 注释与 DSH 排查记录）。
+      const err = errDetail ? t(locale, 'diag.noResultError', { error: String(errDetail).slice(0, 200) }) : ''
+      const shape = blockShape(result && result.output)
+      stage.summary =
+        !text && stop === 'completed'
+          ? t(locale, 'diag.emptyTurn', { stop: stop || 'unknown', shape })
+          : t(locale, 'diag.noResult', { stop: stop || 'unknown', len: (text || '').length, shape, error: err })
       journal.logs.push({ t: Date.now(), level: 'error', message: `${label} ${stage.summary}` })
       if (text) stage.output = clip(text, 4000) // 半截产出（如 stopReason=length）也落盘供诊断
     }

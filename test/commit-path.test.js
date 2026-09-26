@@ -19,7 +19,7 @@
 import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { gitRun, tfAddArgs, tfUnstageArgs, tfDocAddArgs, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from '../host/core/sanity.ts'
+import { gitRun, tfAddArgs, tfUnstageArgs, tfDocAddPlan, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from '../host/core/sanity.ts'
 import { mergeGitignore } from '../host/util.ts'
 
 let failed = 0
@@ -89,8 +89,12 @@ console.log('── ② 修复路径：写 .gitignore → 整树 add → 索引�
 const repo = newRepo('fixed-way')
 seedProject(repo, false)
 writeFileSync(join(repo, '.gitignore'), mergeGitignore(null, [`${TF_LOG_DIR}/`]).text, 'utf8') // = ensureLogGitignore
-const docAdd = gitRun(repo, tfDocAddArgs([`${TF_DOCS_DIR}/20260915-r1-fixture`, `${TF_DOCS_DIR}/memory.md`]))
-ok(docAdd.ok, '交付文档强制入库（add -f）成功')
+// 该 fixture 的 .gitignore 只忽略 logs/teamflow/ → 任务夹未被忽略 → 应正常入库（不靠 -f）
+const docPlan = tfDocAddPlan([`${TF_DOCS_DIR}/20260915-r1-fixture`, `${TF_DOCS_DIR}/memory.md`], repo)
+ok(!docPlan.args.includes('-f'), '未被忽略 → 普通 add（不需要 -f）')
+expect(docPlan.ignored.length, 0, '该仓库没忽略 docs/teamflow → 无被忽略项')
+const docAdd = gitRun(repo, docPlan.args)
+ok(docAdd.ok, '交付文档入库成功')
 const addR = gitRun(repo, tfAddArgs())
 ok(addR.ok, `整树 add 成功（旧写法在这里返回 null）${addR.ok ? '' : `：${addR.error}`}`)
 const unR = gitRun(repo, tfUnstageArgs())

@@ -128,6 +128,13 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.logsArchiveFail': '运行日志归档失败（暂存目录留在项目内，下次同工作区起跑会自动重试）：{msg}',
     'log.logsSwept': '已清理本工作区上次运行残留的日志 {n} 项（其中丢弃可重跑的命令输出/快照 {dropped} 个、{kb} KB）',
     'log.logsPruned': '已淘汰旧日志归档 {n} 个（每个工作区保留最近 {keep} 次 run）',
+    'log.docsIgnored': '任务夹被本仓库 .gitignore 忽略 → 未入库（{list}）；产物仍在工作区，需要入库请自行 add',
+    'log.docsAdded': '交付文档已入库：{list}',
+    // 2026-09-26：add 结果必须可见。unknown（查不到忽略状态）时我们照常尝试入库，
+    // 若 git 仍以「被 .gitignore 忽略」拒绝，这里要把 git 的原话打出来，而不是谎报「已入库」。
+    'log.docsAddFail': '交付文档入库失败（未入库，产物仍在工作区）：{list}｜{msg}',
+    // 提交面可见（方案 C）：整树提交会把工作区其它未提交改动一并带入，用户事先无从知道 → 提交前如实列出。
+    'log.commitScope': '统一收口提交范围：{n} 项（{list}）—— 被 .gitignore 忽略的文件不在此列；不想被带入的请先自行 gitignore 或 stash',
     'log.commitDone': '统一收口提交完成（代码 + 任务夹产物，验收通过后一个 commit）',
     'log.commitSkip': '统一收口提交：无待提交改动（跳过）',
     'log.commitFail': '统一收口提交失败（忽略）：{msg}',
@@ -189,8 +196,13 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'diag.noGateEvidence': '第 {round} 轮修复（{n} 条阻断缺陷）的证据块里没有类别门禁/命中数（gate: / class sweep:）——同缺陷类别换面复现的风险由复验轮兜底；请对照复验结论',
     'diag.tooShortLog': '{label} 产出过短（{length} 字符），未通过实质校验',
     'diag.listNone': '无',
-    'diag.noResult': '未产出有效结果（stopReason={stop}{error}）',
+    'diag.noResult': '未产出有效结果（stopReason={stop}，正文 {len} 字符，响应块构成：{shape}）{error}',
     'diag.noResultError': '，error={error}',
+    // 2026-09-26（tf-muigy5eq r12 实踩）：轮次按 completed 结束、正文却为 0 —— 推理模型「只吐 reasoning 的空收尾」。
+    // 单独给措辞的理由：它与 provider 报错长得完全一样（都是「未产出有效结果」），此前只能跳子代理会话原始记录才看得出。
+    // 带上「响应块构成」后可在日志内自证：空收尾的形状是只有 reasoning、没有 text、没有 tool-call；
+    // 若是宿主中断/预算截断，finish kind 会分别是 aborted/max-tokens，不会是 stop。
+    'diag.emptyTurn': '轮次按「{stop}」结束但正文为空（0 字符），响应块构成：{shape} —— 多为推理模型的空收尾（DeepSeek 实测：reasoning 之后、正文之前被服务端收尾，非宿主动手）；自动重试通常能自愈，若反复出现换模型Routing',
     'diag.startFail': '启动/执行失败：{msg}',
     'diag.unretryable': '{label} 失败原因不可重试（{outcome}），跳过重试，需人工介入',
     'diag.aborted': '{label} 被外部中止（aborted），未正常产出——非预算问题；可 teamflow_resume 续跑（补跑失败任务，已完成任务复用）',
@@ -199,6 +211,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'diag.breaker': '{label} 累计新增 token {fresh}k（input+cacheWrite+output，不含缓存命中）超出预算 {budget}k，熔断，需人工介入',
     'diag.breakerUncached': '{label} 累计新增 token {fresh}k 超出预算 {budget}k（**该 provider 无 prompt 缓存**：命中率 {ratio}%、{calls} 次调用——每轮调用都要重付 system+工具定义，预算已按 {budget}k 计），熔断，需人工介入',
     'diag.docDelivered': '{label} 回复过短（{length} 字符 < {min} 下限），但任务夹产物 {name} 已落盘（{docLen} 字符）→ 判交付（doc 类阶段的产物是文件，回复只是摘要）',
+    // 2026-09-27（A 档空收尾止损）：completed + 空正文 + 任务夹产物已合格 → 直接收口，不再整轮重跑。
+    'diag.emptyTurnDelivered': '{label} 回复为空（空收尾），但任务夹产物 {name} 已落盘且达下限（{length} 字符 ≥ {min}）→ 按文件判交付，不再重跑',
     'diag.retry': '{label} 第 {n} 次尝试未成功（{outcome}），自动重试（重试 prompt 已附上一轮失败诊断）…',
     'diag.retryExhausted': '{label} 连续 {n} 次尝试失败，超出重试阈值，需人工介入',
     'diag.externalBackoff': '{label} 疑似外部供应商不可用（限流/额度/上游故障）→ 第 {n} 次退避 {sec}s 后重试（等待不计 token；命中原文：{detail}）',
@@ -507,6 +521,10 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.logsArchiveFail': 'Failed to archive run logs (the staging dir stays in the project; the next run in this workspace retries it automatically): {msg}',
     'log.logsSwept': 'Cleaned up {n} leftover log item(s) from previous runs in this workspace (dropped {dropped} rerunnable command-output/snapshot file(s), {kb} KB)',
     'log.logsPruned': 'Pruned {n} old run-log archive(s), keeping the latest {keep} runs per workspace',
+    'log.docsIgnored': 'Task folder is ignored by this repo\'s .gitignore → not committed ({list}); artifacts stay in the workspace — run git add yourself if you want them tracked',
+    'log.docsAdded': 'Deliverable docs committed: {list}',
+    'log.docsAddFail': 'Failed to stage deliverable docs (not committed; artifacts stay in the workspace): {list} | {msg}',
+    'log.commitScope': 'Closing commit scope: {n} item(s) ({list}) — files ignored by .gitignore are excluded; gitignore or stash anything you do not want swept in',
     'log.commitDone': 'Unified closing commit done (code + task-folder artifacts, one commit after acceptance)',
     'log.commitSkip': 'Unified closing commit: nothing to commit (skipped)',
     'log.commitFail': 'Unified closing commit failed (ignored): {msg}',
@@ -568,7 +586,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'diag.noGateEvidence': 'Fix round {round} ({n} blocking defect(s)) reported no class gate / hit counts in its evidence block (gate: / class sweep:) — the risk that the same defect class reappears on an uncovered surface is left to the re-verification round; cross-check its verdict',
     'diag.tooShortLog': '{label} output too short ({length} chars), failed substance validation',
     'diag.listNone': 'none',
-    'diag.noResult': 'no usable result produced (stopReason={stop}{error})',
+    'diag.noResult': 'no usable result produced (stopReason={stop}, body {len} chars, response blocks: {shape}){error}',
+    'diag.emptyTurn': 'turn finished as "{stop}" with empty body (0 chars), response blocks: {shape} — typically an empty finish from a reasoning model (observed on DeepSeek: the turn was cut between reasoning and the body, not by the harness); the automatic retry normally recovers, change the model routing if it repeats',
     'diag.noResultError': ', error={error}',
     'diag.startFail': 'failed to start/execute: {msg}',
     'diag.unretryable': '{label} failure reason is not retryable ({outcome}); skipping retries, human intervention required',
@@ -578,6 +597,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'diag.breaker': '{label} cumulative fresh tokens {fresh}k (input+cacheWrite+output, excluding cache hits) exceed the {budget}k budget; circuit broken, human intervention required',
     'diag.breakerUncached': '{label} cumulative fresh tokens {fresh}k exceed the {budget}k budget (**this provider has no prompt cache**: {ratio}% hit rate over {calls} calls — every call re-pays the system prompt + tool definitions, so the budget was scaled to {budget}k); circuit broken, human intervention required',
     'diag.docDelivered': '{label} reply was too short ({length} chars < {min} minimum), but the task-folder artifact {name} is on disk ({docLen} chars) → judged delivered (for doc stages the artifact IS the file; the reply is only a summary)',
+    'diag.emptyTurnDelivered': '{label} reply was empty (empty finish), but the task-folder artifact {name} is on disk and meets the minimum ({length} chars ≥ {min}) → judged delivered by the file, no rerun',
     'diag.retry': '{label} attempt {n} did not succeed ({outcome}); retrying automatically (the retry prompt carries the previous failure diagnosis)…',
     'diag.retryExhausted': '{label} failed {n} consecutive attempts, exceeding the retry threshold; human intervention required',
     'diag.externalBackoff': '{label} looks like an external provider outage (rate limit / quota / upstream failure) → backoff #{n} for {sec}s before retrying (waiting costs no tokens; matched text: {detail})',

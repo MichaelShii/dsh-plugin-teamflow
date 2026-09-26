@@ -22,6 +22,31 @@ export function extractText(blocks) {
   if (!Array.isArray(blocks)) return ''
   return blocks.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n')
 }
+/**
+ * **响应块构成**（失败诊断用，2026-09-26 tf-muigy5eq r12 实踩）。
+ *
+ * 由来：诊断此前只报 `stopReason`，于是「模型吐完 reasoning 就被服务端收尾、既无正文也无工具调用」
+ * 与「provider 报错」在日志里长得一模一样，排查只能去翻子代理的 zstd 会话原始记录（十几分钟）。
+ * 这里把 content blocks 压成一行：`reasoning:2472, tool-call, tool-call, text:96`；
+ * reasoning/text **带字符长度**（`reasoning:0` 一眼看出该步根本没推理），重复块压成 `tool-callx3`。
+ * `no-blocks` = 响应里一个块都没有（与 `empty` 区分：前者是块层面空，后者是块存在但内容空）。
+ */
+export function blockShape(blocks) {
+  if (!Array.isArray(blocks) || blocks.length === 0) return 'no-blocks'
+  const parts = []
+  const tally = new Map()
+  for (const b of blocks) {
+    if (!b || typeof b !== 'object') continue
+    const type = typeof b.type === 'string' ? b.type : 'unknown'
+    if (type === 'text' || type === 'reasoning') {
+      parts.push(`${type}:${typeof b.text === 'string' ? b.text.length : 0}`)
+    } else {
+      tally.set(type, (tally.get(type) || 0) + 1)
+    }
+  }
+  for (const [k, n] of tally) parts.push(n > 1 ? `${k}x${n}` : k)
+  return parts.length ? parts.join(', ') : 'no-blocks'
+}
 
 /**
  * **本机安装环境探测**（2026-09-21 用户实锤，勿写死路径）。
@@ -419,6 +444,28 @@ export function stageDocText(
     if (!best || length > best.length) best = { name, text, length }
   }
   return best
+}
+
+/**
+ * **空收尾兜底判定**（A 档止损，2026-09-27；纯函数——runner 链宿主私有 peer 不可 import，
+ * 可测逻辑下沉 util 是既定纪律，见 cancel.test.js 头注释）。
+ *
+ * 推理模型空收尾（DeepSeek 实测：`finish kind=stop`，reasoning 之后、正文之前被服务端收尾）
+ * 此前一律整轮重跑（一次 ≈ 150 万 token）。判定：`stop==='completed'` 且正文为空且任务夹产物
+ * 已落盘达下限 → 返回该产物（判交付依据，返回值用文件内容顶替空回复）；其余一律 null
+ * （照旧走失败/重试）。⚠️ 边界（tf-muigy5eq r12 实测）：空收尾死在写文件**之前**时不命中
+ * （产物不存在）→ 照旧重跑；「干到一半死掉」须 continuable 续跑（docs/TODO.md B 档立项）。
+ */
+export function emptyTurnDocVerdict(
+  stop: unknown,
+  text: unknown,
+  min: number,
+  doc: { name: string; text: string; length: number } | null | undefined,
+): { name: string; text: string; length: number } | null {
+  if (stop !== 'completed' || text) return null
+  // 空文件绝不可能是交付物（行为级测试实锤边界：min=0 时 0>=0 会误判）——length 必须为正
+  if (!doc || doc.length <= 0 || !(doc.length >= min)) return null
+  return doc
 }
 
 /* ── QA 轮次收敛的**埋点**（D 方案 2026-09-15：先测量，再决定要不要动状态机语义） ──────────
