@@ -133,6 +133,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     // 2026-09-26：add 结果必须可见。unknown（查不到忽略状态）时我们照常尝试入库，
     // 若 git 仍以「被 .gitignore 忽略」拒绝，这里要把 git 的原话打出来，而不是谎报「已入库」。
     'log.docsAddFail': '交付文档入库失败（未入库，产物仍在工作区）：{list}｜{msg}',
+    // 提交面可见（方案 C）：整树提交会把工作区其它未提交改动一并带入，用户事先无从知道 → 提交前如实列出。
+    'log.commitScope': '统一收口提交范围：{n} 项（{list}）—— 被 .gitignore 忽略的文件不在此列；不想被带入的请先自行 gitignore 或 stash',
     'log.commitDone': '统一收口提交完成（代码 + 任务夹产物，验收通过后一个 commit）',
     'log.commitSkip': '统一收口提交：无待提交改动（跳过）',
     'log.commitFail': '统一收口提交失败（忽略）：{msg}',
@@ -515,6 +517,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.docsIgnored': 'Task folder is ignored by this repo\'s .gitignore → not committed ({list}); artifacts stay in the workspace — run git add yourself if you want them tracked',
     'log.docsAdded': 'Deliverable docs committed: {list}',
     'log.docsAddFail': 'Failed to stage deliverable docs (not committed; artifacts stay in the workspace): {list} | {msg}',
+    'log.commitScope': 'Closing commit scope: {n} item(s) ({list}) — files ignored by .gitignore are excluded; gitignore or stash anything you do not want swept in',
     'log.commitDone': 'Unified closing commit done (code + task-folder artifacts, one commit after acceptance)',
     'log.commitSkip': 'Unified closing commit: nothing to commit (skipped)',
     'log.commitFail': 'Unified closing commit failed (ignored): {msg}',

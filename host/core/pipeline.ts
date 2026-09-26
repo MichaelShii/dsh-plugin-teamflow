@@ -46,6 +46,8 @@ import { ambientLocale, localeForMissingSnapshot, runLocaleOf } from './locale.t
  *  en 侧必须覆盖词典 `dev.taskRetry` 的实际产出 `(attempt N)`（R3-2 实锤：只写 retry \d+ 时，
  *  无 taskKey 的存量/异常数据走 label 兜底会漏剥离，任务标题归一失效）——**只增不改 zh 分支**。 */
 const DEV_TITLE_PREFIX = /^(?:开发|Dev) · /
+/** 收口提交前「待提交清单」预览条数（只做可见性，超出的用省略号，不刷屏）。 */
+const COMMIT_SCOPE_PREVIEW = 12
 
 /** 从 journal 已完成阶段重建断点续跑产物（prd/design/scaffold/tech/qa/acceptance/dev）。 */
 export function buildResumeProducts(journal) {
@@ -1384,6 +1386,16 @@ export async function executePipeline(
         // 由提交结果决定日志级别；add 的错误与提交错误一并写进 commitFail，故障不再不可见。
         // 「无事可做」优先用状态判定（确定性，不依赖 git 措辞）：索引为空 = 这次没有内容要提交。
         const pend = gitRun(journal.workspacePath, ['status', '--porcelain'])
+        if (pend.ok && pend.out) {
+          // 提交面可见（2026-09-26 方案 C，只加可见性、不动行为）：收口提交是整树 `add -A -- .`，
+          // 工作区里**未被 .gitignore 忽略**的其它未提交改动（WIP、已跟踪文件的修改）会被一并带入，
+          // 用户事先无从知道 → 提交前如实列出清单（被忽略的文件进不了索引，本就不在其中）。
+          const lines = pend.out.split('\n').filter(Boolean)
+          const list =
+            lines.slice(0, COMMIT_SCOPE_PREVIEW).map((l) => l.slice(3).replace(/^"|"$/g, '')).join(', ') +
+            (lines.length > COMMIT_SCOPE_PREVIEW ? ' …' : '')
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.commitScope', { n: lines.length, list }) })
+        }
         if (pend.ok && pend.out === '') {
           journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.commitSkip') })
         } else {

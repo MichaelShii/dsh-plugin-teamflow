@@ -226,6 +226,8 @@ ok(/archiveRunLogs\(journal, locale\)/.test(pipelineSrc) && /sweepWorkspaceLogs\
 // ① plan 侧永不出现 -f/-A；② 调用侧必须读 docAdd.ok——否则 add 失败仍写「已入库」，日志说谎比不写更糟。
 ok(/tfDocAddPlan\(/.test(pipelineSrc) && !/tfDocAddArgs/.test(pipelineSrc), 'pipeline：交付文档入库走 tfDocAddPlan（逐路径查忽略状态，不再 -f 强加）')
 ok(/const docAdd = gitRun\(journal\.workspacePath, docPlan\.args\)/.test(pipelineSrc) && /if \(docAdd\.ok\)[\s\S]{0,200}log\.docsAdded[\s\S]{0,200}log\.docsAddFail/.test(pipelineSrc), 'pipeline：文档 add 结果可见（失败降级 warn 转述 git 原话，不谎报已入库）')
+// 提交面可见（方案 C）：整树 add 会连带工作区其它未提交改动，用户必须能看见被带走了什么。
+ok(/'log\.commitScope'/.test(pipelineSrc) && /COMMIT_SCOPE_PREVIEW/.test(pipelineSrc) && /pend\.ok && pend\.out\)[\s\S]{0,700}log\.commitScope/.test(pipelineSrc), 'pipeline：收口提交前如实列出待提交清单（项数 + 路径预览）')
 ok(/LOG_ARCHIVE_KEEP/.test(constantsSrc) && /LOG_ARCHIVE_KEEP/.test(hostSrc), 'constants：归档保留 K 次 run 的淘汰口径')
 ok(/function keepInArchive/.test(hostSrc) && /KEEP_EXT = \/\\\.\(mjs\|cjs\|js\|md\|sh\|ps1\|py\)\$\/i/.test(hostSrc) && /KEEP_NAME = 'captures\.json'/.test(hostSrc), 'runlogs：归档白名单（只留检查脚本/笔记 + captures.json）')
 ok(/keepInArchive\(rel\)/.test(hostSrc) && /are DROPPED|KEEP_EXT/.test(promptsSrc), 'runlogs/prompts：过滤语义与 prompt 声明一致（dump 不留存）')
