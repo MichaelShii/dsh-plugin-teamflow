@@ -712,19 +712,20 @@ export async function executePipeline(
     const stageTextOf = (r) => r.text || ((r.stage && r.stage.output) || null)
 
     /**
-     * 同形阶段执行器（2026-09-26 收敛；纯结构重构，**零行为变化**）。
+     * 同形阶段执行器（2026-09-26 收敛）。
      * `prd` / `design` / `scaffold` / `tech` 四阶段形状完全同构——「resume 复用产物 → enterStage 留痕 →
      * withRetry → 空产出抛 stageFailError → 写 timeline + mergeStageState + 累计任务卡用量 → 取消检查」，
-     * 原先四处各抄一遍（每处 25–35 行）。抄写的代价已有实据：**tech 的失败错误传的是本地化 label 文本而非
+     * 原先四处各抄一遍（每处 25–35 行）。抄写的代价曾有实据：**tech 的失败错误传的是本地化 label 文本而非
      * phase key**（另三处都传 key）→ `stageFailError` 内 `phaseKeyOf(s.phase) === label` 恒不匹配 →
-     * 详情恒退化为「无上次记录」。**本次刻意用 failLabel 原样保留该差异**，修它是独立的语义决策，见 docs/TODO.md。
+     * 详情恒退化为「无上次记录」、末次 outcome/summary 全丢。**该差异已随本次收敛一并修掉**（统一传 phase key，
+     * 2026-09-26）——错误文案因此会带上「末次 completed / 摘要」，属有意的语义修复，A/B 可观测。
      * @returns text 阶段产物（resume 复用时为存档产物，可能为空）；cancelled 为真时调用方须整体 return
      */
     const runSimpleStage = async (
       phase: string,
       prompt: string,
       label: string,
-      opts?: { enterLabel?: string; effort?: string | null; failLabel?: string },
+      opts?: { enterLabel?: string; effort?: string | null },
     ): Promise<{ text: string | null; cancelled: boolean; skipped: boolean }> => {
       if (resumed(phase)) {
         const saved = (resume as { products: Record<string, unknown> }).products[phase] as string | null
@@ -734,7 +735,7 @@ export async function executePipeline(
       }
       journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: opts && opts.enterLabel ? opts.enterLabel : phaseLabel(locale, phase) }) })
       const r = await withRetry(journal, parent, label, phase, prompt, signal, undefined, opts && opts.effort ? opts.effort : null)
-      if (!r.text) throw stageFailError(opts && opts.failLabel ? opts.failLabel : phase, r)
+      if (!r.text) throw stageFailError(phase, r)
       timeline[phase] = r.text
       mergeStageState(phase, r.text)
       noteTaskStageUsage(journal)
@@ -797,38 +798,35 @@ export async function executePipeline(
           ? techPrompt(prd, design, scaffold, tasks, root, journal.id, state)
           : architectPrompt(prd, root, journal.id, state),
         techLabel,
-        // ⚠️ enterLabel / failLabel 差异是**原样保留的历史行为**（见 runSimpleStage 注释）：
-        // ① 轻量档的进阶段文案是「架构蓝图」而非「技术方案」；② 失败错误传本地化 label 而非 phase key。
-        { enterLabel: isHeavy ? phaseLabel(locale, 'tech') : t(locale, 'stageLabel.blueprint'), failLabel: techLabel },
+        // enterLabel：轻量档的进阶段文案是「架构蓝图」而非「技术方案」。
+        { enterLabel: isHeavy ? phaseLabel(locale, 'tech') : t(locale, 'stageLabel.blueprint') },
       )
       if (techStage.cancelled) return
       tech = techStage.text
-      // ⚠️ 原样保留的历史行为：resume 复用 tech 产物时**不**跑蓝图提取。这看着像缺陷——
-      // 续跑时 `state.__runCtx.blueprint` 不注入 → dev 继承不到蓝图（正是 r13 那种退化为整体开发的路径）——
-      // 但改它会动到 resume 语义，本次纯结构重构不动，已记 docs/TODO.md 待单独决策。
-      if (!techStage.skipped) {
-        // 提取架构蓝图 JSON → 注入后续阶段（dev 继承蓝图）并用于自动拆任务。
-        // 优先取 stage 回复输出；模型可能把蓝图写进任务夹 TECHNICAL.md（ADR-0008 收口约定）——回退读文件提取，绝不静默丢蓝图（实锤 r13：蓝图只在文档里，dev 退化为单任务整体开发、M2 拆卡失效）。
-        let bd = extractBlueprint(tech)
-        if (!bd || bd.summary === undefined) {
-          try {
-            const techFile = journal.runDocs && journal.workspacePath
-              ? `${journal.workspacePath}/${journal.runDocs}/TECHNICAL.md`
-              : null
-            if (techFile && existsSync(techFile)) bd = extractBlueprint(readFileSync(techFile, 'utf8'))
-            if (bd) journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintFromFile') })
-          } catch (e) { /* 回退失败走既有告警 */ }
-        }
-        if (bd && bd.summary !== undefined) {
-          try {
-            state.__runCtx = state.__runCtx || {}
-            state.__runCtx.blueprint = bd.render
-            journal.blueprint = { modules: bd.modules, tasks: bd.tasks }
-          } catch (e) { /* 蓝图注入失败不影响 */ }
-        } else if (/<!-- blueprint -->/.test(String(tech))) {
-          // 蓝图块存在但解析失败：显式告警（否则静默回退整体开发，并行度丢失难排查）
-          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.blueprintParseFail') })
-        }
+      // 提取架构蓝图 JSON → 注入后续阶段（dev 继承蓝图）并用于自动拆任务。
+      // ⚠️ 2026-09-26 修复：原先这段只在「本次真跑」分支里（抄写的 else 块内）→ **resume 复用 tech 产物时
+      // 不跑蓝图提取**，`state.__runCtx.blueprint` 不注入 → dev 继承不到蓝图，退化成单任务整体开发
+      // （r13 同款症状）。现在 resume 复用时也照样提取（存档 tech 文本里没有蓝图块 → 解析为 null，无副作用）。
+      // 优先取 stage 回复输出；模型可能把蓝图写进任务夹 TECHNICAL.md（ADR-0008 收口约定）——回退读文件提取，绝不静默丢蓝图（实锤 r13：蓝图只在文档里，dev 退化为单任务整体开发、M2 拆卡失效）。
+      let bd = extractBlueprint(tech)
+      if (!bd || bd.summary === undefined) {
+        try {
+          const techFile = journal.runDocs && journal.workspacePath
+            ? `${journal.workspacePath}/${journal.runDocs}/TECHNICAL.md`
+            : null
+          if (techFile && existsSync(techFile)) bd = extractBlueprint(readFileSync(techFile, 'utf8'))
+          if (bd) journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintFromFile') })
+        } catch (e) { /* 回退失败走既有告警 */ }
+      }
+      if (bd && bd.summary !== undefined) {
+        try {
+          state.__runCtx = state.__runCtx || {}
+          state.__runCtx.blueprint = bd.render
+          journal.blueprint = { modules: bd.modules, tasks: bd.tasks }
+        } catch (e) { /* 蓝图注入失败不影响 */ }
+      } else if (/<!-- blueprint -->/.test(String(tech))) {
+        // 蓝图块存在但解析失败：显式告警（否则静默回退整体开发，并行度丢失难排查）
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.blueprintParseFail') })
       }
     }
 

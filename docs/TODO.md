@@ -55,9 +55,10 @@
   **内部形态实测**：`prd`/`design`/`scaffold`/`tech` **四阶段完全同构**——`enabled(X)` → `resumed(X)?logSkip` → `log.enterStage` → `withRetry(...)` → `!R.text?stageFailError` → `mergeStageState(X)`，各占 25–35 行；`dev`（分波并发 + 任务重跑分支）、`qa`（打回循环 + `hasOpenBlockingBugs`）、`acceptance`（交付判定）**各自特殊**，不是同构体。
   **建议两级走法（反对一步上 StageRunner registry）**：① **先做同形阶段收敛**——抽 `runSimpleStage(phase, prompt, label, opts)`，4×30 行 → 1 helper + 4 处 2–4 行调用；② **registry 表驱动留到 dev/qa 也收敛之后**——现在硬把 7 个阶段套进统一 `StageRunner` 接口，dev 的分波与 qa 的循环会逼出「接口里塞可选钩子」，可读性反而劣化（评估提的 registry 是终态，不是第一步）。
   ✅ **① 已落地（2026-09-26）**：`executePipeline` 内闭包 helper `runSimpleStage`（`pipeline.ts` PRD 阶段之前），四阶段各缩到 2–4 行；**A/B 验等价通过**（pre=`git archive HEAD` vs post=工作树，4 场景 × 11 个对比字段全等：`patch` / `full`（四阶段全跑）/ `fail`（空产出抛 stageFailError）/ `resume`（四阶段全走复用分支）），详见 `.workbuddy/verify-2026-09-26/REPORT-h5.md`。**副产物**：该 harness（`h5-stage-convergence.mjs` + `diff-ab.cjs` + `make-stubs.cjs`）可升正式 e2e 测试。
-  **收敛中发现、本次刻意不改的两处历史行为（待决策）**：
-  - **`tech` 阶段失败错误传的是本地化 label 文本而非 phase key**（另三阶段都传 key）→ `stageFailError` 内 `phaseKeyOf(s.phase) === label` 恒不匹配 → 末次尝试详情恒退化为「无上次记录」，丢掉 `outcome/summary`。改法简单（传 `'tech'`），但会动错误文案，属语义变更，单独做。
-  - **`resume` 复用 tech 产物时不跑蓝图提取** → `state.__runCtx.blueprint` 不注入 → dev 继承不到蓝图（同 r13 那种退化为整体开发的路径）。看着像缺陷，但改它会动 resume 语义；本次用 `if (!techStage.skipped)` 原样保留。
+  ✅ **两处历史行为缺陷已随收敛一并修掉（2026-09-26，同一 release 周期）**：
+  - **`tech` 阶段失败错误传本地化 label 而非 phase key** → 现统一传 phase key。A/B 实测：错误文案从「…2 次尝试未交付，**无阶段记录**」变为「…未交付，**末次 completed（未产出有效结果（stopReason=completed））**」，`outcome/summary` 不再丢。
+  - **`resume` 复用 tech 产物时不跑蓝图提取** → 现 resume 也照样提取（存档文本无蓝图块则解析为 null，无副作用）。A/B 实测：resume 场景下 `journal.blueprint` 从 `null` 变为注入成功，dev 子代理 label 从「开发 · **整体开发**（补跑）」变为「开发 · **任务一**（补跑）」——即续跑时 dev 不再退化成单任务整体开发（r13 同款症状消除）。
+  - 回归面：`patch` / `full` / `fail` 三场景 A/B 仍**全部一致**，修复未波及其它路径。
 - 🔜 **成本从「量」到「钱」（评估改进 #5，阻塞在价格口径）**：现计量只到 token 三桶（input/cacheRead/cacheWrite）+ 命中率，汇报与工作台均无量纲金额。要出金额需 `pricing.json`（per-model 每百万单价），**未做的原因是价格数据源未定**：① 官方 provider 无价格 API（宿主 `dsh-llm` 只给 usage）；② 手抄价目表会随上游调价腐化且无校验。待决策：价格从哪来（手工维护 + 版本号 / 用户 settings 覆盖 / 只按 cacheRead 折算「省了多少」的相对口径）。
 - 🔜 **`catch (e) {}` 分类 lint 规则（oxlint 现行配置未覆盖）**：全仓大量空 catch（起跑清扫 / 状态记忆 / 资源释放等"失败不影响主流程"处有正当理由，但也可能吞掉真错误）。现 `.oxlintrc.json` 关掉了 `no-empty`（未启用），无分类手段。待做：给正当空 catch 统一加 `// ignore: <理由>` 注释前缀 + 自定义规则/脚本统计无注释空 catch 数量并设上限；**实测基线（2026-09-26，57 文件 / 133 个 catch）**：裸空 `catch (e) {}` **0 个**；注释-only 静默 **81 个**（top：`pipeline.ts` 14、`guard.ts` 13、`index.ts` 7、`panel.tsx` 6、`runlogs.ts` 5），真处理 52 个。**结论：现有纪律已达标（静默处均写了理由，如 `/* 清扫失败不影响起跑 */`）→ 本条降为低优先级**，真要做也不是加规则，而是给这 81 处静默加**可选 warn 级日志**（排障时能看到被吞的异常），不是门禁。
 
