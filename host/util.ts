@@ -22,6 +22,31 @@ export function extractText(blocks) {
   if (!Array.isArray(blocks)) return ''
   return blocks.filter((b) => b && b.type === 'text' && typeof b.text === 'string').map((b) => b.text).join('\n')
 }
+/**
+ * **响应块构成**（失败诊断用，2026-09-26 tf-muigy5eq r12 实踩）。
+ *
+ * 由来：诊断此前只报 `stopReason`，于是「模型吐完 reasoning 就被服务端收尾、既无正文也无工具调用」
+ * 与「provider 报错」在日志里长得一模一样，排查只能去翻子代理的 zstd 会话原始记录（十几分钟）。
+ * 这里把 content blocks 压成一行：`reasoning:2472, tool-call, tool-call, text:96`；
+ * reasoning/text **带字符长度**（`reasoning:0` 一眼看出该步根本没推理），重复块压成 `tool-callx3`。
+ * `no-blocks` = 响应里一个块都没有（与 `empty` 区分：前者是块层面空，后者是块存在但内容空）。
+ */
+export function blockShape(blocks) {
+  if (!Array.isArray(blocks) || blocks.length === 0) return 'no-blocks'
+  const parts = []
+  const tally = new Map()
+  for (const b of blocks) {
+    if (!b || typeof b !== 'object') continue
+    const type = typeof b.type === 'string' ? b.type : 'unknown'
+    if (type === 'text' || type === 'reasoning') {
+      parts.push(`${type}:${typeof b.text === 'string' ? b.text.length : 0}`)
+    } else {
+      tally.set(type, (tally.get(type) || 0) + 1)
+    }
+  }
+  for (const [k, n] of tally) parts.push(n > 1 ? `${k}x${n}` : k)
+  return parts.length ? parts.join(', ') : 'no-blocks'
+}
 
 /**
  * **本机安装环境探测**（2026-09-21 用户实锤，勿写死路径）。

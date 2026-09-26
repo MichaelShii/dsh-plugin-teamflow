@@ -5,7 +5,7 @@
 import { runtime, providerName, trackInFlight, untrackInFlight } from './context.ts'
 import { accumulateSessionUsage, freshTokensOf, effectiveFreshBudget } from './metering.ts'
 import { startStageGuard } from './guard.ts'
-import { clip, extractText, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs, stageDocText } from '../util.ts'
+import { clip, extractText, blockShape, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs, stageDocText } from '../util.ts'
 import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../constants.ts'
 import { t, type HostLocale } from '../locales.ts'
 import { runLocaleOf } from './locale.ts'
@@ -249,12 +249,15 @@ export async function runAgent(
     } else {
       // 诊断必须能自证（2026-09-26 tf-muigy5eq r12 实踩）：此前只报 stopReason，
       // 「正文为空」与「provider 报错」长得一模一样，排查只能跳子代理会话原始记录。
-      // 现在带上正文长度；且 `completed` + 0 字符 = 推理模型空收尾，给专属措辞（一眼可认）。
+      // 现在带上正文长度 + **响应块构成**；且 `completed` + 0 字符 = 推理模型空收尾，给专属措辞（一眼可认）。
+      // 块构成是判断「谁收的尾」的关键：空收尾形状 = 只有 reasoning、无 text、无 tool-call；
+      // 宿主中断会带 aborted、预算截断会带 max-tokens，都不会是 stop（见 util.blockShape 注释与 DSH 排查记录）。
       const err = errDetail ? t(locale, 'diag.noResultError', { error: String(errDetail).slice(0, 200) }) : ''
+      const shape = blockShape(result && result.output)
       stage.summary =
         !text && stop === 'completed'
-          ? t(locale, 'diag.emptyTurn', { stop: stop || 'unknown' })
-          : t(locale, 'diag.noResult', { stop: stop || 'unknown', len: (text || '').length, error: err })
+          ? t(locale, 'diag.emptyTurn', { stop: stop || 'unknown', shape })
+          : t(locale, 'diag.noResult', { stop: stop || 'unknown', len: (text || '').length, shape, error: err })
       journal.logs.push({ t: Date.now(), level: 'error', message: `${label} ${stage.summary}` })
       if (text) stage.output = clip(text, 4000) // 半截产出（如 stopReason=length）也落盘供诊断
     }
