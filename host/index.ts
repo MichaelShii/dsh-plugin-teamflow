@@ -14,30 +14,25 @@ import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { parameterSchemaSpecToJsonSchema } from '@deepseek-ai/dsh-tools'
 import { TEAMFLOW_DESCRIPTORS } from '../descriptors.ts'
-import {
-  dshHome, teamflowRoot, productDir, fileFor,
-  readJson, readJsonAny, writeJson, persistJournal, loadJournals, journalFile,
-} from '../store.ts'
-import type { JournalRecord, JournalStage } from '../store.ts'
+import { teamflowRoot, readJsonAny, writeJson, persistJournal, loadJournals } from '../store.ts'
+import type { JournalRecord } from '../store.ts'
 import { fileAddressFor } from '@deepseek-ai/dsh-util-workspace-path'
-import type {
-  Journal, BacklogItem, PipelineOptions, ResumeContext, SubagentRunLike, ParentAgentLike, UsageBuckets,
-} from './types.ts'
-import { RETRY_LIMIT, STATUS, PHASE_ORDER, PHASE_KEY_OF, PHASE_KEY_BY_NAME, phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER } from './constants.ts'
-import { toText, clip, extractText, normalizeRoot, normalizeTasks, sanitizeSnapOptions, normalizeSignal, isUnretryable, handoffBrief, runPool } from './util.ts'
-import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, devPrompt, qaPrompt, acceptancePrompt } from './prompts/index.ts'
-import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, setSessionProjections, setInstallCtx, workspaceScopeOf, getRun } from './core/context.ts'
+
+import { phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER } from './constants.ts'
+import { toText, clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions } from './util.ts'
+
+import { runtime, runs, setRuntime, setSessionProjections, setInstallCtx, workspaceScopeOf, getRun } from './core/context.ts'
 import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/backlog.ts'
 import { runsFor, runAddress, productKeyOf, runVisibleIn, runBrief, productMetaOf, listProducts } from './core/products.ts'
 import { loadTeams, findTeam, teamNameOf, teamDescOf, type TeamConfig } from './core/teams.ts'
-import { runAgent, withRetry } from './core/runner.ts'
-import { deliverCompletion } from './core/report.ts'
+
+
 import { runSanityCheck, gitCmd } from './core/sanity.ts'
 import { loadState } from './core/state.ts'
 import { isDangerousVcsRoot, dirTooLargeForBaseline } from './util.ts'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { mkdirSync, readdirSync, statSync } from 'node:fs'
+import { mkdirSync, readdirSync } from 'node:fs'
 
 /** 有界计数（决策问句里的"现有 N 个文件"；不精确——只采样，超阈值即停）。 */
 function countFilesBounded(dir: string, cap = 1000): number {
@@ -55,9 +50,9 @@ function countFilesBounded(dir: string, cap = 1000): number {
   walk(dir, 0)
   return n
 }
-import { executePipeline, summarizeTimeline, startPipeline, resumeRun } from './core/pipeline.ts'
+import { startPipeline, resumeRun } from './core/pipeline.ts'
 import { cancelRun } from './core/context.ts'
-import { suggestMode, MODE_REGISTRY, PIPELINE_MODES, MODE_RANK, normalizeMode, runTriage, guardrailUpgrade, triageCacheKey, triageCacheGet, triageCachePut, triageCacheMarkPending, triageCacheSettle, type TriageVerdict } from './core/triage.ts'
+import { MODE_REGISTRY, PIPELINE_MODES, MODE_RANK, normalizeMode, runTriage, guardrailUpgrade, triageCacheKey, triageCacheGet, triageCachePut, triageCacheMarkPending, triageCacheSettle, type TriageVerdict } from './core/triage.ts'
 import { t, modeDesc } from './locales.ts'
 import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.ts'
 

@@ -76,6 +76,11 @@ client/
 
 - **构建/验证**（插件目录下）：
   - `pnpm run typecheck` —— tsc --noEmit（改 type 后必跑）
+  - `pnpm run lint` —— oxlint，**0 warning 门禁**（CI 同跑；引入时存量已清零）
+    - 豁免口径：`catch (e) {}` = 刻意的尽力而为风格（caughtErrors: none）；`_` 前缀参数/变量豁免
+    - `no-useless-fallback-in-spread` / `no-new-array` off：`|| {}` 兜底与 `new Array(n)` 在
+      strict:false 鸭子类型下承担**类型角色**（unknown 展开/收窄会让消费点类型劣化，实测 tsc 6 错）
+    - `while (true)` 的 QA 打回循环 = 行内 disable + 有界注释（round > QA_REWORK_LIMIT → break）
   - `pnpm run bundle` —— tsdown → `lib/`（host.mjs/client.js/store.mjs/descriptors.mjs）
   - `pnpm test` —— smoke + locale + journal + runlogs + cancel + verdict + stages + diagnostic + evidence + metering + gitignore + commit-path + product-scope + prompt-contract + conformance + changelog + instruction-budget + client-host-api（smoke 对 host 目录做源码断言：新增/移动函数后要同步指向；**改 prompt/注入必跑 L1 prompt-contract + L2 conformance；改语言层/文案必跑 locale（词典键唯一 + zh/en 同形 + en 无 CJK）；改计量/宿主适配必跑 metering；改收口提交面/日志忽略必跑 gitignore + commit-path（后者是真 git 集成：需要能 spawn git 的终端，受限沙箱下自动 SKIP）；改日志生命周期/归档落点必跑 runlogs；改取消语义/中断入口必跑 cancel（含 descriptor↔服务↔三处 UI 入口的同源断言）；改产品线装配/全局面板数据面必跑 product-scope**）
   - **部署**：`node deploy.mjs`（构建+测试+同步 profile 副本 + 检测运行 web 提示）→ **重启 `dsh --profile web` 才生效**（易踩坑，ADR-0003）。

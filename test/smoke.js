@@ -556,7 +556,7 @@ ok(/if \(cols === null\) \{ cols = defectHeaderCols\(cells\); continue \}/.test(
 ok(!/const sev = \(cells\[1\]/.test(backlogSrc), 'backlog：已删除「第 2 格即严重级」的位置式判定（旧写法 = 每轮复验重生一个 P2）')
 ok(/const mergeEligible = journal\.status === 'completed' && !journal\.humanIntervention && acceptanceDone/.test(reportSrc), 'report：合回邀请需「已完成 + 无人工介入 + 验收阶段真的 done」（未验收不得邀请合回）')
 ok(/report\.needsHumanNoAcceptance/.test(reportSrc) && /const needsHumanNotice = journal\.humanIntervention && !acceptanceDone/.test(reportSrc), 'report：验收未跑 + 需人工介入时显式提示「不要据此合回 main」')
-ok(/const RETRY_SUFFIX = \/\(\?:（\(\?:第 \\d\+ 次重试\|补跑\)）\| \\\(\?:retry \\d\+\|attempt \\d\+\|follow-up run\)\\\)\)\$\/|attempt \\d\+/.test(pipelineSrc), 'pipeline：RETRY_SUFFIX 覆盖词典实际产出「(attempt N)」（R3-2，无 taskKey 的 label 兜底路径）')
+ok(/RETRY_SUFFIX_LOCAL/.test(utilSrc) && /attempt \\d\+/.test(utilSrc), 'taskKey 归一正则覆盖词典实际产出「(attempt N)」（R3-2，无 taskKey 的 label 兜底路径）')
 ok(/'diag\.colon'/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')) && /t\(locale, 'diag\.colon'\)/.test(runnerSrc), 'runner：护栏中止摘要的连接符走词典（en 出半角冒号，不再硬编码全角「：」）')
 ok(/journal\.locale === 'en' \? `# TeamFlow run log/.test(storeSrc), 'store：运行日志文件头随 run 语言（持久化层不引 host 词典，只本地化这一行）')
 ok(!/✅ Pass ／ / .test(promptsSrc) && /Acceptance verdict: ✅ Pass \/ /.test(promptsSrc), 'prompts：en 验收档位行用半角斜杠（zh 侧 ／ 逐字不变）')

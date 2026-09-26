@@ -6,7 +6,7 @@ import { fileFor, readJson, writeJson, teamflowRoot, persistJournal } from '../.
 import type { BacklogItem } from '../types.ts'
 import { stores } from './context.ts'
 import { STATUS, PHASE_ROLE } from '../constants.ts'
-import { clip, snippet } from '../util.ts'
+import { snippet } from '../util.ts'
 import { t } from '../locales.ts'
 import { ambientLocale, runLocaleOf } from './locale.ts'
 
@@ -327,7 +327,7 @@ export function noteTaskStageUsage(journal) {
  * 只做 status + summary + humanIntervention，不碰 assign——assign 由 noteTaskAssign 独立处理。
  * meta: { by: 'dev'|'qa'|'pm' }（仅用于事件日志标注）
  */
-export function advanceTask(journal, to, summary, reason, meta) {
+export function advanceTask(journal, to, summary, reason, _meta) {
   const store = storeFor(journal.workspace || 'default')
   const task = journal.taskId ? store.find('task', journal.taskId) : null
   if (!task) { persistJournal(journal); return }

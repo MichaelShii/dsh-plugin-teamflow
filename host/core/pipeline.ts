@@ -5,13 +5,13 @@
  * 展开实际执行阶段集（resolveStages），再与团队阶段取交集——见 ADR-0004。
  */
 import { runtime, runs, inFlight, activeProducts, providerName, workspaceScopeOf, installCtx, pruneRuns } from './context.ts'
-import { initPipelineBacklog, advanceTask, storeFor, parseDefectRows, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, createSubtask, completeSubtask, noteSubtaskUsage, getSubtasks, hasOpenBlockingBugs } from './backlog.ts'
+import { initPipelineBacklog, advanceTask, storeFor, parseDefectRows, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, createSubtask, completeSubtask, noteSubtaskUsage, hasOpenBlockingBugs } from './backlog.ts'
 import { withRetry, resolveChildRoute } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
 import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, devTaskIdAt, backfillDevTaskIds, artifactText, detectInstallEnv, mergeFileOverlaps, concurrentWriteConflicts, planDevWaves } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
-import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, FIX_GATE_PATTERN, DEV_MAX_CONCURRENCY, DEV_DEFAULT_CONCURRENCY } from '../constants.ts'
+import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, FIX_GATE_PATTERN, DEV_MAX_CONCURRENCY, DEV_DEFAULT_CONCURRENCY } from '../constants.ts'
 import { persistJournal, loadJournalById, dshHome } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext, PipelineMode } from '../types.ts'
@@ -39,14 +39,13 @@ import type { GitResult } from './sanity.ts'
 import { archiveRunLogs, sweepWorkspaceLogs } from './runlogs.ts'
 import { preflightWorkspaceAcl } from './acl-preflight.ts'
 import { currentModelSupportsVision } from './context.ts'
-import { modeLabel, parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
+import { parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
 import { ambientLocale, localeForMissingSnapshot, runLocaleOf } from './locale.ts'
 
 /** dev 子卡/阶段 label 的「开发 · 」前缀与重试后缀：zh 存量兼容 + en 新增（QA-2：既有解析契约只增不改）。
  *  en 侧必须覆盖词典 `dev.taskRetry` 的实际产出 `(attempt N)`（R3-2 实锤：只写 retry \d+ 时，
  *  无 taskKey 的存量/异常数据走 label 兜底会漏剥离，任务标题归一失效）——**只增不改 zh 分支**。 */
 const DEV_TITLE_PREFIX = /^(?:开发|Dev) · /
-const RETRY_SUFFIX = /(?:（(?:第 \d+ 次重试|补跑)）| \((?:retry \d+|attempt \d+|follow-up run)\))$/
 
 /** 从 journal 已完成阶段重建断点续跑产物（prd/design/scaffold/tech/qa/acceptance/dev）。 */
 export function buildResumeProducts(journal) {
@@ -1148,7 +1147,7 @@ export async function executePipeline(
         qaRoundEntry.gate = fixGate
         noteTaskStageUsage(journal) // 修复子代理真实 usage 累计到任务卡
         if (journal.cancelled) return
-      } while (true)
+      } while (true) // oxlint-disable-line no-constant-condition -- 有界循环：round > QA_REWORK_LIMIT → break（勿改 while 形态，见评估「未发现无界循环」）
       if (!qaBlocked && qaClean) {
         verifyReqBugs(journal) // 复验通过 → 关闭全部 open 缺陷
         advanceTask(journal, 'pending-acceptance', snippet(qa, 3000), t(locale, 'event.qaPass'), { by: 'qa' })

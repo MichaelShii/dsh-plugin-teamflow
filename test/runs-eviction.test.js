@@ -23,13 +23,9 @@ const home = mkdtempSync(join(tmpdir(), 'tf-evict-'))
 process.env.DSH_HOME = home
 
 const { runs, inFlight, activeProducts, evictableRunIds, pruneRuns, getRun } = await import('../host/core/context.ts')
-const { persistJournal, loadJournalById, journalFile } = await import('../store.ts')
+const { persistJournal, loadJournalById } = await import('../store.ts')
 
 let failed = 0
-const ok = (cond, msg) => {
-  if (cond) console.log(`  ✓ ${msg}`)
-  else { console.error(`  ✗ ${msg}`); failed++ }
-}
 const eq = (actual, expected, msg) => {
   if (actual === expected) console.log(`  ✓ ${msg}`)
   else { console.error(`  ✗ ${msg} — got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`); failed++ }
@@ -103,7 +99,7 @@ eq(loadJournalById('tf-disk-nope'), null, '不存在的 id → null')
 
 console.log('── 6) getRun：内存优先 → 磁盘回读不回填 ──')
 clear()
-const memRun = put(J(100, { id: 'tf-get-001' }))
+put(J(100, { id: 'tf-get-001' }))
 eq(getRun('tf-get-001').id, 'tf-get-001', '内存命中直接返回')
 persistJournal(J(100, { id: 'tf-get-002' }))
 const fromDisk = getRun('tf-get-002')

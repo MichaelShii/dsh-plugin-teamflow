@@ -125,7 +125,7 @@ export function loadState(projectKey: string): TeamflowState {
       if (raw && typeof raw === 'object') {
         base.projectName = raw.projectName ?? null
         base.updatedAt = raw.updatedAt ?? null
-        base.product = { ...base.product, ...(raw.product || {}) }
+        base.product = { ...base.product, ...raw.product }
         base.lastRunFolder = raw.lastRunFolder ?? null
         base.modules = raw.modules || {}
         base.verifyScripts = Array.isArray(raw.verifyScripts) ? raw.verifyScripts : []

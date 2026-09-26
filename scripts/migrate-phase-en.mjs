@@ -5,7 +5,7 @@
  * 目标：DSH_HOME/teamflow 下 runs 与 backlog 的 JSON 文件
  */
 import { readdirSync, existsSync, writeFileSync, renameSync, readFileSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { join } from 'node:path'
 import { homedir } from 'node:os'
 
 const DRY = process.argv.includes('--dry-run')
@@ -69,7 +69,7 @@ function migrateFile(file) {
   }
 }
 
-function sep() { return /^win/.test(process.platform) ? '\\' : '/' }
+function sep() { return process.platform.startsWith('win') ? '\\' : '/' }
 
 console.log(`迁移目录: ${ROOT}（dry-run=${DRY}）`)
 walk(ROOT)

@@ -59,7 +59,7 @@ const HISTORY_PATTERNS = [
 const hits = []
 let total = 0
 lines.forEach((line, i) => {
-  if (/^## \[/.test(line)) return // 版本标题行：发布日期是必要信息
+  if (line.startsWith('## [')) return // 版本标题行：发布日期是必要信息
   for (const [re, label] of HISTORY_PATTERNS) {
     const found = line.match(re)
     if (found && found.length > 0) {

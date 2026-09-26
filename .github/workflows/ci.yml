@@ -25,6 +25,9 @@ jobs:
       - name: Install (frozen lockfile)
         run: pnpm install --frozen-lockfile
 
+      - name: Lint（oxlint，0 warning 门禁；2026-09-26 引入，存量违规已清零）
+        run: pnpm lint
+
       - name: Test
         run: pnpm test
 
