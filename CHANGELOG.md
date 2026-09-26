@@ -2,6 +2,28 @@
 
 > 本插件首次公开发布版本为 **v0.1.0**；发布前的内部迭代（v0.3~v0.13）记录于 `AGENTS.md` §5，对外统一归到 v0.1.0。
 
+## [0.2.2] - 2026-09-26
+
+> 逐条变更说明与验证数据见 `docs/releases/v0.2.2.md`。**无破坏性**：宿主窗口不变（`>=0.1.7-alpha.1 <0.2.0`），journal/任务夹/参数全部向后兼容。性质 = 缺陷修复 + 工程基建（lint/CI 门禁），无新功能。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **无破坏性、无行为变更面**：宿主窗口不变；全部变更经 A/B 行为验证（`git archive` 修复前后双副本 + stub 宿主依赖，dispose / 分诊定时器 / runs 有界化 / resume 四项对照）与全套测试（24 套件）+ `oxlint --deny-warnings` 0 warning 门禁。
+- **升完重启 `dsh --profile web` 生效**。
+
+### 修复
+
+- **正常结算路径子代理从未 dispose（死代码）**：`runner.ts` 结算 `finally` 里的 `if (run) { ... run.dispose() }` 被行注释吞成死代码（编辑事故），导致每个阶段正常结算后子代理会话不释放（对宿主契约 `settleRun` = result 后必 dispose 的违背）。修复后 A/B 实测：修复前 5/5 阶段 dispose 0 次 → 修复后 5/5 各 1 次且发生在 result 结算之后。
+- **分诊超时定时器悬挂**：`triage.ts` 的 `Promise.race` 超时 `setTimeout` 无 `clearTimeout`——每次分诊成功都留一个 240s 悬挂定时器（事件循环无法及时退出）。修复后结算即清，A/B 实测：修复前 cleared 0 / pending 1（进程被吊住 >120s）→ 修复后 cleared 1 / pending 0（进程 171ms 退出）。
+- **`runs` 内存注册表有界化**：原实现只 set 不 delete + 启动时全量灌入 → 常驻宿主跨工作区单调增长。现改为「最近 100 条终态 + 全部活跃 run」的有界缓存（`RUNS_MEMORY_KEEP`），终态 checkpoint 落盘后 `pruneRuns` 收缩；被淘汰 run 由 `getRun` 统一入口读磁盘回读（不回填），`snapshot`/`status`/`stageDetail`/`teamflow_merge` 五处读点全部切换。实测灌 120 条历史 run 后跑真实 pipeline：内存 120 → 100、淘汰 21 条、回读完整；修复前 120 → 121 单调增长。
+- **resume 查不到 per-project journal 的隐性缺口**：`resumeRun` 的磁盘读只查全局 `runs/`，per-project 新格式 journal 一直靠启动时全量回填的内存兜底才续得上。新增 `store.loadJournalById`（双路径 + runId 白名单防注入）作为 resume 与 `getRun` 的统一权威读取。实测：内存不存在的 per-project journal 修复前 resume 报 `Run not found` → 修复后续跑至 completed。
+- **dev 并发上限 8 三处硬编码收敛为常量**（`DEV_MAX_CONCURRENCY` / `DEV_DEFAULT_CONCURRENCY`，评估复核时发现实际是 3 处而非 2 处）。
+
+### 工程基建
+
+- **oxlint 0-warning 门禁**：devDeps + `.oxlintrc.json`（存量 210 warnings 清零，含 58 处历史死 import）；CI 追加 lint 步骤（与 test/bundle 同跑）。豁免口径与理由登记于 `AGENTS.md` §4 与 `CONTRIBUTING.md`（`catch (e) {}` 是刻意的尽力而为风格；`|| {}` 兜底与 `new Array(n)` 在 `strict:false` 鸭子类型下承担类型角色，机械等价改写会让消费点类型劣化——规则 off，勿"清理"）。
+- **`CONTRIBUTING.md` 新增「Lint gate」说明**（含"oxlint 会扫未跟踪文件"的本地跑提示）。
+
 ## [0.2.1] - 2026-09-25
 
 > 逐条变更说明与验证数据见 `docs/releases/v0.2.1.md`。**无破坏性**：宿主窗口不变（`>=0.1.7-alpha.1 <0.2.0`），蓝图与任务参数向后兼容。
