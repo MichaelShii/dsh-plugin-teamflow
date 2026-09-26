@@ -28,6 +28,31 @@ pnpm bundle        # build client + host → lib/
 pnpm typecheck     # needs the local dsh profile types (see above)
 ```
 
+## Lint gate
+
+`pnpm run lint` (= `pnpm lint`) runs oxlint with `--deny-warnings`, so **warnings are failures**:
+the tree is kept at 0 warnings / 0 errors. CI runs the same command before `test` and `bundle`
+(`.github/workflows/ci.yml`), so a warning you leave behind also fails your PR. Fix it — don't
+silence it with a disable comment.
+
+Note that oxlint walks **untracked files too**: scratch directories left in your working tree can
+fail your local run even though CI (which only sees the commit) is green. Commit-time scope is
+what counts.
+
+Rules live in `.oxlintrc.json` (`correctness` = error). A few deliberate carve-outs:
+
+- **`catch (e) {}` is intentional best-effort style**, not an accident: `no-unused-vars` is a
+  warning with `caughtErrors: none`, so swallowing an error stays legal.
+- **`_`-prefixed parameters and variables are exempt** (`argsIgnorePattern`/`varsIgnorePattern: ^_`)
+  — use `_name` when a signature forces an unused binding.
+- **`no-useless-fallback-in-spread` and `no-new-array` are off on purpose**: `|| {}` fallbacks and
+  `new Array(n)` carry a *type* role under `strict: false` duck-typing — narrowing them (e.g. to
+  `??`) degrades the consuming call sites and makes `tsc` report errors. They are not style
+  preferences, so don't "clean them up".
+- `no-constant-condition` is off as well: the QA-rework loop in `host/core/pipeline.ts` is a
+  `while (true)` with a bounded `round > QA_REWORK_LIMIT` break and an inline disable. Keep any
+  such loop bounded the same way.
+
 ## Where things live
 
 ```
@@ -72,8 +97,8 @@ is cut right after each release).
 2. **Branch from the latest release branch** (e.g. `release-v0.2.0`) — **not from `main`** — and open
    your PR **against that release branch**. Keep PRs focused — we merge with a real merge commit
    that keeps every commit (we do not squash).
-3. CI runs `pnpm test` + `pnpm bundle` on pushes to `main` and `release-*` and on every PR; make sure
-   both are green locally too.
+3. CI runs `pnpm lint` + `pnpm test` + `pnpm bundle` on pushes to `main` and `release-*` and on every
+   PR; make sure the same three are green locally too.
 4. Update `README.md`/`README.en.md` if user-facing, `CHANGELOG.md` for released behavior
    changes, and `AGENTS.md` (maintainer memory) for pipeline-level decisions.
 

@@ -1,0 +1,7 @@
+{
+  "reqId": "req-10",
+  "runId": "tf-mui8equ6-4vne7g",
+  "title": "在 CONTRIBUTING.md 中补充一节「Lint 门禁」说明，内容包括：pnpm run lint（oxlint，0 warning 门禁，CI 同跑）",
+  "mode": "patch",
+  "createdAt": 1790417596325
+}
