@@ -247,7 +247,14 @@ export async function runAgent(
       }
       if (text) stage.output = clip(text, 4000)
     } else {
-      stage.summary = t(locale, 'diag.noResult', { stop: stop || 'unknown', error: errDetail ? t(locale, 'diag.noResultError', { error: String(errDetail).slice(0, 200) }) : '' })
+      // 诊断必须能自证（2026-09-26 tf-muigy5eq r12 实踩）：此前只报 stopReason，
+      // 「正文为空」与「provider 报错」长得一模一样，排查只能跳子代理会话原始记录。
+      // 现在带上正文长度；且 `completed` + 0 字符 = 推理模型空收尾，给专属措辞（一眼可认）。
+      const err = errDetail ? t(locale, 'diag.noResultError', { error: String(errDetail).slice(0, 200) }) : ''
+      stage.summary =
+        !text && stop === 'completed'
+          ? t(locale, 'diag.emptyTurn', { stop: stop || 'unknown' })
+          : t(locale, 'diag.noResult', { stop: stop || 'unknown', len: (text || '').length, error: err })
       journal.logs.push({ t: Date.now(), level: 'error', message: `${label} ${stage.summary}` })
       if (text) stage.output = clip(text, 4000) // 半截产出（如 stopReason=length）也落盘供诊断
     }

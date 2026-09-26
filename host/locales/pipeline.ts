@@ -196,8 +196,11 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'diag.noGateEvidence': '第 {round} 轮修复（{n} 条阻断缺陷）的证据块里没有类别门禁/命中数（gate: / class sweep:）——同缺陷类别换面复现的风险由复验轮兜底；请对照复验结论',
     'diag.tooShortLog': '{label} 产出过短（{length} 字符），未通过实质校验',
     'diag.listNone': '无',
-    'diag.noResult': '未产出有效结果（stopReason={stop}{error}）',
+    'diag.noResult': '未产出有效结果（stopReason={stop}，正文 {len} 字符{error}）',
     'diag.noResultError': '，error={error}',
+    // 2026-09-26（tf-muigy5eq r12 实踩）：轮次按 completed 结束、正文却为 0 —— 推理模型「只吐 reasoning 的空收尾」。
+    // 单独给措辞的理由：它与 provider 报错长得完全一样（都是「未产出有效结果」），此前只能跳子代理会话原始记录才看得出。
+    'diag.emptyTurn': '轮次按「{stop}」结束但正文为空（0 字符）—— 多为推理模型只吐 reasoning 的空收尾（DeepSeek 实测）；自动重试通常能自愈，若反复出现换模型Routing',
     'diag.startFail': '启动/执行失败：{msg}',
     'diag.unretryable': '{label} 失败原因不可重试（{outcome}），跳过重试，需人工介入',
     'diag.aborted': '{label} 被外部中止（aborted），未正常产出——非预算问题；可 teamflow_resume 续跑（补跑失败任务，已完成任务复用）',
@@ -579,7 +582,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'diag.noGateEvidence': 'Fix round {round} ({n} blocking defect(s)) reported no class gate / hit counts in its evidence block (gate: / class sweep:) — the risk that the same defect class reappears on an uncovered surface is left to the re-verification round; cross-check its verdict',
     'diag.tooShortLog': '{label} output too short ({length} chars), failed substance validation',
     'diag.listNone': 'none',
-    'diag.noResult': 'no usable result produced (stopReason={stop}{error})',
+    'diag.noResult': 'no usable result produced (stopReason={stop}, body {len} chars{error})',
+    'diag.emptyTurn': 'turn finished as "{stop}" with empty body (0 chars) — typically a reasoning-only finish from a reasoning model (observed on DeepSeek); the automatic retry normally recovers, change the model routing if it repeats',
     'diag.noResultError': ', error={error}',
     'diag.startFail': 'failed to start/execute: {msg}',
     'diag.unretryable': '{label} failure reason is not retryable ({outcome}); skipping retries, human intervention required',
