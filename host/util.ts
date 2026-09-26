@@ -446,6 +446,28 @@ export function stageDocText(
   return best
 }
 
+/**
+ * **空收尾兜底判定**（A 档止损，2026-09-27；纯函数——runner 链宿主私有 peer 不可 import，
+ * 可测逻辑下沉 util 是既定纪律，见 cancel.test.js 头注释）。
+ *
+ * 推理模型空收尾（DeepSeek 实测：`finish kind=stop`，reasoning 之后、正文之前被服务端收尾）
+ * 此前一律整轮重跑（一次 ≈ 150 万 token）。判定：`stop==='completed'` 且正文为空且任务夹产物
+ * 已落盘达下限 → 返回该产物（判交付依据，返回值用文件内容顶替空回复）；其余一律 null
+ * （照旧走失败/重试）。⚠️ 边界（tf-muigy5eq r12 实测）：空收尾死在写文件**之前**时不命中
+ * （产物不存在）→ 照旧重跑；「干到一半死掉」须 continuable 续跑（docs/TODO.md B 档立项）。
+ */
+export function emptyTurnDocVerdict(
+  stop: unknown,
+  text: unknown,
+  min: number,
+  doc: { name: string; text: string; length: number } | null | undefined,
+): { name: string; text: string; length: number } | null {
+  if (stop !== 'completed' || text) return null
+  // 空文件绝不可能是交付物（行为级测试实锤边界：min=0 时 0>=0 会误判）——length 必须为正
+  if (!doc || doc.length <= 0 || !(doc.length >= min)) return null
+  return doc
+}
+
 /* ── QA 轮次收敛的**埋点**（D 方案 2026-09-15：先测量，再决定要不要动状态机语义） ──────────
  * 背景：52 个历史 run 里「真正需要第 3 轮修复」从未发生，而「同一缺陷原样复现就早停」这条判据
  * **按缺陷 id 判不出来**——QA 每轮重新编号（实锤 r9：`QA-*` → `R2-*` → `R3-*`）。

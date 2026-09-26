@@ -5,7 +5,7 @@
 import { runtime, providerName, trackInFlight, untrackInFlight } from './context.ts'
 import { accumulateSessionUsage, freshTokensOf, effectiveFreshBudget } from './metering.ts'
 import { startStageGuard } from './guard.ts'
-import { clip, extractText, blockShape, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs, stageDocText } from '../util.ts'
+import { clip, extractText, blockShape, emptyTurnDocVerdict, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs, stageDocText } from '../util.ts'
 import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../constants.ts'
 import { t, type HostLocale } from '../locales.ts'
 import { runLocaleOf } from './locale.ts'
@@ -193,15 +193,15 @@ export async function runAgent(
     }
     // **空收尾的文件兜底**（2026-09-27，A 档止损）：`completed` + 0 字符 = 推理模型空收尾（DeepSeek 实测：
     // reasoning 之后、正文之前被服务端收尾）。doc 类阶段「文件即产物」——若任务夹产物已落盘且达下限，
-    // 没理由因「没说话」整轮重跑（重跑 ≈ 150 万 token）。⚠️ 边界（tf-muigy5eq r12 实测）：这次空收尾
-    // 死在写报告**之前**（全程只写了验证脚本），文件不存在 → 兜底不命中 → 照旧重跑。它救的是
-    // 「文件已合格、只差说话」的变体；「干到一半死掉」要 continuable 续跑（docs/TODO.md 立项）。
+    // 没理由因「没说话」整轮重跑（重跑 ≈ 150 万 token）。判定核心在 util.emptyTurnDocVerdict（纯函数，
+    // 行为级测试锁得住——runner 链宿主私有 peer 不可 import）。⚠️ 边界（tf-muigy5eq r12 实测）：空收尾
+    // 死在写报告**之前**（全程只写了验证脚本）时不命中 → 照旧重跑。它救的是「文件已合格、只差说话」的
+    // 变体；「干到一半死掉」要 continuable 续跑（docs/TODO.md 立项）。
     // 返回值用**文件内容**顶替空回复：timeline 存产物全文（与 resume 复用同构）；state 块不在文件里
     // 则 mergeStageState 自然跳过（宽容语义），不破坏下游。
     let emptyTurnDoc: { name: string; text: string; length: number } | null = null
     if (!text && stop === 'completed') {
-      const doc = stageDocText(journal, phase)
-      if (doc && doc.length >= verdict.min) emptyTurnDoc = doc
+      emptyTurnDoc = emptyTurnDocVerdict(stop, text, verdict.min, stageDocText(journal, phase))
     }
     if (journal.cancelled) {
       stage.status = 'cancelled'; stage.outcome = 'cancelled'
