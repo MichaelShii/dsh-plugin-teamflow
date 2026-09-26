@@ -1370,8 +1370,12 @@ export async function executePipeline(
           journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.docsIgnored', { list: docPlan.ignored.join(', ') }) })
         }
         if (docPlan.args.length) {
-          gitRun(journal.workspacePath, docPlan.args)
-          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.docsAdded', { list: docPlan.args.slice(2).join(', ') }) })
+          // 结果必须可见（2026-09-26）：未知状态下我们照常尝试入库，git 若以「被忽略」拒绝，
+          // 这里转述 git 的原话并降级为 warn——绝不能在 add 失败时仍写「已入库」。
+          const docAdd = gitRun(journal.workspacePath, docPlan.args)
+          const list = docPlan.args.slice(2).join(', ')
+          if (docAdd.ok) journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.docsAdded', { list }) })
+          else journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.docsAddFail', { list, msg: docAdd.error || 'git add failed' }) })
         }
         const addR = gitRun(journal.workspacePath, tfAddArgs())
         noteLogsUnstaged(journal, gitRun(journal.workspacePath, tfUnstageArgs()), locale) // 索引兜底（幂等）

@@ -130,6 +130,9 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.logsPruned': '已淘汰旧日志归档 {n} 个（每个工作区保留最近 {keep} 次 run）',
     'log.docsIgnored': '任务夹被本仓库 .gitignore 忽略 → 未入库（{list}）；产物仍在工作区，需要入库请自行 add',
     'log.docsAdded': '交付文档已入库：{list}',
+    // 2026-09-26：add 结果必须可见。unknown（查不到忽略状态）时我们照常尝试入库，
+    // 若 git 仍以「被 .gitignore 忽略」拒绝，这里要把 git 的原话打出来，而不是谎报「已入库」。
+    'log.docsAddFail': '交付文档入库失败（未入库，产物仍在工作区）：{list}｜{msg}',
     'log.commitDone': '统一收口提交完成（代码 + 任务夹产物，验收通过后一个 commit）',
     'log.commitSkip': '统一收口提交：无待提交改动（跳过）',
     'log.commitFail': '统一收口提交失败（忽略）：{msg}',
@@ -511,6 +514,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.logsPruned': 'Pruned {n} old run-log archive(s), keeping the latest {keep} runs per workspace',
     'log.docsIgnored': 'Task folder is ignored by this repo\'s .gitignore → not committed ({list}); artifacts stay in the workspace — run git add yourself if you want them tracked',
     'log.docsAdded': 'Deliverable docs committed: {list}',
+    'log.docsAddFail': 'Failed to stage deliverable docs (not committed; artifacts stay in the workspace): {list} | {msg}',
     'log.commitDone': 'Unified closing commit done (code + task-folder artifacts, one commit after acceptance)',
     'log.commitSkip': 'Unified closing commit: nothing to commit (skipped)',
     'log.commitFail': 'Unified closing commit failed (ignored): {msg}',

@@ -222,6 +222,10 @@ ok(/LOG_LIFECYCLE/.test(promptsSrc) && /TRANSIENT scratch inside the project/.te
 ok(/persistRunLog/.test(storeSrc) && /runLogFile/.test(storeSrc), 'host 端 run 日志落归档位')
 ok(/runLogArchiveDir\(journal\)/.test(storeSrc) && /logsArchiveRoot/.test(storeSrc), 'store：归档落点 = $DSH_HOME/teamflow/<workspace>/logs/<runId>（日志根离开用户项目）')
 ok(/archiveRunLogs\(journal, locale\)/.test(pipelineSrc) && /sweepWorkspaceLogs\(journal, locale\)/.test(pipelineSrc), 'pipeline：终态归档 + 起跑清扫残留（自愈）')
+// 交付文档入库：尊重 .gitignore（不 -f）+ add 结果必须可见（2026-09-26 两条锁，缺一就会回到「静默」）
+// ① plan 侧永不出现 -f/-A；② 调用侧必须读 docAdd.ok——否则 add 失败仍写「已入库」，日志说谎比不写更糟。
+ok(/tfDocAddPlan\(/.test(pipelineSrc) && !/tfDocAddArgs/.test(pipelineSrc), 'pipeline：交付文档入库走 tfDocAddPlan（逐路径查忽略状态，不再 -f 强加）')
+ok(/const docAdd = gitRun\(journal\.workspacePath, docPlan\.args\)/.test(pipelineSrc) && /if \(docAdd\.ok\)[\s\S]{0,200}log\.docsAdded[\s\S]{0,200}log\.docsAddFail/.test(pipelineSrc), 'pipeline：文档 add 结果可见（失败降级 warn 转述 git 原话，不谎报已入库）')
 ok(/LOG_ARCHIVE_KEEP/.test(constantsSrc) && /LOG_ARCHIVE_KEEP/.test(hostSrc), 'constants：归档保留 K 次 run 的淘汰口径')
 ok(/function keepInArchive/.test(hostSrc) && /KEEP_EXT = \/\\\.\(mjs\|cjs\|js\|md\|sh\|ps1\|py\)\$\/i/.test(hostSrc) && /KEEP_NAME = 'captures\.json'/.test(hostSrc), 'runlogs：归档白名单（只留检查脚本/笔记 + captures.json）')
 ok(/keepInArchive\(rel\)/.test(hostSrc) && /are DROPPED|KEEP_EXT/.test(promptsSrc), 'runlogs/prompts：过滤语义与 prompt 声明一致（dump 不留存）')
