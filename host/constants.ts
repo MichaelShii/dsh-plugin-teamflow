@@ -20,6 +20,26 @@ export const QA_REWORK_LIMIT = 2
  * → 200k ≈ 允许 RETRY_LIMIT 的两轮尝试各留余量，只在该量级的 3 倍以上（真跑飞）才熔断。
  */
 export const FRESH_TOKEN_BUDGET = 200000
+/**
+ * dev 阶段并发池上限（runPool 硬顶）。三个归一入口共用（`util.sanitizeSnapOptions` /
+ * `pipeline` 选项归一 / journal options 归一），防多处硬编码漂移（2026-09-26 复核修复：
+ * 原先 `Math.min(..., 8)` 在 3 处各自硬编码）。
+ */
+export const DEV_MAX_CONCURRENCY = 8
+/** dev 阶段并发池默认值（未显式传 maxConcurrency 或非法时）。 */
+export const DEV_DEFAULT_CONCURRENCY = 3
+/**
+ * 内存 run 注册表（context.runs）保留的**终态** run 条数上限（2026-09-26）。
+ *
+ * 为什么要有：runs 只 set 不 delete（全仓 grep 实锤），且启动时 loadJournals 把**全部**历史灌进内存
+ * ——常驻宿主跨工作区单调增长（实测单 run journal 20–200KB：stages 数随 QA 打回追加、执行期日志无上限）。
+ * 磁盘（persistJournal）是权威，内存降级为「最近 N 条终态 + 全部活跃 run」的有界缓存；
+ * 被淘汰的 run 由 `context.getRun` 读磁盘回读（snapshot/status/stageDetail/resume 统一走它）。
+ *
+ * 取 100 而非 50：面板列表视图线为 30（index.list）/ 50（全局面板 runs），且按 workspace **分别**切——
+ * 多工作区并行时全局 keep 要留出各视图线的余量，100 × 200KB 最坏 20MB，可控。
+ */
+export const RUNS_MEMORY_KEEP = 100
 /** 任务夹产物展示顺序（ADR-0008）：工作台只列其中**真实存在**的文件，按此顺序出「一键右侧栏预览」按钮。 */
 export const TEAMFLOW_ARTIFACT_ORDER = ['PRD.md', 'DESIGN.md', 'TECHNICAL.md', 'QA-REPORT.md', 'ACCEPTANCE.md', 'meta.json']
 

@@ -4,15 +4,15 @@
  * 【档位阶段集】按 mode（full/medium/lite/tech/patch）经 STAGE_POLICY（constants.ts）
  * 展开实际执行阶段集（resolveStages），再与团队阶段取交集——见 ADR-0004。
  */
-import { runtime, runs, inFlight, activeProducts, providerName, workspaceScopeOf, installCtx } from './context.ts'
+import { runtime, runs, inFlight, activeProducts, providerName, workspaceScopeOf, installCtx, pruneRuns } from './context.ts'
 import { initPipelineBacklog, advanceTask, storeFor, parseDefectRows, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, createSubtask, completeSubtask, noteSubtaskUsage, getSubtasks, hasOpenBlockingBugs } from './backlog.ts'
 import { withRetry, resolveChildRoute } from './runner.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
 import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, devTaskIdAt, backfillDevTaskIds, artifactText, detectInstallEnv, mergeFileOverlaps, concurrentWriteConflicts, planDevWaves } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
-import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, FIX_GATE_PATTERN } from '../constants.ts'
-import { persistJournal, readJsonAny, journalFile, dshHome } from '../../store.ts'
+import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, PHASE_KEY_BY_NAME, PHASE_KEY_OF, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, FIX_GATE_PATTERN, DEV_MAX_CONCURRENCY, DEV_DEFAULT_CONCURRENCY } from '../constants.ts'
+import { persistJournal, loadJournalById, dshHome } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext, PipelineMode } from '../types.ts'
 import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, MODE_RANK, contractsForDeliverable, normalizeHost, forceHost, PLUGIN_ARTIFACTS, triageRecordOf, type TriageVerdict } from './triage.ts'
@@ -452,7 +452,7 @@ export async function executePipeline(
     }
   }
   const tasks = normalizeTasks(options.tasks)
-  const maxConcurrency = Number.isFinite(options.maxConcurrency) && options.maxConcurrency > 0 ? Math.min(options.maxConcurrency, 8) : 3
+  const maxConcurrency = Number.isFinite(options.maxConcurrency) && options.maxConcurrency > 0 ? Math.min(options.maxConcurrency, DEV_MAX_CONCURRENCY) : DEV_DEFAULT_CONCURRENCY
   const timeline: Record<string, unknown> = {}
   // 档位→阶段集（ADR-0004 差异执行的单一事实来源）：先按 mode + needDesign/needScaffold 展开，
   // 再与团队阶段列表取交集（团队可进一步裁剪）。取代散落的 if/else 阶段门控。
@@ -1364,6 +1364,9 @@ export async function executePipeline(
     try { archiveRunLogs(journal, locale) } catch (e) { /* 归档尽力而为，不影响收尾 */ }
     journal.result = { requirement, options: sanitizeSnapOptions(options), timeline: summarizeTimeline(timeline) }
     persistJournal(journal) // 终态 checkpoint（含日志刷新；阶段全文保留在磁盘+内存，供详情抽屉/断点续跑读取）
+    // 内存注册表有界化（2026-09-26）：终态已确认落盘（磁盘权威）→ 此刻 prune 是唯一安全时机，
+    // 只淘汰终态且未被 inFlight/activeProducts 引用的 run；被淘汰的由 context.getRun 读磁盘回读。
+    try { pruneRuns() } catch (e) { /* 淘汰尽力而为，不影响收尾 */ }
     // 孤儿收尾：run 异常/取消时把未到终态的 req/task 落成可见状态（中断不再永远 in-progress；cancelled 保留 resume 入口）
     try {
       const store = storeFor(scopeKey)
@@ -1444,7 +1447,7 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
       teamId: options.teamId || undefined,
       tasks: normalizeTasks(options.tasks),
       productRoot: normalizeRoot(options.productRoot),
-      maxConcurrency: (Number.isFinite(options.maxConcurrency) && options.maxConcurrency > 0) ? Math.min(options.maxConcurrency, 8) : null,
+      maxConcurrency: (Number.isFinite(options.maxConcurrency) && options.maxConcurrency > 0) ? Math.min(options.maxConcurrency, DEV_MAX_CONCURRENCY) : null,
       branchPolicy: options.branchPolicy || undefined,
       branchName: options.branchName || undefined,
       preAction: options.preAction || undefined,
@@ -1487,10 +1490,12 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
 export function resumeRun(runId: string | null | undefined, sessionId: string | null | undefined): { ok: boolean; runId?: string; resumedFrom?: string; error?: string } {
   const id = typeof runId === 'string' ? runId : null
   if (!id) return { ok: false, error: t(ambientLocale(), 'run.missingId') }
-  // 从磁盘加载完整 journal（内存版已裁剪 output，磁盘保留阶段产物全文）
+  // 从磁盘加载完整 journal（内存版已裁剪 output，磁盘保留阶段产物全文）。
+  // loadJournalById 双路径（per-project + 全局）——2026-09-26 修正：旧读法 journalFile(id) 只查全局
+  // runs/，per-project 新格式 journal 一直靠启动 loadJournals 的内存兜底才续得上（隐性缺口）。
   let j = null
   try {
-    const disk = readJsonAny(journalFile(id), null) as JournalRecord | null
+    const disk = loadJournalById(id) as JournalRecord | null
     if (disk && typeof disk === 'object' && disk.id === id) j = disk
   } catch (e) { /* 落到内存版 */ }
   if (!j) j = runs.get(id)

@@ -1,7 +1,7 @@
 /**
  * dsh-plugin-teamflow — 通用纯工具（底座；依赖 constants.ts，无其他依赖）。
  */
-import { REFUSAL_PATTERN, STAGE_MIN_LENGTH, DELIVERY_EVIDENCE_PATTERN } from './constants.ts'
+import { REFUSAL_PATTERN, STAGE_MIN_LENGTH, DELIVERY_EVIDENCE_PATTERN, DEV_MAX_CONCURRENCY } from './constants.ts'
 import { readdirSync, statSync, existsSync, readFileSync } from 'node:fs'
 import { t } from './locales.ts'
 import type { HostLocale } from './locales.ts'
@@ -261,7 +261,7 @@ export function sanitizeSnapOptions(o) {
     lite: opts.lite === true,
     mode: (typeof opts.mode === 'string' && opts.mode) ? opts.mode : undefined,
     productRoot: typeof opts.productRoot === 'string' ? opts.productRoot : null,
-    maxConcurrency: (Number.isFinite(opts.maxConcurrency) && opts.maxConcurrency > 0) ? Math.min(opts.maxConcurrency, 8) : null,
+    maxConcurrency: (Number.isFinite(opts.maxConcurrency) && opts.maxConcurrency > 0) ? Math.min(opts.maxConcurrency, DEV_MAX_CONCURRENCY) : null,
     tasks: Array.isArray(opts.tasks) ? opts.tasks.map((t) => ({ title: String((t && t.title) || ''), spec: String((t && t.spec) || '') })) : [],
   }
 }

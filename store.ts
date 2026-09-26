@@ -418,6 +418,31 @@ export function persistJournal(journal: JournalRecord): boolean {
 }
 
 /**
+ * 按 id 从磁盘读**单个** journal（2026-09-26）：先扫 per-project `$DSH_HOME/teamflow/<project>/runs/`，
+ * 再查全局 `$DSH_HOME/teamflow/runs/`（与 persistJournal 的写路径一一对应）。
+ * 用途：① 内存 run 注册表淘汰后的回读（context.getRun 统一入口）；
+ * ② resume 的权威磁盘读——旧实现只查全局路径（journalFile），per-project 新格式 journal
+ *    一直靠启动时 loadJournals 的内存兜底才续得上（隐性缺口，此处一并修正）。
+ * runId 必须通过 `^[A-Za-z0-9-]+$` 白名单（journal.id 形如 tf-xxx-xxx），防路径拼接注入。
+ */
+export function loadJournalById(runId: string): JournalRecord | null {
+  if (!runId || !/^[A-Za-z0-9-]+$/.test(runId)) return null
+  try {
+    const root = teamflowRoot()
+    if (existsSync(root)) {
+      for (const d of readdirSync(root)) {
+        const p = join(root, d, 'runs', `${runId}.json`)
+        if (!existsSync(p)) continue
+        const j = readJsonAny<JournalRecord | null>(p, null)
+        if (j && typeof j === 'object' && j.id === runId) return j
+      }
+    }
+    const j = readJsonAny<JournalRecord | null>(journalFile(runId), null)
+    return j && typeof j === 'object' && j.id === runId ? j : null
+  } catch (e) { return null }
+}
+
+/**
  * 启动时扫描磁盘 journal：
  * - 全局 $DSH_HOME/teamflow/runs/（兼容旧格式）
  * - 各 per-project $DSH_HOME/teamflow/<project>/runs/（新格式）

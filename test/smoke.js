@@ -202,7 +202,7 @@ ok(/FRESH_TOKEN_BUDGET = 200000/.test(constantsSrc), '熔断预算=新增 token 
 ok(/function isUnretryable/.test(utilSrc), 'context-limit 类失败不重试')
 ok(/activeProducts/.test(hostSrc) && /已有流水线/.test(hostSrc), '产品级并发限制（防 req 状态互踩）')
 ok(/summarizeTimeline\(/.test(hostSrc) && !/delete s\.output/.test(hostSrc), '终态 checkpoint 不再删 stage.output —— 保留全文供 detail 抽屉/断点续跑读取')
-ok(/readJsonAny\(journalFile\(id\)/.test(hostSrc), 'resume 从磁盘加载完整 journal')
+ok(/loadJournalById\(id\)/.test(hostSrc) && /export function loadJournalById/.test(storeSrc), 'resume 从磁盘加载完整 journal（双路径：per-project + 全局）')
 
 console.log('── 3e) 工作区隔离 + 单任务模型 + 真实 token（v0.9）──')
 const contextSrc = readFileSync(join(here, '../host/core/context.ts'), 'utf8')

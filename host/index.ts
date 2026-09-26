@@ -26,7 +26,7 @@ import type {
 import { RETRY_LIMIT, STATUS, PHASE_ORDER, PHASE_KEY_OF, PHASE_KEY_BY_NAME, phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER } from './constants.ts'
 import { toText, clip, extractText, normalizeRoot, normalizeTasks, sanitizeSnapOptions, normalizeSignal, isUnretryable, handoffBrief, runPool } from './util.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, devPrompt, qaPrompt, acceptancePrompt } from './prompts/index.ts'
-import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, setSessionProjections, setInstallCtx, workspaceScopeOf } from './core/context.ts'
+import { runtime, runs, inFlight, activeProducts, providerName, setRuntime, setSessionProjections, setInstallCtx, workspaceScopeOf, getRun } from './core/context.ts'
 import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/backlog.ts'
 import { runsFor, runAddress, productKeyOf, runVisibleIn, runBrief, productMetaOf, listProducts } from './core/products.ts'
 import { loadTeams, findTeam, teamNameOf, teamDescOf, type TeamConfig } from './core/teams.ts'
@@ -452,7 +452,7 @@ function registerTools(ctx) {
       const sc = workspaceScopeOf(exec && exec.agent)
       if (!sc.path) throw new Error(t(ambientLocale(), 'err.tool.noWorkspace'))
       const key = sc.projectKey
-      const target = (typeof args.runId === 'string' && args.runId) ? runs.get(args.runId)
+      const target = (typeof args.runId === 'string' && args.runId) ? getRun(args.runId)
         : [...runs.values()].filter((j) => j.workspace === key && j.status === 'completed').sort((a, b) => (b.endedAt || 0) - (a.endedAt || 0))[0]
       if (!target) throw new Error(t(ambientLocale(), 'err.tool.noCompletedRun'))
       const branch = gitCmd(sc.path, ['rev-parse', '--abbrev-ref', 'HEAD'])
@@ -512,7 +512,7 @@ function registerTools(ctx) {
     async execute(args, exec) {
       const id = args && typeof args.runId === 'string' ? args.runId : null
       if (id) {
-        const j = runs.get(id)
+        const j = getRun(id)
         if (!j) return { error: t(ambientLocale(), 'err.tool.runNotFound', { id }) }
         const running = j.status === 'running'
         return { runId: j.id, status: j.status, workspace: j.workspace || null, reminder: running ? t(ambientLocale(), 'tool.status.reminder') : null, snapshot: snapshotOf(j) }
@@ -776,7 +776,7 @@ export class TeamflowService extends TypertRemoteService {
     const key = productOverride ? productKeyOf(productOverride) : sessionScope(sessionId).projectKey
     if (!key) return null
     if (runId && typeof runId === 'string') {
-      const j = runs.get(runId)
+      const j = getRun(runId)
       if (!j) return null
       // 跨 workspace 的 run 不可见（除无工作区会话的 default 兜底）
       if (!runVisibleIn(j, key)) return null
@@ -784,7 +784,7 @@ export class TeamflowService extends TypertRemoteService {
     }
     const latest = runsFor(key)[0]
     if (!latest) return null
-    const j = runs.get(latest.id)
+    const j = getRun(latest.id)
     return j ? snapshotOf(j) : null
   }
 
@@ -795,7 +795,7 @@ export class TeamflowService extends TypertRemoteService {
     if (typeof runId !== 'string' || !runId || seq === undefined || seq === null) return null
     const key = productOverride ? productKeyOf(productOverride) : sessionScope(sessionId).projectKey
     if (!key) return null
-    const j = runs.get(runId)
+    const j = getRun(runId)
     if (!j) return null
     // 跨 workspace 的 run 不可见（同 snapshot 守卫）
     if (!runVisibleIn(j, key)) return null

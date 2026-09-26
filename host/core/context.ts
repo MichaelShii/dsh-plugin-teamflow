@@ -4,9 +4,11 @@
  * - runs/inFlight/activeProducts：流水线运行期 Map（跨 runner/pipeline/report/服务共享）。
  * 这是 ADR-0004「共享状态」在编排层的落点：共享对象集中、单向被 core 各模块 import（不反向）。
  */
-import { slugPath, persistJournal } from '../../store.ts'
+import { slugPath, persistJournal, loadJournalById } from '../../store.ts'
+import type { JournalRecord } from '../../store.ts'
 import { t } from '../locales.ts'
 import { runLocaleOf } from './locale.ts'
+import { RUNS_MEMORY_KEEP } from '../constants.ts'
 
 /** 子代理/计量等宿主能力（由 TeamflowService 装配时 setRuntime 注入）。字段为鸭子类型：消费方自行窄化。 */
 export const runtime: {
@@ -75,6 +77,56 @@ export function untrackInFlight(runId: unknown, stage: unknown): void {
 export const stores = new Map()
 /** 产品级并发锁：product → 活跃 runId（同一产品同时只允许一条流水线）。 */
 export const activeProducts = new Map()
+
+/**
+ * **可淘汰 runId 决策**（纯决策，不动 Map；2026-09-26）。
+ *
+ * 背景：`runs` 只 set 不 delete（全仓 grep 实锤）+ 启动时 loadJournals 全量灌入 → 常驻宿主
+ * 跨工作区单调增长。磁盘（persistJournal）才是权威，内存降级为「最近 N 条终态 + 全部活跃」的
+ * 有界缓存。淘汰只针对**终态且已落 endedAt** 的 run——running（cancelRun 门禁只认它）与
+ * 活跃引用（inFlight 的 key / activeProducts 的值）一律保护。
+ *
+ * 决策与执行分离的原因同 `judgeDeliverable` 下沉：pipeline 链到宿主私有 peer 测不到，
+ * 这里可被行为级测试直接锁真值表。
+ *
+ * @param keep 保留的最近终态条数（按 endedAt 降序）
+ * @returns 可安全从 runs 中删除的 runId 列表
+ */
+export function evictableRunIds(keep: number): string[] {
+  if (!(keep > 0)) return []
+  const protectedIds = new Set<string>()
+  for (const id of inFlight.keys()) protectedIds.add(String(id))
+  for (const id of activeProducts.values()) protectedIds.add(String(id))
+  const terminal: Array<{ id: string; endedAt: number; locked: boolean }> = []
+  for (const [id, j] of runs) {
+    const rec = j as { status?: unknown; endedAt?: unknown }
+    if (!rec || rec.status === 'running' || rec.endedAt == null) continue
+    // 受保护 run 仍占排序位（不因保护而「让坑」）：否则活跃 run 挡住最新槽位时，
+    // 比它更旧的终态 run 会永远留在内存——与「最近 keep 条终态 + 全部活跃」的契约相悖。
+    terminal.push({ id, endedAt: Number(rec.endedAt) || 0, locked: protectedIds.has(id) })
+  }
+  terminal.sort((a, b) => b.endedAt - a.endedAt)
+  return terminal.slice(Math.floor(keep)).filter((x) => !x.locked).map((x) => x.id)
+}
+
+/** 执行淘汰（在终态 checkpoint 落盘**之后**调用——磁盘确认写完才允许内存放手）。 @returns 实际淘汰条数。 */
+export function pruneRuns(keep: number = RUNS_MEMORY_KEEP): number {
+  const ids = evictableRunIds(keep)
+  for (const id of ids) runs.delete(id)
+  return ids.length
+}
+
+/**
+ * 读 run 的统一入口：内存未命中 → 磁盘回读（**不回填** runs——回填会让「浏览历史 run」重新撑大
+ * 内存，有界性破产；resume 需要驻留时自己显式 runs.set，snapshot/status 等只读场景每次小文件读盘即可）。
+ * runId 白名单校验在 store.loadJournalById 内做（防路径拼接注入）。
+ */
+export function getRun(id: unknown): JournalRecord | null {
+  if (typeof id !== 'string' || !id) return null
+  const hit = runs.get(id)
+  if (hit) return hit as JournalRecord
+  return loadJournalById(id)
+}
 
 /**
  * 取消运行（只对**本进程正在跑**的 run 有效：置 cancelled + dispose 进行中的子代理）。
