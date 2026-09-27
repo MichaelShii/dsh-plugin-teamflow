@@ -39,6 +39,16 @@ silence it with a disable comment.
 (quotes, semicolons, trailing commas, trailing spaces, brace spacing, arrow parens, indentation) in
 place. Only the non-fixable ones — most notably `max-len` — still need a human decision, and there
 is **no code formatter** in this repo (no Prettier), so long lines are not wrapped automatically.
+The command runs the fixer **twice** on purpose: overlapping JS-plugin fixes leave one more fixable
+diagnostic after the first pass (`semi` is only removed after `quotes` has rewritten the line).
+
+### Git hook (lefthook)
+
+`pnpm install` installs a `pre-commit` hook through `postinstall`. On every commit it runs the same
+fixer over **staged files only** and re-stages whatever it changed, so contributions land already
+formatted instead of bouncing off CI for style. It also runs `git diff --cached --check` for
+whitespace errors. CI installs with `--ignore-scripts`, so the hook is local-only — the
+repository-wide gate is still `pnpm lint` in CI.
 
 Note that oxlint walks **untracked files too**: scratch directories left in your working tree can
 fail your local run even though CI (which only sees the commit) is green. Commit-time scope is

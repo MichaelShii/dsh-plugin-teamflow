@@ -10,3 +10,7 @@ autoInstallPeers: false
 #   时使用扁平布局（类似 npm），无需 SeCreateSymbolicLinkPrivilege；
 #   仍是 pnpm 管理 + 同一 pnpm-lock.yaml，可无缝切回默认（删除本行即可）。
 nodeLinker: hoisted
+# allowBuilds: pnpm 11 默认不跑依赖的构建脚本。lefthook 的构建脚本 = 下载对应平台的二进制，
+#   不跑它就没有 lefthook 可执行文件。CI 用 `--ignore-scripts` 安装，不受此影响。
+allowBuilds:
+  lefthook: true

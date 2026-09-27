@@ -1,0 +1,22 @@
+# Git hooks (lefthook). Local checkpoint only — CI owns the repository-wide gate
+# (`.github/workflows/ci.yml`). Installed automatically by the `postinstall` script.
+#
+# Why the formatter runs here too: this repo is developed agent-first, and agents write
+# files directly — they never read `.editorconfig`. So the only thing that can keep style
+# consistent is a fixer that actually runs. `pnpm format` does it for the whole tree;
+# this job does it for whatever you are about to commit, and re-stages what it fixed.
+#
+# Config reference: https://lefthook.dev/configuration/
+
+pre-commit:
+  parallel: true
+  commands:
+    format:
+      glob: '*.{ts,tsx,js,mjs}'
+      # Two passes on purpose: overlapping JS-plugin fixes expose one more fixable
+      # diagnostic after the first pass (e.g. `semi` is only removed once `quotes`
+      # has been rewritten). Second pass's exit code decides whether the commit is blocked.
+      run: node node_modules/oxlint/bin/oxlint --fix {staged_files} || node node_modules/oxlint/bin/oxlint --fix {staged_files}
+      stage_fixed: true
+    whitespace:
+      run: git diff --cached --check
