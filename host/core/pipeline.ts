@@ -680,7 +680,14 @@ export async function executePipeline(
       const wsCwd = workspaceScopeOf(parent).path
       const sanity = runSanityCheck(wsCwd, locale)
       state.__runCtx = { ...(state.__runCtx || {}), sanity: sanity.summary }
-      journal.sanity = { ok: sanity.ok, branch: sanity.branch, hasDirty: sanity.hasDirty, dirty: sanity.dirty.slice(0, 1000), recentCommits: sanity.recentCommits.slice(0, 1000), summary: sanity.summary }
+      journal.sanity = {
+        ok: sanity.ok,
+        branch: sanity.branch,
+        hasDirty: sanity.hasDirty,
+        dirty: sanity.dirty.slice(0, 1000),
+        recentCommits: sanity.recentCommits.slice(0, 1000),
+        summary: sanity.summary,
+      }
       if (sanity.hasDirty || !sanity.ok) {
         journal.logs.push({ t: Date.now(), level: 'warn', message: sanity.summary })
       } else {
@@ -1168,7 +1175,7 @@ export async function executePipeline(
         qaRoundEntry.gate = fixGate
         noteTaskStageUsage(journal) // 修复子代理真实 usage 累计到任务卡
         if (journal.cancelled) return { cancelled: true, qa, qaBlocked }
-      } while (true) // oxlint-disable-line no-constant-condition -- 有界循环：round > QA_REWORK_LIMIT → break（勿改 while 形态，见评估「未发现无界循环」）
+      } while (true) // 有界循环：round > QA_REWORK_LIMIT → break（勿改 while 形态，见评估「未发现无界循环」）
       if (!qaBlocked && qaClean) {
         verifyReqBugs(journal) // 复验通过 → 关闭全部 open 缺陷
         advanceTask(journal, 'pending-acceptance', snippet(qa, 3000), t(locale, 'event.qaPass'), { by: 'qa' })

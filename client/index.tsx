@@ -551,7 +551,7 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
           h('span', { style: { color: stColor(sub.status), fontWeight: 600, minWidth: 12, flex: '0 0 auto' } }, sub.status === 'done' ? '✓' : sub.status === 'failed' ? '✗' : sub.status === 'running' ? '⟳' : '…'),
           h('span', { title: sub.title || undefined, style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, (sub.title || '').replace(/^开发 · /, '')),
           sub.devAssign ? h('span', { title: t('board.assignDevTip', { who: sub.devAssign }), style: { flex: '0 1 auto', color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 70, minWidth: 0, whiteSpace: 'nowrap' } }, sub.devAssign) : null,
-        ))
+        )),
       )
     })() : null,
   )

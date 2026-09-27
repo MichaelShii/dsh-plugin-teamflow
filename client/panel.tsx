@@ -755,7 +755,14 @@ export function GlobalPanel(props) {
       h('span', null, hint),
       h('button', { style: panelBtn, onClick: () => setHint(null) }, t('common.gotIt'))) : null,
     h('div', { style: { flex: 1, minHeight: 0, display: 'flex', position: 'relative' } },
-      h(ProductRail, { products: state.products, current: state.current, loadingKey: state.view ? null : state.current, busy: state.busy, onRefresh: () => loadProducts(state.current), onSelect: selectProduct }),
+      h(ProductRail, {
+        products: state.products,
+        current: state.current,
+        loadingKey: state.view ? null : state.current,
+        busy: state.busy,
+        onRefresh: () => loadProducts(state.current),
+        onSelect: selectProduct,
+      }),
       h('div', { style: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' } },
         !state.current
           ? h('div', { style: { padding: '12px 14px' } }, muted(t('panel.pickProduct')))

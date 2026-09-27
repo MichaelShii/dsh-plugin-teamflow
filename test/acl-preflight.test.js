@@ -42,12 +42,12 @@ ok(/status === 'failed'[\s\S]*?journal\.status = 'failed'[\s\S]*?persistJournal\
 console.log('[2] SID 同源：与宿主 materializeAclGrant 同 SID 同路径')
 ok(pfSrc.includes('aclMod.workspaceWriteSid(root)'), 'SID 来自宿主包的 workspaceWriteSid（确定性派生，宿主 exact-ACE skip 生效的前提）')
 ok(pfSrc.includes('realpathSync.native'), 'root 经 realpathSync.native 规范化（与宿主 sandbox-policy 同口径）')
-ok(pfSrc.includes("add(root, true)"), 'grant 以 standing 形态物化（dispose 不回收，等价宿主 workspace grant 语义）')
+ok(pfSrc.includes('add(root, true)'), 'grant 以 standing 形态物化（dispose 不回收，等价宿主 workspace grant 语义）')
 ok(pfSrc.includes('(OI)(CI)(WO)'), '修复 ACE 是 (OI)(CI)(WO)（仅 WRITE_OWNER，无需提权）')
 ok(!pfSrc.includes('(OI)(CI)F'), '修复 ACE 不是 F（最小权限：只补缺的 WRITE_OWNER 位）')
 
 console.log('[3] 失败语义：给用户的命令可复制、错误原文透传')
-ok(pfSrc.includes("icacls"), 'fix 命令基于 icacls')
+ok(pfSrc.includes('icacls'), 'fix 命令基于 icacls')
 ok(pfSrc.includes("'%USERNAME%'"), '账号解析失败时退 %USERNAME% 占位（命令仍可直接执行）')
 
 console.log('[4] locale 三键 zh/en 对称')

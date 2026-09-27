@@ -30,10 +30,10 @@ const negated = `## 验收结论：通过
 不存在需求与实际不符、需求站不住的情形，本轮为有效修复，全部验证通过。`
 expect(parseAcceptanceVerdict(negated), 'accepted', '正文否定式「需求与实际不符」不触发 reject')
 
-const passWithChg = `## 验收结论：✅ 通过（其他模块代码无需改动，均可继续）`
+const passWithChg = '## 验收结论：✅ 通过（其他模块代码无需改动，均可继续）'
 expect(parseAcceptanceVerdict(passWithChg), 'accepted', '结论行含「通过」+「无需改动」→ accepted（通过词优先）')
 
-const noConclusion = `主体内容未按格式写结论行。需求无效这类词出现在正文讨论里，不应判拒绝。`
+const noConclusion = '主体内容未按格式写结论行。需求无效这类词出现在正文讨论里，不应判拒绝。'
 expect(parseAcceptanceVerdict(noConclusion), 'needs-human', '无结论行 → needs-human（不再默认 accepted——防漏报，需人工确认）')
 
 console.log('── 章节标题蒙蔽结论行（2026-09-17 实测 bug，tf-mu4bve7t-duux2k）──')
@@ -115,7 +115,7 @@ expect(extractBlueprint('没有蓝图块'), null, '无蓝图块 → null')
 expect(extractBlueprint('<!-- blueprint -->{bad json}<!-- /blueprint -->'), null, '非法 JSON → null')
 
 console.log('── 回归：蓝图「顶层值提前闭合」抢救（实锤 tf-mt85o5jj：duplications 后多一个 }，tasks 被判为块外内容 → 静默回退整体开发）──')
-const broken = `<!-- blueprint -->{"summary":"踢墙开关","modules":{"/game.js":{"responsibility":"引擎","why":"状态闭环"}},"duplications":["与 ghost/BGM 开关模式不同，需 README 标注"]},"tasks":[{"title":"T1: game.js 引擎踢墙开关","files":["/game.js"],"spec":"偏移表+开关"},{"title":"T2: ui.js 面板开关","files":["/ui.js"],"spec":"开关控件"}]}<!-- /blueprint -->`
+const broken = '<!-- blueprint -->{"summary":"踢墙开关","modules":{"/game.js":{"responsibility":"引擎","why":"状态闭环"}},"duplications":["与 ghost/BGM 开关模式不同，需 README 标注"]},"tasks":[{"title":"T1: game.js 引擎踢墙开关","files":["/game.js"],"spec":"偏移表+开关"},{"title":"T2: ui.js 面板开关","files":["/ui.js"],"spec":"开关控件"}]}<!-- /blueprint -->'
 const bdb = extractBlueprint(broken)
 expect(bdb !== null, true, '提前闭合的畸形蓝图可被抢救（不再回退 null）')
 expect((bdb && bdb.tasks ? bdb.tasks.length : -1), 2, '抢救后 tasks 不丢失（并行拆解保住）')

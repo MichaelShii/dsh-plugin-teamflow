@@ -433,7 +433,7 @@ console.log('── 3o-2) 客户端双语（v0.1.9：走宿主 locale 服务，�
   const enKeys = keysOf(enBlock)
   ok(zhKeys.length >= 180 && new Set(zhKeys).size === zhKeys.length, `词典 zh 无重复 key（${zhKeys.length} 条）`)
   // en 是兜底语言：缺 key 会直接显示 key 本身（用户看到 raw key），故两侧必须逐条同形
-  ok(zhKeys.length === enKeys.length && zhKeys.every((k, i) => k === enKeys[i]), `词典 zh/en key 集合完全一致（en 漏 key 会显示 raw key）`)
+  ok(zhKeys.length === enKeys.length && zhKeys.every((k, i) => k === enKeys[i]), '词典 zh/en key 集合完全一致（en 漏 key 会显示 raw key）')
   ok(/export const NS = 'teamflow'/.test(localesSrc), 'locales：命名空间常量 NS（单占位命名空间）')
   // 占位符必须两侧一致：某侧漏了 {n}（或写错名字）→ 该语言下参数不被替换，界面出现残缺句子/裸 {}
   const pairsOf = (block) => [...block.matchAll(/^\s*'([^']+)':\s*'((?:[^'\\]|\\.)*)',/gm)].map((m) => [m[1], m[2]])

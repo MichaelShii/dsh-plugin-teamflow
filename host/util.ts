@@ -592,6 +592,7 @@ export function refusalHit(text: string | null | undefined): { phrase: string; c
 export function classifyExternalFailure(text: string | null | undefined, hint?: string | null): 'external' | 'content' | 'unknown' {
   const s = `${String(text || '')} ${String(hint || '')}`
   if (!s.trim()) return 'unknown'
+  // oxlint-disable-next-line @stylistic/max-len
   const external = /(?:\b429\b|\b402\b|rate[ _-]?limit|too many requests|insufficient[ _-]?(?:balance|quota|funds)|quota|exceeded[ _-]?(?:your[ _-]?)?(?:quota|limit|rate)|no[ _-]?(?:available[ _-]?)?(?:quota|balance|credit)|out of credit|billing|payment required|overload|temporarily unavailable|service unavailable|\b50[234]\b|upstream|gateway timeout|\b52[0-9]\b|timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|fetch failed|network error|限流|限速|频率限制|请求过于频繁|额度|配额|余额不足|欠费|无额度|暂时不可用|服务不可用|上游不可用|超时|网络错误|连接被重置|过载|供应商)/i.test(s)
   if (external) return 'external'
   const content = /context[ _-]?(?:window|length)|too many tokens|maximum context|prompt is too long|上下文(?:长度|超限|耗尽)|护栏|degenerated|stalled|insufficient output|too short|产出过短/i.test(s)
@@ -1245,7 +1246,15 @@ const RETRY_SUFFIX_LOCAL = /(?:（(?:第 \d+ 次重试|补跑)）| \((?:retry \d
  * `backfillDevTaskIds` 给存量 stage 补算 id（用蓝图 title 结构化匹配），之后本函数只看到 id。
  * **判定逻辑因此始终只有一个键空间**，不做"双键匹配"、不切分 title。
  */
-export function devTaskStatuses(stages: Array<{ taskKey?: string | null; taskIds?: string[] | null; label?: string; seq?: number; status?: string }>): Map<string, { done: boolean; lastStatus: string | null; lastSeq: number }> {
+type DevStageRow = {
+  taskKey?: string | null
+  taskIds?: string[] | null
+  label?: string
+  seq?: number
+  status?: string
+}
+type DevTaskStatus = { done: boolean; lastStatus: string | null; lastSeq: number }
+export function devTaskStatuses(stages: Array<DevStageRow>): Map<string, DevTaskStatus> {
   const m = new Map<string, { done: boolean; lastStatus: string | null; lastSeq: number }>()
   for (const s of stages || []) {
     const ids = Array.isArray(s.taskIds)

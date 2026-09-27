@@ -611,7 +611,9 @@ export async function runTriage(
   signal?: unknown,
   locale: HostLocale = 'zh',
 ): Promise<TriageVerdict> {
-  const subagents = runtime.subagents as { start?: (provider: string, init: unknown) => Promise<{ result: Promise<{ output?: unknown; stopReason?: string }>; dispose?: () => Promise<void> | void }> } | undefined
+  type Started = { result: Promise<{ output?: unknown; stopReason?: string }>; dispose?: () => Promise<void> | void }
+  type Starters = { start?: (provider: string, init: unknown) => Promise<Started> }
+  const subagents = runtime.subagents as Starters | undefined
   if (!subagents || typeof subagents.start !== 'function') return fallbackVerdict(requirement, opts, locale, 'subagents service unavailable')
   const pre = suggestMode(requirement, opts, locale)
   let lastReason = ''

@@ -107,7 +107,7 @@ if (hasUiWorkspaceUse) {
   else bad("用了 uiWorkspace 但没人 inject 'uiWorkspace'", 'inject 声明缺失 → 宿主不会注入，运行期拿不到服务')
   const provided = sources.filter(([, src]) => /ctx\.get\('uiWorkspace'\)/.test(src)).map(([f]) => f)
   if (provided.length > 0) ok("slot/props 桥接了 ctx.get('uiWorkspace')", provided.join(', '))
-  else bad("没有把 uiWorkspace 桥接给组件", "组件靠 props 拿不到服务 → 按钮仍会灰")
+  else bad('没有把 uiWorkspace 桥接给组件', '组件靠 props 拿不到服务 → 按钮仍会灰')
 } else {
   ok('未使用 uiWorkspace（无需 inject）')
 }

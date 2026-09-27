@@ -99,3 +99,11 @@
   - 依赖实验性 Agent Teams 包（`@deepseek-ai/dsh-experimental-*` 5 个）：无稳定性承诺、**稳定包被禁止依赖实验包**、用户须显式加 profile → 与「可分发插件」定位冲突。
   - **`subagent.toolFilter` 做宿主强制工具裁剪**：`tools.restrict()` 对**未知工具名 fail-loud 抛错**，而子代理工具集随 preset/深度变化（如 maxDepth 下没有 subagent）→ 跨 profile 会让子代理 **start 直接失败**；`maxDepth` 也不是嵌套约束（`resolveChildDepth` 超限只是抛错，不传播限制）。即「QA 禁改产品代码」这类按名字裁剪无法安全表达。
   - 把阶段指令搬进 system prompt（会作废跨子代理前缀复用，冒烟 93% 命中率靠它）；`contextBreakdown` 当熔断/计费依据（官方明确是启发式）。
+- 🔜 **风格门禁：是否收严 max-len / 是否引入 printer**（2026-09-27 定：oxlint 走宿主同款 `@stylistic`，先落 200）。
+  现状：`.oxlintrc.json` 挂 `jsPlugins: @stylistic/eslint-plugin`（`arrow-parens` 用 `always`——宿主 `as-needed` 会改 270 处写法并炸 12 条源码排版断言），
+  **不开 `indent`**（与 Prettier 的 JSX 缩进互斥，实测 tsx 上 952 处「 Expected N found N+2」全是这一条），`max-len` 阈值 200（代码结构行 8 处超额已手工断行；
+  160 剩 27 处、140 剩 61 处）。**收严到 160/140 之前必须先答**：要不要引 printer 自动折行——Prettier 全仓重排实测 63 文件 **+19230/−5010**，
+  且 `printWidth` 重排会让一批源码正则断言失效（要走「断言格式无关化」这一遍）。**当前代价（明确记录）**：无 printer ⇒ 缩进与换行没有自动格式化，
+  只有 ① 可自动修的那几条（quotes/semi/comma-dangle/eol-last/trailing-spaces/object-curly-spacing/arrow-parens/member-delimiter-style，靠 `--fix`）
+  ② `max-len` 这类只报警不修的硬校验；新代码的排版靠作者手写 + `.editorconfig`。另注：`jsPlugins` 在 schema 里明写 **alpha、不受 semver**，
+  所以 `oxlint` devDep 已锁精确版本（宿主 likewise 锁 1.76.0），升级前先在临时目录验一遍规则仍生效（已知 `@stylistic/comma-dangle` 对 interface 成员静默失效）。

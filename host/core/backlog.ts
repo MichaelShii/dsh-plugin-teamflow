@@ -79,7 +79,19 @@ export function backlogSummary(product: string | null | undefined) {
         bugs: store.fileBug,
       },
     },
-    requirements: store.requirements.slice(-20).map((r) => ({ id: r.id, title: r.title, status: r.status, humanIntervention: !!r.humanIntervention, taskIds: (r.taskIds || []).slice(-20), bugIds: (r.bugIds || []).slice(-20), createdAt: r.createdAt, updatedAt: r.updatedAt })).reverse(),
+    requirements: store.requirements
+      .slice(-20)
+      .map((r) => ({
+        id: r.id,
+        title: r.title,
+        status: r.status,
+        humanIntervention: !!r.humanIntervention,
+        taskIds: (r.taskIds || []).slice(-20),
+        bugIds: (r.bugIds || []).slice(-20),
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+      }))
+      .reverse(),
     tasks: store.tasks.slice(-80).map((t) => ({
       id: t.id, type: t.type || 'task', title: t.title, status: t.status,
       reqId: t.reqId || null, bugId: t.bugId || null, owner: t.owner || null,
@@ -93,7 +105,20 @@ export function backlogSummary(product: string | null | undefined) {
       startedAt: t.startedAt || null, endedAt: t.endedAt || null, updatedAt: t.updatedAt || null,
       summary: t.summary || '',
     })).reverse(),
-    bugs: store.bugs.slice(-30).map((b) => ({ id: b.id, reqId: b.reqId || null, severity: b.severity || null, title: b.title, status: b.status, owner: b.owner || null, retries: b.retries || 0, humanIntervention: !!b.humanIntervention, updatedAt: b.updatedAt })).reverse(),
+    bugs: store.bugs
+      .slice(-30)
+      .map((b) => ({
+        id: b.id,
+        reqId: b.reqId || null,
+        severity: b.severity || null,
+        title: b.title,
+        status: b.status,
+        owner: b.owner || null,
+        retries: b.retries || 0,
+        humanIntervention: !!b.humanIntervention,
+        updatedAt: b.updatedAt,
+      }))
+      .reverse(),
   }
 }
 
