@@ -1,0 +1,21 @@
+# https://editorconfig.org
+#
+# 编辑器侧的约定声明。与 lint 的分工：oxlint + @stylistic 只做事后校验，这里管「写入时就别写歪」。
+# 取值刻意与 .oxlintrc.json 的 @stylistic 规则一致（2 空格 / 末行换行 / 无尾空格），不引入第二套口径。
+#
+# 缩进一项是补位：我们不开 @stylistic/indent（它与 Prettier 的 JSX 缩进互斥——实测 client 两个 tsx
+# 上 952 处「Expected N found N+2」全来自这一条），且当前没有 printer，所以缩进只能由编辑器兜住。
+# 行尾同理：仓库索引已是 LF（`git ls-files --eol` 实测 163 文件全 i/lf、0 个 i/crlf）。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.md]
+# Markdown 的行尾双空格是硬换行，剪掉会破坏排版
+trim_trailing_whitespace = false
