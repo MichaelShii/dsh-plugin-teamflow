@@ -35,6 +35,11 @@ the tree is kept at 0 warnings / 0 errors. CI runs the same command before `test
 (`.github/workflows/ci.yml`), so a warning you leave behind also fails your PR. Fix it — don't
 silence it with a disable comment.
 
+**Before committing: run `pnpm format`** (= `oxlint --fix .`). It applies every auto-fixable rule
+(quotes, semicolons, trailing commas, trailing spaces, brace spacing, arrow parens, indentation) in
+place. Only the non-fixable ones — most notably `max-len` — still need a human decision, and there
+is **no code formatter** in this repo (no Prettier), so long lines are not wrapped automatically.
+
 Note that oxlint walks **untracked files too**: scratch directories left in your working tree can
 fail your local run even though CI (which only sees the commit) is green. Commit-time scope is
 what counts.

@@ -24,6 +24,7 @@
     {
       "files": ["**/*.{ts,tsx}"],
       "rules": {
+        "@stylistic/indent": ["error", 2],
         "@stylistic/semi": ["error", "never"],
         "@stylistic/quotes": ["error", "single", { "avoidEscape": true }],
         "@stylistic/comma-dangle": ["error", "always-multiline"],

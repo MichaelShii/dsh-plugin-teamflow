@@ -98,21 +98,21 @@ function FlowStageCard(s, key, onOpen) {
       boxShadow: running ? `0 0 0 1px color-mix(in srgb, ${color} 32%, transparent), 0 6px 18px color-mix(in srgb, ${color} 15%, transparent)` : '0 1px 2px rgba(0,0,0,.05)',
     },
   },
-    h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
-      running ? h('span', { style: { width: 7, height: 7, borderRadius: 999, background: color, animation: 'tf-pulse 1.15s ease-in-out infinite' } })
-        : h('span', { style: { width: 6, height: 6, borderRadius: 2, background: color } }),
-      h('span', { title: s.label, style: { flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, stageLabelOf(s)),
-      (s.attempts && s.attempts.length > 1) ? h('span', { title: t('stage.retryTip', { n: s.attempts.length - 1, m: s.attempts.length }), style: { fontFamily: MONO, fontSize: 10, fontWeight: 800, color: T.warn, background: `color-mix(in srgb, ${T.warn} 14%, transparent)`, borderRadius: 999, padding: '0 6px', lineHeight: '15px', flex: '0 0 auto' } }, `↻${s.attempts.length - 1}`) : null,
-      chip(stageStatusText(s.status), color, { dot: true }),
-      h('span', { style: { color: T.text2, fontSize: 11, opacity: 0.5 } }, '↗'),
-    ),
-    h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 13, fontSize: 10.5, color: T.text2, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' } },
-      s.startedAt ? h('span', {}, fmtDur(s.startedAt, s.endedAt)) : h('span', {}, '—'),
-      usage ? h('span', { title: usageDetail(s), style: { marginLeft: 'auto', color } }, usage) : null,
-    ),
-    running ? h('div', { style: { position: 'absolute', left: 5, right: 5, bottom: 3, height: 2, borderRadius: 2, overflow: 'hidden', background: `color-mix(in srgb, ${color} 20%, transparent)` } },
-      h('div', { style: { height: '100%', width: '42%', borderRadius: 2, background: color, animation: 'tf-shimmer 1.1s linear infinite' } }),
-    ) : null,
+  h('div', { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+    running ? h('span', { style: { width: 7, height: 7, borderRadius: 999, background: color, animation: 'tf-pulse 1.15s ease-in-out infinite' } })
+      : h('span', { style: { width: 6, height: 6, borderRadius: 2, background: color } }),
+    h('span', { title: s.label, style: { flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, stageLabelOf(s)),
+    (s.attempts && s.attempts.length > 1) ? h('span', { title: t('stage.retryTip', { n: s.attempts.length - 1, m: s.attempts.length }), style: { fontFamily: MONO, fontSize: 10, fontWeight: 800, color: T.warn, background: `color-mix(in srgb, ${T.warn} 14%, transparent)`, borderRadius: 999, padding: '0 6px', lineHeight: '15px', flex: '0 0 auto' } }, `↻${s.attempts.length - 1}`) : null,
+    chip(stageStatusText(s.status), color, { dot: true }),
+    h('span', { style: { color: T.text2, fontSize: 11, opacity: 0.5 } }, '↗'),
+  ),
+  h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, paddingLeft: 13, fontSize: 10.5, color: T.text2, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' } },
+    s.startedAt ? h('span', {}, fmtDur(s.startedAt, s.endedAt)) : h('span', {}, '—'),
+    usage ? h('span', { title: usageDetail(s), style: { marginLeft: 'auto', color } }, usage) : null,
+  ),
+  running ? h('div', { style: { position: 'absolute', left: 5, right: 5, bottom: 3, height: 2, borderRadius: 2, overflow: 'hidden', background: `color-mix(in srgb, ${color} 20%, transparent)` } },
+    h('div', { style: { height: '100%', width: '42%', borderRadius: 2, background: color, animation: 'tf-shimmer 1.1s linear infinite' } }),
+  ) : null,
   )
 }
 
@@ -123,36 +123,36 @@ function FlowNode(node, onOpen) {
     key: 'n' + g.i,
     style: { position: 'absolute', left: g.left, top: g.top, width: NODE_W, height: g.h, boxSizing: 'border-box', display: 'flex', flexDirection: 'column' },
   },
-    /* 步骤序号徽标（悬在左上角，突出编号与次序） */
-    h('div', {
-      style: {
-        position: 'absolute', top: -8, left: 12, width: 22, height: 22, borderRadius: 7, zIndex: 2,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        fontFamily: MONO, fontSize: 10.5, fontWeight: 800, color: g.headColor,
-        background: `color-mix(in srgb, ${g.headColor} 16%, ${T.layer1})`,
-        border: `1px solid color-mix(in srgb, ${g.headColor} 36%, transparent)`,
-        boxShadow: '0 2px 8px rgba(0,0,0,.14)',
-      },
-    }, String(g.i + 1).padStart(2, '0')),
-    /* 相位头 */
-    h('div', {
-      style: {
-        height: HEAD_H, boxSizing: 'border-box', borderRadius: 11, padding: '0 11px',
-        display: 'flex', alignItems: 'center', gap: 7,
-        color: g.headColor, fontSize: 12.5, fontWeight: 700,
-        background: `linear-gradient(90deg, color-mix(in srgb, ${g.headColor} 13%, transparent), color-mix(in srgb, ${g.headColor} 5%, transparent))`,
-        border: `1px solid color-mix(in srgb, ${g.headColor} 30%, transparent)`,
-      },
+  /* 步骤序号徽标（悬在左上角，突出编号与次序） */
+  h('div', {
+    style: {
+      position: 'absolute', top: -8, left: 12, width: 22, height: 22, borderRadius: 7, zIndex: 2,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontFamily: MONO, fontSize: 10.5, fontWeight: 800, color: g.headColor,
+      background: `color-mix(in srgb, ${g.headColor} 16%, ${T.layer1})`,
+      border: `1px solid color-mix(in srgb, ${g.headColor} 36%, transparent)`,
+      boxShadow: '0 2px 8px rgba(0,0,0,.14)',
     },
-      h('span', { style: { fontSize: 13.5 } }, phaseIconOf(g.phase)),
-      h('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, phaseNameOf(g.phase)),
-      g.stages.length > 1 ? h('span', { style: { fontFamily: MONO, fontSize: 10, fontWeight: 800, background: `color-mix(in srgb, ${g.headColor} 16%, transparent)`, borderRadius: 999, padding: '0 7px', lineHeight: '16px' } }, `×${g.stages.length}`) : null,
-      running ? h('span', { style: { width: 8, height: 8, borderRadius: 999, background: g.headColor, animation: 'tf-pulse 1.4s ease-in-out infinite' } }) : null,
-    ),
-    /* 卡片列 */
-    h('div', { style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 7, paddingTop: 10 } },
-      g.stages.map((s) => FlowStageCard(s, s.seq, onOpen)),
-    ),
+  }, String(g.i + 1).padStart(2, '0')),
+  /* 相位头 */
+  h('div', {
+    style: {
+      height: HEAD_H, boxSizing: 'border-box', borderRadius: 11, padding: '0 11px',
+      display: 'flex', alignItems: 'center', gap: 7,
+      color: g.headColor, fontSize: 12.5, fontWeight: 700,
+      background: `linear-gradient(90deg, color-mix(in srgb, ${g.headColor} 13%, transparent), color-mix(in srgb, ${g.headColor} 5%, transparent))`,
+      border: `1px solid color-mix(in srgb, ${g.headColor} 30%, transparent)`,
+    },
+  },
+  h('span', { style: { fontSize: 13.5 } }, phaseIconOf(g.phase)),
+  h('span', { style: { flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, phaseNameOf(g.phase)),
+  g.stages.length > 1 ? h('span', { style: { fontFamily: MONO, fontSize: 10, fontWeight: 800, background: `color-mix(in srgb, ${g.headColor} 16%, transparent)`, borderRadius: 999, padding: '0 7px', lineHeight: '16px' } }, `×${g.stages.length}`) : null,
+  running ? h('span', { style: { width: 8, height: 8, borderRadius: 999, background: g.headColor, animation: 'tf-pulse 1.4s ease-in-out infinite' } }) : null,
+  ),
+  /* 卡片列 */
+  h('div', { style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', gap: 7, paddingTop: 10 } },
+    g.stages.map((s) => FlowStageCard(s, s.seq, onOpen)),
+  ),
   )
 }
 
@@ -181,9 +181,9 @@ function StageDetailDrawer({ det, onClose, sessionId, uiWorkspace }) {
   }
   const outText = cur && cur.output ? cur.output
     : cur && cur.summary ? t('stage.summaryFallback', { summary: cur.summary })
-    : det.err ? t('stage.loadFailed', { err: det.err })
-    : det.loading ? t('common.loading')
-    : t('stage.noOutput')
+      : det.err ? t('stage.loadFailed', { err: det.err })
+        : det.loading ? t('common.loading')
+          : t('stage.noOutput')
   const closeBtn = { font: 'inherit', width: 26, height: 26, borderRadius: 8, cursor: 'pointer', border: `1px solid ${T.border}`, background: 'transparent', color: T.text2, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, lineHeight: 1 }
   // 悬浮于画布右上（不挤占画布宽度）。滚轮在浮层内只滚自身内容：
   // 用原生 wheel stopPropagation 在冒泡到画布前拦下，避免触发画布缩放。
@@ -207,86 +207,86 @@ function StageDetailDrawer({ det, onClose, sessionId, uiWorkspace }) {
       boxShadow: '0 14px 48px rgba(0,0,0,.30)',
     },
   },
-    /* 头 */
-    h('div', { style: { display: 'flex', alignItems: 'center', gap: 9, padding: '12px 14px', borderBottom: `1px solid ${T.border}`, background: `linear-gradient(135deg, color-mix(in srgb, ${color} 14%, transparent), transparent 62%)` } },
-      h('span', { style: { fontSize: 17 } }, phaseIconOf(st && st.phase)),
-      h('div', { style: { flex: 1, minWidth: 0 } },
-        h('div', { title: st ? st.label : undefined, style: { fontSize: 12.5, fontWeight: 700, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, st ? stageLabelOf(st) : t('stage.detailTitle')),
-        h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 1, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' } },
-          `${st ? `#${st.seq} · ${st.phase}` : ''}${(st && (st.startedAt || st.endedAt)) ? ` · ${fmtDur(st.startedAt, st.endedAt)}` : ''}`),
-      ),
-      st ? chip(stageStatusText(st.status), color, { dot: true }) : null,
-      h('button', { onClick: onClose, style: closeBtn, title: t('common.close') }, '✕'),
+  /* 头 */
+  h('div', { style: { display: 'flex', alignItems: 'center', gap: 9, padding: '12px 14px', borderBottom: `1px solid ${T.border}`, background: `linear-gradient(135deg, color-mix(in srgb, ${color} 14%, transparent), transparent 62%)` } },
+    h('span', { style: { fontSize: 17 } }, phaseIconOf(st && st.phase)),
+    h('div', { style: { flex: 1, minWidth: 0 } },
+      h('div', { title: st ? st.label : undefined, style: { fontSize: 12.5, fontWeight: 700, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, st ? stageLabelOf(st) : t('stage.detailTitle')),
+      h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 1, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' } },
+        `${st ? `#${st.seq} · ${st.phase}` : ''}${(st && (st.startedAt || st.endedAt)) ? ` · ${fmtDur(st.startedAt, st.endedAt)}` : ''}`),
     ),
-    /* 内容 */
-    h('div', { style: { flex: 1, overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 11 } },
-      /* usage 明细（官方口径全字段） */
+    st ? chip(stageStatusText(st.status), color, { dot: true }) : null,
+    h('button', { onClick: onClose, style: closeBtn, title: t('common.close') }, '✕'),
+  ),
+  /* 内容 */
+  h('div', { style: { flex: 1, overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 11 } },
+    /* usage 明细（官方口径全字段） */
+    h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+      h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, t('token.officialTitle')),
+      h('span', { style: { fontSize: 11.5, fontFamily: MONO, color: T.text, lineHeight: 1.65 } }, usageDetail(cur || st || {})),
+    ),
+    /* 尝试历史时间线（同任务多次尝试；单次不渲染——保持现状简洁） */
+    attempts ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
+      h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, t('stage.attemptHistory', { n: attempts.length })),
       h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-        h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, t('token.officialTitle')),
-        h('span', { style: { fontSize: 11.5, fontFamily: MONO, color: T.text, lineHeight: 1.65 } }, usageDetail(cur || st || {})),
-      ),
-      /* 尝试历史时间线（同任务多次尝试；单次不渲染——保持现状简洁） */
-      attempts ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
-        h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, t('stage.attemptHistory', { n: attempts.length })),
-        h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-          attempts.map((a, idx) => {
-            const aColor = a.status === 'done' ? T.success : (a.status === 'failed' ? T.error : T.warn)
-            const sel = idx === selIdx
-            return h('div', {
-              key: a.seq, onClick: () => setSel(idx),
-              title: (a.summary || a.outcome || '').slice(0, 200),
-              style: {
-                cursor: 'pointer', borderRadius: 9, padding: '6px 9px', display: 'flex', gap: 7, alignItems: 'center',
-                border: `1px solid ${sel ? color : T.border}`,
-                background: sel ? `color-mix(in srgb, ${color} 10%, transparent)` : T.layer1,
-              },
+        attempts.map((a, idx) => {
+          const aColor = a.status === 'done' ? T.success : (a.status === 'failed' ? T.error : T.warn)
+          const sel = idx === selIdx
+          return h('div', {
+            key: a.seq, onClick: () => setSel(idx),
+            title: (a.summary || a.outcome || '').slice(0, 200),
+            style: {
+              cursor: 'pointer', borderRadius: 9, padding: '6px 9px', display: 'flex', gap: 7, alignItems: 'center',
+              border: `1px solid ${sel ? color : T.border}`,
+              background: sel ? `color-mix(in srgb, ${color} 10%, transparent)` : T.layer1,
             },
-              h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2, flex: '0 0 52px' } }, `#${a.seq}`),
-              h('span', { style: { fontSize: 11, color: aColor, flex: '0 0 64px', fontWeight: 700 } }, a.status === 'done' ? t('stage.attemptDone') : a.status === 'failed' ? t('stage.attemptFailed', { outcome: a.outcome || t('common.failed') }) : a.status === 'cancelled' ? t('stageStatus.cancelled') : t('stage.attemptRunning')),
-              h('span', { style: { flex: 1, minWidth: 0, fontSize: 10.5, color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, (a.summary || a.outcome || t('common.noSummary')).slice(0, 80)),
-              h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2, flex: '0 0 auto' } }, a.startedAt ? fmtDur(a.startedAt, a.endedAt) : '—'),
-              h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2, flex: '0 0 auto' } }, a.usage ? fmtTokens(totalTokens(a.usage)) : ''),
-            )
-          }),
-        ),
-      ) : null,
-      /* 跳子代理会话（当前 DSH 未暴露"切 conversation.view 视图"接口：openSubagent 仅完成跳转，
-         完整轨迹需到「对话」tab 查看；待官方 conversation.setView 支持后再一键直达，见 AGENTS §6 待办） */
-      h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
-        h('button', {
-          onClick: openChild, disabled: !hasChild,
-          title: crossSession
-            ? t('stage.childCrossSessionTip', { sid: ownerSession.slice(-6) })
-            : hasChild ? t('stage.childJumpTip') : t('stage.childNoneTip'),
-          style: {
-            font: 'inherit', fontSize: 12, fontWeight: 600, padding: '8px 12px', borderRadius: 9, cursor: 'pointer',
-            display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center',
-            border: `1px solid color-mix(in srgb, ${T.brand} 40%, transparent)`,
-            background: `color-mix(in srgb, ${T.brand} 12%, transparent)`, color: T.brand,
-            opacity: hasChild ? 1 : 0.45,
           },
-        }, t('stage.childJumpBtn')),
-        crossSession
-          ? h('div', { style: { fontSize: 10.5, color: T.text2, textAlign: 'center', lineHeight: 1.55 } },
-            t('stage.childCrossSessionNote', { sid: ownerSession ? ownerSession.slice(-6) : '' }))
-          : hasChild ? h('div', { style: { fontSize: 10.5, color: T.text2, textAlign: 'center', lineHeight: 1.55 } },
-            t('stage.childJumpNote')) : null,
+          h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2, flex: '0 0 52px' } }, `#${a.seq}`),
+          h('span', { style: { fontSize: 11, color: aColor, flex: '0 0 64px', fontWeight: 700 } }, a.status === 'done' ? t('stage.attemptDone') : a.status === 'failed' ? t('stage.attemptFailed', { outcome: a.outcome || t('common.failed') }) : a.status === 'cancelled' ? t('stageStatus.cancelled') : t('stage.attemptRunning')),
+          h('span', { style: { flex: 1, minWidth: 0, fontSize: 10.5, color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, (a.summary || a.outcome || t('common.noSummary')).slice(0, 80)),
+          h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2, flex: '0 0 auto' } }, a.startedAt ? fmtDur(a.startedAt, a.endedAt) : '—'),
+          h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2, flex: '0 0 auto' } }, a.usage ? fmtTokens(totalTokens(a.usage)) : ''),
+          )
+        }),
       ),
-      /* 验证证据（dev/qaFix 契约；policy 级——缺失已记 warn，此处置灰提示可见） */
-      (st && phaseKeyOf(st.phase) === 'dev') ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
-        h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, t('stage.evidenceTitle')),
-        (cur && cur.verifyEvidence)
-          ? h('div', { style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11.5, lineHeight: 1.62, color: T.text, background: `color-mix(in srgb, ${T.layer2} 55%, transparent)`, border: `1px solid ${T.border}`, borderRadius: 10, padding: '10px 12px', maxHeight: 180, overflowY: 'auto', fontFamily: MONO } }, cur.verifyEvidence)
-          : h('div', { style: { fontSize: 11, color: T.warn, background: `color-mix(in srgb, ${T.warn} 8%, transparent)`, border: `1px dashed color-mix(in srgb, ${T.warn} 45%, transparent)`, borderRadius: 10, padding: '8px 12px', lineHeight: 1.55 } }, t('stage.evidenceMissing')),
-      ) : null,
-      /* 产物全文 */
-      h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
-        h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, t('stage.artifactsTitle')),
-        h('div', {
-          style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, lineHeight: 1.62, color: T.text, background: `color-mix(in srgb, ${T.layer2} 55%, transparent)`, border: `1px solid ${T.border}`, borderRadius: 10, padding: '10px 12px', maxHeight: 240, overflowY: 'auto' },
-        }, outText),
-      ),
+    ) : null,
+    /* 跳子代理会话（当前 DSH 未暴露"切 conversation.view 视图"接口：openSubagent 仅完成跳转，
+         完整轨迹需到「对话」tab 查看；待官方 conversation.setView 支持后再一键直达，见 AGENTS §6 待办） */
+    h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
+      h('button', {
+        onClick: openChild, disabled: !hasChild,
+        title: crossSession
+          ? t('stage.childCrossSessionTip', { sid: ownerSession.slice(-6) })
+          : hasChild ? t('stage.childJumpTip') : t('stage.childNoneTip'),
+        style: {
+          font: 'inherit', fontSize: 12, fontWeight: 600, padding: '8px 12px', borderRadius: 9, cursor: 'pointer',
+          display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center',
+          border: `1px solid color-mix(in srgb, ${T.brand} 40%, transparent)`,
+          background: `color-mix(in srgb, ${T.brand} 12%, transparent)`, color: T.brand,
+          opacity: hasChild ? 1 : 0.45,
+        },
+      }, t('stage.childJumpBtn')),
+      crossSession
+        ? h('div', { style: { fontSize: 10.5, color: T.text2, textAlign: 'center', lineHeight: 1.55 } },
+          t('stage.childCrossSessionNote', { sid: ownerSession ? ownerSession.slice(-6) : '' }))
+        : hasChild ? h('div', { style: { fontSize: 10.5, color: T.text2, textAlign: 'center', lineHeight: 1.55 } },
+          t('stage.childJumpNote')) : null,
     ),
+    /* 验证证据（dev/qaFix 契约；policy 级——缺失已记 warn，此处置灰提示可见） */
+    (st && phaseKeyOf(st.phase) === 'dev') ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
+      h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, t('stage.evidenceTitle')),
+      (cur && cur.verifyEvidence)
+        ? h('div', { style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 11.5, lineHeight: 1.62, color: T.text, background: `color-mix(in srgb, ${T.layer2} 55%, transparent)`, border: `1px solid ${T.border}`, borderRadius: 10, padding: '10px 12px', maxHeight: 180, overflowY: 'auto', fontFamily: MONO } }, cur.verifyEvidence)
+        : h('div', { style: { fontSize: 11, color: T.warn, background: `color-mix(in srgb, ${T.warn} 8%, transparent)`, border: `1px dashed color-mix(in srgb, ${T.warn} 45%, transparent)`, borderRadius: 10, padding: '8px 12px', lineHeight: 1.55 } }, t('stage.evidenceMissing')),
+    ) : null,
+    /* 产物全文 */
+    h('div', { style: { display: 'flex', flexDirection: 'column', gap: 5 } },
+      h('span', { style: { fontSize: 10.5, fontWeight: 700, color: T.text2, letterSpacing: 0.3 } }, t('stage.artifactsTitle')),
+      h('div', {
+        style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, lineHeight: 1.62, color: T.text, background: `color-mix(in srgb, ${T.layer2} 55%, transparent)`, border: `1px solid ${T.border}`, borderRadius: 10, padding: '10px 12px', maxHeight: 240, overflowY: 'auto' },
+      }, outText),
+    ),
+  ),
   )
 }
 
@@ -421,40 +421,40 @@ function PipelinePanel({ active, api, runId, sessionId, uiWorkspace }) {
       backgroundBlendMode: 'overlay',
     },
   },
-    /* 世界层（整体可拖动/缩放的画布） */
-    h('div', {
-      style: { position: 'absolute', left: 0, top: 0, width: layout.worldW, height: layout.worldH, transform: `translate(${view.x}px, ${view.y}px) scale(${view.s})`, transformOrigin: '0 0' },
-    },
-      /* 连接弧线 SVG 层（置于节点之下） */
-      h('svg', { width: layout.worldW, height: layout.worldH, style: { position: 'absolute', left: 0, top: 0, overflow: 'visible', zIndex: 0 } },
-        h('defs', {}, layout.conns.map((c) => h('marker', { key: 'm' + c.x1 + '-' + c.y1, id: 'tfm-' + c.x1 + '-' + c.y1, viewBox: '0 0 10 10', refX: 8, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: c.color })))),
-        layout.conns.map((c) => h('g', { key: 'c' + c.x1 + '-' + c.y1 },
-          h('path', { d: connPath(c), fill: 'none', stroke: `color-mix(in srgb, ${c.color} 12%, transparent)`, strokeWidth: 7, strokeLinecap: 'round' }),
-          h('path', { d: connPath(c), fill: 'none', stroke: `color-mix(in srgb, ${c.color} 45%, transparent)`, strokeWidth: 2.5, markerEnd: `url(#tfm-${c.x1}-${c.y1})` }),
-          h('path', { d: connPath(c), fill: 'none', stroke: c.color, strokeWidth: 2, strokeLinecap: 'round', strokeDasharray: '5 9', animation: 'tf-flow .75s linear infinite' }),
-        )),
-      ),
-      /* 节点层 */
-      h('div', { style: { position: 'absolute', left: 0, top: 0, zIndex: 1 } },
-        layout.nodes.map((n) => FlowNode(n, openDetail)),
-      ),
-    ),
-    layout.nodes.length === 0 ? h('div', { style: { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.text2, fontSize: 13 } }, t('pipeline.noNodes')) : null,
-    /* 浮层控制簇（不参与画布拖拽） */
-    h('div', {
-      onMouseDown: (e) => e.stopPropagation(),
-      style: { position: 'absolute', top: 10, right: 12, zIndex: 6, display: 'flex', alignItems: 'center', gap: 6, padding: 5, borderRadius: 11, border: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.layer1} 82%, transparent)`, backdropFilter: 'blur(8px)', boxShadow: '0 6px 20px rgba(0,0,0,.16)' },
-    },
-      h('button', { title: t('pipeline.zoomOut'), onClick: () => zoomBy(0.86), style: zoomStyle }, '−'),
-      h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2, minWidth: 34, textAlign: 'center' } }, `${Math.round(view.s * 100)}%`),
-      h('button', { title: t('pipeline.zoomIn'), onClick: () => zoomBy(1.16), style: zoomStyle }, '+'),
-      h('span', { style: { width: 1, height: 14, background: T.border } }),
-      h('button', { title: t('pipeline.fitCanvas'), onClick: fitNow, style: { ...zoomStyle, fontSize: 13 } }, '⤢'),
-      h('span', { style: { width: 1, height: 14, background: T.border } }),
-      h('span', { style: { fontSize: 10.5, color: T.text2, paddingRight: 4, opacity: 0.85 } }, t('pipeline.canvasHint')),
-    ),
-    /* 阶段详情浮层：悬浮于画布右上，不挤占画布宽度；浮层内滚轮只滚正文（原生 stopPropagation），不触发画布缩放 */
-    det ? h(StageDetailDrawer, { det, onClose: closeDet, sessionId, uiWorkspace }) : null,
+  /* 世界层（整体可拖动/缩放的画布） */
+  h('div', {
+    style: { position: 'absolute', left: 0, top: 0, width: layout.worldW, height: layout.worldH, transform: `translate(${view.x}px, ${view.y}px) scale(${view.s})`, transformOrigin: '0 0' },
+  },
+  /* 连接弧线 SVG 层（置于节点之下） */
+  h('svg', { width: layout.worldW, height: layout.worldH, style: { position: 'absolute', left: 0, top: 0, overflow: 'visible', zIndex: 0 } },
+    h('defs', {}, layout.conns.map((c) => h('marker', { key: 'm' + c.x1 + '-' + c.y1, id: 'tfm-' + c.x1 + '-' + c.y1, viewBox: '0 0 10 10', refX: 8, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' }, h('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: c.color })))),
+    layout.conns.map((c) => h('g', { key: 'c' + c.x1 + '-' + c.y1 },
+      h('path', { d: connPath(c), fill: 'none', stroke: `color-mix(in srgb, ${c.color} 12%, transparent)`, strokeWidth: 7, strokeLinecap: 'round' }),
+      h('path', { d: connPath(c), fill: 'none', stroke: `color-mix(in srgb, ${c.color} 45%, transparent)`, strokeWidth: 2.5, markerEnd: `url(#tfm-${c.x1}-${c.y1})` }),
+      h('path', { d: connPath(c), fill: 'none', stroke: c.color, strokeWidth: 2, strokeLinecap: 'round', strokeDasharray: '5 9', animation: 'tf-flow .75s linear infinite' }),
+    )),
+  ),
+  /* 节点层 */
+  h('div', { style: { position: 'absolute', left: 0, top: 0, zIndex: 1 } },
+    layout.nodes.map((n) => FlowNode(n, openDetail)),
+  ),
+  ),
+  layout.nodes.length === 0 ? h('div', { style: { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.text2, fontSize: 13 } }, t('pipeline.noNodes')) : null,
+  /* 浮层控制簇（不参与画布拖拽） */
+  h('div', {
+    onMouseDown: (e) => e.stopPropagation(),
+    style: { position: 'absolute', top: 10, right: 12, zIndex: 6, display: 'flex', alignItems: 'center', gap: 6, padding: 5, borderRadius: 11, border: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.layer1} 82%, transparent)`, backdropFilter: 'blur(8px)', boxShadow: '0 6px 20px rgba(0,0,0,.16)' },
+  },
+  h('button', { title: t('pipeline.zoomOut'), onClick: () => zoomBy(0.86), style: zoomStyle }, '−'),
+  h('span', { style: { fontFamily: MONO, fontSize: 10.5, color: T.text2, minWidth: 34, textAlign: 'center' } }, `${Math.round(view.s * 100)}%`),
+  h('button', { title: t('pipeline.zoomIn'), onClick: () => zoomBy(1.16), style: zoomStyle }, '+'),
+  h('span', { style: { width: 1, height: 14, background: T.border } }),
+  h('button', { title: t('pipeline.fitCanvas'), onClick: fitNow, style: { ...zoomStyle, fontSize: 13 } }, '⤢'),
+  h('span', { style: { width: 1, height: 14, background: T.border } }),
+  h('span', { style: { fontSize: 10.5, color: T.text2, paddingRight: 4, opacity: 0.85 } }, t('pipeline.canvasHint')),
+  ),
+  /* 阶段详情浮层：悬浮于画布右上，不挤占画布宽度；浮层内滚轮只滚正文（原生 stopPropagation），不触发画布缩放 */
+  det ? h(StageDetailDrawer, { det, onClose: closeDet, sessionId, uiWorkspace }) : null,
   )
 }
 
@@ -504,56 +504,56 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
     },
     title: t('board.cardTip', { id: item.id, status: item.status, summary: item.summary ? '\n' + item.summary : '' }),
   },
-    h('div', { style: { display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 } },
-      h('span', { style: { fontFamily: MONO, color: T.text2, fontSize: 10.5, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.id),
-      item.severity ? chip(item.severity, item.severity === 'P0' ? T.error : item.severity === 'P1' ? T.warn : T.text2) : null,
-      item.owner ? h('span', { style: { marginLeft: 'auto', fontSize: 10.5, color: T.text2, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `👤 ${item.owner}`) : null,
-    ),
-    h('div', { title: item.title || undefined, style: { fontWeight: 500, margin: '3px 0 4px', lineHeight: 1.4, overflowWrap: 'anywhere' } }, (item.title || '').slice(0, 30)),
-    h('div', { style: { ...flexRow, marginTop: 2, minWidth: 0 } },
-      chip(stText(item.status), stColor(item.status)),
-      typeof item.retries === 'number' && item.retries > 0 ? h('span', { style: { fontSize: 10.5, color: T.warn, fontFamily: MONO } }, `↻${item.retries}`) : null,
-      item.humanIntervention || item.status === 'needs-human' ? h('span', { style: { fontSize: 10.5, color: T.error, fontWeight: 700 } }, '⚠') : null,
-    ),
-    (kind === 'task' && (item.devAssign || item.qaAssign || item.acceptBy)) ? h('div', { style: { ...flexRow, marginTop: 3, fontSize: 10.5, color: T.text2, fontFamily: MONO, minWidth: 0 } },
-      item.devAssign ? h('span', { title: t('board.assignDevTip', { who: item.devAssign }), style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', minWidth: 0, whiteSpace: 'nowrap' } }, `👨‍💻${item.devAssign}`) : null,
-      item.qaAssign ? h('span', { title: t('board.assignQaTip', { who: item.qaAssign }), style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', minWidth: 0, whiteSpace: 'nowrap' } }, `🧪${item.qaAssign}`) : null,
-      item.acceptBy ? h('span', { title: t('board.acceptTip', { who: item.acceptBy }), style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', minWidth: 0, whiteSpace: 'nowrap' } }, `✅${item.acceptBy}`) : null,
-    ) : null,
-    /* 按角色 token 行：等宽数字是不可断的长串 → 允许在任意处换行（否则撑破窄列） */
-    (kind === 'task' && byRoleLine(item)) ? h('div', { style: { ...flexRow, marginTop: 3, fontSize: 10.5, color: T.warn, fontFamily: MONO, minWidth: 0, maxWidth: '100%' } },
-      h('span', { style: { color: T.text2, flex: '0 0 auto' } }, '⛽'),
-      h('span', { title: byRoleLine(item), style: { minWidth: 0, flex: '1 1 auto', overflowWrap: 'anywhere', wordBreak: 'break-word' } }, byRoleLine(item)),
-    ) : null,
-    // 子卡摘要 + 子卡列表（主卡展开）
-    (kind === 'task' && (item.subtaskIds || []).length > 0) ? (() => {
-      const subs = item.subtaskIds.map((id) => subtaskMap[id]).filter(Boolean)
-      if (subs.length === 0) return null
-      const done = subs.filter((s) => s.status === 'done').length
-      const failed = subs.filter((s) => s.status === 'failed').length
-      const running = subs.filter((s) => s.status === 'running').length
-      return h('div', { style: { marginTop: 5 } },
-        h('div', { style: { ...flexRow, fontSize: 10.5, color: T.text2, fontFamily: MONO, marginBottom: 3 } },
-          h('span', null, t('board.subtaskCount', { n: subs.length })),
-          done > 0 ? h('span', { style: { color: T.success } }, `${done}✓`) : null,
-          running > 0 ? h('span', { style: { color: T.brand } }, `${running}⟳`) : null,
-          failed > 0 ? h('span', { style: { color: T.error } }, `${failed}✗`) : null,
-        ),
-        subs.map((sub) => h('div', {
-          key: sub.id,
-          style: {
-            display: 'flex', alignItems: 'center', gap: 4, fontSize: 10.5, fontFamily: MONO,
-            padding: '2px 6px', borderRadius: 4, marginBottom: 2, minWidth: 0,
-            background: sub.status === 'failed' ? `color-mix(in srgb, ${T.error} 7%, transparent)` : T.layer2,
-            border: `1px solid ${stColor(sub.status)}30`,
-          },
+  h('div', { style: { display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 } },
+    h('span', { style: { fontFamily: MONO, color: T.text2, fontSize: 10.5, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.id),
+    item.severity ? chip(item.severity, item.severity === 'P0' ? T.error : item.severity === 'P1' ? T.warn : T.text2) : null,
+    item.owner ? h('span', { style: { marginLeft: 'auto', fontSize: 10.5, color: T.text2, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, `👤 ${item.owner}`) : null,
+  ),
+  h('div', { title: item.title || undefined, style: { fontWeight: 500, margin: '3px 0 4px', lineHeight: 1.4, overflowWrap: 'anywhere' } }, (item.title || '').slice(0, 30)),
+  h('div', { style: { ...flexRow, marginTop: 2, minWidth: 0 } },
+    chip(stText(item.status), stColor(item.status)),
+    typeof item.retries === 'number' && item.retries > 0 ? h('span', { style: { fontSize: 10.5, color: T.warn, fontFamily: MONO } }, `↻${item.retries}`) : null,
+    item.humanIntervention || item.status === 'needs-human' ? h('span', { style: { fontSize: 10.5, color: T.error, fontWeight: 700 } }, '⚠') : null,
+  ),
+  (kind === 'task' && (item.devAssign || item.qaAssign || item.acceptBy)) ? h('div', { style: { ...flexRow, marginTop: 3, fontSize: 10.5, color: T.text2, fontFamily: MONO, minWidth: 0 } },
+    item.devAssign ? h('span', { title: t('board.assignDevTip', { who: item.devAssign }), style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', minWidth: 0, whiteSpace: 'nowrap' } }, `👨‍💻${item.devAssign}`) : null,
+    item.qaAssign ? h('span', { title: t('board.assignQaTip', { who: item.qaAssign }), style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', minWidth: 0, whiteSpace: 'nowrap' } }, `🧪${item.qaAssign}`) : null,
+    item.acceptBy ? h('span', { title: t('board.acceptTip', { who: item.acceptBy }), style: { display: 'inline-flex', alignItems: 'center', gap: 3, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '100%', minWidth: 0, whiteSpace: 'nowrap' } }, `✅${item.acceptBy}`) : null,
+  ) : null,
+  /* 按角色 token 行：等宽数字是不可断的长串 → 允许在任意处换行（否则撑破窄列） */
+  (kind === 'task' && byRoleLine(item)) ? h('div', { style: { ...flexRow, marginTop: 3, fontSize: 10.5, color: T.warn, fontFamily: MONO, minWidth: 0, maxWidth: '100%' } },
+    h('span', { style: { color: T.text2, flex: '0 0 auto' } }, '⛽'),
+    h('span', { title: byRoleLine(item), style: { minWidth: 0, flex: '1 1 auto', overflowWrap: 'anywhere', wordBreak: 'break-word' } }, byRoleLine(item)),
+  ) : null,
+  // 子卡摘要 + 子卡列表（主卡展开）
+  (kind === 'task' && (item.subtaskIds || []).length > 0) ? (() => {
+    const subs = item.subtaskIds.map((id) => subtaskMap[id]).filter(Boolean)
+    if (subs.length === 0) return null
+    const done = subs.filter((s) => s.status === 'done').length
+    const failed = subs.filter((s) => s.status === 'failed').length
+    const running = subs.filter((s) => s.status === 'running').length
+    return h('div', { style: { marginTop: 5 } },
+      h('div', { style: { ...flexRow, fontSize: 10.5, color: T.text2, fontFamily: MONO, marginBottom: 3 } },
+        h('span', null, t('board.subtaskCount', { n: subs.length })),
+        done > 0 ? h('span', { style: { color: T.success } }, `${done}✓`) : null,
+        running > 0 ? h('span', { style: { color: T.brand } }, `${running}⟳`) : null,
+        failed > 0 ? h('span', { style: { color: T.error } }, `${failed}✗`) : null,
+      ),
+      subs.map((sub) => h('div', {
+        key: sub.id,
+        style: {
+          display: 'flex', alignItems: 'center', gap: 4, fontSize: 10.5, fontFamily: MONO,
+          padding: '2px 6px', borderRadius: 4, marginBottom: 2, minWidth: 0,
+          background: sub.status === 'failed' ? `color-mix(in srgb, ${T.error} 7%, transparent)` : T.layer2,
+          border: `1px solid ${stColor(sub.status)}30`,
         },
-          h('span', { style: { color: stColor(sub.status), fontWeight: 600, minWidth: 12, flex: '0 0 auto' } }, sub.status === 'done' ? '✓' : sub.status === 'failed' ? '✗' : sub.status === 'running' ? '⟳' : '…'),
-          h('span', { title: sub.title || undefined, style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, (sub.title || '').replace(/^开发 · /, '')),
-          sub.devAssign ? h('span', { title: t('board.assignDevTip', { who: sub.devAssign }), style: { flex: '0 1 auto', color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 70, minWidth: 0, whiteSpace: 'nowrap' } }, sub.devAssign) : null,
-        )),
-      )
-    })() : null,
+      },
+      h('span', { style: { color: stColor(sub.status), fontWeight: 600, minWidth: 12, flex: '0 0 auto' } }, sub.status === 'done' ? '✓' : sub.status === 'failed' ? '✗' : sub.status === 'running' ? '⟳' : '…'),
+      h('span', { title: sub.title || undefined, style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, (sub.title || '').replace(/^开发 · /, '')),
+      sub.devAssign ? h('span', { title: t('board.assignDevTip', { who: sub.devAssign }), style: { flex: '0 1 auto', color: T.text2, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 70, minWidth: 0, whiteSpace: 'nowrap' } }, sub.devAssign) : null,
+      )),
+    )
+  })() : null,
   )
 
   const groups = [
@@ -563,48 +563,48 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
   ]
   return h('div', { style: { position: 'relative', flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } },
     h('div', { style: { flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 14, paddingRight: 4 } },
-    groups.map(({ kind, list }) => {
-      const counts = {}
-      for (const s of COLUMNS[kind]) counts[s] = 0
-      for (const item of list) counts[item.status] = (counts[item.status] || 0) + 1
-      return h('div', { key: kind },
+      groups.map(({ kind, list }) => {
+        const counts = {}
+        for (const s of COLUMNS[kind]) counts[s] = 0
+        for (const item of list) counts[item.status] = (counts[item.status] || 0) + 1
+        return h('div', { key: kind },
         /* 分组标题：看板区滚动时吸附在顶部（否则滚下去就不知道在看哪组） */
-        h('div', {
-          style: {
-            position: 'sticky', top: 0, zIndex: 3, background: T.bg,
-            display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: 13,
-            padding: '6px 0 8px',
+          h('div', {
+            style: {
+              position: 'sticky', top: 0, zIndex: 3, background: T.bg,
+              display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: 13,
+              padding: '6px 0 8px',
+            },
           },
-        },
           h('span', { style: { fontSize: 14 } }, kind === 'req' ? '📌' : kind === 'task' ? '🔧' : '🐞'),
           kindTitle(kind),
           h('span', {
             style: { fontSize: 11, fontWeight: 600, color: T.text2, background: T.layer2, borderRadius: 999, padding: '0 8px', lineHeight: '18px' },
           }, String(list.length)),
-        ),
-        h('div', { style: { display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 6 } },
-          COLUMNS[kind].map((s) => {
-            const isOver = over === `${kind}:${s}`
-            const color = stColor(s)
-            const colBg = isOver ? `color-mix(in srgb, ${color} 8%, ${T.layer1})` : T.layer2
-            return h('div', {
-              key: s,
-              onDragOver: (e) => { e.preventDefault(); setOver(`${kind}:${s}`) },
-              onDragLeave: () => setOver((o) => (o === `${kind}:${s}` ? null : o)),
-              onDrop: async () => {
-                if (drag && drag.kind === kind && drag.from !== s) await move(kind, drag.id, s)
-                setDrag(null); setOver(null)
+          ),
+          h('div', { style: { display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 6 } },
+            COLUMNS[kind].map((s) => {
+              const isOver = over === `${kind}:${s}`
+              const color = stColor(s)
+              const colBg = isOver ? `color-mix(in srgb, ${color} 8%, ${T.layer1})` : T.layer2
+              return h('div', {
+                key: s,
+                onDragOver: (e) => { e.preventDefault(); setOver(`${kind}:${s}`) },
+                onDragLeave: () => setOver((o) => (o === `${kind}:${s}` ? null : o)),
+                onDrop: async () => {
+                  if (drag && drag.kind === kind && drag.from !== s) await move(kind, drag.id, s)
+                  setDrag(null); setOver(null)
+                },
+                style: {
+                  minWidth: 140, maxWidth: 172, flex: '0 0 auto',
+                  borderRadius: 10, padding: 0, minHeight: 84,
+                  // 卡片多了在列内滚（不再拉长整列），配合下方表头吸附；overflowX 兜底：任何超宽内容都不许顶出列外
+                  maxHeight: 340, overflowY: 'auto', overflowX: 'hidden',
+                  background: colBg,
+                  border: `1px dashed ${isOver ? color : T.border}`,
+                  transition: 'background .12s ease, border-color .12s ease',
+                },
               },
-              style: {
-                minWidth: 140, maxWidth: 172, flex: '0 0 auto',
-                borderRadius: 10, padding: 0, minHeight: 84,
-                // 卡片多了在列内滚（不再拉长整列），配合下方表头吸附；overflowX 兜底：任何超宽内容都不许顶出列外
-                maxHeight: 340, overflowY: 'auto', overflowX: 'hidden',
-                background: colBg,
-                border: `1px dashed ${isOver ? color : T.border}`,
-                transition: 'background .12s ease, border-color .12s ease',
-              },
-            },
               /* 列头：列内滚动时吸附在顶部（sticky 需要不透明底，用列自身底色） */
               h('div', {
                 style: {
@@ -613,17 +613,17 @@ function BoardPanel({ backlog, api, onRefresh, sessionId, onShowRun, openArtifac
                   padding: '7px 9px 5px', borderTopLeftRadius: 10, borderTopRightRadius: 10,
                 },
               },
-                h('span', null, stText(s)),
-                h('span', { style: { marginLeft: 'auto', fontFamily: MONO, fontSize: 10, opacity: .75 } }, counts[s] || 0),
+              h('span', null, stText(s)),
+              h('span', { style: { marginLeft: 'auto', fontFamily: MONO, fontSize: 10, opacity: .75 } }, counts[s] || 0),
               ),
               h('div', { style: { display: 'flex', flexDirection: 'column', gap: 6, padding: '0 7px 7px', minWidth: 0 } },
                 list.filter((item) => item.status === s).map((item) => card(item, kind)),
               ),
-            )
-          }),
-        ),
-      )
-    })),
+              )
+            }),
+          ),
+        )
+      })),
     det ? h(ItemDetailDrawer, { det, onClose: () => setDet(null), onShowRun, openArtifact }) : null,
   )
 }
@@ -666,23 +666,23 @@ function ItemDetailDrawer({ det, onClose, onShowRun, openArtifact }) {
       boxShadow: '0 14px 48px rgba(0,0,0,.30)',
     },
   },
-    /* 头 */
-    h('div', { style: { display: 'flex', alignItems: 'center', gap: 9, padding: '12px 14px', borderBottom: `1px solid ${T.border}`, background: `linear-gradient(135deg, color-mix(in srgb, ${color} 14%, transparent), transparent 62%)` } },
-      h('span', { style: { fontSize: 17 } }, icon),
-      h('div', { style: { flex: 1, minWidth: 0 } },
-        h('div', { style: { fontSize: 12.5, fontWeight: 700, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: d ? (d.title || d.id) : undefined },
-          d ? (d.title || d.id) : `${det.kind} · ${det.id}`),
-        d ? h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 1, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' } },
-          `${d.id} · ${d.kind}${d.severity ? ' · ' + d.severity : ''}`) : null,
-      ),
-      d ? chip(stText(d.status), color, { dot: true }) : null,
-      h('button', { onClick: onClose, style: closeBtn, title: t('common.close') }, '✕'),
+  /* 头 */
+  h('div', { style: { display: 'flex', alignItems: 'center', gap: 9, padding: '12px 14px', borderBottom: `1px solid ${T.border}`, background: `linear-gradient(135deg, color-mix(in srgb, ${color} 14%, transparent), transparent 62%)` } },
+    h('span', { style: { fontSize: 17 } }, icon),
+    h('div', { style: { flex: 1, minWidth: 0 } },
+      h('div', { style: { fontSize: 12.5, fontWeight: 700, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: d ? (d.title || d.id) : undefined },
+        d ? (d.title || d.id) : `${det.kind} · ${det.id}`),
+      d ? h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 1, fontFamily: MONO, fontVariantNumeric: 'tabular-nums' } },
+        `${d.id} · ${d.kind}${d.severity ? ' · ' + d.severity : ''}`) : null,
     ),
-    /* 内容 */
-    h('div', { style: { flex: 1, overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 13 } },
-      loading ? h('div', { style: { color: T.text2, fontSize: 12, padding: 12 } }, t('common.loading')) :
-        err ? h('div', { style: { color: T.error, fontSize: 12, padding: 12 } }, '⚠ ' + err) :
-          !d ? null :
+    d ? chip(stText(d.status), color, { dot: true }) : null,
+    h('button', { onClick: onClose, style: closeBtn, title: t('common.close') }, '✕'),
+  ),
+  /* 内容 */
+  h('div', { style: { flex: 1, overflowY: 'auto', padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 13 } },
+    loading ? h('div', { style: { color: T.text2, fontSize: 12, padding: 12 } }, t('common.loading')) :
+      err ? h('div', { style: { color: T.error, fontSize: 12, padding: 12 } }, '⚠ ' + err) :
+        !d ? null :
           [
             /* 概览 */
             h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
@@ -733,10 +733,10 @@ function ItemDetailDrawer({ det, onClose, onShowRun, openArtifact }) {
                   ),
                   (ri.startedAt || ri.endedAt) ? h('span', { style: { fontSize: 10.5, color: T.text2, fontFamily: MONO } }, `${fmtAt(ri.startedAt)} → ${fmtAt(ri.endedAt)} · ${fmtDur(ri.startedAt, ri.endedAt)}`) : null,
                 ),
-                  h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
-                    secTitle(t('item.requirement')),
-                    h(FoldableText, { text: ri.requirement || t('item.noRequirement'), charLimit: 300, lineLimit: 4, style: { background: T.layer2, borderRadius: 8, padding: '8px 10px' } }),
-                  ),
+                h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } },
+                  secTitle(t('item.requirement')),
+                  h(FoldableText, { text: ri.requirement || t('item.noRequirement'), charLimit: 300, lineLimit: 4, style: { background: T.layer2, borderRadius: 8, padding: '8px 10px' } }),
+                ),
               )
             })() : null,
             /* 任务夹（ADR-0008）：路径 + 产物一键右侧栏预览（host 只回存在且带好地址的文件） */
@@ -792,7 +792,7 @@ function ItemDetailDrawer({ det, onClose, onShowRun, openArtifact }) {
               ),
             ) : null,
           ],
-    ),
+  ),
   )
 }
 
@@ -855,9 +855,9 @@ function TeamSelector({ sessionId, remote, locale }) {
         transition: 'all .12s ease',
       },
     },
-      h('span', { style: { fontSize: 12 } }, active ? active.icon : '🏭'),
-      h('span', { title: active && active.name ? String(active.name) : t('team.label'), style: { maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, active ? active.name : t('team.label')),
-      h('span', { style: { fontSize: 8, opacity: .6 } }, open ? '▲' : '▼'),
+    h('span', { style: { fontSize: 12 } }, active ? active.icon : '🏭'),
+    h('span', { title: active && active.name ? String(active.name) : t('team.label'), style: { maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, active ? active.name : t('team.label')),
+    h('span', { style: { fontSize: 8, opacity: .6 } }, open ? '▲' : '▼'),
     ),
     open ? h('div', {
       style: {
@@ -867,42 +867,42 @@ function TeamSelector({ sessionId, remote, locale }) {
         zIndex: 100, overflow: 'hidden',
       },
     },
-      h('div', { style: { padding: '7px 12px', fontSize: 10, color: T.text2, borderBottom: `1px solid ${T.border}` } }, t('team.pick')),
-      // "无团队"选项：清除选择，回到原生模式
-      h('button', {
-        onClick: () => select(null),
-        style: {
-          display: 'flex', alignItems: 'flex-start', gap: 10, width: '100%',
-          padding: '9px 12px', border: 'none', cursor: 'pointer', textAlign: 'left',
-          background: !active ? `color-mix(in srgb, ${T.text2} 10%, transparent)` : 'transparent',
-          color: T.text, fontSize: 12, transition: 'background .1s',
-          borderBottom: `1px solid ${T.border}`,
-        },
+    h('div', { style: { padding: '7px 12px', fontSize: 10, color: T.text2, borderBottom: `1px solid ${T.border}` } }, t('team.pick')),
+    // "无团队"选项：清除选择，回到原生模式
+    h('button', {
+      onClick: () => select(null),
+      style: {
+        display: 'flex', alignItems: 'flex-start', gap: 10, width: '100%',
+        padding: '9px 12px', border: 'none', cursor: 'pointer', textAlign: 'left',
+        background: !active ? `color-mix(in srgb, ${T.text2} 10%, transparent)` : 'transparent',
+        color: T.text, fontSize: 12, transition: 'background .1s',
+        borderBottom: `1px solid ${T.border}`,
       },
-        h('span', { style: { fontSize: 14, opacity: .5, width: 18, flexShrink: 0, lineHeight: 1.4 } }, '💬'),
-        h('div', { style: { minWidth: 0, flex: 1 } },
-          h('div', { style: { fontWeight: 600, lineHeight: 1.35 } }, t('team.none')),
-          h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 3, lineHeight: 1.45, whiteSpace: 'normal', wordBreak: 'break-word' } }, t('team.noneNote')),
-        ),
-        !active ? h('span', { style: { marginLeft: 'auto', color: T.text2, fontSize: 12, flexShrink: 0 } }, '✓') : null,
-      ),
-      teams.map((team) => h('button', {
-        key: team.id,
-        onClick: () => select(team.id),
-        style: {
-          display: 'flex', alignItems: 'flex-start', gap: 10, width: '100%',
-          padding: '9px 12px', border: 'none', cursor: 'pointer', textAlign: 'left',
-          background: active && active.id === team.id ? `color-mix(in srgb, ${T.brand} 10%, transparent)` : 'transparent',
-          color: T.text, fontSize: 12, transition: 'background .1s',
-        },
+    },
+    h('span', { style: { fontSize: 14, opacity: .5, width: 18, flexShrink: 0, lineHeight: 1.4 } }, '💬'),
+    h('div', { style: { minWidth: 0, flex: 1 } },
+      h('div', { style: { fontWeight: 600, lineHeight: 1.35 } }, t('team.none')),
+      h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 3, lineHeight: 1.45, whiteSpace: 'normal', wordBreak: 'break-word' } }, t('team.noneNote')),
+    ),
+    !active ? h('span', { style: { marginLeft: 'auto', color: T.text2, fontSize: 12, flexShrink: 0 } }, '✓') : null,
+    ),
+    teams.map((team) => h('button', {
+      key: team.id,
+      onClick: () => select(team.id),
+      style: {
+        display: 'flex', alignItems: 'flex-start', gap: 10, width: '100%',
+        padding: '9px 12px', border: 'none', cursor: 'pointer', textAlign: 'left',
+        background: active && active.id === team.id ? `color-mix(in srgb, ${T.brand} 10%, transparent)` : 'transparent',
+        color: T.text, fontSize: 12, transition: 'background .1s',
       },
-        h('span', { style: { fontSize: 14, width: 18, flexShrink: 0, lineHeight: 1.4 } }, team.icon),
-        h('div', { style: { minWidth: 0, flex: 1 } },
-          h('div', { style: { fontWeight: 600, lineHeight: 1.35 } }, team.name),
-          h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 3, lineHeight: 1.45, whiteSpace: 'normal', wordBreak: 'break-word' } }, team.description),
-        ),
-        active && active.id === team.id ? h('span', { style: { marginLeft: 'auto', color: T.brand, fontSize: 12, flexShrink: 0 } }, '✓') : null,
-      )),
+    },
+    h('span', { style: { fontSize: 14, width: 18, flexShrink: 0, lineHeight: 1.4 } }, team.icon),
+    h('div', { style: { minWidth: 0, flex: 1 } },
+      h('div', { style: { fontWeight: 600, lineHeight: 1.35 } }, team.name),
+      h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 3, lineHeight: 1.45, whiteSpace: 'normal', wordBreak: 'break-word' } }, team.description),
+    ),
+    active && active.id === team.id ? h('span', { style: { marginLeft: 'auto', color: T.brand, fontSize: 12, flexShrink: 0 } }, '✓') : null,
+    )),
     ) : null,
   )
 }
@@ -1089,17 +1089,17 @@ function TeamFlowView(props: TeamFlowViewProps) {
         borderRadius: 10, padding: '9px 12px',
       },
     },
-      h('span', { style: { fontWeight: 700, color: T.warn, fontSize: 12.5 } }, t('workbench.needsHumanBanner', { n: needHuman.length })),
-      needHuman.slice(0, 5).map((item) => {
-        const kind = (backlog.requirements || []).some((r) => r.id === item.id) ? 'req'
-          : (backlog.tasks || []).some((t) => t.id === item.id) ? 'task' : 'bug'
-        const fin = kind === 'bug' ? 'verified' : 'accepted'
-        return h('button', {
-          key: item.id,
-          onClick: async () => { await api.backlogUpdate(kind, item.id, fin, props.sessionId, t('workbench.manualReason')); refresh() },
-          style: { ...btn, background: T.success, color: '#fff', border: 'none', fontWeight: 600 },
-        }, t('workbench.handle', { id: item.id }))
-      }),
+    h('span', { style: { fontWeight: 700, color: T.warn, fontSize: 12.5 } }, t('workbench.needsHumanBanner', { n: needHuman.length })),
+    needHuman.slice(0, 5).map((item) => {
+      const kind = (backlog.requirements || []).some((r) => r.id === item.id) ? 'req'
+        : (backlog.tasks || []).some((t) => t.id === item.id) ? 'task' : 'bug'
+      const fin = kind === 'bug' ? 'verified' : 'accepted'
+      return h('button', {
+        key: item.id,
+        onClick: async () => { await api.backlogUpdate(kind, item.id, fin, props.sessionId, t('workbench.manualReason')); refresh() },
+        style: { ...btn, background: T.success, color: '#fff', border: 'none', fontWeight: 600 },
+      }, t('workbench.handle', { id: item.id }))
+    }),
     ) : null,
 
     /* tab 栏 */
@@ -1129,9 +1129,9 @@ function TeamFlowView(props: TeamFlowViewProps) {
           border: `1px solid color-mix(in srgb, ${T.brand} 30%, transparent)`, color: T.brand,
         },
       },
-        h('span', { style: { fontSize: 13 } }, '🗂'),
-        h('span', { title: (workspace && workspace.path) ? String(workspace.path) : undefined, style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 } },
-          (workspace && workspace.path) ? String(workspace.path).split(/[\\/]/).filter(Boolean).pop() : 'ungrouped'),
+      h('span', { style: { fontSize: 13 } }, '🗂'),
+      h('span', { title: (workspace && workspace.path) ? String(workspace.path) : undefined, style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 } },
+        (workspace && workspace.path) ? String(workspace.path).split(/[\\/]/).filter(Boolean).pop() : 'ungrouped'),
       ),
       /* 历史 run 切换：仅流水线 tab 下有意义（Backlog 看板是工作区级，不随 run 变化，
          展示在这里点击无反应还会误导 —— 故只看板 tab 时隐藏） */

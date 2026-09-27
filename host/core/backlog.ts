@@ -274,7 +274,7 @@ export function initPipelineBacklog(journal, requirement, options) {
   const reqId = store.nextId('req')
   const req = {
     id: reqId, product: key, productRoot: options.productRoot || null,
-      title: String(requirement || t(locale, 'backlog.untitled')).replace(/\s+/g, ' ').trim().slice(0, 120), status: 'created',
+    title: String(requirement || t(locale, 'backlog.untitled')).replace(/\s+/g, ' ').trim().slice(0, 120), status: 'created',
     createdAt: Date.now(), updatedAt: Date.now(), events: [], taskIds: [], bugIds: [], humanIntervention: false,
   }
   store.requirements.push(req)

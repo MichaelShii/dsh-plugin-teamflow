@@ -3,8 +3,9 @@
 # 编辑器侧的约定声明。与 lint 的分工：oxlint + @stylistic 只做事后校验，这里管「写入时就别写歪」。
 # 取值刻意与 .oxlintrc.json 的 @stylistic 规则一致（2 空格 / 末行换行 / 无尾空格），不引入第二套口径。
 #
-# 缩进一项是补位：我们不开 @stylistic/indent（它与 Prettier 的 JSX 缩进互斥——实测 client 两个 tsx
-# 上 952 处「Expected N found N+2」全来自这一条），且当前没有 printer，所以缩进只能由编辑器兜住。
+# 缩进现在两边都管：@stylistic/indent（可 `pnpm format` 自动修、进 CI 门禁）+ 本文件（编辑器写入时对齐）。
+# 两者取值一致（2 空格），不冲突。注意：本文件只对人类编辑器生效——AI 直接写文件时不读它，
+# 那种情况下兜住缩进的是 lint 的 indent 规则，这就是它必须开着的原因。
 # 行尾同理：仓库索引已是 LF（`git ls-files --eol` 实测 163 文件全 i/lf、0 个 i/crlf）。
 root = true
 

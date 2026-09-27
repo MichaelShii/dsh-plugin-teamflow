@@ -801,21 +801,21 @@ export class TeamflowService extends TypertRemoteService {
     const taskKey = taskKeyOf(s)
     const attempts = taskKey
       ? (j.stages || [])
-          .filter((x) => phaseKeyOf(x.phase) === phaseKeyOf(s.phase) && taskKeyOf(x) === taskKey)
-          .sort((a, b) => Number(a.seq) - Number(b.seq))
-          .map((x) => ({
-            seq: x.seq,
-            label: x.label,
-            status: x.status,
-            outcome: x.outcome || null,
-            summary: clip(x.summary || '', 1500),
-            output: clip(toText(x.output) || toText(x.handoff) || '', 12000),
-            usage: x.usage || null,
-            verifyEvidence: x.verifyEvidence || null,
-            childId: x.childId || null,
-            startedAt: x.startedAt,
-            endedAt: x.endedAt,
-          }))
+        .filter((x) => phaseKeyOf(x.phase) === phaseKeyOf(s.phase) && taskKeyOf(x) === taskKey)
+        .sort((a, b) => Number(a.seq) - Number(b.seq))
+        .map((x) => ({
+          seq: x.seq,
+          label: x.label,
+          status: x.status,
+          outcome: x.outcome || null,
+          summary: clip(x.summary || '', 1500),
+          output: clip(toText(x.output) || toText(x.handoff) || '', 12000),
+          usage: x.usage || null,
+          verifyEvidence: x.verifyEvidence || null,
+          childId: x.childId || null,
+          startedAt: x.startedAt,
+          endedAt: x.endedAt,
+        }))
       : null
     return {
       seq: s.seq, label: s.label, phase: s.phase, status: s.status, outcome: s.outcome,
