@@ -2,6 +2,27 @@
 
 > 本插件首次公开发布版本为 **v0.1.0**；发布前的内部迭代（v0.3~v0.13）记录于 `AGENTS.md` §5，对外统一归到 v0.1.0。
 
+## [0.2.4] - 2026-09-28
+
+> 逐条变更说明与验证数据见 `docs/releases/v0.2.4.md`。**无破坏性**：宿主窗口不变（`>=0.1.7-alpha.1 <0.2.0`），journal/任务夹/参数全部向后兼容。性质 = 工程基建（代码格式单一仲裁者 + max-len 对齐宿主 140 + lefthook 预提交自动修 + @stylistic/oxlint 风格门禁），零功能性变更、零用户可见行为变化。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **无破坏性**：宿主窗口不变；journal 格式、任务夹契约、`teamflow_*` 工具参数全部向后兼容。
+- **升完重启 `dsh --profile web` 生效**。
+- 纯工程基建版本：确立代码格式单一仲裁者（`@stylistic/indent`，不引入 Prettier）、行长上限对齐宿主收严到 140、加 lefthook 预提交钩子自动修复 staged 文件、风格门禁改走宿主同款 `@stylistic`（oxlint jsPlugins）。
+
+### 工程基建
+
+- **代码格式单一仲裁者**：确立 `@stylistic/indent` 为唯一格式权威，不引入 Prettier（两者在 JSX 缩进上互斥）；规范见 `docs/anchors/code-style.md`（含规则准入与升级纪律、源码断言锁只锁内容不锁排版）。
+- **max-len 收严到 140**：对齐宿主 dsh 行宽；全仓 53 处超长行手工折行 + 3 条长正则拆成语义分组数组并做等价性校验（disable 计数归零），不靠 disable 逃避。
+- **lefthook 预提交钩子**：贡献者 `git commit` 即合规——`pnpm format`（两遍 `--fix`）+ `git diff --cached --check` 空白检查，`stage_fixed: true`。
+- **风格门禁改走宿主同款 `@stylistic`**：oxlint `jsPlugins` 加载 `@stylistic/eslint-plugin`（103 规则、0 warning 门禁），锁精确版本 1.85.0（jsPlugins alpha 不随 semver）；补 `@stylistic/indent` + `pnpm format` + `.editorconfig` 三层缩进兜底。
+
+### 验证
+
+- 全仓 oxlint `--deny-warnings` 0/0 @ 103 规则；`tsc --noEmit` 0；28 个测试套件全绿（含 instruction-budget / changelog / prompt-contract / conformance）；lefthook 预提交钩子实跑通过。验证数据见发布说明。
+
 ## [0.2.3] - 2026-09-27
 
 > 逐条变更说明与验证数据见 `docs/releases/v0.2.3.md`。**无破坏性**：宿主窗口不变（`>=0.1.7-alpha.1 <0.2.0`），journal/任务夹/参数全部向后兼容。性质 = 诚实可见性（git 提交面 / 失败诊断 / 主会话触发纪律）+ 空收尾止损 + 只读检查 CLI。
