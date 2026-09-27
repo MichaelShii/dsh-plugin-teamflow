@@ -135,7 +135,12 @@ export const chip = (text, color, opts: { style?: Record<string, string>; dot?: 
 }, opts.dot ? h('span', { style: { width: 5, height: 5, borderRadius: 999, background: color, display: 'inline-block', flex: '0 0 auto' } }) : null, text)
 
 /** 可折叠长文本：默认只显示前几行预览，「展开全文」/「收起」双向切换（数据不动，纯展示层——summary/需求原文等富文本不再铺满抽屉）。 */
-export function FoldableText({ text, charLimit = 280, lineLimit = 5, style }: { text: unknown; charLimit?: number; lineLimit?: number; style?: Record<string, unknown> }) {
+export function FoldableText({
+  text,
+  charLimit = 280,
+  lineLimit = 5,
+  style,
+}: { text: unknown; charLimit?: number; lineLimit?: number; style?: Record<string, unknown> }) {
   const [open, setOpen] = React.useState(false)
   if (!text) return null
   const s = String(text)

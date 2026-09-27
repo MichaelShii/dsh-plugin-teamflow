@@ -201,7 +201,10 @@ export function mergeStateBlock(projectKey: string, block: StageStateBlock, phas
 }
 
 /** 按 run 更新 lastRun / lastRunFolder（finally 时调用）。 */
-export function noteRun(projectKey: string, run: { id?: string; requirement?: string; verdict?: string; endedAt?: number; runDocs?: string | null }): void {
+export function noteRun(
+  projectKey: string,
+  run: { id?: string; requirement?: string; verdict?: string; endedAt?: number; runDocs?: string | null },
+): void {
   const state = loadState(projectKey)
   if (run.runDocs) state.lastRunFolder = run.runDocs
   state.lastRun = {

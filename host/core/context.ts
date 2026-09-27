@@ -20,7 +20,13 @@ export const runtime: {
   llm?: any
 } = {}
 
-export function setRuntime(agents: unknown, subagents: unknown, workspaceRegistry?: unknown, agentDefaultModel?: unknown, llm?: unknown): void {
+export function setRuntime(
+  agents: unknown,
+  subagents: unknown,
+  workspaceRegistry?: unknown,
+  agentDefaultModel?: unknown,
+  llm?: unknown,
+): void {
   runtime.agents = agents
   runtime.subagents = subagents
   runtime.workspaceRegistry = workspaceRegistry
@@ -192,7 +198,9 @@ interface LlmModelInfoLike { inputModalities?: readonly string[] }
  */
 export async function currentModelSupportsVision(provider?: string | null, model?: string | null): Promise<boolean> {
   try {
-    const llm = runtime.llm as { resolveModelInfo?: (p: string, m: string) => Promise<LlmModelInfoLike | undefined | null> } | null | undefined
+    const llm = runtime.llm as {
+      resolveModelInfo?: (p: string, m: string) => Promise<LlmModelInfoLike | undefined | null>
+    } | null | undefined
     if (!llm || typeof llm.resolveModelInfo !== 'function') return false
     const p = (provider && provider.trim()) || providerName()
     const m = (model && model.trim()) || (() => {

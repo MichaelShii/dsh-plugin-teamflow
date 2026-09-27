@@ -311,7 +311,9 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     qaRounds: (journal.qaRounds || []).slice(-12).map((r) => ({
       round: r.round, seq: r.seq, blocking: r.blocking, p3: r.p3,
       defects: Array.isArray(r.defects)
-        ? (r.defects as Array<Record<string, unknown>>).slice(0, 20).map((d) => ({ id: clip(d.id, 40), sev: d.sev, module: clip(d.module, 60), fp: clip(d.fp, 200) }))
+        ? (r.defects as Array<Record<string, unknown>>)
+          .slice(0, 20)
+          .map((d) => ({ id: clip(d.id, 40), sev: d.sev, module: clip(d.module, 60), fp: clip(d.fp, 200) }))
         : [],
       withCheck: r.withCheck, withCriterion: r.withCriterion,
       qaCalls: r.qaCalls, fixCalls: r.fixCalls, gate: r.gate,

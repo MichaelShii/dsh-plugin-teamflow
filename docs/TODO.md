@@ -99,13 +99,15 @@
   - 依赖实验性 Agent Teams 包（`@deepseek-ai/dsh-experimental-*` 5 个）：无稳定性承诺、**稳定包被禁止依赖实验包**、用户须显式加 profile → 与「可分发插件」定位冲突。
   - **`subagent.toolFilter` 做宿主强制工具裁剪**：`tools.restrict()` 对**未知工具名 fail-loud 抛错**，而子代理工具集随 preset/深度变化（如 maxDepth 下没有 subagent）→ 跨 profile 会让子代理 **start 直接失败**；`maxDepth` 也不是嵌套约束（`resolveChildDepth` 超限只是抛错，不传播限制）。即「QA 禁改产品代码」这类按名字裁剪无法安全表达。
   - 把阶段指令搬进 system prompt（会作废跨子代理前缀复用，冒烟 93% 命中率靠它）；`contextBreakdown` 当熔断/计费依据（官方明确是启发式）。
-- 🔜 **风格门禁：是否收严 max-len / 是否引入 printer**（2026-09-27 定：oxlint 走宿主同款 `@stylistic`，先落 200）。
-  现状：`.oxlintrc.json` 挂 `jsPlugins: @stylistic/eslint-plugin`（`arrow-parens` 用 `always`——宿主 `as-needed` 会改 270 处写法并炸 12 条源码排版断言），
-  **已开 `@stylistic/indent: [error, 2]`**（2026-09-27 晚补：纯 AI Coding 下 `.editorconfig` 对 AI 写文件无效，
-  缩进必须有自动手段，且「与 Prettier 的 JSX 缩进互斥」这条理由在弃用 Prettier 后已不成立——试跑 959 处一遍 fix 收敛、
-  改动 5 文件 +920/−920 纯缩进、测试零破损），`max-len` 阈值 200（代码结构行 8 处超额已手工断行；
-  160 剩 27 处、140 剩 61 处）。**收严到 160/140 之前必须先答**：要不要引 printer 自动折行——Prettier 全仓重排实测 63 文件 **+19230/−5010**，
-  且 `printWidth` 重排会让一批源码正则断言失效（要走「断言格式无关化」这一遍）。**当前代价（明确记录）**：无 printer ⇒ **换行/折行仍无自动格式化**（缩进已由 `@stylistic/indent` 兜住），
-  只有 ① 可自动修的那几条（quotes/semi/comma-dangle/eol-last/trailing-spaces/object-curly-spacing/arrow-parens/member-delimiter-style，靠 `--fix`）
-  ② `max-len` 这类只报警不修的硬校验；新代码的排版靠作者手写 + `.editorconfig`。另注：`jsPlugins` 在 schema 里明写 **alpha、不受 semver**，
-  所以 `oxlint` devDep 已锁精确版本（宿主 likewise 锁 1.76.0），升级前先在临时目录验一遍规则仍生效（已知 `@stylistic/comma-dangle` 对 interface 成员静默失效）。
+- ✅ **风格门禁已收口（2026-09-27 定案，规范落在 `docs/anchors/code-style.md`）**：
+  - **单一仲裁者**：不引 formatter（Prettier 与 `@stylistic/indent` 在 JSX 缩进上互斥，只能有一个定义源）；
+    格式由 `.oxlintrc.json` 的 `@stylistic/*` 规则裁决，经 oxlint `jsPlugins` 执行。
+  - **行宽 140**（对齐宿主 dsh）：含缩进计数，字符串/模板/URL 豁免；53 处超额已全数手工断行收口。
+  - **执行三层**：`pnpm format`（两遍 `--fix`，一遍不收敛）+ lefthook `pre-commit`（staged 文件自动回灌）+ CI `pnpm lint`（0 warning）。
+    判据是规则数 `64 files with 103 rules`——数字掉下来 = 配置没被吃到（退出码仍可能是 0）。
+  - **`arrow-parens` 用 `always`**（宿主 `as-needed` 会改 270 处写法并炸 12 条源码断言）——与宿主的有意差异已写进规范文档。
+  - **源码断言锁只锁内容不锁排版**：跨行处分隔符写 `\s*`、容忍尾逗号，否则行宽合规与门禁会互相打架。
+  - 另注：`jsPlugins` 在 schema 里明写 **alpha、不受 semver**，所以 `oxlint` devDep 已锁精确版本（宿主 likewise 锁 1.76.0），
+    升级前先在临时目录验一遍规则仍生效（已知 `@stylistic/comma-dangle` 对 interface 成员静默失效）。
+- 🔜 **换行/折行仍无自动手段**（唯一已知缺口）：`max-len` 只报警不修，缩进已由 `@stylistic/indent` 兜住，
+  但「把一行断成两行」仍靠作者/AI 手写。若日后要补，只考虑**可声明、可进门禁**的形态（不是再引一个 printer 与之互斥）。

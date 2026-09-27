@@ -42,7 +42,8 @@ const TF_DOCS = 'docs/teamflow'
 
 /** 本次任务产物夹相对路径（ADR-0008）：host 在启动时注入 state.__runCtx.runDocs。 */
 function RUN(state: unknown): string {
-  const rd = state && (state as { __runCtx?: { runDocs?: unknown } }).__runCtx && (state as { __runCtx?: { runDocs?: unknown } }).__runCtx!.runDocs
+  const rcDocs = state as { __runCtx?: { runDocs?: unknown } } | undefined
+  const rd = rcDocs && rcDocs.__runCtx ? rcDocs.__runCtx.runDocs : undefined
   return typeof rd === 'string' && rd ? rd : `${TF_DOCS}/current-run`
 }
 
@@ -53,7 +54,8 @@ function RUN(state: unknown): string {
  * - 经 state 读取而非新增工厂参数：11 个 prompt 工厂签名与全部调用点零连锁改动（AC-4）。
  */
 function LOCALE(state: unknown): HostLocale {
-  const l = state && (state as { __runCtx?: { locale?: unknown } }).__runCtx && (state as { __runCtx?: { locale?: unknown } }).__runCtx!.locale
+  const rcLocale = state as { __runCtx?: { locale?: unknown } } | undefined
+  const l = rcLocale && rcLocale.__runCtx ? rcLocale.__runCtx.locale : undefined
   return l === 'en' ? 'en' : 'zh'
 }
 
@@ -71,7 +73,8 @@ function replyLang(state: unknown): string {
  * 并重跑缺陷行自带的检测命令——否则「上一轮的面没覆盖到」这件事没人会发现（r9 实测）。
  */
 function QAREVERIFY(state: unknown): boolean {
-  const v = state && (state as { __runCtx?: { qaReverify?: unknown } }).__runCtx && (state as { __runCtx?: { qaReverify?: unknown } }).__runCtx!.qaReverify
+  const rcQa = state as { __runCtx?: { qaReverify?: unknown } } | undefined
+  const v = rcQa && rcQa.__runCtx ? rcQa.__runCtx.qaReverify : undefined
   return v === true
 }
 
@@ -81,8 +84,9 @@ function QAREVERIFY(state: unknown): boolean {
  * 由 pipeline 写 `state.__runCtx.knownIssues`（同一注入通道，不改工厂签名）；缺省 = 常规验收。
  */
 function KNOWNISSUES(state: unknown): boolean {
-  const v = state && (state as { __runCtx?: { knownIssues?: unknown } }).__runCtx && (state as { __runCtx?: { knownIssues?: unknown } }).__runCtx!.knownIssues
-  return v === true
+  type RunCtxHost = { __runCtx?: { knownIssues?: unknown } }
+  const rc = ((state || {}) as RunCtxHost).__runCtx
+  return rc ? rc.knownIssues === true : false
 }
 
 /**
@@ -354,7 +358,8 @@ export const ONCE_DISCIPLINE = `[ONE-SHOT WRITE · policy] The most important ef
  * 写成一个**给主 agent 执行的步骤**，而不是"请用户手动测试"。
  */
 function installBlock(en: boolean, rc: Record<string, unknown>): string {
-  const env = (rc && rc.installEnv) as { ok?: boolean; profile?: string; profileDir?: string; cliOnPath?: boolean; dshHome?: string } | undefined
+  type InstallEnv = { ok?: boolean; profile?: string; profileDir?: string; cliOnPath?: boolean; dshHome?: string }
+  const env = (rc && rc.installEnv) as InstallEnv | undefined
   if (!env) return ''
   const ok = env.ok === true
   const p = env.profile || '?'
@@ -678,7 +683,13 @@ ${ARTIFACT_DELIVERY(RUN(state))}
 }
 
 /** 需求分诊模型 prompt（模型驱动 triage；供 core/triage.runTriage 使用）。 */
-export const TRIAGE_PROMPT = (requirement: string, opts: { needDesign?: boolean } | undefined, pre: { rationale: string[] }, retryHint?: string, locale?: HostLocale): string => {
+export const TRIAGE_PROMPT = (
+  requirement: string,
+  opts: { needDesign?: boolean } | undefined,
+  pre: { rationale: string[] },
+  retryHint?: string,
+  locale?: HostLocale,
+): string => {
   const en = locale === 'en'
   /** 英文档位等价示例与 rationale 语言指令（AC-7 增补）；zh 分支不追加 → 输出与现状逐字一致。 */
   const langNote = en

@@ -42,7 +42,7 @@
         "@stylistic/max-len": [
           "error",
           {
-            "code": 200,
+            "code": 140,
             "ignoreUrls": true,
             "ignoreStrings": true,
             "ignoreTemplateLiterals": true

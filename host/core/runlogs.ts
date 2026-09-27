@@ -209,7 +209,12 @@ export function pruneLogArchives(journal: JournalRecord, locale: HostLocale = 'z
  * （内容与 `runs/<runId>.json` 的 journal.logs 同源，归档只是重复）。本次/活跃 run 的文件不动。
  * 不写 journal 日志行（由调用方汇总成一条，避免每文件一行噪音）。
  */
-function archiveLooseFile(journal: JournalRecord, root: string, name: string, locale: HostLocale): { kept: number; dropped: number; bytes: number } {
+function archiveLooseFile(
+  journal: JournalRecord,
+  root: string,
+  name: string,
+  locale: HostLocale,
+): { kept: number; dropped: number; bytes: number } {
   const archiveRoot = logsArchiveRoot(journal)
   const src = join(root, name)
   const stem = name.replace(/\.[^.]+$/, '') || name

@@ -121,7 +121,10 @@ async function clarificationPreflight(
   if ((verdict.intent !== 'requirement' || verdict.blockers.length > 0) && !alreadyClarified) {
     return { needsClarification: { intent: verdict.intent, blockers: verdict.blockers }, cacheKey }
   }
-  if (alreadyClarified && verdict.blockers.length > 0) (verdict as unknown as Record<string, unknown>).__clarifyProceeded = verdict.blockers.length
+  if (alreadyClarified && verdict.blockers.length > 0) {
+    const mutable = verdict as unknown as Record<string, unknown>
+    mutable.__clarifyProceeded = verdict.blockers.length
+  }
   return { verdict, cacheKey }
 }
 
@@ -302,7 +305,13 @@ function registerTools(ctx) {
         }
         // 需求澄清闸门（快路径）：分支决策之前先过闸门/护栏。**权威判定在 pipeline 内**——这里失败不致命，
         // 原因记进 `__triageError` 由 pipeline 记 warn（实测：漏传 signal 会让工具内分诊秒退 fallback）。
-        const pre = await clarificationPreflight(requirement, options as unknown as Record<string, unknown>, parent, exec && exec.signal, ambientLocale())
+        const pre = await clarificationPreflight(
+          requirement,
+          options as unknown as Record<string, unknown>,
+          parent,
+          exec && exec.signal,
+          ambientLocale(),
+        )
         // 缓存键在**两条返回分支**上都有（pendingDecision 状态机要用；见 core/triage.ts 的缓存注释）
         const triageKey = pre.cacheKey
         if ('needsClarification' in pre) {
@@ -842,7 +851,14 @@ export class TeamflowService extends TypertRemoteService {
     // 任务夹路径（ADR-0008）+ 关联 run 信息（req 需求原文在这）：匹配该需求的 journal
     let runDocs: string | null = null
     let runDocsRoot: string | null = null
-    let runInfo: { runId: string; status: string; requirement: string; startedAt: number | null; endedAt: number | null; ownerSession: string | null } | null = null
+    let runInfo: {
+      runId: string
+      status: string
+      requirement: string
+      startedAt: number | null
+      endedAt: number | null
+      ownerSession: string | null
+    } | null = null
     for (const j of runsFor(key)) {
       if (j.reqId !== reqId) continue
       if (j.runDocs && !runDocs) { runDocs = j.runDocs; runDocsRoot = j.workspacePath || null }
@@ -865,7 +881,15 @@ export class TeamflowService extends TypertRemoteService {
       } catch (e) { /* 任务夹不存在/不可读 → 空清单（前端不渲染按钮） */ }
     }
     const byRole = item.byRole || null
-    let subtasks: Array<{ id: string; title: string; status: string; summary: string; devAssign: string | null; usage: unknown; failed: boolean }> = []
+    let subtasks: Array<{
+      id: string
+      title: string
+      status: string
+      summary: string
+      devAssign: string | null
+      usage: unknown
+      failed: boolean
+    }> = []
     let bugs: Array<{ id: string; title: string; status: string; severity: string | null }> = []
     if (k === 'task') {
       for (const sid of (item.subtaskIds || [])) {
@@ -979,7 +1003,8 @@ export class TeamflowService extends TypertRemoteService {
       }
       if (pre.verdict) {
         const explicit = opts.mode as typeof opts.mode
-        const up = guardrailUpgrade(explicit, !!(opts as Record<string, unknown>).lite, pre.verdict.mode, { needDesign: (opts as Record<string, unknown>).needDesign === true })
+        const needDesign = (opts as Record<string, unknown>).needDesign === true
+        const up = guardrailUpgrade(explicit, !!(opts as Record<string, unknown>).lite, pre.verdict.mode, { needDesign })
         if (up) {
           const fromMode = (explicit !== undefined || (opts as Record<string, unknown>).lite) ? (explicit || 'lite') : pre.verdict.mode
           if (MODE_RANK[fromMode] < MODE_RANK[up]) (pre.verdict as unknown as Record<string, unknown>).__upgradedFrom = fromMode

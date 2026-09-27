@@ -190,9 +190,13 @@ export function tfUnstageArgs(): string[] {
  * 覆盖实测到的三种英文措辞 + 中文 git 兜底；判据只增不改（措辞变化时宁可多报失败，不可少报）。
  * 主路径不依赖它：收口提交先用 `git status --porcelain` 空判定（确定性），这里只兜「索引非空但 commit 仍说没东西」。
  */
-export const GIT_NOTHING_TO_COMMIT = /nothing to commit|nothing added to commit|no changes added to commit|working tree clean|无文件要提交|没有要提交|工作区干净/i
+export const GIT_NOTHING_TO_COMMIT = new RegExp([
+  'nothing to commit', 'nothing added to commit', 'no changes added to commit', 'working tree clean',
+  '无文件要提交', '没有要提交', '工作区干净',
+].join('|'), 'i')
 
-/** 任务夹命名空间（ADR-0008：docs/teamflow/<yyyyMMdd-rN-slug>/ 与 memory.md）。 */export const TF_DOCS_DIR = 'docs/teamflow'
+/** 任务夹命名空间（ADR-0008：docs/teamflow/<yyyyMMdd-rN-slug>/ 与 memory.md）。 */
+export const TF_DOCS_DIR = 'docs/teamflow'
 
 /**
  * 交付文档的**入库计划**（2026-09-26 改造：**尊重目标仓库的 `.gitignore`，不再无条件 `-f` 强加**）。

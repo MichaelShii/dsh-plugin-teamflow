@@ -124,7 +124,14 @@ export function backlogSummary(product: string | null | undefined) {
 
 /** backlog 状态流转（校验目标状态合法性，合法的终态自动清 needs-human）。
  *  只做 status + humanIntervention，不碰 assign——assign 是独立操作，由 teamflow_assign 工具或 noteTaskAssign 处理。 */
-export function transitionBacklog(product: string | null | undefined, kind, id: string, to: string, reason: string | null | undefined, _meta?) {
+export function transitionBacklog(
+  product: string | null | undefined,
+  kind,
+  id: string,
+  to: string,
+  reason: string | null | undefined,
+  _meta?,
+) {
   const store = storeFor(product)
   const item = store.find(kind, id)
   if (!item) return { ok: false, error: t(ambientLocale(), 'backlog.notFound', { kind, id }) }
@@ -485,7 +492,16 @@ export function assignTask(product: string | null | undefined, kind: string, id:
   }
   item.updatedAt = Date.now()
   store.persist()
-  return { ok: true, item: { id: item.id, devAssign: item.devAssign || null, qaAssign: item.qaAssign || null, acceptBy: item.acceptBy || null, owner: item.owner || null } }
+  return {
+    ok: true,
+    item: {
+      id: item.id,
+      devAssign: item.devAssign || null,
+      qaAssign: item.qaAssign || null,
+      acceptBy: item.acceptBy || null,
+      owner: item.owner || null,
+    },
+  }
 }
 
 /**

@@ -66,7 +66,11 @@ function isAgentBusy(run: { localAgent?: unknown } | null | undefined): boolean 
 function eventsOf(run: { localAgent?: { session?: unknown } } | null | undefined): unknown[] {
   try {
     const local = run && (run as { localAgent?: { session?: unknown } }).localAgent
-    const session = (local && local.session) as { events?: unknown; snapshotEvents?: () => unknown; ownEvents?: () => unknown } | null | undefined
+    const session = (local && local.session) as {
+      events?: unknown
+      snapshotEvents?: () => unknown
+      ownEvents?: () => unknown
+    } | null | undefined
     if (!session) return []
     const candidates: unknown[] = []
     try {
@@ -199,7 +203,9 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
         if (timing) {
           detail = t(locale, 'guard.diagTiming', { through: timing.activeThrough === undefined ? t(locale, 'guard.diagNoTurn') : timing.activeThrough })
         } else {
-          const local = (run as { localAgent?: { session?: { events?: unknown; snapshotEvents?: () => unknown; ownEvents?: () => unknown } } }).localAgent
+          const local = (run as {
+            localAgent?: { session?: { events?: unknown; snapshotEvents?: () => unknown; ownEvents?: () => unknown } }
+          }).localAgent
           const session = local && local.session
           const lens: string[] = []
           if (session) {
@@ -230,7 +236,11 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
       if (events.length > processed) {
         const newEvents = events.slice(processed)
         for (const ev of newEvents) {
-          const e = ev as { type?: string; data?: { texts?: unknown; chunk?: { type?: string; text?: string } } | null; texts?: unknown } | null
+          const e = ev as {
+            type?: string
+            data?: { texts?: unknown; chunk?: { type?: string; text?: string } } | null
+            texts?: unknown
+          } | null
           if (!e) continue
           let streamText: string | null = null
           if (e.type === 'text-chunks' || e.type === 'reasoning-chunks') {

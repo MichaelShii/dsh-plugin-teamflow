@@ -104,7 +104,12 @@ function sessionEventsOf(run: SubagentRunLike | null | undefined): unknown[] {
 
 /** 从单个 assistant/message 事件取 usage（宿主 usageOf 同款双路径：data.usage 优先，
  * 缺失时从 data.stream 的 usage chunk 取——v2 事件 usage 可能只在 stream 里）。 */
-function usageOfEvent(e: { type?: string; data?: unknown } | null): { inputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; outputTokens?: number } | undefined {
+function usageOfEvent(e: { type?: string; data?: unknown } | null): {
+  inputTokens?: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  outputTokens?: number
+} | undefined {
   if (!e || e.type !== 'assistant/message') return undefined
   const d = (e.data || {}) as { usage?: unknown; stream?: unknown[] }
   if (d.usage && typeof d.usage === 'object') return d.usage as { inputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; outputTokens?: number }

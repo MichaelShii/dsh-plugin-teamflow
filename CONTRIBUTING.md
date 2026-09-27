@@ -30,6 +30,10 @@ pnpm typecheck     # needs the local dsh profile types (see above)
 
 ## Lint gate
 
+The authoritative style spec is [`docs/anchors/code-style.md`](docs/anchors/code-style.md) — line
+width (140), which rules run, why there is no formatter, and how new rules get admitted. Read it
+before arguing about formatting in a review.
+
 `pnpm run lint` (= `pnpm lint`) runs oxlint with `--deny-warnings`, so **warnings are failures**:
 the tree is kept at 0 warnings / 0 errors. CI runs the same command before `test` and `bundle`
 (`.github/workflows/ci.yml`), so a warning you leave behind also fails your PR. Fix it — don't

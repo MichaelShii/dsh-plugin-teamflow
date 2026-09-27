@@ -682,7 +682,8 @@ ok(/log\.modeUpgraded/.test(pipelineSrc) && /__upgradedFrom/.test(hostSrc) && /_
 // dsh 插件」，但**模型根本没调用 teamflow_start**（0 次调用、该产品线 runs=0）——不复现「抢跑」，可闸门也
 // 就没机会生效。旧注入只写「不明确就别调用」，没写「澄清完要回来开工」→ 这条链没有闭环保证。故补三段。
 // 权威判定在 pipeline（2026-09-16 实测 tf-mu35oza7-wmuckz：预检漏传 signal → 工具内分诊 0.4s 退 fallback，闸门静默失效）
-ok(/clarificationPreflight\(requirement, options as unknown as Record<string, unknown>, parent, exec && exec\.signal, ambientLocale\(\)\)/.test(hostSrc), 'host：预检把工具 signal 传给分诊（漏传会让分诊秒退 fallback）')
+// 源码锁只锁「参数内容与顺序」，不锁排版（换行/缩进归 formatter 与 max-len 管），故分隔符一律写 \s*
+ok(/clarificationPreflight\(\s*requirement,\s*options as unknown as Record<string, unknown>,\s*parent,\s*exec && exec\.signal,\s*ambientLocale\(\)\s*,?\s*\)/.test(hostSrc), 'host：预检把工具 signal 传给分诊（漏传会让分诊秒退 fallback）')
 ok(/verdict: TriageVerdict \| null; error\?: string/.test(hostSrc) && /__triageError/.test(hostSrc), 'host：预检失败返回原因（__triageError），不静默')
 ok(/\} else if \(options\.mode !== 'patch'\) \{/.test(pipelineSrc), 'pipeline：除 patch 外一律跑分诊（含显式 lite/mode —— 权威判定在 pipeline）')
 ok(/function abortForClarification/.test(pipelineSrc) && /return abortForClarification\(journal, locale, verdict\)/.test(pipelineSrc), 'pipeline：闸门兜底 abortForClarification（非明确需求/must-know → 不开工，落可续跑中断态）')

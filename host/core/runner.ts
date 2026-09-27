@@ -9,7 +9,7 @@ import { clip, extractText, blockShape, emptyTurnDocVerdict, normalizeSignal, ju
 import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../constants.ts'
 import { t, type HostLocale } from '../locales.ts'
 import { runLocaleOf } from './locale.ts'
-import type { Journal, ParentAgentLike } from '../types.ts'
+import type { Journal, ParentAgentLike, UsageBuckets } from '../types.ts'
 import type { JournalStage } from '../../store.ts'
 
 /**
@@ -78,7 +78,9 @@ export function resolveChildRoute(parent: ParentAgentLike): { provider?: string;
   const out: { provider?: string; model?: string; maxTokens?: number } = {}
   try {
     // 1. 最近生效路由（request header config）
-    const session = (parent as { session?: { requestHeader?: () => { config?: { provider?: string; model?: string; maxTokens?: number } } | undefined } }).session
+    const session = (parent as {
+      session?: { requestHeader?: () => { config?: { provider?: string; model?: string; maxTokens?: number } } | undefined }
+    }).session
     const header = session && typeof session.requestHeader === 'function' ? session.requestHeader() : undefined
     const cfg = header && header.config
     if (cfg && typeof cfg.provider === 'string' && cfg.provider) {
@@ -89,7 +91,9 @@ export function resolveChildRoute(parent: ParentAgentLike): { provider?: string;
   } catch (e) { /* 回退下一级 */ }
   if (!out.provider) {
     // 2. 全局默认模型当前选择（切换即更新）
-    const defaultModel = runtime.agentDefaultModel as { currentSelection?: () => { provider?: string; model?: string; maxTokens?: number } } | undefined
+    const defaultModel = runtime.agentDefaultModel as {
+      currentSelection?: () => { provider?: string; model?: string; maxTokens?: number }
+    } | undefined
     if (defaultModel && typeof defaultModel.currentSelection === 'function') {
       try {
         const sel = defaultModel.currentSelection()
@@ -334,13 +338,20 @@ async function sleepUnlessCancelled(ms: number, isCancelled: () => boolean): Pro
  * 顺序：不可重试/外部中止/护栏中止 → 预算门 → 自动重试（预算合理时重试优先于熔断，2026-09-11 修正）。
  * `effortHint`：机械阶段的推理强度降档提示（第 1 次尝试生效，重试自动回升 high，见 resolveStageEffort）。 */
 export async function withRetry(
-  journal: Journal, parent: unknown, label: string, phase: string, prompt: string, signal: unknown, taskKey?: string | null, effortHint?: string | null,
+  journal: Journal,
+  parent: unknown,
+  label: string,
+  phase: string,
+  prompt: string,
+  signal: unknown,
+  taskKey?: string | null,
+  effortHint?: string | null,
   taskIds?: string[] | null,
 ): Promise<{ text: string | null; attempts: number; freshTokens: number; stage: JournalStage | null }> {
   let attempts = 0
   let freshTokens = 0
   // 熔断预算的缓存能力判据：累计本次调用各次尝试的 usage（只看本阶段，见 metering.effectiveFreshBudget）
-  let usageAcc: { input: number; cacheRead: number; cacheWrite: number; output: number; calls: number } = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 }
+  let usageAcc: UsageBuckets = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 }
   let lastStage: JournalStage | null | undefined = null
   // 外部供应商故障的独立计数（不受 RETRY_LIMIT 约束：那是"换做法重试"的次数，
   // 外部故障是"等窗口过去"，两件事不能共用一个计数器）

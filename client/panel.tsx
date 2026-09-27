@@ -365,7 +365,13 @@ function RunDetailPane({ snap, product, api, onCancel }) {
   const stages = snap.stages || []
   const totals = stages.reduce((a, s) => {
     const u = s.usage
-    if (u) { a.input += u.input || 0; a.cacheRead += u.cacheRead || 0; a.cacheWrite += u.cacheWrite || 0; a.output += u.output || 0; a.calls += u.calls || 0 }
+    if (u) {
+      a.input += u.input || 0
+      a.cacheRead += u.cacheRead || 0
+      a.cacheWrite += u.cacheWrite || 0
+      a.output += u.output || 0
+      a.calls += u.calls || 0
+    }
     return a
   }, { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 })
   const openStage = async (s) => {
@@ -497,7 +503,17 @@ export function RunDetailTab(props) {
       return undefined
     }
     if (!api) { setSnap(null); setErr(t('tab.remoteUnavailable')); return undefined }
-    api.runDetail(runId).then((v) => { if (alive) { setSnap(v); setErr(null) } }, (e) => { if (alive) setErr(String((e && e.message) || e)) })
+    api.runDetail(runId).then(
+      (v) => {
+        if (alive) {
+          setSnap(v)
+          setErr(null)
+        }
+      },
+      (e) => {
+        if (alive) setErr(String((e && e.message) || e))
+      },
+    )
     const timer = setInterval(() => {
       api.runDetail(runId).then((v) => {
         if (!alive) return
@@ -629,7 +645,8 @@ export function GlobalPanel(props) {
     try {
       const v = unwrap(await remote.products(currentSessionId || null), 'products') || {}
       const list = v.products || []
-      const key = preferKey || state.current || (v.current && list.some((p) => p.key === v.current) ? v.current : (list[0] && list[0].key) || null)
+      const key =
+        preferKey || state.current || (v.current && list.some((p) => p.key === v.current) ? v.current : (list[0] && list[0].key) || null)
       setState({ products: list, current: key, view: key === state.current ? state.view : null, err: null, busy: false })
       setViewTick((t) => t + 1)   // 无论 key 是否变化都要重新拉取（同值点击/会话切换都不能卡在"读取中"）
     } catch (e) {
@@ -700,7 +717,14 @@ export function GlobalPanel(props) {
       setHint(t('cancel.sent'))
     } catch (e) { setState((s) => ({ ...s, err: String((e && e.message) || e) })) }
   }
-  const openRun = (r) => { goOwnerSessionAndOpen({ ownerSession: r.ownerSession, address: r.address, label: r.id, fallback: () => { void showInline(r) } }) }
+  const openRun = (r) => {
+    goOwnerSessionAndOpen({
+      ownerSession: r.ownerSession,
+      address: r.address,
+      label: r.id,
+      fallback: () => { void showInline(r) },
+    })
+  }
   const openArtifactInPanel = (address, name, ownerSession) => {
     goOwnerSessionAndOpen({ ownerSession, address, label: name })
   }
@@ -748,7 +772,12 @@ export function GlobalPanel(props) {
       h('button', {
         style: panelBtn,
         title: t('panel.backToChatTip'),
-        onClick: () => { try { const layout = props.layout; if (layout && layout.selectPanel) layout.selectPanel(null) } catch (e) { /* ignore */ } },
+        onClick: () => {
+          try {
+            const layout = props.layout
+            if (layout && layout.selectPanel) layout.selectPanel(null)
+          } catch (e) { /* ignore */ }
+        },
       }, t('panel.backToChat')))),
   state.err ? h('div', { style: { padding: '6px 14px', fontSize: 11, color: T.error, borderBottom: `1px solid ${T.border}` } }, state.err) : null,
   hint ? h('div', { style: { ...flexRow, justifyContent: 'space-between', gap: 8, padding: '6px 14px', fontSize: 11, color: T.warn, borderBottom: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.warn} 8%, transparent)` } },

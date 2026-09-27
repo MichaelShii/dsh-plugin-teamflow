@@ -62,7 +62,10 @@ export interface PipelineOptions {
   mode?: PipelineMode
   /** 团队 id：指定走哪个团队的流水线（从 teams.json 读取阶段配置）。 */
   teamId?: string
-  /** 分支策略（ADR-2026-08-27 基调：启动前用户决策）：'auto'（默认）——建特性分支 feat/<branchName|slug>（从当前 HEAD 派生）；'keep'——沿用当前分支不建。需要决策的场景由 teamflow_start 返回 needs-decision，用户选择后带本参数重发。 */
+  /** 分支策略（ADR-2026-08-27 基调：启动前用户决策）：
+   *  - 'auto'（默认）——建特性分支 feat/<branchName|slug>（从当前 HEAD 派生）；
+   *  - 'keep'——沿用当前分支不建。
+   *  需要决策的场景由 teamflow_start 返回 needs-decision，用户选择后带本参数重发。 */
   branchPolicy?: 'auto' | 'keep'
   /** 自定义分支名（branchPolicy=auto 时生效；缺省用 triage slug；仅 [a-z0-9-_]，host 校验）。 */
   branchName?: string | null

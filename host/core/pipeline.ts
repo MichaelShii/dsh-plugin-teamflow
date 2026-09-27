@@ -139,6 +139,11 @@ function ensureLogGitignore(cwd: string | null | undefined, journal: Journal, lo
  * tool 侧预检透传的分诊裁决（2026-09-16 需求澄清闸门）：只接受形状正确的对象；
  * 形状不对 → 返回 null，走回「内部再跑一次分诊」的原路径（绝不因为透传字段坏掉就跳过路由）。
  */
+/** 并发上限归一：未给/非法 → null（调用方回落默认池大小）；正数 → 夹到 DEV_MAX_CONCURRENCY。 */
+function normalizeConcurrency(raw: number | null | undefined): number | null {
+  return (Number.isFinite(raw) && raw > 0) ? Math.min(raw, DEV_MAX_CONCURRENCY) : null
+}
+
 function normalizeTriagePassthrough(raw: unknown): TriageVerdict | null {
   const o = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : null
   if (!o) return null
@@ -453,7 +458,10 @@ export async function executePipeline(
     }
   }
   const tasks = normalizeTasks(options.tasks)
-  const maxConcurrency = Number.isFinite(options.maxConcurrency) && options.maxConcurrency > 0 ? Math.min(options.maxConcurrency, DEV_MAX_CONCURRENCY) : DEV_DEFAULT_CONCURRENCY
+  const maxConcurrency =
+    Number.isFinite(options.maxConcurrency) && options.maxConcurrency > 0
+      ? Math.min(options.maxConcurrency, DEV_MAX_CONCURRENCY)
+      : DEV_DEFAULT_CONCURRENCY
   const timeline: Record<string, unknown> = {}
   // 档位→阶段集（ADR-0004 差异执行的单一事实来源）：先按 mode + needDesign/needScaffold 展开，
   // 再与团队阶段列表取交集（团队可进一步裁剪）。取代散落的 if/else 阶段门控。
@@ -924,7 +932,8 @@ export async function executePipeline(
           const rerun: Array<{ title: string; spec?: string; dtId: string | null; failed: boolean; output: string } | undefined> = []
           for (let w = 0; w < todoPlan.waves.length; w++) {
             if (journal.cancelled) break
-            const waveRes = await runPool(todoPlan.waves[w], maxConcurrency, async (task) => {          // resume 补跑诊断（缺口修复 2026-09-04）：resume 是全新子代理会话，不拼诊断=盲试
+            // resume 补跑诊断（缺口修复 2026-09-04）：resume 是全新子代理会话，不拼诊断=盲试
+            const waveRes = await runPool(todoPlan.waves[w], maxConcurrency, async (task) => {
               // （与 withRetry 自动重试同构的问题——模型不知道上次为何失败，会重复踩同一坑）。
               // 找该任务上次失败 stage（**按 taskIds 与本组任务 id 有交集**的最近失败；存量无 taskIds 时回退 title 匹配），
               // 附 buildRetryDiagnostic（outcome/summary/产出尾部）。
@@ -982,7 +991,11 @@ export async function executePipeline(
         // 目的不是优化，而是**可观测**：模型到底有没有用 reads，看这条日志即可（不需要跑几十条流水线做统计）。
         const knownGroups = devPlan.groups.filter((g) => g.files.length)
         if (devTaskDefs.some((d) => d.reads && d.reads.length) && knownGroups.length > 1) {
-          const legacy = mergeFileOverlaps(devTaskDefs.filter((d) => d.files && d.files.length).map((d) => ({ ...d, files: [...d.files, ...(d.reads || [])] })))
+          const legacy = mergeFileOverlaps(
+            devTaskDefs
+              .filter((d) => d.files && d.files.length)
+              .map((d) => ({ ...d, files: [...d.files, ...(d.reads || [])] })),
+          )
           if (legacy.length < knownGroups.length) {
             journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devParallelKept', { n: legacy.length, m: knownGroups.length, d: knownGroups.length - legacy.length }) })
           }
@@ -1139,7 +1152,14 @@ export async function executePipeline(
           /* D 埋点（2026-09-15）：逐轮记录阻断集合的**稳定身份**与增/减/停滞计数（纯函数在 util.qaRoundEntry）。
          * 目的：为「把 QA_REWORK_LIMIT 硬上限换成收敛判据」攒真实数据（当前 52 个 run 里从未出现
          * 真正需要第 3 轮的情况，而 id 跨轮不可比——QA 每轮重编号）。只记录、不改变任何行为。 */
-          const qaRoundEntry = buildQaRoundEntry(round, qaR.stage ? qaR.stage.seq : null, defects, journal.qaRounds, qaR.stage && qaR.stage.usage ? qaR.stage.usage.calls : null, QA_REWORK_LIMIT)
+          const qaRoundEntry = buildQaRoundEntry(
+            round,
+            qaR.stage ? qaR.stage.seq : null,
+            defects,
+            journal.qaRounds,
+            qaR.stage && qaR.stage.usage ? qaR.stage.usage.calls : null,
+            QA_REWORK_LIMIT,
+          )
           journal.qaRounds = [...(journal.qaRounds || []), qaRoundEntry].slice(-12)
           if (blocking.length === 0) {
             qaClean = true
@@ -1511,7 +1531,7 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
       teamId: options.teamId || undefined,
       tasks: normalizeTasks(options.tasks),
       productRoot: normalizeRoot(options.productRoot),
-      maxConcurrency: (Number.isFinite(options.maxConcurrency) && options.maxConcurrency > 0) ? Math.min(options.maxConcurrency, DEV_MAX_CONCURRENCY) : null,
+      maxConcurrency: normalizeConcurrency(options.maxConcurrency),
       branchPolicy: options.branchPolicy || undefined,
       branchName: options.branchName || undefined,
       preAction: options.preAction || undefined,
@@ -1551,7 +1571,10 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
 /* 取消运行 `cancelRun` 在 core/context.ts（只操作 runs/inFlight，且无宿主私有依赖 → 可被 tests 直接加载）。 */
 
 /** 从断点续跑：跳过已完成阶段，从第一个未完成阶段重跑（service 与工具共用）。 */
-export function resumeRun(runId: string | null | undefined, sessionId: string | null | undefined): { ok: boolean; runId?: string; resumedFrom?: string; error?: string } {
+export function resumeRun(
+  runId: string | null | undefined,
+  sessionId: string | null | undefined,
+): { ok: boolean; runId?: string; resumedFrom?: string; error?: string } {
   const id = typeof runId === 'string' ? runId : null
   if (!id) return { ok: false, error: t(ambientLocale(), 'run.missingId') }
   // 从磁盘加载完整 journal（内存版已裁剪 output，磁盘保留阶段产物全文）。

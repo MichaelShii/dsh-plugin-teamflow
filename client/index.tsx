@@ -929,7 +929,14 @@ interface TeamflowRemote {
   list(sessionId?: string | null): Promise<RpcEnvelope>
   snapshot(runId?: string | null, sessionId?: string | null): Promise<RpcEnvelope>
   backlog(sessionId?: string | null): Promise<RpcEnvelope>
-  backlogUpdate(kind: string, id: string, to: string, sessionId?: string | null, reason?: string, meta?: Record<string, unknown>): Promise<RpcEnvelope>
+  backlogUpdate(
+    kind: string,
+    id: string,
+    to: string,
+    sessionId?: string | null,
+    reason?: string,
+    meta?: Record<string, unknown>,
+  ): Promise<RpcEnvelope>
   resume(runId: string, sessionId: string): Promise<RpcEnvelope>
   /** 中断运行（只对正在跑的 run 有效；host 返回 `{ ok }`，false = 已不在运行中）。 */
   cancel(runId: string): Promise<RpcEnvelope>
