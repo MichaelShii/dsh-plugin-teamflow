@@ -693,6 +693,21 @@ assertContract({
 // （main.js 调 GameEngine.move/render/toggleRunning，实际是 update/draw/start|stop）→ 打开页面首帧
 // TypeError；而 QA 的「文件存在 / 有 export」清单全绿放行。三条锁分别对应三层修复：
 // 蓝图必须给 api 签名 → dev 必须逐字使用 → QA 必须做静态接口一致性核对（不需要浏览器/运行时）。
+/* 声明与投递必须一致（2026-09-29 修）：
+ * devPrompt / qaPrompt / acceptancePrompt 三处都写着「if the injected blueprint JSON
+ * ("<!-- blueprint -->") is present」，但 stateSliceFor 的白名单只有 arch/tech/dev ⇒
+ * qa 与 acceptance 那两句**永远为假**，只能退回 ARCHITECTURE.md 猜契约
+ * （观察期 run tf-muliqvaq 的 QA 报告自己点出「本阶段上下文未注入 <!-- blueprint --> JSON」）。
+ * 修在 host/core/domain/state.ts 的 BLUEPRINT_ROLES；此锁防它被改回去。 */
+assertContract({
+  id: 'BLUEPRINT-REACHES-DECLARED-ROLES', level: 'structural',
+  targets: ['devPrompt', 'qaPrompt', 'qaPromptReverify', 'acceptancePrompt'],
+  intent: '凡声明「若注入蓝图则依它核对」的角色，必须真的收到蓝图（dev 依它实现；qa/acceptance 依它核对接口一致性与模块抽取）',
+  // ⚠️ 必须匹配**注入载荷**而不是 `<!-- blueprint -->` 字面量 —— 后者的标记语在 prompt 正文里也有
+  // （"if the injected blueprint JSON (<!-- blueprint -->) is present"），拿它当锚点会永远为真、锁等于没有。
+  // 这行锚点经过「临时回退修复 → 断言必须变红」验证，不是想当然。
+  include: [/\{"summary":"s"\}/],
+})
 assertContract({
   id: 'BLUEPRINT-API-SIGNATURES', level: 'structural', targets: ['techPrompt', 'architectPrompt'],
   intent: '蓝图 schema 与说明都要求 modules 给出 api 精确签名（下游逐字使用，不得自创成员名）',

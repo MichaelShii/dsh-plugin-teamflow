@@ -219,6 +219,18 @@ export function noteRun(
 
 /** 按角色渲染 state slice（注入到子代理 prompt）。角色 → 只拿相关片段。
  * 语言：读 `state.__runCtx.locale`（由 pipeline 按 run 快照写入；缺省/历史缺字段 → zh，逐字不变）。 */
+/**
+ * 需要看到 M1 架构蓝图的角色：
+ * - `dev` 依它实现（模块划分 / 装配顺序 / api 逐字调用）
+ * - `qa` / `acceptance` 依它**核对**（接口一致性、模块是否按计划抽取）
+ *
+ * ⚠️ 2026-09-29 修：此前白名单只有 arch/tech/dev，而 `qaPrompt` 的 0a「接口一致性核对」与
+ * `acceptancePrompt` 的模块抽取核对都写成 "if the injected blueprint JSON is present" ——
+ * 条件**永远为假**，QA 只能退回 ARCHITECTURE.md 猜契约（观察期 run tf-muliqvaq 的 QA 报告
+ * 自己点出了「本阶段上下文未注入 <!-- blueprint --> JSON」）。
+ */
+const BLUEPRINT_ROLES: readonly string[] = ['arch', 'tech', 'dev', 'qa', 'acceptance']
+
 export function stateSliceFor(state: TeamflowState, role: RoleKey): string {
   const locale = runCtxLocale(state)
   const lines: string[] = []
@@ -226,7 +238,7 @@ export function stateSliceFor(state: TeamflowState, role: RoleKey): string {
   if (state.__runCtx) {
     if (state.__runCtx.runDocs) lines.push(t(locale, 'state.runDocs', { docs: state.__runCtx.runDocs }))
     if (state.__runCtx.sanity) lines.push(state.__runCtx.sanity)
-    if (state.__runCtx.blueprint && (role === 'arch' || role === 'tech' || role === 'dev')) lines.push(state.__runCtx.blueprint)
+    if (state.__runCtx.blueprint && BLUEPRINT_ROLES.includes(role)) lines.push(state.__runCtx.blueprint)
   }
   lines.push(t(locale, 'state.header'))
   if (state.product.summary) lines.push(t(locale, 'state.productSummary', { summary: state.product.summary }))
