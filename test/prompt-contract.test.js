@@ -515,14 +515,26 @@ assertContract({
 
 // ── 视觉能力条款（按模型多模态能力动态生成，两分支互斥）──
 assertContract({
+  id: 'HEADLESS-BROWSER-RECIPE', level: 'policy', targets: ['visualOn', 'visualOff'],
+  intent: '视觉两分支都带可用的无头浏览器配方：--no-sandbox（缺它 Chromium 会以 mojo/crashpad 拒绝访问退出，'
+    + '被误判成「浏览器不可用→只能人工测」）+ 两种免识图的像素判据（渲染发生 / 画面在动）',
+  include: [
+    /Headless browser · launch recipe/,
+    /--no-sandbox is required here/,
+    /did it render/,
+    /is it moving/,
+    /Do NOT trust FPS\/timing numbers/,
+  ],
+})
+assertContract({
   id: 'VISUAL-ON-SCRIPTED-FIRST', level: 'policy', targets: 'visualOn',
-  intent: 'vision=true：截图仅限人眼类项，精确值仍走 DOM 计算断言；浏览器失败降级不重试',
-  include: [/Visual verification · enabled/, /Scripted assertions first/, /offsetWidth/, /人工补测清单/, /do NOT retry more than once/],
+  intent: 'vision=true：截图仅限人眼类项，精确值仍走 DOM 计算断言；浏览器失败先按配方诊断重试一次（不再一次就放弃）',
+  include: [/Visual verification · enabled/, /Scripted assertions first/, /offsetWidth/, /人工补测清单/, /retry ONCE/],
 })
 assertContract({
   id: 'VISUAL-OFF-NO-SCREENSHOT', level: 'policy', targets: 'visualOff',
-  intent: 'vision=false：禁截图看图（防幻觉/循环），只走 DOM 文本断言，目测项进人工补测',
-  include: [/Visual verification · limited/, /You CANNOT interpret screenshots/, /do NOT take screenshots/, /人工补测清单/, /do NOT guess, do NOT retry/],
+  intent: 'vision=false：禁截图看图（防幻觉/循环），只走 DOM 文本断言 + 像素计数（返回数字，无需识图），目测项进人工补测',
+  include: [/Visual verification · limited/, /You CANNOT interpret screenshots/, /do NOT take screenshots/, /人工补测清单/, /do NOT guess/, /retry ONCE/],
 })
 
 // ── policy：产物交付（官方 present 工具 → 交付文件卡）──

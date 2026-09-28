@@ -556,17 +556,31 @@ ${clip(tech, 12000)}`
  * 按当前模型多模态能力动态生成——vision=true 允许截图看图（人眼类项），精确值仍走 DOM 计算断言；
  * vision=false 禁截图看图（防幻觉/循环，历史禁令动机=模型不识图），只走 DOM 计算断言（evaluate 返回文本）。
  * 两者都要求：浏览器失败降级不重试。 */
+/** 无头浏览器启动配方（2026-09-29 本机实测）。两个能力分支共用。
+ *  为什么需要：策略里**本来就允许** launch headless，但没给可用的启动参数 —— 缺 `--no-sandbox`
+ *  时 Chromium 会以 mojo/crashpad「拒绝访问」退出，于是被误判成「浏览器不可用 → 只能人工测」，
+ *  一次失败就放弃（实测代价：A 组把「能不能玩」整体推给人工清单，还判「不影响交付质量」）。 */
+const HEADLESS_BROWSER_RECIPE = `[Headless browser · launch recipe (verified 2026-09-29)]
+- Locate one first: 'where chrome' (Windows) or 'which google-chrome chromium chrome' (posix); common Windows paths: "C:/Program Files/Google/Chrome/Application/chrome.exe", "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe".
+- Args verified to work under the sandbox: --headless=new --no-sandbox --disable-dev-shm-usage --enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader --user-data-dir=<a fresh dir inside the workspace>.
+- **--no-sandbox is required here.** Without it Chromium dies with 'FATAL:mojo ... Check failed' or 'crashpad ... OpenProcess: 拒绝访问' — that is the sandbox blocking its IPC channel, NOT "browser unavailable". On that error, add --no-sandbox and retry ONCE before degrading.
+- Extra flags: --screenshot=<path>; --window-size=W,H; --virtual-time-budget=<ms> (advances virtual time so timers/rAF actually run — use it for canvas/animation); --dump-dom.
+- Two AUTOMATED checks that need no image interpretation (therefore usable even without vision): (1) did it render — count pixels of the expected colour in the screenshot (a canvas that never draws stays pure black: 0 target px vs 936 px in a real case); (2) is it moving — screenshot with and without --virtual-time-budget and diff the two frames (inert 0 px differed vs 18407 px in a real case).
+- Do NOT trust FPS/timing numbers from headless (software rendering); pixel content and file size are reliable.`
+
 export const VISUAL_POLICY = (vision: boolean, locale: HostLocale = 'zh'): string => vision
-  ? `[Visual verification · enabled (model supports image input)]
+  ? `${HEADLESS_BROWSER_RECIPE}
+[Visual verification · enabled (model supports image input)]
 - Real-browser visual verification IS allowed: launch the page (headless browser / browser-use) and verify layout/pixel/overlay/occlusion items by screenshot + reading the image.
 - **Scripted assertions first** (exact values must come from DOM computation, not eyeballing): evaluate offsetWidth/scrollWidth/clientHeight for overflow, getComputedStyle for exact colors/visibility, element sizes & ratios (e.g. 1:2). Assert on those numbers/strings.
 - Screenshot checks are for human-eye items only: overlay occlusion, animation feel, layout reasonableness. Save screenshots under the task folder (docs/teamflow/.../qa/) for acceptance & human review.
-- On browser launch failure: degrade to jsdom/scripted checks + list remaining items in ${t(locale, 'doc.manualChecklistQ')}; do NOT retry more than once.`
-  : `[Visual verification · limited (current model has NO image input)]
+- On browser failure: apply the recipe's diagnosis (usually a missing --no-sandbox) and retry ONCE; if it still fails, degrade to jsdom/scripted checks + list the remaining items in ${t(locale, 'doc.manualChecklistQ')}.`
+  : `${HEADLESS_BROWSER_RECIPE}
+[Visual verification · limited (current model has NO image input)]
 - You CANNOT interpret screenshots (no image input) — do NOT take screenshots to "look" at them (waste loop); do NOT guess layout/pixel state from screenshots.
-- Scripted DOM assertions ARE allowed and preferred: launch the page headless and evaluate TEXT values only — overflow (scrollWidth <= clientWidth), exact colors via getComputedStyle, visibility, element sizes/ratios. Assert on those numbers/strings.
-- Visual-judgment items (occlusion, animation feel, layout aesthetics) that cannot be asserted via DOM values: list them in ${t(locale, 'doc.manualChecklistQ')} (acceptance criterion + method + tool), note ${t(locale, 'doc.envLimitQ')}; do NOT guess, do NOT retry.
-- On any browser failure: degrade to jsdom + ${t(locale, 'doc.manualChecklistQ')}, do not retry.`
+- Scripted DOM assertions ARE allowed and preferred: launch the page headless and evaluate TEXT values only — overflow (scrollWidth <= clientWidth), exact colors via getComputedStyle, visibility, element sizes/ratios. Assert on those numbers/strings. You may also run the recipe's two pixel-count checks: they return NUMBERS, so no image input is needed.
+- Visual-judgment items (occlusion, animation feel, layout aesthetics) that cannot be asserted via DOM values: list them in ${t(locale, 'doc.manualChecklistQ')} (acceptance criterion + method + tool), note ${t(locale, 'doc.envLimitQ')}; do NOT guess.
+- On browser failure: apply the recipe's diagnosis and retry ONCE; if it still fails, degrade to jsdom + ${t(locale, 'doc.manualChecklistQ')}.`
 
 export const qaPrompt = (prd, devSummary, root, runId, state, vision) => `You are a senior QA test engineer. The current workspace IS the target project — functionally test this delivery.
 ${productCtx(root, LOCALE(state))}${stateSliceFor(state, 'qa')}${TOKEN_HYGIENE(runId)}[PRD (this change & relevant ACs)]
