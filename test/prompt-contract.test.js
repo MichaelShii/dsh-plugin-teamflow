@@ -675,5 +675,26 @@ assertContract({
   include: [/confirmation sheet/],
 })
 
+// ── 接口契约（2026-09-28，复盘 tf-mul4t5ga-ajs4i4 贪吃蛇）──
+// 事故：蓝图只定「文件边界」不定「接口」⇒ 两个任务对同一模块各写一套方法名
+// （main.js 调 GameEngine.move/render/toggleRunning，实际是 update/draw/start|stop）→ 打开页面首帧
+// TypeError；而 QA 的「文件存在 / 有 export」清单全绿放行。三条锁分别对应三层修复：
+// 蓝图必须给 api 签名 → dev 必须逐字使用 → QA 必须做静态接口一致性核对（不需要浏览器/运行时）。
+assertContract({
+  id: 'BLUEPRINT-API-SIGNATURES', level: 'structural', targets: ['techPrompt', 'architectPrompt'],
+  intent: '蓝图 schema 与说明都要求 modules 给出 api 精确签名（下游逐字使用，不得自创成员名）',
+  include: [/"api":\[/, /api \(mandatory per module\)/],
+})
+assertContract({
+  id: 'DEV-INTERFACE-CONTRACT', level: 'policy', targets: 'devPrompt',
+  intent: 'dev 只许调用蓝图/设计里声明的成员；禁止自创方法名（写调用前先 grep 目标文件确认存在）',
+  include: [/\[Interface contract · mandatory\]/, /Never invent a member name/],
+})
+assertContract({
+  id: 'QA-INTERFACE-CONSISTENCY', level: 'policy', targets: 'qaPrompt',
+  intent: 'QA 必须做接口一致性核对（静态 grep 即可）；不匹配 = P1 阻断——「文件存在/有 export」清单拦不住这类死机',
+  include: [/\[Interface consistency · mandatory · static, no runtime needed\]/, /P1 blocking defect/],
+})
+
 console.log(failed === 0 ? '\n✅ prompt-contract 全部通过' : `\n❌ prompt-contract ${failed} 项契约失败`)
 process.exit(failed === 0 ? 0 : 1)

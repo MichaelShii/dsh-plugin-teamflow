@@ -796,6 +796,12 @@ export function parseAcceptanceVerdict(text) {
 /** 架构蓝图（M1/M2）：tech/architect 阶段的产物契约，host 解析注入 dev。 */
 export interface BlueprintModule {
   responsibility: string
+  /** 模块对外暴露的 API **精确签名**（dev 必须逐字使用，不得自创成员名）。
+   *  2026-09-28 增：复盘 tf-mul4t5ga-ajs4i4（贪吃蛇）发现「蓝图只定文件边界、不定接口」是产出不可用的
+   *  头号原因——两个任务对同一模块各写一套方法名（main.js 调 `GameEngine.move/render/toggleRunning`，
+   *  实际是 `update/draw/start|stop`），打开页面第一帧就 TypeError，而 QA 的「文件存在/有 export」
+   *  清单全绿通过。接口契约必须与文件边界**同时**给出。 */
+  api?: string[]
   dependsOn?: string[]
   assemblyOrder?: number
   why?: string
@@ -875,8 +881,8 @@ export function extractBlueprint(text: string | null | undefined, locale?: HostL
   const modEntries = Object.entries(modules)
   if (modEntries.length) {
     parts.push(en
-      ? `Module blueprint: ${modEntries.map(([f, m]) => `${f}→${m.responsibility || ''}${m.why ? ` (${m.why})` : ''}`).join('; ')}`
-      : `模块蓝图：${modEntries.map(([f, m]) => `${f}→${m.responsibility || ''}${m.why ? `（${m.why}）` : ''}`).join('；')}`)
+      ? `Module blueprint: ${modEntries.map(([f, m]) => `${f}→${m.responsibility || ''}${m.api && m.api.length ? ` [API: ${m.api.join(' | ')}]` : ''}${m.why ? ` (${m.why})` : ''}`).join('; ')}`
+      : `模块蓝图：${modEntries.map(([f, m]) => `${f}→${m.responsibility || ''}${m.api && m.api.length ? `【接口：${m.api.join(' | ')}】` : ''}${m.why ? `（${m.why}）` : ''}`).join('；')}`)
   }
   if (duplications.length) parts.push(en ? `Duplication risks: ${duplications.join('; ')}` : `重复风险：${duplications.join('；')}`)
   if (tasks.length) parts.push(en ? `Decomposed tasks: ${tasks.map((t) => t.title).join(', ')}` : `架构拆解任务：${tasks.map((t) => t.title).join('，')}`)
