@@ -9,10 +9,11 @@
 import { advanceTask, storeFor, parseDefectRows, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, hasOpenBlockingBugs } from '../domain/backlog.ts'
 import { withRetry, resolveChildRoute } from '../agent/runner.ts'
 import { qaPrompt, qaFixPrompt } from '../../prompts/index.ts'
-import { snippet, artifactText, qaRoundEntry as buildQaRoundEntry, listDeliverableFiles, assessQaVerificationEvidence } from '../../util.ts'
+import { snippet, clip, artifactText, qaRoundEntry as buildQaRoundEntry, listDeliverableFiles, assessQaVerificationEvidence } from '../../util.ts'
 import { QA_REWORK_LIMIT, phaseKeyOf, FIX_GATE_PATTERN } from '../../constants.ts'
 import { persistJournal } from '../../../store.ts'
 import { currentModelSupportsVision } from '../agent/context.ts'
+import { captureLoadCheck } from '../workspace/browser-probe.ts'
 import { phaseLabel, t } from '../../locales.ts'
 import type { PipelineCtx } from '../pipeline.ts'
 /**
@@ -39,6 +40,20 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
     logSkip('qa')
   } else {
     journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'qa') }) })
+    // host 侧加载检查（2026-09-29，**纯记录、零行为影响**）：host 能起浏览器（已实测），
+    // 对含 HTML 入口的交付先跑一次真浏览器加载、捕获未捕获异常 —— **子代理做不到这件事**
+    // （agent 在受限令牌下起不了任何 Chromium 系）。本轮只写日志，不参与判定；稳定后再考虑接进 QA。
+    try {
+      const lc = captureLoadCheck(root)
+      if (lc.status === 'ok' && lc.errors.length) {
+        journal.logs.push({
+          t: Date.now(), level: 'warn',
+          message: t(locale, 'log.hostLoadErrors', { file: lc.entry || '', n: lc.errors.length, first: clip(lc.errors[0] || '', 160) }),
+        })
+      } else if (lc.status === 'ok') {
+        journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.hostLoadOk', { file: lc.entry || '' }) })
+      }
+    } catch (e) { /* 纯记录，绝不因此影响流水线 */ }
     advanceTask(journal, 'testing', null, t(locale, 'event.qaStart'), { by: 'qa' })
     const store = storeFor(scopeKey)
     const qaStageChildren = () => journal.stages.filter((s) => phaseKeyOf(s.phase) === 'qa').map((s) => (s.childId || '').slice(0, 8)).filter(Boolean).join(',') || t(locale, 'role.qaTeam')

@@ -20,6 +20,7 @@ import { mkdirSync, writeFileSync, statSync, existsSync, unlinkSync } from 'node
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { dshHome } from '../../../store.ts'
+import { listDeliverableFiles } from '../../util.ts'
 
 export interface HostBrowserProbe {
   /** ok=host 侧能截图（不受限） blocked=与 agent 同样被令牌拦死 no-browser=找不到可执行文件 error=其它 */
@@ -125,4 +126,78 @@ export function probeHostBrowserAndLog(): string {
       : p.status === 'no-browser' ? '· 未找到浏览器可执行文件'
         : '? 探测出错'
   return `浏览器探测：${label}｜${p.chrome || 'n/a'}｜exit=${String(p.exitCode)}｜${p.ms}ms`
+}
+
+/**
+ * host 侧「加载检查」（2026-09-29）—— 对**含 HTML 入口的交付**跑一次真浏览器加载，
+ * 捕获未捕获异常（Uncaught TypeError / ReferenceError / SyntaxError…）。
+ *
+ * 为什么由 host 做：**子代理永远做不到** —— agent 进程套了受限令牌，crashpad 需要
+ * `PROCESS_ALL_ACCESS` 开自身（缺 0x200/0x800 ⇒ 恒 DENY ⇒ -36863）。而 host 侧已实测可起浏览器
+ * （截图 447B / exit 0），所以「打开就崩」这一类**能在这里客观检出**，不必依赖 QA 自觉。
+ *
+ * 覆盖范围与边界（勿夸大）：只抓**加载/初始化期抛出的未捕获错误**。
+ * 抓不到「静默不动」（如循环判定写反、不抛错但什么都不做）—— 那需要像素/绘制统计，本轮不做。
+ * 纯记录：**不参与任何判定、不影响流水线行为**，调用方自行决定怎么用。
+ */
+export interface LoadCheck {
+  status: 'ok' | 'no-html' | 'spawn-failed' | 'error'
+  entry: string | null
+  /** 未捕获错误消息（截断、去重、最多 5 条） */
+  errors: string[]
+  ms: number
+}
+
+const HTML_ENTRY = /\.html?$/i
+
+/** 挑一个入口：优先 index.html，其次任意 html（相对 root）。 */
+function pickHtmlEntry(root: string): string | null {
+  const files = listDeliverableFiles(root)
+  const htmls = files.filter((f) => HTML_ENTRY.test(f))
+  if (!htmls.length) return null
+  return htmls.find((f) => /(^|\/)index\.html?$/i.test(f)) || htmls[0]
+}
+
+export function captureLoadCheck(root: string | null | undefined, timeoutMs = 20000): LoadCheck {
+  const t0 = Date.now()
+  const out: LoadCheck = { status: 'error', entry: null, errors: [], ms: 0 }
+  try {
+    if (!root) { out.status = 'no-html'; out.ms = Date.now() - t0; return out }
+    const entry = pickHtmlEntry(root)
+    if (!entry) { out.status = 'no-html'; out.ms = Date.now() - t0; return out }
+    out.entry = entry
+    const chrome = findBrowser()
+    if (!chrome) { out.status = 'spawn-failed'; out.ms = Date.now() - t0; return out }
+
+    const dir = join(dshHome(), 'teamflow', '.probe')
+    mkdirSync(dir, { recursive: true })
+    // --enable-logging=stderr + --dump-dom：stdout（DOM）丢弃、只收 stderr，避免大页面把内存撑爆。
+    const r = spawnSync(chrome, [
+      '--headless=new', '--no-sandbox', '--disable-dev-shm-usage',
+      '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader',
+      `--user-data-dir=${join(dir, 'ud-load')}`,
+      '--enable-logging=stderr', '--v=0', '--dump-dom',
+      pathToFileURL(join(root, entry)).href,
+    ], { timeout: timeoutMs, windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] })
+
+    if (r.error || r.status === null) {
+      out.status = 'spawn-failed'
+      out.ms = Date.now() - t0
+      return out
+    }
+    const stderr = String(r.stderr || '')
+    const hits = new Set<string>()
+    for (const line of stderr.split('\n')) {
+      if (!/(Uncaught|TypeError|ReferenceError|SyntaxError|is not a function|is not defined)/.test(line)) continue
+      const msg = line.replace(/^\[[^\]]*\]\s*/, '').replace(/^ERROR:\S+\]?\s*/, '').trim()
+      if (msg) hits.add(msg.slice(0, 200))
+      if (hits.size >= 5) break
+    }
+    out.errors = [...hits]
+    out.status = 'ok'
+  } catch (e) {
+    out.status = 'error'
+  }
+  out.ms = Date.now() - t0
+  return out
 }
