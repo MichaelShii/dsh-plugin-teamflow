@@ -516,11 +516,12 @@ assertContract({
 // ── 视觉能力条款（按模型多模态能力动态生成，两分支互斥）──
 assertContract({
   id: 'HEADLESS-BROWSER-RECIPE', level: 'policy', targets: ['visualOn', 'visualOff'],
-  intent: '视觉两分支都带可用的无头浏览器配方：--no-sandbox（缺它 Chromium 会以 mojo/crashpad 拒绝访问退出，'
-    + '被误判成「浏览器不可用→只能人工测」）+ 两种免识图的像素判据（渲染发生 / 画面在动）',
+  intent: '视觉两分支都带无头浏览器配方，且**要求先自检再用**（参数只在维护者宿主会话实测过，'
+    + '子代理沙箱可能不同；自检失败不算交付缺陷，只降级）+ 两种免识图的像素判据',
   include: [
     /Headless browser · launch recipe/,
-    /--no-sandbox is required here/,
+    /Self-check before relying on it/,
+    /--no-sandbox/,
     /did it render/,
     /is it moving/,
     /Do NOT trust FPS\/timing numbers/,

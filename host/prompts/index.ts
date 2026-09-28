@@ -556,16 +556,18 @@ ${clip(tech, 12000)}`
  * 按当前模型多模态能力动态生成——vision=true 允许截图看图（人眼类项），精确值仍走 DOM 计算断言；
  * vision=false 禁截图看图（防幻觉/循环，历史禁令动机=模型不识图），只走 DOM 计算断言（evaluate 返回文本）。
  * 两者都要求：浏览器失败降级不重试。 */
-/** 无头浏览器启动配方（2026-09-29 本机实测）。两个能力分支共用。
- *  为什么需要：策略里**本来就允许** launch headless，但没给可用的启动参数 —— 缺 `--no-sandbox`
- *  时 Chromium 会以 mojo/crashpad「拒绝访问」退出，于是被误判成「浏览器不可用 → 只能人工测」，
- *  一次失败就放弃（实测代价：A 组把「能不能玩」整体推给人工清单，还判「不影响交付质量」）。 */
-const HEADLESS_BROWSER_RECIPE = `[Headless browser · launch recipe (verified 2026-09-29)]
+/** 无头浏览器配方。两个能力分支共用。
+ *  ⚠️ 措辞纪律：下面这组参数是在**维护者的宿主会话**里实测通过的，**不能据此断言子代理沙箱也一定可用**
+ *  （两者权限模型可能不同）。所以配方必须自带「先自检再用」这一步 —— 假设错了也只是降级，不会误判。
+ *  为什么需要它：策略里本来就允许 launch headless，但没给可用的启动参数与失败诊断，缺 `--no-sandbox`
+ *  时 Chromium 以 mojo/crashpad「拒绝访问」退出，于是被误判成「浏览器不可用 → 只能人工测」，一次失败就放弃。 */
+const HEADLESS_BROWSER_RECIPE = `[Headless browser · launch recipe]
 - Locate one first: 'where chrome' (Windows) or 'which google-chrome chromium chrome' (posix); common Windows paths: "C:/Program Files/Google/Chrome/Application/chrome.exe", "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe".
-- Args verified to work under the sandbox: --headless=new --no-sandbox --disable-dev-shm-usage --enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader --user-data-dir=<a fresh dir inside the workspace>.
-- **--no-sandbox is required here.** Without it Chromium dies with 'FATAL:mojo ... Check failed' or 'crashpad ... OpenProcess: 拒绝访问' — that is the sandbox blocking its IPC channel, NOT "browser unavailable". On that error, add --no-sandbox and retry ONCE before degrading.
+- **Self-check before relying on it (~30s):** screenshot a tiny known-good page and confirm a non-empty PNG appears. Depend on the browser ONLY after this probe passes. If it fails, degrade to the scripted/DOM path and list the remaining items in the manual checklist — and never report the probe's failure as a delivery defect.
+- Launch args that worked on the maintainer's host session: --headless=new --no-sandbox --disable-dev-shm-usage --enable-unsafe-swiftshader --use-gl=angle --use-angle=swiftshader --user-data-dir=<a fresh dir inside the workspace>. Your sandbox may differ — that is exactly what the self-check is for.
+- If Chromium exits with 'FATAL:mojo ... Check failed' or 'crashpad ... OpenProcess: access denied', the sandbox is blocking its IPC channel (it does NOT mean "no browser installed"): add --no-sandbox and retry ONCE before concluding it is unavailable.
 - Extra flags: --screenshot=<path>; --window-size=W,H; --virtual-time-budget=<ms> (advances virtual time so timers/rAF actually run — use it for canvas/animation); --dump-dom.
-- Two AUTOMATED checks that need no image interpretation (therefore usable even without vision): (1) did it render — count pixels of the expected colour in the screenshot (a canvas that never draws stays pure black: 0 target px vs 936 px in a real case); (2) is it moving — screenshot with and without --virtual-time-budget and diff the two frames (inert 0 px differed vs 18407 px in a real case).
+- Two AUTOMATED checks that need no image interpretation (therefore usable even without vision): (1) did it render — count pixels of the expected colour in the screenshot (a canvas that never draws stays pure black: 0 target px vs 936 px in a recorded case); (2) is it moving — screenshot with and without --virtual-time-budget and diff the two frames (inert 0 px differed vs 18407 px in a recorded case).
 - Do NOT trust FPS/timing numbers from headless (software rendering); pixel content and file size are reliable.`
 
 export const VISUAL_POLICY = (vision: boolean, locale: HostLocale = 'zh'): string => vision
