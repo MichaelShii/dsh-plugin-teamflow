@@ -516,14 +516,15 @@ assertContract({
 // ── 视觉能力条款（按模型多模态能力动态生成，两分支互斥）──
 assertContract({
   id: 'BROWSER-AVAILABILITY-KNOWN', level: 'policy', targets: ['visualOn', 'visualOff'],
-  intent: '视觉两分支都写明「本环境浏览器不可用」并附实测证据（-36863 + crashpad OpenProcess 拒绝访问，'
-    + '--no-sandbox 无效）+ 给出可用的脚本替代路径 —— 防 QA 反复试参数白烧 token、或把它当交付缺陷',
+  intent: '视觉两分支都写明「在 agent 沙箱内浏览器不可启动」+ 根因（受限令牌缺 0x200/0x800）+ 实测无效的'
+    + '绕法清单 —— 防 QA 反复试参数白烧 token、或把它当交付缺陷',
   include: [
-    /Browser availability · KNOWN UNAVAILABLE in this environment/,
+    /Browser availability · NOT launchable inside the agent sandbox/,
     /crashpad_client_win\.cc:421 OpenProcess/,
-    /--no-sandbox changes nothing/,
+    /PROCESS_SET_INFORMATION \(0x200\)/,
+    /--no-sandbox makes no difference/,
     /Do NOT spend turns on flag combinations/,
-    /A browser is not required/,
+    /a browser is not required/,
   ],
 })
 assertContract({

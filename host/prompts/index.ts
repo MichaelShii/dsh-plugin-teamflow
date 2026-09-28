@@ -561,10 +561,11 @@ ${clip(tech, 12000)}`
  *  ⚠️ 关键认知：`--no-sandbox` 关的是 **Chromium 自己的沙箱**，管不到 **宿主沙箱** 对 crashpad
  *  辅助进程跨进程 OpenProcess 的拒绝 —— 所以它在「宿主允许该操作」的机器上有效、在本环境无效
  *  （实测加与不加 stderr 逐字节相同）。教训：在别处（如维护者会话）测通 ≠ 本环境的事实。 */
-const BROWSER_AVAILABILITY = `[Browser availability · KNOWN UNAVAILABLE in this environment]
-- Direct probe (2026-09-29, host dsh): launching Chrome headless fails at browser init — exit code -36863, stderr 'crashpad_client_win.cc:421 OpenProcess: 拒绝访问。(0x5)' then 'crash server failed to launch, self-terminating'. The profile dir is never created. **--no-sandbox changes nothing** (byte-identical output with and without it): that flag disables Chromium's own sandbox, not the host sandbox that denies the crashpad helper's cross-process OpenProcess. Chrome 153.0.8010.53 was probed; Edge 154 shares the same Chromium/crashpad mechanism (expected identical, not separately probed).
-- ⇒ Do NOT spend turns on flag combinations. "Cannot launch a real browser" is an ENVIRONMENT limitation and never a delivery defect — and it does NOT excuse skipping verification (use the scripted path below).
-- If an environment change ever makes it launchable (an actual non-empty screenshot appears), you may use it — cap that at ONE attempt.`
+const BROWSER_AVAILABILITY = `[Browser availability · NOT launchable inside the agent sandbox]
+- Root cause, measured (2026-09-29): the agent sandbox runs the process under a **restricted token + Low integrity level**, which denies two bits **on its own process object**: PROCESS_SET_INFORMATION (0x200) and PROCESS_SUSPEND_RESUME (0x800). Chromium's crashpad helper needs PROCESS_ALL_ACCESS on its own PID at startup (crashpad_client_win.cc:421 OpenProcess), and PROCESS_ALL_ACCESS includes those two bits ⇒ it always fails, then 'crash server failed to launch, self-terminating' (exit -36863 = crashpad kTerminationCodeCrashNoDump). The profile dir is never created.
+- ⚠️ This is a HOST-SANDBOX restriction, not a Chrome or flag problem: **--no-sandbox makes no difference** (it disables Chromium's own renderer sandbox, not the host token), and --disable-breakpad / --no-zygote --single-process were measured useless too. Edge fails identically (same crashpad code). **Do NOT spend turns on flag combinations.**
+- ⇒ Treat "cannot launch a real browser" as an ENVIRONMENT limitation, never a delivery defect — and it does NOT excuse skipping verification: use the scripted path below (**a browser is not required**).
+- (Outside this sandbox a browser does work — the same command succeeds when the call is granted full access, or from a process the sandbox does not wrap. So this is about WHERE the agent runs, not about the machine.)`
 
 export const VISUAL_POLICY = (vision: boolean, locale: HostLocale = 'zh'): string => vision
   ? `${BROWSER_AVAILABILITY}
