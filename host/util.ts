@@ -438,6 +438,80 @@ export function artifactText(
 }
 
 /**
+ * 列出交付产物文件（相对 root）—— 只回答「交付里有没有可执行入口」，**不做形态识别**。
+ * 排除 run 自己的痕迹（docs/ 任务夹、logs/ 暂存）与依赖/构建目录。
+ */
+export function listDeliverableFiles(root: string | null | undefined, limit = 400): string[] {
+  if (!root) return []
+  const SKIP_DIR = new Set([
+    '.git', 'node_modules', 'logs', 'dist', 'build', 'out', '.next',
+    'coverage', '.cache', 'target', '__pycache__', '.venv', 'venv',
+  ])
+  const out: string[] = []
+  const walk = (dir: string, depth: number): void => {
+    if (out.length >= limit || depth > 6) return
+    let entries
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch (e) { return }
+    for (const e of entries) {
+      if (out.length >= limit) return
+      const p = `${dir}/${e.name}`
+      if (e.isDirectory()) { if (!SKIP_DIR.has(e.name)) walk(p, depth + 1); continue }
+      const rel = `${p.slice(root.length + 1)}`
+      if (/^(?:docs|logs)\//.test(rel)) continue
+      out.push(rel)
+    }
+  }
+  walk(root, 0)
+  return out
+}
+
+/**
+ * QA 运行证据判据（2026-09-28 加，**warn-only 观察期**——请勿据此硬失败）。
+ *
+ * 背景：A/B 实测里 A 组两次交付都「打开就不可用」（一次符号写反导致循环空转黑屏、一次初始化漏调
+ * 函数抛 TypeError），而 QA 报告全绿放行 —— 它的检查停在「文件存在 / 有 export」，从没运行过交付。
+ *
+ * 判据只问一个问题：**交付含可执行入口时，QA 报告里有没有「命令 + 结果」的证据**。
+ * 它刻意**不判断「网站还是游戏还是 CLI」**（那是形态识别，会滑向按形态硬编码）——
+ * 只看「有没有可执行入口文件」这个二值事实。
+ *
+ * 观察期只记 warn 不阻断：命令/结果的**文本识别宽松度**必须由真实样本校准，
+ * 否则会误伤写法各异的合格报告（B 组那种「9 个脚本全绿 + 逐条 exit 0」正是要认得出来的形态）。
+ */
+export interface QaEvidenceAssessment {
+  hasRunnableEntry: boolean
+  hasCommand: boolean
+  hasResult: boolean
+  hasNa: boolean
+  /** skip=无需证据 ok=有命令+结果 na=显式声明无法自动验证 missing=有入口却无证据（观察目标） */
+  verdict: 'skip' | 'ok' | 'na' | 'missing'
+}
+
+export function assessQaRuntimeEvidence(
+  qaText: string | null | undefined,
+  files: string[] = [],
+): QaEvidenceAssessment {
+  const RUNNABLE = /\.(?:js|mjs|cjs|jsx|ts|tsx|html?|py|sh|ps1|bat|go|rb|java|rs|php)$/i
+  const hasRunnableEntry = files.some((f) => RUNNABLE.test(String(f)))
+  const text = String(qaText || '')
+  // 「命令」：出现可执行调用，或点名了某个脚本文件
+  const hasCommand =
+    /(?:^|[\s|>])(?:node|npm|pnpm|npx|bun|deno|python3?|curl|wget|pwsh|powershell|bash|cargo)\s+\S/i.test(text) ||
+    /[\w./-]+\.(?:mjs|cjs|sh|ps1)\b/i.test(text)
+  // 「结果」：退出码或通过计数
+  const hasResult =
+    /(?:exit\s*(?:code)?\s*[:：]?\s*-?\d|退出码\s*[:：]?\s*-?\d|passed|PASS\b|通过数|全绿|\d+\s*\/\s*\d+)/i.test(text)
+  // 「N/A」：显式声明无可自动验证路径（唯一豁免通道）。
+  // ⚠️ 刻意**不**把「环境限制 / 需要浏览器」算作豁免 —— 那正是 A 组用来推脱的措辞，
+  // 而 B 组在同环境下用 DOM 桩跑通了 E2E，证明「没浏览器」不等于「验不了」。
+  const hasNa = /(N\/A|不适用|无法自动验证|不可自动验证|无可自动验证|无可执行路径|纯文档|no runnable|nothing runnable)/i.test(text)
+  const verdict: QaEvidenceAssessment['verdict'] = !hasRunnableEntry
+    ? 'skip'
+    : (hasCommand && hasResult) ? 'ok' : hasNa ? 'na' : 'missing'
+  return { hasRunnableEntry, hasCommand, hasResult, hasNa, verdict }
+}
+
+/**
  * doc 类阶段的产物兜底：按 `DOC_STAGE_FILES` 取**最长**的一个候选文件（同一阶段可能有多种产物形态，
  * 如 tech 档 PRD 写 `TECH-CHANGE.md`）；无候选/文件缺失/未达下限 → null（绝不抛）。
  */
