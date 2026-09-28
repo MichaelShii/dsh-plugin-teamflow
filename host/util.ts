@@ -3,6 +3,7 @@
  */
 import { REFUSAL_PATTERN, STAGE_MIN_LENGTH, DELIVERY_EVIDENCE_PATTERN, DEV_MAX_CONCURRENCY } from './constants.ts'
 import { readdirSync, statSync, existsSync, readFileSync } from 'node:fs'
+import { isAbsolute, join } from 'node:path'
 import { t } from './locales.ts'
 import type { HostLocale } from './locales.ts'
 
@@ -485,6 +486,25 @@ export interface QaEvidenceAssessment {
   hasNa: boolean
   /** skip=无需证据 ok=有命令+结果 na=显式声明无法自动验证 missing=有入口却无证据（观察目标） */
   verdict: 'skip' | 'ok' | 'na' | 'missing'
+}
+
+/**
+ * 项目**文件系统根**：host 侧解析真实路径的唯一入口（acl-preflight / runlogs 同惯例）。
+ *
+ * ⚠️ 别把 `root`(options.productRoot) 当路径用 —— 它是给 prompt 的**产品线标识**，
+ * 在工作区模式下**恒为 null**（2026-09-29 实测 5/5 run 全是 null），拿它当路径会让检查静默空转
+ * （当天 host 加载检查 + 验证证据探针两个功能就是这么一起悄悄没跑的）。
+ * 产品线模式（root 非空）下 root 是 workspacePath 的相对子目录；绝对路径则直接用。
+ */
+export function fsRootOf(
+  root: string | null | undefined,
+  workspacePath: string | null | undefined,
+): string | null {
+  const ws = workspacePath ? String(workspacePath) : null
+  const r = root ? String(root) : null
+  if (!r) return ws
+  if (isAbsolute(r)) return r
+  return ws ? join(ws, r) : null
 }
 
 export function assessQaVerificationEvidence(

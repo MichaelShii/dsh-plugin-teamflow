@@ -9,7 +9,7 @@
 import { advanceTask, storeFor, parseDefectRows, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, hasOpenBlockingBugs } from '../domain/backlog.ts'
 import { withRetry, resolveChildRoute } from '../agent/runner.ts'
 import { qaPrompt, qaFixPrompt } from '../../prompts/index.ts'
-import { snippet, clip, artifactText, qaRoundEntry as buildQaRoundEntry, listDeliverableFiles, assessQaVerificationEvidence } from '../../util.ts'
+import { snippet, clip, artifactText, qaRoundEntry as buildQaRoundEntry, listDeliverableFiles, assessQaVerificationEvidence, fsRootOf } from '../../util.ts'
 import { QA_REWORK_LIMIT, phaseKeyOf, FIX_GATE_PATTERN } from '../../constants.ts'
 import { persistJournal } from '../../../store.ts'
 import { currentModelSupportsVision } from '../agent/context.ts'
@@ -40,17 +40,27 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
     logSkip('qa')
   } else {
     journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'qa') }) })
+    // 项目文件系统根：host 侧一律走 fsRootOf（`root` 是产品线标识、工作区模式下恒为 null，
+    // 2026-09-29 实测 5/5 run 如此 —— 早先直接拿 root 当路径，导致下面两项检查静默空转）。
+    const fsRoot = fsRootOf(root, journal.workspacePath)
     // host 侧加载检查（2026-09-29，**纯记录、零行为影响**）：host 能起浏览器（已实测），
     // 对含 HTML 入口的交付先跑一次真浏览器加载、捕获未捕获异常 —— **子代理做不到这件事**
     // （agent 在受限令牌下起不了任何 Chromium 系）。本轮只写日志，不参与判定；稳定后再考虑接进 QA。
+    // ⚠️ 每种结局都留痕：否则「不适用」「起不来」「跑通了」在 journal 里长得一模一样，
+    // 排查时无从下手（这正是本项功能首跑翻车的方式）。
     try {
-      const lc = captureLoadCheck(root)
-      if (lc.status === 'ok' && lc.errors.length) {
+      const lc = captureLoadCheck(fsRoot)
+      if (lc.status !== 'ok') {
+        journal.logs.push({
+          t: Date.now(), level: 'info',
+          message: t(locale, 'log.hostLoadSkipped', { reason: lc.status, root: fsRoot || 'n/a' }),
+        })
+      } else if (lc.errors.length) {
         journal.logs.push({
           t: Date.now(), level: 'warn',
           message: t(locale, 'log.hostLoadErrors', { file: lc.entry || '', n: lc.errors.length, first: clip(lc.errors[0] || '', 160) }),
         })
-      } else if (lc.status === 'ok') {
+      } else {
         journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.hostLoadOk', { file: lc.entry || '' }) })
       }
     } catch (e) { /* 纯记录，绝不因此影响流水线 */ }
@@ -90,7 +100,8 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
       // **观察期只记 warn 不阻断** —— 文本识别的宽松度必须由真实样本校准（B 组那种「9 个脚本全绿 +
       // 逐条 exit 0」要认得出来，A 组两次「全推人工/静态检查」要报出来），校准后再决定是否升级为硬失败。
       try {
-        const ev = assessQaVerificationEvidence(qa, listDeliverableFiles(root))
+        const dFiles = listDeliverableFiles(fsRoot)
+        const ev = assessQaVerificationEvidence(qa, dFiles)
         if (ev.verdict === 'missing') {
           journal.logs.push({
             t: Date.now(),
@@ -99,6 +110,10 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
           })
         } else if (ev.verdict === 'na') {
           journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.qaVerificationEvidenceNa') })
+        } else if (ev.verdict === 'skip') {
+          // skip = 交付里没有可执行入口。也要留痕：否则「路径算错 → 扫到 0 个文件」与「真的纯文档」
+          // 在 journal 里无法区分（2026-09-29 首跑就是前者，静默空转）。
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.qaVerificationEvidenceSkip', { n: dFiles.length }) })
         }
       } catch (e) { /* 观察期：判据自身异常绝不阻断 QA 流程 */ }
       noteTaskStageUsage(journal) // QA 角色的真实 usage 累计

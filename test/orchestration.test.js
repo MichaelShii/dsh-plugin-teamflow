@@ -415,6 +415,24 @@ console.log('\n[16] 澄清闸门：分诊 intent 非需求 + must-know 缺口 �
   ok(r.status !== 'running', `澄清中止后 status 不卡 running（实测 ${r.status}）`)
 }
 
+console.log('\n[17] host 侧两项检查必须「可观测」—— 不许静默空转')
+{
+  // 回归 2026-09-29 实测事故：两项 host 侧检查直接拿 `root`(=options.productRoot) 当路径，
+  // 而工作区模式下它**恒为 null**（5/5 真实 run）⇒ listDeliverableFiles(null)=[] ⇒
+  // 加载检查静默 no-html、证据探针静默 skip，两个功能一起空转且 journal 里零痕迹。
+  // 这里同时锁两件事：① 必须留痕；② 留痕里必须带**解析出的真实路径**（而不是 null）。
+  const r = await runScenario('host-observability', {
+    options: QA_OPTS, artifacts: { qa: [QA_CLEAN], acceptance: ACC.pass },
+  })
+  const loadLog = (r.logs || []).find((l) => l.includes('host 侧加载检查'))
+  ok(!!loadLog, `host 加载检查必须留痕（即使不适用）—— 实测 ${loadLog ? '有' : '无（=静默空转，本次要防的正是这个）'}`)
+  ok(/no-html/.test(String(loadLog)), `本场景工作区无 HTML 入口 → 记为 no-html（实测 ${String(loadLog).slice(0, 90)}）`)
+  ok(/根=\S/.test(String(loadLog)) && !/根=n\/a/.test(String(loadLog)),
+    '留痕必须带解析出的 workspacePath（root=null 时回落 workspacePath，不得记成 n/a）')
+  const evLog = (r.logs || []).find((l) => l.includes('QA 验证证据观察'))
+  ok(!!evLog, `证据探针的 skip 也要留痕（否则「路径算错扫到 0 文件」与「真的纯文档」无法区分）—— 实测 ${evLog ? '有' : '无'}`)
+}
+
 if (failed) {
   console.error(`\n❌ ${failed} 项断言失败`)
   process.exit(1)

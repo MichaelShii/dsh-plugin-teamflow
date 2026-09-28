@@ -2,7 +2,8 @@
  * dsh-plugin-teamflow — 验证证据块（dev/qaFix 输出契约）提取测试。
  * extractVerificationEvidence 从回复中提取 [Verification evidence] 块（审计存证用）。
  */
-import { extractVerificationEvidence, assessQaVerificationEvidence } from '../host/util.ts'
+import { extractVerificationEvidence, assessQaVerificationEvidence, fsRootOf } from '../host/util.ts'
+import { join } from 'node:path'
 
 let failed = 0
 function expect(actual, expected, label) {
@@ -62,6 +63,19 @@ expect(assessQaVerificationEvidence('无法自动验证：N/A（纯静态资源�
 expect(assessQaVerificationEvidence('跑了 node check.mjs 但没记结果', FILES_APP).verdict, 'missing', '有命令无结果 → missing（证据不完整）')
 expect(assessQaVerificationEvidence('', FILES_APP).verdict, 'missing', '报告为空 → missing')
 expect(assessQaVerificationEvidence(B_REPORT, []).verdict, 'skip', '无可执行入口的空清单 → skip')
+
+/* ── 项目文件系统根（fsRootOf）：2026-09-29 实锤回归 ──
+ * 首跑翻车根因：两项 host 侧检查直接用了 `root`(=options.productRoot) 当路径，
+ * 而它在工作区模式下**恒为 null**（实测 5/5 run）⇒ listDeliverableFiles(null)=[] ⇒
+ * 一个静默 skip、一个静默 no-html，两个功能同时空转且 journal 里毫无痕迹。 */
+console.log('\n── fsRootOf（工作区模式下 root=null，必须回落到 workspacePath）──')
+const WS = join('E:', 'Code', 'Probe', 'ws')
+expect(fsRootOf(null, WS), WS, 'root=null（工作区模式）→ 回落 workspacePath：这是最常见的真实情形')
+expect(fsRootOf(undefined, WS), WS, 'root=undefined → 同样回落 workspacePath')
+expect(fsRootOf('products/tetris', WS), join(WS, 'products', 'tetris'), '产品线模式：root 是 workspacePath 下的相对子目录')
+expect(fsRootOf('E:/abs/prod', WS), 'E:/abs/prod', '绝对路径 root → 直接采用')
+expect(fsRootOf(null, null), null, '两者皆空 → null（调用方必须容忍）')
+expect(fsRootOf('products/x', null), null, '有 root 却无 workspacePath → null，不得凭相对路径瞎猜')
 
 console.log(failed === 0 ? '\n✅ evidence 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)
