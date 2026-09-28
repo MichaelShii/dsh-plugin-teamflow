@@ -12,8 +12,8 @@
  * peerDeps 拉到 registry 404 的问题。
  */
 import { execSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, existsSync } from 'node:fs'
-import { join, dirname } from 'node:path'
+import { copyFileSync, mkdirSync, existsSync, readdirSync, rmSync } from 'node:fs'
+import { join, dirname, relative } from 'node:path'
 import { homedir } from 'node:os'
 
 const ROOT = import.meta.dirname ?? process.cwd()
@@ -106,6 +106,47 @@ if (skipTest) {
 
 /* ── 3) 同步 ─────────────────────────────────────────────────── */
 console.log('3/3 📂 同步到 profile ...')
+
+/**
+ * 3a) 先删「源里已经没有」的副本文件。
+ * 为什么需要：deploy 历来**只复制不删除** ⇒ 源码里被移走/改名的文件会在 profile 副本里永久残留。
+ * 这是与「漏登记进 FILES = 副本源码永久陈旧」同一类漂移，只是方向相反（2026-09-28 分目录时
+ * 实测残留 11 个 host/core/*.ts）。残留文件虽不会被 import，但会干扰 HMR/目录扫描与人工排查。
+ *
+ * 安全边界（缺一不可）：
+ *   ① 只处理 host/ 与 client/ 下的源码文件（.ts/.tsx），不碰 lib/ 产物与配置文件；
+ *   ② 源目录扫描结果为空 ⇒ 中止（多半是路径算错，此时删除会变成清空副本）；
+ *   ③ 逐文件 rmSync(force)，不存在也不抛。
+ */
+const scanTs = (base, prefix) => {
+  const out = []
+  const walk = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name)
+      if (e.isDirectory()) walk(p)
+      else if (/\.(ts|tsx)$/.test(e.name)) {
+        out.push(`${prefix}/${relative(base, p).split('\\').join('/')}`)
+      }
+    }
+  }
+  if (existsSync(base)) walk(base)
+  return out
+}
+{
+  const srcSet = new Set([...scanTs(join(ROOT, 'host'), 'host'), ...scanTs(join(ROOT, 'client'), 'client')])
+  if (srcSet.size === 0) {
+    console.error('❌ 源 host/ client/ 扫描为空 —— 中止同步，避免误删 profile 副本')
+    process.exit(1)
+  }
+  const stale = [...scanTs(join(PROFILE, 'host'), 'host'), ...scanTs(join(PROFILE, 'client'), 'client')]
+    .filter((rel) => !srcSet.has(rel))
+  for (const rel of stale) {
+    rmSync(join(PROFILE, rel), { force: true })
+    console.log(`  🧹 移除源已删除的副本文件：${rel}`)
+  }
+  if (stale.length) console.log(`  （${stale.length} 个 —— 上一次结构变更留下的残骸）`)
+}
+
 let count = 0, failed = []
 for (const f of FILES) {
   const src = join(ROOT, f)
