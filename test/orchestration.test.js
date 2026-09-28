@@ -11,13 +11,16 @@
  * 全部可在毫秒级复现，不依赖网络、不烧 token。
  *
  * ⚠️ **要跑起来需要 `@deepseek-ai/*` 可解析**：pipeline → report → `@deepseek-ai/dsh-llm` 是静态
- * import，而这一族是**宿主私有 peer**（运行时由 dsh profile 注入，仓库里不安装）。本机仓库根目录
- * 没有它 ⇒ 静态/动态 import 都会 ERR_MODULE_NOT_FOUND。两种让它真跑的方式：
- *   ① `TF_ORCH_BASE=<某份源码副本>` —— 副本放在能解析到该 peer 的位置（例如 dsh profile 目录下）；
- *   ② 在本仓补好 peer 解析（symlink / pnpm link）后再跑。
- * 解析不到时本文件 **明确打印 SKIP 并退出 0**（不是静默通过）：
- * 它保证的是「不会把这个检查静悄悄绕过」，代价是在本机默认环境里它不提供保护——
- * 可运行的等价校验脚本见 `.workbuddy/verify-2026-09-26/h5-stage-convergence.mjs`（A/B 对比用法）。
+ * import，而这一族是**宿主私有 peer**（运行时由 dsh profile 注入，仓库里不安装）。
+ *
+ * 本机（Windows）已用 **directory junction** 解决（无需管理员权限，见下面 SKIP 提示里的命令）：
+ *   node_modules/@deepseek-ai  ->  ~/.dsh/profiles/node_modules/@deepseek-ai
+ * 于是 `pnpm test` 默认就会真跑本文件（58 条断言）。
+ *
+ * 在**没有 profile 的环境**（CI / 新 clone 未配置）解析不到时，本文件 **明确打印 SKIP 并退出 0**
+ * —— 不是静默通过，而是把「本环境跑不了」说清楚，同时保留 TF_ORCH_BASE 兜底：
+ *   TF_ORCH_BASE=<能解析 peer 的源码副本> node test/orchestration.test.js
+ * 等价的 A/B 对照脚本见 `.workbuddy/verify-2026-09-26/h5-stage-convergence.mjs`。
  */
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -56,7 +59,9 @@ try {
     console.log(`   尝试解析位置：${base}`)
     console.log('   跳过原因见本文件头注释（仓库默认环境没有这一族包，不是测试失败）。')
     console.log(`   原始错误：${String(e.message || e).slice(0, 160)}`)
-    console.log('   若想真实执行：TF_ORCH_BASE=<能解析 peer 的源码副本> node test/orchestration.test.js')
+    console.log('   本机修复（Windows junction，无需管理员）：')
+    console.log('     node_modules/@deepseek-ai  ->  ~/.dsh/profiles/node_modules/@deepseek-ai')
+    console.log('   临时兜底：TF_ORCH_BASE=<能解析 peer 的源码副本> node test/orchestration.test.js')
     process.exit(0)
   }
   throw e
