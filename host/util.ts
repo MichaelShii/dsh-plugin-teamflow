@@ -466,7 +466,7 @@ export function listDeliverableFiles(root: string | null | undefined, limit = 40
 }
 
 /**
- * QA 运行证据判据（2026-09-28 加，**warn-only 观察期**——请勿据此硬失败）。
+ * QA 验证证据判据（2026-09-28 加，**warn-only 观察期**——请勿据此硬失败）。
  *
  * 背景：A/B 实测里 A 组两次交付都「打开就不可用」（一次符号写反导致循环空转黑屏、一次初始化漏调
  * 函数抛 TypeError），而 QA 报告全绿放行 —— 它的检查停在「文件存在 / 有 export」，从没运行过交付。
@@ -487,7 +487,7 @@ export interface QaEvidenceAssessment {
   verdict: 'skip' | 'ok' | 'na' | 'missing'
 }
 
-export function assessQaRuntimeEvidence(
+export function assessQaVerificationEvidence(
   qaText: string | null | undefined,
   files: string[] = [],
 ): QaEvidenceAssessment {

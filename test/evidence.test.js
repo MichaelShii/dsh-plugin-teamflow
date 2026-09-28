@@ -2,7 +2,7 @@
  * dsh-plugin-teamflow — 验证证据块（dev/qaFix 输出契约）提取测试。
  * extractVerificationEvidence 从回复中提取 [Verification evidence] 块（审计存证用）。
  */
-import { extractVerificationEvidence, assessQaRuntimeEvidence } from '../host/util.ts'
+import { extractVerificationEvidence, assessQaVerificationEvidence } from '../host/util.ts'
 
 let failed = 0
 function expect(actual, expected, label) {
@@ -25,7 +25,7 @@ expect(extractVerificationEvidence(''), null, '空文本 → null')
 expect(extractVerificationEvidence(null), null, 'null → null')
 expect(extractVerificationEvidence('[Verification evidence]\n  \n<!-- state -->{"phase":"dev"}'), null, '空块（无内容）→ null')
 
-console.log('\n── QA 运行证据判据（assessQaRuntimeEvidence，2026-09-28 warn-only 观察期）──')
+console.log('\n── QA 验证证据判据（assessQaVerificationEvidence，2026-09-28 warn-only 观察期）──')
 // 判据：交付含可执行入口时，QA 报告须有「命令 + 结果」证据。刻意不判形态（网站/游戏/CLI），
 // 只看「有没有可执行入口文件」这个二值事实 —— 否则会滑向按形态硬编码。
 // 下面两份是**真实报告样本**（B/A 两组 A/B 实测），不是编的：
@@ -52,16 +52,16 @@ const A2_REPORT = [
   '所有架构验收形态验证通过。未发现功能性缺陷。需人工补测项目均为浏览器交互类（环境限制），不影响交付质量判断。',
 ].join('\n')
 
-expect(assessQaRuntimeEvidence(B_REPORT, FILES_APP).verdict, 'ok', 'B 组真实样本 → ok（9 脚本 + exit 0，不误伤）')
-expect(assessQaRuntimeEvidence(A2_REPORT, FILES_APP).verdict, 'missing', 'A2 真实样本（全推人工补测）→ missing（抓得住）')
-expect(assessQaRuntimeEvidence(A2_REPORT, FILES_APP).hasRunnableEntry, true, '可执行入口识别（.js/.html）')
-expect(assessQaRuntimeEvidence(A2_REPORT, FILES_APP).hasCommand, false, 'A2 样本无命令证据')
-expect(assessQaRuntimeEvidence(A2_REPORT, FILES_DOC).verdict, 'skip', '纯文档交付（无可执行入口）→ skip（豁免）')
-expect(assessQaRuntimeEvidence('因环境限制无法运行浏览器测试', FILES_APP).verdict, 'missing', '「环境限制」不构成豁免（用桩仍可验，B 组即证）——防借此推脱')
-expect(assessQaRuntimeEvidence('无法自动验证：N/A（纯静态资源，无可执行路径）', FILES_APP).verdict, 'na', '显式 N/A 声明 → na（合法豁免通道）')
-expect(assessQaRuntimeEvidence('跑了 node check.mjs 但没记结果', FILES_APP).verdict, 'missing', '有命令无结果 → missing（证据不完整）')
-expect(assessQaRuntimeEvidence('', FILES_APP).verdict, 'missing', '报告为空 → missing')
-expect(assessQaRuntimeEvidence(B_REPORT, []).verdict, 'skip', '无可执行入口的空清单 → skip')
+expect(assessQaVerificationEvidence(B_REPORT, FILES_APP).verdict, 'ok', 'B 组真实样本 → ok（9 脚本 + exit 0，不误伤）')
+expect(assessQaVerificationEvidence(A2_REPORT, FILES_APP).verdict, 'missing', 'A2 真实样本（全推人工补测）→ missing（抓得住）')
+expect(assessQaVerificationEvidence(A2_REPORT, FILES_APP).hasRunnableEntry, true, '可执行入口识别（.js/.html）')
+expect(assessQaVerificationEvidence(A2_REPORT, FILES_APP).hasCommand, false, 'A2 样本无命令证据')
+expect(assessQaVerificationEvidence(A2_REPORT, FILES_DOC).verdict, 'skip', '纯文档交付（无可执行入口）→ skip（豁免）')
+expect(assessQaVerificationEvidence('因环境限制无法运行浏览器测试', FILES_APP).verdict, 'missing', '「环境限制」不构成豁免（用桩仍可验，B 组即证）——防借此推脱')
+expect(assessQaVerificationEvidence('无法自动验证：N/A（纯静态资源，无可执行路径）', FILES_APP).verdict, 'na', '显式 N/A 声明 → na（合法豁免通道）')
+expect(assessQaVerificationEvidence('跑了 node check.mjs 但没记结果', FILES_APP).verdict, 'missing', '有命令无结果 → missing（证据不完整）')
+expect(assessQaVerificationEvidence('', FILES_APP).verdict, 'missing', '报告为空 → missing')
+expect(assessQaVerificationEvidence(B_REPORT, []).verdict, 'skip', '无可执行入口的空清单 → skip')
 
 console.log(failed === 0 ? '\n✅ evidence 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

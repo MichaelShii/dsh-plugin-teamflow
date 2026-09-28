@@ -9,7 +9,7 @@
 import { advanceTask, storeFor, parseDefectRows, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, hasOpenBlockingBugs } from '../domain/backlog.ts'
 import { withRetry, resolveChildRoute } from '../agent/runner.ts'
 import { qaPrompt, qaFixPrompt } from '../../prompts/index.ts'
-import { snippet, artifactText, qaRoundEntry as buildQaRoundEntry, listDeliverableFiles, assessQaRuntimeEvidence } from '../../util.ts'
+import { snippet, artifactText, qaRoundEntry as buildQaRoundEntry, listDeliverableFiles, assessQaVerificationEvidence } from '../../util.ts'
 import { QA_REWORK_LIMIT, phaseKeyOf, FIX_GATE_PATTERN } from '../../constants.ts'
 import { persistJournal } from '../../../store.ts'
 import { currentModelSupportsVision } from '../agent/context.ts'
@@ -71,19 +71,19 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
         throw stageFailError('qa', { attempts: qaR.attempts, freshTokens: qaR.freshTokens })
       }
       timeline.qa = qa
-      // 运行证据观察（warn-only，2026-09-28）：交付含可执行入口时，报告应给出「命令+结果」类证据。
+      // 验证证据观察（warn-only，2026-09-28）：交付含可执行入口时，报告应给出「命令+结果」类证据。
       // **观察期只记 warn 不阻断** —— 文本识别的宽松度必须由真实样本校准（B 组那种「9 个脚本全绿 +
       // 逐条 exit 0」要认得出来，A 组两次「全推人工/静态检查」要报出来），校准后再决定是否升级为硬失败。
       try {
-        const ev = assessQaRuntimeEvidence(qa, listDeliverableFiles(root))
+        const ev = assessQaVerificationEvidence(qa, listDeliverableFiles(root))
         if (ev.verdict === 'missing') {
           journal.logs.push({
             t: Date.now(),
             level: 'warn',
-            message: t(locale, 'log.qaRuntimeEvidenceMiss', { cmd: ev.hasCommand ? 'yes' : 'no', res: ev.hasResult ? 'yes' : 'no' }),
+            message: t(locale, 'log.qaVerificationEvidenceMiss', { cmd: ev.hasCommand ? 'yes' : 'no', res: ev.hasResult ? 'yes' : 'no' }),
           })
         } else if (ev.verdict === 'na') {
-          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.qaRuntimeEvidenceNa') })
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.qaVerificationEvidenceNa') })
         }
       } catch (e) { /* 观察期：判据自身异常绝不阻断 QA 流程 */ }
       noteTaskStageUsage(journal) // QA 角色的真实 usage 累计

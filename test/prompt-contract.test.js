@@ -696,9 +696,15 @@ assertContract({
   include: [/\[Interface consistency · mandatory · static, no runtime needed\]/, /P1 blocking defect/],
 })
 assertContract({
-  id: 'QA-SMOKE-RUN', level: 'policy', targets: 'qaPrompt',
-  intent: 'QA 必须证明交付「真的跑得起来」（主路径有可观测状态变化）；跑不动 = P1——专治「一个符号反了、全程无异常、控制台干净」的静默失效',
-  include: [/\[Smoke run · mandatory · never sign off on static checks alone\]/, /dead on arrival/, /real timer semantics/],
+  id: 'QA-VERIFICATION-EVIDENCE', level: 'policy', targets: 'qaPrompt',
+  intent: 'QA 必须用一次真实执行过的检查证明交付可用（命令+结果），跑不动 = P1（专治「一个符号反了、全程无异常」'
+    + '的静默失效）；同时锁住「不得强行执行不该执行的交付」—— 需编译/依赖服务/纯库的形态走等价检查',
+  include: [
+    /\[Verification evidence · mandatory · never sign off on existence checks alone\]/,
+    /dead on arrival/,
+    /real timer semantics/,
+    /Never force-launch something that is not meant to be launched/,
+  ],
 })
 
 console.log(failed === 0 ? '\n✅ prompt-contract 全部通过' : `\n❌ prompt-contract ${failed} 项契约失败`)
