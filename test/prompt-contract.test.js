@@ -515,27 +515,26 @@ assertContract({
 
 // ── 视觉能力条款（按模型多模态能力动态生成，两分支互斥）──
 assertContract({
-  id: 'HEADLESS-BROWSER-RECIPE', level: 'policy', targets: ['visualOn', 'visualOff'],
-  intent: '视觉两分支都带无头浏览器配方，且**要求先自检再用**（参数只在维护者宿主会话实测过，'
-    + '子代理沙箱可能不同；自检失败不算交付缺陷，只降级）+ 两种免识图的像素判据',
+  id: 'BROWSER-AVAILABILITY-KNOWN', level: 'policy', targets: ['visualOn', 'visualOff'],
+  intent: '视觉两分支都写明「本环境浏览器不可用」并附实测证据（-36863 + crashpad OpenProcess 拒绝访问，'
+    + '--no-sandbox 无效）+ 给出可用的脚本替代路径 —— 防 QA 反复试参数白烧 token、或把它当交付缺陷',
   include: [
-    /Headless browser · launch recipe/,
-    /Self-check before relying on it/,
-    /--no-sandbox/,
-    /did it render/,
-    /is it moving/,
-    /Do NOT trust FPS\/timing numbers/,
+    /Browser availability · KNOWN UNAVAILABLE in this environment/,
+    /crashpad_client_win\.cc:421 OpenProcess/,
+    /--no-sandbox changes nothing/,
+    /Do NOT spend turns on flag combinations/,
+    /A browser is not required/,
   ],
 })
 assertContract({
   id: 'VISUAL-ON-SCRIPTED-FIRST', level: 'policy', targets: 'visualOn',
-  intent: 'vision=true：截图仅限人眼类项，精确值仍走 DOM 计算断言；浏览器失败先按配方诊断重试一次（不再一次就放弃）',
-  include: [/Visual verification · enabled/, /Scripted assertions first/, /offsetWidth/, /人工补测清单/, /retry ONCE/],
+  intent: 'vision=true：脚本断言为主（浏览器不可用也照做），截图仅限人眼类项并入人工补测清单',
+  include: [/Visual verification · enabled/, /Scripted assertions first/, /人工补测清单/, /A browser is not required/],
 })
 assertContract({
   id: 'VISUAL-OFF-NO-SCREENSHOT', level: 'policy', targets: 'visualOff',
-  intent: 'vision=false：禁截图看图（防幻觉/循环），只走 DOM 文本断言 + 像素计数（返回数字，无需识图），目测项进人工补测',
-  include: [/Visual verification · limited/, /You CANNOT interpret screenshots/, /do NOT take screenshots/, /人工补测清单/, /do NOT guess/, /retry ONCE/],
+  intent: 'vision=false：禁截图看图（防幻觉/循环），走 DOM/Canvas 桩的脚本断言（不需要浏览器），目测项进人工补测',
+  include: [/Visual verification · limited/, /You CANNOT interpret screenshots/, /do NOT take screenshots/, /人工补测清单/, /do NOT guess/, /A browser is not required/],
 })
 
 // ── policy：产物交付（官方 present 工具 → 交付文件卡）──
