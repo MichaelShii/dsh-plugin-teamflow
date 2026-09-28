@@ -229,6 +229,11 @@ function notePrdAssumptions(journal: Journal, locale: HostLocale): string | null
 function abortForClarification(journal: Journal, locale: HostLocale, verdict: TriageVerdict): void {
   journal.interrupted = true
   journal.interruptedAt = Date.now()
+  // ⚠️ status 必须一并落到终态（2026-09-28 编排行为测试实测：此前只置 interrupted 而漏了这一行，
+  // status 停在 'running' ⇒ ① resumeRun 只认 interrupted/failed/cancelled，续跑被拒，而本函数写的
+  // 错误文案又说「可续跑」——自相矛盾；② 工作台永远「运行中」+ 中断按钮（与 cancel 终态归一前同病）。
+  // 正是本函数头注释承诺的那个「零阶段 run（status=interrupted + humanIntervention）」。
+  journal.status = 'interrupted'
   journal.humanIntervention = true
   journal.error = t(locale, 'run.needsClarification', { intent: verdict.intent, n: verdict.blockers.length })
   journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyAbort', { intent: verdict.intent, n: verdict.blockers.length }) })

@@ -104,9 +104,22 @@ const ACC = {
   reject: '# 验收报告\n\n## 验收结论：需求不适用\n',
   noVerdict: '# 验收报告\n\n正文有内容，但没有结论行。\n',
 }
+/** 分诊裁决：intent 非 requirement ⇒ 澄清闸门应拦下（不得开工）。
+ *  ⚠️ intent 必须取 `TRIAGE_INTENTS = ['requirement','exploration','feedback']` 白名单内的值——
+ *  normalizeIntent 对白名单外/缺失一律归一成 'requirement'（有意设计：不因模型漏字段就拦启动），
+ *  早先用 'chat' 就被静默归一，闸门没触发（实测踩过）。
+ *  runTriage 要求子代理回复以 JSON 对象开头，故这里直接给 JSON 文本。 */
+const TRIAGE_EXPLORE = JSON.stringify({
+  mode: 'full', kind: 'feature', complexity: 'medium', confidence: 'high',
+  intent: 'exploration', blockers: [{ question: '要改哪个文件？', changes: '不确定', rework: '可能返工' }],
+  slug: 'clarify-probe',
+})
 
 /** 构造一次 run：stub 子代理 + 隔离的 $DSH_HOME / 工作区。 */
-async function runScenario(name, { options, resume = null, emptyNext = false, failLabel = null, artifacts = null }) {
+async function runScenario(
+  name,
+  { options, resume = null, emptyNext = false, failLabel = null, artifacts = null, cancelAfter = 0, triage = null },
+) {
   const rootTmp = mkdtempSync(join(tmpdir(), `tf-orch-${name}-`))
   process.env.DSH_HOME = `${rootTmp}/home`
   const work = `${rootTmp}/work`
@@ -127,8 +140,12 @@ async function runScenario(name, { options, resume = null, emptyNext = false, fa
         putArtifact('ACCEPTANCE.md', artifacts.acceptance)
       }
     }
+    // 取消注入：起够 N 个子代理后置 cancelled（模拟用户在 dev 期间按了中断）
+    if (cancelAfter && children.length >= cancelAfter) journal.cancelled = true
     const labelHit = failLabel && label.includes(failLabel)
-    const text = labelHit || doEmpty ? '' : LONG
+    let text = labelHit || doEmpty ? '' : LONG
+    // 分诊裁决注入：子代理直接回 JSON（runTriage 期望回复以 JSON 对象开头）
+    if (triage && /需求分诊/.test(label)) text = triage
     doEmpty = false
     return {
       id: `c-${children.length}`,
@@ -347,6 +364,50 @@ console.log('\n[13] 验收结论：缺结论行 → needs-human（宁严勿松�
   })
   ok(r.status === 'failed', `无结论行 → 硬失败而非默认 accepted（实测 ${r.status}）`)
   ok(/验收结论|结论行/.test(String(r.error)), `失败文案点名「结论行」缺失（实测 ${String(r.error).slice(0, 60)}）`)
+}
+
+/* ── ⑭ dev 提测门禁：有 failed 任务 → 停止流水线，不进 QA ── */
+console.log('\n[14] dev 提测门禁：任务失败 ⇒ 拦住，不进 QA')
+{
+  const r = await runScenario('dev-gate', {
+    options: {
+      ...QA_OPTS,
+      tasks: [
+        { id: 'T1', title: '任务一', spec: 's', files: ['a.ts'], reads: [] },
+        { id: 'T2', title: '任务二', spec: 's', files: ['b.ts'], reads: [] },
+      ],
+    },
+    failLabel: '任务二',
+    artifacts: { qa: [QA_CLEAN], acceptance: ACC.pass },
+  })
+  ok(!has(r.childLabels, 'QA 测试'), 'dev 有失败任务 ⇒ 提测门禁拦住，不派生 QA 子代理'
+    + '（r26 实锤：带已知缺口进 QA，检查轮必然重复报告，白烧 token）')
+  ok(/提测门禁/.test(String(r.error)), `失败文案点名「提测门禁」并说明不进 QA 的理由（实测 ${String(r.error).slice(0, 40)}）`)
+  ok(r.humanIntervention, '提测失败 → 置需人工（人工处理后 resume 从开发补跑，已完成任务复用）')
+  ok(r.status === 'failed', `流水线停止（实测 ${r.status}）`)
+}
+
+/* ── ⑮ 取消路径：dev 期间取消 → 终态归一到 cancelled ── */
+console.log('\n[15] 取消：dev 期间取消 → 终态归一（不卡 running）')
+{
+  const r = await runScenario('dev-cancel', {
+    options: QA_OPTS, cancelAfter: 2, artifacts: { qa: [QA_CLEAN], acceptance: ACC.pass },
+  })
+  ok(r.status === 'cancelled', `取消 → status 落 cancelled（实测 ${r.status}；`
+    + '卡 running 会让中断按钮永久失效、续跑一轮又一轮）')
+  ok(!has(r.childLabels, 'QA 测试'), '取消后不再继续起 QA 子代理')
+  ok(r.journal.cancelled === true, 'journal.cancelled 置位（汇报据此渲染「已取消」）')
+}
+
+/* ── ⑯ 澄清闸门：分诊判定非需求 → 不开工 ── */
+console.log('\n[16] 澄清闸门：分诊 intent 非需求 + must-know 缺口 → 不开工，落可续跑中断态')
+{
+  const r = await runScenario('triage-clarify', { options: QA_OPTS, triage: TRIAGE_EXPLORE })
+  ok(r.journal.interrupted === true, '落 interrupted（可续跑的中断态，不是失败）')
+  ok(r.humanIntervention, '置需人工（等澄清）')
+  ok(!has(r.childLabels, '梳理 PRD'), '未进入 PRD 阶段（闸门在任何阶段之前——不得先干再问）')
+  ok(/澄清|尚未对齐/.test(String(r.error)), `错误文案要求先向用户澄清（实测 ${String(r.error).slice(0, 40)}）`)
+  ok(r.status !== 'running', `澄清中止后 status 不卡 running（实测 ${r.status}）`)
 }
 
 if (failed) {
