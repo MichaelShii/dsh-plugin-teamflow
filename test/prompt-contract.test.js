@@ -695,6 +695,11 @@ assertContract({
   intent: 'QA 必须做接口一致性核对（静态 grep 即可）；不匹配 = P1 阻断——「文件存在/有 export」清单拦不住这类死机',
   include: [/\[Interface consistency · mandatory · static, no runtime needed\]/, /P1 blocking defect/],
 })
+assertContract({
+  id: 'QA-SMOKE-RUN', level: 'policy', targets: 'qaPrompt',
+  intent: 'QA 必须证明交付「真的跑得起来」（主路径有可观测状态变化）；跑不动 = P1——专治「一个符号反了、全程无异常、控制台干净」的静默失效',
+  include: [/\[Smoke run · mandatory · never sign off on static checks alone\]/, /dead on arrival/, /real timer semantics/],
+})
 
 console.log(failed === 0 ? '\n✅ prompt-contract 全部通过' : `\n❌ prompt-contract ${failed} 项契约失败`)
 process.exit(failed === 0 ? 0 : 1)
