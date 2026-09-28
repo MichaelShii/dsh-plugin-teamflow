@@ -5,7 +5,7 @@
  */
 import { join, dirname } from 'node:path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { teamflowRoot } from '../../store.ts'
+import { teamflowRoot } from '../../../store.ts'
 
 /** 团队阶段定义。 */
 export interface TeamStage {

@@ -341,7 +341,7 @@ export function writeText(file: string, text: string): boolean {
  * 背景：子代理受 DSH 文件沙箱约束（workspace-write = **只允许写会话工作区 + 平台临时区**，
  * 实测 `$DSH_HOME` 写入被拒），所以子代理产出的命令日志只能先在**工作区内暂存**；
  * run 结束由 host（进程侧无沙箱限制）归档到 `$DSH_HOME/teamflow/<workspace>/logs/<runId>/`
- * 并把暂存目录从项目里删掉——项目内不留存、`$DSH_HOME` 侧按最近 K 次保留（见 host/core/runlogs.ts）。
+ * 并把暂存目录从项目里删掉——项目内不留存、`$DSH_HOME` 侧按最近 K 次保留（见 host/core/workspace/runlogs.ts）。
  */
 
 /** 工作区内暂存目录段（与 host/constants.TF_LOG_DIR 同址；store 是独立 entry、刻意不引 host 代码，一致性由 test/runlogs.test.js 守门）。 */

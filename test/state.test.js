@@ -19,7 +19,7 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { loadState, saveState } from '../host/core/state.ts'
+import { loadState, saveState } from '../host/core/domain/state.ts'
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -36,7 +36,7 @@ const cleanup = () => { try { rmSync(home, { recursive: true, force: true }) } c
 const EXEMPT = new Set(['__runCtx', 'version'])
 
 console.log('── 1) 结构化门禁：TeamflowState 的每个持久化字段都必须被 loadState 搬运 ──')
-const src = readFileSync(join(here, '../host/core/state.ts'), 'utf8')
+const src = readFileSync(join(here, '../host/core/domain/state.ts'), 'utf8')
 // 抽出 interface TeamflowState { ... } 的顶层键（只取 2 空格缩进的 `key?:` / `key:` 行）
 const iface = (src.match(/export interface TeamflowState \{[\s\S]*?\n\}/) || [''])[0]
 const topKeys = []
@@ -87,7 +87,7 @@ ok(loadState(KEY).gitMode === undefined, '非法值被过滤（脏数据不写�
 console.log('\n── 4) 「合并阶段 state 块」不得弄丢 gitMode（实锤的丢失路径）──')
 // 实锤路径：pipeline 写 gitMode → 之后任一阶段产出 state 块 → mergeStateBlock(load→save) 往返
 saveState(KEY, { ...full, gitMode: 'repo' })
-const { mergeStateBlock } = await import('../host/core/state.ts')
+const { mergeStateBlock } = await import('../host/core/domain/state.ts')
 mergeStateBlock(KEY, { phase: 'prd', summary: '阶段结论', extra: { acIndex: { 'AC-9': '新增' } } })
 const afterMerge = loadState(KEY)
 ok(afterMerge.gitMode === 'repo', '**合并 state 块后 gitMode 仍在**（修复前正是这一步把它抹掉）')

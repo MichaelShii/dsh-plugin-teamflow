@@ -9,8 +9,8 @@
  * **官方 Session 投影优先**（tokenUsage 四桶 + sessionStats.steps 调用数），事件扫描降级为
  * 无投影宿主的回退——本文件同时冻结两条路径与回退触发条件。
  */
-import { accumulateSessionUsage, totalTokensOf, cacheHitRatioOf, effectiveFreshBudget } from '../host/core/metering.ts'
-import { runtime } from '../host/core/context.ts'
+import { accumulateSessionUsage, totalTokensOf, cacheHitRatioOf, effectiveFreshBudget } from '../host/core/agent/metering.ts'
+import { runtime } from '../host/core/agent/context.ts'
 
 let failed = 0
 const ok = (cond, msg) => {

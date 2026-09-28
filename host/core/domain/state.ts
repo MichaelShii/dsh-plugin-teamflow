@@ -12,10 +12,10 @@
  */
 import { join } from 'node:path'
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs'
-import { teamflowRoot } from '../../store.ts'
-import type { RoleKey } from '../constants.ts'
-import { t } from '../locales.ts'
-import { runCtxLocale } from './locale.ts'
+import { teamflowRoot } from '../../../store.ts'
+import type { RoleKey } from '../../constants.ts'
+import { t } from '../../locales.ts'
+import { runCtxLocale } from '../locale.ts'
 
 /** 各阶段会额外输出一段 `<!-- state -->...<!-- /state -->` 的结构化 JSON，host 提取后合并进 state.json。 */
 export interface StageStateBlock {

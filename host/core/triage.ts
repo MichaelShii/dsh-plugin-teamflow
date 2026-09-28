@@ -6,7 +6,7 @@
  */
 import type { PipelineMode, PipelineOptions } from '../types.ts'
 import { extractText } from '../util.ts'
-import { runtime, providerName } from './context.ts'
+import { runtime, providerName } from './agent/context.ts'
 import { TRIAGE_PROMPT } from '../prompts/index.ts'
 import { t, type HostLocale } from '../locales.ts'
 

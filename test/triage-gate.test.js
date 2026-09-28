@@ -458,11 +458,11 @@ console.log('     `dsh plugin --profile web add` 在他机器上跑不通；故�
   ok(/state\.__runCtx\.installEnv = env/.test(pipeSrc3) && /journal\.installEnv = env/.test(pipeSrc3), 'pipeline：探测结果同时进 __runCtx（供 prompt）与 journal（留痕）')
   ok(/PLUGIN_ARTIFACTS\.indexOf\(art0\) !== -1/.test(pipeSrc3), '只对插件形态探测（其余交付物不涉及装进 profile）')
   // ── 锚点搬运链：index(构造) → context 单例 → pipeline 读 ──
-  const ctxSrc = readFileSync(join(here, '../host/core/context.ts'), 'utf8')
+  const ctxSrc = readFileSync(join(here, '../host/core/agent/context.ts'), 'utf8')
   ok(/export function setInstallCtx/.test(ctxSrc) && /export const installCtx/.test(ctxSrc), 'context.ts：installCtx 单例 + setter（与 setRuntime 同款搬运）')
   const idxSrc = readFileSync(join(here, '../host/index.ts'), 'utf8')
   ok(/setInstallCtx\(ctx\)/.test(idxSrc), 'index.ts：TeamflowService 构造时登记宿主锚点（ctx.baseUrl）')
-  ok(/if \(!verdict\.ok && text && stop === 'completed'\)/.test(readFileSync(join(here, '../host/core/runner.ts'), 'utf8')) || true, '(占位)')
+  ok(/if \(!verdict\.ok && text && stop === 'completed'\)/.test(readFileSync(join(here, '../host/core/agent/runner.ts'), 'utf8')) || true, '(占位)')
   const storeSrc2 = readFileSync(join(here, '../store.ts'), 'utf8')
   ok(/installEnv: journal\.installEnv \|\| null/.test(storeSrc2), '落盘：installEnv 进 serializeJournal')
   const prdSrc = readFileSync(join(here, '../host/prompts/index.ts'), 'utf8')

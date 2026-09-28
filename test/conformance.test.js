@@ -3,7 +3,7 @@
  *
  * 行业对应物：golden corpus 回归门禁（确定性判据，零 LLM 成本）。
  * 语料 = docs/benchmarks/corpus/ 冻结的真实形状阶段产物（含历史实证坑）；
- * 本运行器把每份语料喂给**宿主真实解析器**（host/util.ts + core/backlog.ts），
+ * 本运行器把每份语料喂给**宿主真实解析器**（host/util.ts + core/domain/backlog.ts），
  * 断言解析结果 == manifest 期望值。
  *
  * 用途：改动 prompt / 解析器 / 注入格式后跑本文件——任何冻结边界回归立刻显形
@@ -14,7 +14,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseAcceptanceVerdict, extractVerificationEvidence, extractBlueprint, judgeDeliverable, extractHostResearchSection } from '../host/util.ts'
-import { parseDefects } from '../host/core/backlog.ts'
+import { parseDefects } from '../host/core/domain/backlog.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const corpusDir = join(here, '../docs/benchmarks/corpus')

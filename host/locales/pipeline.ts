@@ -1,8 +1,8 @@
 /**
  * dsh-plugin-teamflow — 流水线面词典（zh / en）。
  *
- * 消费区：core/pipeline.ts、core/state.ts、core/sanity.ts、core/runner.ts、
- * core/guard.ts、core/report.ts（流水线日志 / 阶段 label / 状态注入块 / 护栏与重试诊断 /
+ * 消费区：core/pipeline.ts、core/domain/state.ts、core/workspace/sanity.ts、core/agent/runner.ts、
+ * core/agent/guard.ts、core/report.ts（流水线日志 / 阶段 label / 状态注入块 / 护栏与重试诊断 /
  * 完成汇报与合回邀请）。
  *
  * 约定（与 locales.ts 的机制配套）：

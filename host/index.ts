@@ -21,14 +21,14 @@ import { fileAddressFor } from '@deepseek-ai/dsh-util-workspace-path'
 import { phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER } from './constants.ts'
 import { toText, clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions } from './util.ts'
 
-import { runtime, runs, setRuntime, setSessionProjections, setInstallCtx, workspaceScopeOf, getRun } from './core/context.ts'
-import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/backlog.ts'
-import { runsFor, runAddress, productKeyOf, runVisibleIn, runBrief, productMetaOf, listProducts } from './core/products.ts'
-import { loadTeams, findTeam, teamNameOf, teamDescOf, type TeamConfig } from './core/teams.ts'
+import { runtime, runs, setRuntime, setSessionProjections, setInstallCtx, workspaceScopeOf, getRun } from './core/agent/context.ts'
+import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/domain/backlog.ts'
+import { runsFor, runAddress, productKeyOf, runVisibleIn, runBrief, productMetaOf, listProducts } from './core/workspace/products.ts'
+import { loadTeams, findTeam, teamNameOf, teamDescOf, type TeamConfig } from './core/domain/teams.ts'
 
 
-import { runSanityCheck, gitCmd } from './core/sanity.ts'
-import { loadState } from './core/state.ts'
+import { runSanityCheck, gitCmd } from './core/workspace/sanity.ts'
+import { loadState } from './core/domain/state.ts'
 import { isDangerousVcsRoot, dirTooLargeForBaseline } from './util.ts'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
@@ -51,12 +51,12 @@ function countFilesBounded(dir: string, cap = 1000): number {
   return n
 }
 import { startPipeline, resumeRun } from './core/pipeline.ts'
-import { cancelRun } from './core/context.ts'
+import { cancelRun } from './core/agent/context.ts'
 import { MODE_REGISTRY, PIPELINE_MODES, MODE_RANK, normalizeMode, runTriage, guardrailUpgrade, triageCacheKey, triageCacheGet, triageCachePut, triageCacheMarkPending, triageCacheSettle, type TriageVerdict } from './core/triage.ts'
 import { t, modeDesc } from './locales.ts'
 import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.ts'
 
-/* BacklogStore / storeFor 见 core/backlog.ts（数据层与状态机）。 */
+/* BacklogStore / storeFor 见 core/domain/backlog.ts（数据层与状态机）。 */
 
 /**
  * 需求澄清闸门 · 启动前预检（2026-09-16 Phase 1，**快路径**）。
@@ -132,17 +132,17 @@ async function clarificationPreflight(
 
 /* 阶段提示词 prd/design/scaffold/tech/dev/qa/acceptancePrompt 见 prompts/。 */
 
-/* 并发池见 util.ts（runPool）；单阶段执行/重试熔断见 core/runner.ts（runAgent/withRetry）。 */
+/* 并发池见 util.ts（runPool）；单阶段执行/重试熔断见 core/agent/runner.ts（runAgent/withRetry）。 */
 
-/* 缺陷解析 / 立项建卡 / 任务流转见 core/backlog.ts（parseDefects / initPipelineBacklog / advanceTask）。 */
+/* 缺陷解析 / 立项建卡 / 任务流转见 core/domain/backlog.ts（parseDefects / initPipelineBacklog / advanceTask）。 */
 
 /** 阶段顺序/key 映射见 constants.ts（PHASE_ORDER/PHASE_KEY_OF/PHASE_KEY_BY_NAME）。 */
 
 /* 流水线编排/入口/取消/续跑与 resume 辅助见 core/pipeline.ts（buildResumeProducts/interruptedPhaseOf/executePipeline/summarizeTimeline）。 */
 
-/* 流水线入口/断点续跑见 core/pipeline.ts（startPipeline/resumeRun）；取消见 core/context.ts（cancelRun）。 */
+/* 流水线入口/断点续跑见 core/pipeline.ts（startPipeline/resumeRun）；取消见 core/agent/context.ts（cancelRun）。 */
 
-/** 按工作区作用域过滤运行见 core/products.ts（runsFor；全局面板与远程面共用）。 */
+/** 按工作区作用域过滤运行见 core/workspace/products.ts（runsFor；全局面板与远程面共用）。 */
 
 /** 由 sessionId 推导会话所属 workspace（项目）作用域。 */
 function sessionScope(sessionId: string | null | undefined) {
@@ -171,8 +171,8 @@ function snapshotOf(j) {
   }
 }
 
-/* backlog 视图/流转见 core/backlog.ts（backlogSummary/transitionBacklog）。 */
-/* 产品线装配（runsFor/runAddress/runBrief/productMetaOf/listProducts）见 core/products.ts。 */
+/* backlog 视图/流转见 core/domain/backlog.ts（backlogSummary/transitionBacklog）。 */
+/* 产品线装配（runsFor/runAddress/runBrief/productMetaOf/listProducts）见 core/workspace/products.ts。 */
 
 /* ── 模型工具注册 ─────────────────────────────────────────────────── */
 const simple = { type: 'object', additionalProperties: true }

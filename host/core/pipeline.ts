@@ -4,20 +4,25 @@
  * 【档位阶段集】按 mode（full/medium/lite/tech/patch）经 STAGE_POLICY（constants.ts）
  * 展开实际执行阶段集（resolveStages），再与团队阶段取交集——见 ADR-0004。
  */
-import { runtime, runs, inFlight, activeProducts, providerName, workspaceScopeOf, installCtx, pruneRuns } from './context.ts'
-import { initPipelineBacklog, advanceTask, storeFor, parseDefectRows, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, createSubtask, completeSubtask, noteSubtaskUsage, hasOpenBlockingBugs } from './backlog.ts'
-import { withRetry, resolveChildRoute } from './runner.ts'
+import { runtime, runs, inFlight, activeProducts, providerName, workspaceScopeOf, installCtx, pruneRuns } from './agent/context.ts'
+import { initPipelineBacklog, storeFor, noteTaskStageUsage, hasOpenBlockingBugs } from './domain/backlog.ts'
+import { withRetry, resolveChildRoute } from './agent/runner.ts'
+import { runDevPhase, buildDevTaskDefs } from './stages/dev.ts'
+import { runQaPhase } from './stages/qa.ts'
+import { runAcceptancePhase } from './stages/acceptance.ts'
+/** DevTaskDef 已迁出到 dev.ts（依赖方向必须 pipeline → dev 单向）；再导出保持既有对外 surface。 */
+export type { DevTaskDef } from './stages/dev.ts'
 import { deliverCompletion } from './report.ts'
-import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, devPrompt, qaPrompt, acceptancePrompt, techChangePrompt, patchConfirmPrompt, qaFixPrompt } from '../prompts/index.ts'
-import { clip, snippet, normalizeRoot, normalizeTasks, sanitizeSnapOptions, parseAcceptanceVerdict, extractBlueprint, extractVerificationEvidence, buildRetryDiagnostic, runFolderName, deriveBranchSlug, mergeGitignore, qaRoundEntry as buildQaRoundEntry, runPool, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, devTaskIdAt, backfillDevTaskIds, artifactText, detectInstallEnv, mergeFileOverlaps, concurrentWriteConflicts, planDevWaves } from '../util.ts'
+import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
+import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
-import { RETRY_LIMIT, QA_REWORK_LIMIT, PHASE_ORDER, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, FIX_GATE_PATTERN, DEV_MAX_CONCURRENCY, DEV_DEFAULT_CONCURRENCY } from '../constants.ts'
+import { RETRY_LIMIT, PHASE_ORDER, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, DEV_MAX_CONCURRENCY, DEV_DEFAULT_CONCURRENCY } from '../constants.ts'
 import { persistJournal, loadJournalById, dshHome } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext, PipelineMode } from '../types.ts'
 import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, MODE_RANK, contractsForDeliverable, normalizeHost, forceHost, PLUGIN_ARTIFACTS, triageRecordOf, type TriageVerdict } from './triage.ts'
-import { loadTeams, findTeam, getActiveStages, teamNameOf } from './teams.ts'
-import { loadState, saveState, extractStateBlock, mergeStateBlock, noteRun } from './state.ts'
+import { loadTeams, findTeam, getActiveStages, teamNameOf } from './domain/teams.ts'
+import { loadState, saveState, extractStateBlock, mergeStateBlock, noteRun } from './domain/state.ts'
 import { isDangerousVcsRoot, dirTooLargeForBaseline } from '../util.ts'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -34,11 +39,10 @@ function cliOnPath(): boolean {
     return r.status === 0
   } catch (e) { return false }
 }
-import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddPlan, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from './sanity.ts'
-import type { GitResult } from './sanity.ts'
-import { archiveRunLogs, sweepWorkspaceLogs } from './runlogs.ts'
-import { preflightWorkspaceAcl } from './acl-preflight.ts'
-import { currentModelSupportsVision } from './context.ts'
+import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddPlan, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from './workspace/sanity.ts'
+import type { GitResult } from './workspace/sanity.ts'
+import { archiveRunLogs, sweepWorkspaceLogs } from './workspace/runlogs.ts'
+import { preflightWorkspaceAcl } from './workspace/acl-preflight.ts'
 import { parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
 import { ambientLocale, localeForMissingSnapshot, runLocaleOf } from './locale.ts'
 
@@ -266,61 +270,47 @@ export function interruptedPhaseOf(journal) {
  *  任务身份与 resume 判定的完整论证见该函数注释。 */
 
 /**
- * 读 journal 后**先补算存量 stage 的 id** 再判定（2026-09-18 二次修正，勿回退）。
+ * 流水线阶段上下文（v0.2.5 第 ③ 步）——dev / qa / acceptance 三块外移后，
+ * 原先靠闭包捕获的共享状态在这里显式成契约。
  *
- * 为什么：升级前的 stage 只写了 `taskKey`（title）。若直接判定（只认 id），历史成果会被
- * 当成"没做过"——实测 probe-cache `tf-mu6tb281`：纯 title 判定补跑 2 个，而"只认 id +
- * 存量回退 title"两头不靠 → **补跑 8 个**。补算后**只有一个键空间**（id），存量自愈并写回 journal。
- * 补算用**蓝图 title 匹配**（结构化 → 文本），不切分 title；合并执行的 stage 会补出多个 id。
+ * 为什么是「一个 ctx」而不是一串形参：三块共用的东西有 20+ 项（含会 mutate 的 timeline / state
+ * 与五个绑定了阶段集/journal/locale 的宿主闭包），逐项传参既啰嗦、又容易漏改一处。至于某一块到底
+ * 依赖其中哪几项，由该文件顶部那句解构常量写明——它顺手成了「这块需要什么」的索引。
  *
- * @returns 含 id 的任务定义（供后续 filter/completed 判定用）
+ * **读写约定**：journal / timeline / state 传的是同一份引用（阶段内写入直接生效，与原闭包语义一致）；
+ * prd / tech 在调用前写定、之后只读；qa / qaBlocked 由 QA 阶段产出后回填，再交给验收阶段消费。
  */
-function devTaskDefsWithBackfill(journal, tasks, locale: HostLocale): DevTaskDef[] {
-  const defs = buildDevTaskDefs(journal, tasks, locale)
-  const patched = backfillDevTaskIds(journal.stages || [], defs)
-  if (patched > 0) {
-    journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devIdsBackfilled', { n: patched }) })
-  }
-  return defs
-}
-
-
-/** 开发任务定义（单一来源）：架构蓝图自动拆 > 调用方显式 tasks > 整体开发兜底。
- *  resume 补跑与正常执行共用。
- *
- *  **`id` 是任务的身份（2026-09-18 新增，勿回退）**：由 **host 按定义顺序生成**（`dt-1`…`dt-N`），
- *  与 `title` 彻底解耦。为什么必须这样——probe-cache 实锤 `tf-mu6tb281-4n43oc`：
- *  ① 冲突检测（下方 mergedDefs）会把 files 有交集的任务**合并**，合并时 `title` 被拼成
- *     `"T0 … + T6 … + T7 …"`（**host 自己拼的**，不是模型发挥），而 `taskKey` 当时只存 title；
- *  ② resume 时 `buildDevTaskDefs` 重新从蓝图取回**未合并**的 `T0 …`/`T6 …`/`T7 …`；
- *  ③ 判定按 title 全文精确匹配 → 三个都查不到 → 判定「未完成」→ **重复执行已成功的工作**
- *     （backlog 里 `dev-1` 与 `dev-7` 同是 T0、`dev-8` 同是 T6，肉眼可见的重复卡）。
- *  `id` 在**合并前**分配、合并时以数组累加，故"一个子代理干了三个任务"能被准确记账为
- *  `taskIds=['dt-1','dt-7','dt-8']`，resume 时三个 id 各自命中「已做」。
- *  **禁止回退为「按 title 匹配」或「按分隔符切分 title」**——那是拿文本长相当身份，同型的错已犯过两次
- *  （per-plugin 正则、固定 .gitignore 词表）。 */
-/** dev 任务定义。`files` = 可写（owns，并发互斥判据）；`reads` = 只读依赖（不互斥）。 */
-export interface DevTaskDef { id: string; title: string; spec: string; files: string[]; reads: string[] }
-
-function buildDevTaskDefs(journal, tasks, locale: HostLocale = 'zh'): DevTaskDef[] {
-  // 蓝图任务：`files` = 可写（owns），`reads` = 只读依赖（不参与并发互斥判定）。
-  // `reads` 是 2026-09-24 新增的可选字段，存量蓝图没有它 → 缺省空数组 ⇒ 行为与旧实现一致（安全默认）。
-  const blueprintTasks = (journal.blueprint && Array.isArray(journal.blueprint.tasks) && journal.blueprint.tasks.length)
-    ? journal.blueprint.tasks.map((t) => ({
-      title: t.title || t(locale, 'dev.blueprintTask'),
-      files: Array.isArray(t.files) ? t.files : [],
-      reads: Array.isArray(t.reads) ? t.reads : [],
-      spec: t.spec || '',
-    }))
-    : []
-  const base = blueprintTasks.length
-    ? blueprintTasks
-    : tasks.length > 0
-      ? tasks.map((t) => ({ title: t.title, spec: t.spec, files: t.files || ([] as string[]), reads: [] as string[] }))
-      : [{ title: t(locale, 'dev.overall'), spec: t(locale, 'dev.overallSpec'), files: [] as string[], reads: [] as string[] }]
-  // id 按定义顺序生成 —— 同一份蓝图（journal.blueprint 落盘后不变）必然产生同一组 id，
-  // 故 resume 重新调用本函数时 id 稳定可对齐（这正是 title 做不到的）。
-  return base.map((d, i) => ({ id: devTaskIdAt(i), title: d.title, spec: d.spec, files: d.files || [], reads: d.reads || [] }))
+export interface PipelineCtx {
+  /* 输入（本次 run 内不变） */
+  journal: Journal
+  parent: any
+  requirement: string
+  options: PipelineOptions
+  signal: any
+  resume: ResumeContext | null
+  locale: HostLocale
+  /** 工作区（产品）作用域键：并发锁 + backlog 隔离键，同时是 storeFor 的入参。 */
+  scopeKey: string
+  root: string | null
+  tasks: any[]
+  maxConcurrency: number
+  installCtx: any
+  /* 共享可变状态（同一份引用，阶段内写入即生效） */
+  timeline: Record<string, unknown>
+  state: any
+  /* 跨阶段产物交接 */
+  prd: string | null
+  tech: string | null
+  qa: string | null
+  qaBlocked: boolean
+  /* 宿主侧共享闭包（保留在 executePipeline 内——它们绑定阶段集 / journal / locale） */
+  enabled: (key: string) => boolean
+  resumed: (phase: string) => boolean
+  logSkip: (phase: string) => void
+  stageFailError: (label: string, r: { attempts?: number; freshTokens?: number }) => Error
+  mergeStageState: (phaseKey: string, output: unknown) => void
+  noteVerifyEvidence: (stage: any, output: unknown) => void
+  stageTextOf: (r: any) => string | null
 }
 /**
  * 执行流水线。resume = null 全新运行；resume = { phase, products } 从断点续跑：
@@ -848,506 +838,29 @@ export async function executePipeline(
     }
 
     /**
-     * 开发阶段（并发池 + 依赖分波 + resume 补跑 + 收口提测门禁）——2026-09-26 从 executePipeline
-     * 主流程里**包成命名单元**（第 ② 步收敛的第一步）。原 1,078 行线性函数里 dev 独占约 220 行，
-     * 读代码时它与前后阶段块混在一起、边界只能靠注释认。先只做「命名 + 隔离」、不搬家：函数体一字未改，
-     * 闭包依赖全部照旧，因此行为不变有**结构性保证**（唯一语义差异是下面把 `return` 改成带 cancelled 的
-     * 返回，语义等价）。等 dev / qa / acceptance 都成块后再整体外移——那时依赖面已经看清楚了，不必提前猜接口。
-     * **缩进暂保持原样**：整块重排会让 diff 变成 200+ 行全量改动，反而掩盖真正的语义差异。
-     * @returns cancelled 为真表示 dev 期间被取消，调用方须整体 return（原 `if (journal.cancelled) return`）
+     * dev / qa / acceptance 三块的实现已整体外移到 `./dev.ts` / `./qa.ts` / `./acceptance.ts`
+     * （函数体按行切片搬运、一字未改），这里只保留「执行顺序 + 阶段间产物交接」。
+     * 依赖方向是 **pipeline → 三兄弟单向**：它们用 `import type` 反向引用本文件的 PipelineCtx，
+     * 运行时无回边（dev 侧的 DevTaskDef / buildDevTaskDefs 也为此一并迁出）。
      */
-    const runDevStage = async (): Promise<{ cancelled: boolean }> => {
-    /* ── 开发阶段（并发池；resume 到 QA/验收时复用旧结果） ── */
-    /* 并发写的**事后记账**（issue #4 第三道防线）：前两道护栏都可能被绕过——
-       ① 任务没声明 files ⇒ mergeFileOverlaps 无从判定；② agent 越界写别人的文件（prompt 只软约束）；
-       ③ agent 用 shell 改写文件 ⇒ 宿主 CAS（FS_STALE_VERSION）完全看不见。
-       唯一绕不过去的事实是「这一舞台最终动了哪些文件」（state block 的 touched），
-       所以各 dev 舞台结束时连同真实执行窗口记一笔，收尾统一求并发窗口内的文件交集。 */
-      const devTouchEntries: Array<{ key: string; startedAt: number; endedAt: number; files: string[] }> = []
-      const trackDevTouched = (key: string, startedAt: number, endedAt: number, text: unknown) => {
-        const block = extractStateBlock(text)
-        const files = Array.isArray(block && block.touched)
-          ? (block!.touched || []).map((f) => String(f || '').trim()).filter(Boolean)
-          : []
-        if (files.length) devTouchEntries.push({ key, startedAt, endedAt, files })
-      }
-      /** 合并结果 + 波次的留痕（两条 dev 路径共用）。**必须区分「没声明 files」与「共享可写文件」**——
-     *  两者补救方式完全不同（前者要声明 files，后者是真的改同一文件）。
-     *  2026-09-24 r1b 实锤第一版两条路径各打一半：resume 分支只用了 overlap 文案，三个**无 files** 的任务
-     *  被合并后日志却说"共享文件"；r3 又发现 `devNoBoundary` 的 {n} 传的是**总数**，5 个任务里只有 1 个
-     *  没声明 files 却写成"5 个任务未声明"。日志一旦与事实不符，排查就会被带偏——这里两个数字都给全。 */
-      const logDevPlan = (defs: Array<{ files?: string[] }>, plan: ReturnType<typeof planDevWaves>) => {
-        const missing = plan.missingBoundary.length
-        if (missing > 0 && defs.length > 1) {
-          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devNoBoundary', { m: missing, n: defs.length }) })
-        } else if (plan.merged > 0) {
-          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devOverlapMerged', { n: defs.length, m: plan.groups.length - (missing ? 1 : 0) }) })
-        }
-        if (plan.dropped > 0) {
-          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.devPlanCycle', { n: plan.dropped }) })
-        }
-        if (plan.waves.length > 0 && plan.groups.length > 1) {
-          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devWaves', { g: plan.groups.length, w: plan.waves.length, lanes: plan.waves.map((w) => w.length).join('+') }) })
-        }
-      }
-      const reportDevWriteConflicts = () => {
-        const hits = concurrentWriteConflicts(devTouchEntries)
-        for (const c of hits.slice(0, 5)) {
-          journal.logs.push({
-            t: Date.now(), level: 'warn',
-            message: t(locale, 'log.devWriteConflict', {
-              a: clip(c.a, 40), b: clip(c.b, 40), files: c.files.slice(0, 6).join(', '),
-              min: Math.max(1, Math.round(c.overlapMs / 60000)),
-            }),
-          })
-        }
-        return hits.length
-      }
-      let devResults = null
-      if (resume) {
-      // resume 场景（状态机 2026-09-06）：无论起点在开发之前还是开发本身——
-      // 开发 = 复用已完成产物 + 仅补跑「任务级聚合后未成功」的任务；全完成 → 跳过。
-      // 判定完全基于 journal stages（devTaskStatuses），不读 backlog 子卡。
-        devResults = resume.products.dev || []
-        // **先补算存量 id 再判定**（2026-09-18 二次修正）：升级前的 stage 只有 title，直接按 id 查
-        // 会全部 Miss → 补跑 8 个（实测）。补算后判定只在一个键空间（id）内进行。
-        const devDefs = devTaskDefsWithBackfill(journal, tasks, locale)
-        const taskStatuses = devTaskStatuses(journal.stages || [])
-        const todoDefs = devDefs.filter((d) => {
-          const st = taskStatuses.get(d.id)
-          return !st || !st.done
-        })
-        if (todoDefs.length === 0) {
-          timeline.dev = devResults
-          logSkip('dev')
-        } else {
-          const reused = devResults.filter((r) => r && !todoDefs.some((d) => d.title === r.title))
-          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.resumeDev', { reused: reused.length, todo: todoDefs.length }) })
-          // **补跑同样要过冲突护栏**（2026-09-24 issue #4 实锤修复）：补跑任务是从
-          // `devDefs` 过滤出来的**原始**任务（未合并），直接喂 runPool 会让共享文件的任务并发执行——
-          // 首次开发有护栏、补跑反而没有，是最容易被忽略的一半。复用结果仍按原始 title 判定，
-          // 合并/分波只作用于「这次要起几个子代理」。
-          const todoPlan = planDevWaves(todoDefs)
-          logDevPlan(todoDefs, todoPlan)
-          const rerun: Array<{ title: string; spec?: string; dtId: string | null; failed: boolean; output: string } | undefined> = []
-          for (let w = 0; w < todoPlan.waves.length; w++) {
-            if (journal.cancelled) break
-            // resume 补跑诊断（缺口修复 2026-09-04）：resume 是全新子代理会话，不拼诊断=盲试
-            const waveRes = await runPool(todoPlan.waves[w], maxConcurrency, async (task) => {
-              // （与 withRetry 自动重试同构的问题——模型不知道上次为何失败，会重复踩同一坑）。
-              // 找该任务上次失败 stage（**按 taskIds 与本组任务 id 有交集**的最近失败；存量无 taskIds 时回退 title 匹配），
-              // 附 buildRetryDiagnostic（outcome/summary/产出尾部）。
-              const prevStage = [...journal.stages].reverse().find((s) => phaseKeyOf(s.phase) === 'dev' && s.status !== 'done'
-            && (Array.isArray(s.taskIds) && s.taskIds.length
-              ? task.ids.some((id) => s.taskIds.includes(id))
-              : ((s.taskKey && task.ids.some((id) => s.taskKey === String(id))) || (!s.taskKey && task.title && (s.label || '').includes(String(task.title))))))
-              const t0 = Date.now()
-              const resumePrompt = devPrompt(task, tech, prd, root, journal.id, state) + (prevStage ? buildRetryDiagnostic(2, prevStage) : '')
-              const devR = await withRetry(journal, parent, t(locale, 'dev.taskRerun', { title: task.title }), 'dev', resumePrompt, signal, task.title, null, task.ids)
-              const rerunText = stageTextOf(devR)
-              trackDevTouched(task.title, t0, Date.now(), rerunText)
-              noteVerifyEvidence(devR.stage, rerunText)
-              const ok = !!devR.text
-              return { title: task.title, spec: task.spec, dtId: task.ids[0], failed: !ok, output: rerunText || t(locale, 'dev.failedPlaceholder') }
-            }, () => journal.cancelled)
-            rerun.push(...waveRes)
-            // 失败传播（AC3）：本波有失败 ⇒ 后续波的组在拿半成品往下做，直接记账跳过（resume 会按未完成补跑）
-            const failedHere = waveRes.filter((r) => r && r.failed).length
-            if (failedHere > 0 && w + 1 < todoPlan.waves.length) {
-              journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.devDepBlocked', { wave: w + 1, failed: failedHere, rest: todoPlan.groups.length - rerun.length }) })
-              for (let gi = rerun.length; gi < todoPlan.groups.length; gi++) {
-                const g = todoPlan.groups[gi]
-                rerun.push({ title: g.title, spec: g.spec, dtId: g.ids[0], failed: true, output: t(locale, 'dev.depBlocked') })
-              }
-              break
-            }
-          }
-          for (const t of rerun) {
-            if (!t) continue // 取消后并发池不再取新任务 → 未启动的条目是 undefined（时间线里留空位）
-            // 子卡同步：createSubtask 同任务复用（业务任务实体一张卡）+ completeSubtask 更新状态
-            const sub = createSubtask(journal, t.title, t.spec || '', t.dtId)
-            if (sub) completeSubtask(journal, sub.id, t.failed, t.output ? snippet(t.output, 1000) : null, null)
-          }
-          reportDevWriteConflicts()
-          devResults = [...reused, ...rerun]
-          timeline.dev = devResults
-        }
-      } else {
-        journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'dev') }) })
-        // 开发任务来源（按优先级）：架构蓝图自动拆 > 调用方显式 tasks > 整体开发兜底。
-        // M2「认知前置 + 架构落地」：架构师（tech/architect 阶段）已按文件边界拆好蓝图 tasks，
-        // dev 继承蓝图在既有架构上实现；无蓝图时退化为整体开发或调用方 tasks。
-        const devTaskDefs = buildDevTaskDefs(journal, tasks, locale)
-        // 冲突护栏 = 合并（write∩write，保证并发不写同一文件）+ 分波（依赖边靠排序，不再拖累无关任务）。
-        // 共用实现在 `util.planDevWaves`（内部用 `mergeFileOverlaps`，不变量与 resume 路径事故的说明见其头注释）。
-        // **合并时 ids 一并累加**（2026-09-18）：title 拼接是给人看的，id 数组才是身份——
-        // 少了这一步，"一个子代理干了三个任务"就无法被 resume 正确识别（probe-cache 实锤）。
-        // 2026-09-25（Run 3 实证后）：从「任一无 files ⇒ 整批合并串行」升级为「未知写集 ⇒ 独占最后一波」——
-        // 一个收尾任务不再把 4 个本可并行的任务拖下水；reads/dependsOn 变成真实的执行顺序（AC3）。
-        const devPlan = planDevWaves(devTaskDefs)
-        logDevPlan(devTaskDefs, devPlan)
-        // 只读声明的收益留痕：把 reads 也算冲突的话会被合并成几组？差值 = 这一轮多保住的并发路数。
-        // 只对**已知边界**的任务算（未知写集本来就独占一波，混进来只会把差值抹成 0——r3 实测）。
-        // 目的不是优化，而是**可观测**：模型到底有没有用 reads，看这条日志即可（不需要跑几十条流水线做统计）。
-        const knownGroups = devPlan.groups.filter((g) => g.files.length)
-        if (devTaskDefs.some((d) => d.reads && d.reads.length) && knownGroups.length > 1) {
-          const legacy = mergeFileOverlaps(
-            devTaskDefs
-              .filter((d) => d.files && d.files.length)
-              .map((d) => ({ ...d, files: [...d.files, ...(d.reads || [])] })),
-          )
-          if (legacy.length < knownGroups.length) {
-            journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devParallelKept', { n: legacy.length, m: knownGroups.length, d: knownGroups.length - legacy.length }) })
-          }
-        }
-        journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devStart', { n: devPlan.groups.length, concurrency: maxConcurrency, fromBlueprint: journal.blueprint && Array.isArray(journal.blueprint.tasks) && journal.blueprint.tasks.length ? t(locale, 'log.devFromBlueprint') : '' }) })
-        advanceTask(journal, 'running', null, t(locale, 'event.devStart'), { by: 'dev' })
-        // 为每个 dev 子任务建一张子卡（并行 agent 各自独立跟踪）
-        // 传 ids[0] 作 dtId：合并任务的子卡归属其**首个**任务 id（保底唯一、稳定；合并语义在 stage.taskIds 里完整保留）
-        const subCards = devPlan.groups.map((dt) => createSubtask(journal, dt.title, dt.spec, dt.ids[0]))
-        devResults = []
-        for (let w = 0; w < devPlan.waves.length; w++) {
-          if (journal.cancelled) break
-          const offset = devResults.length // 波次展开 = 扁平顺序，偏移量正好是已产出的结果数（含取消产生的空位）
-          const waveRes = await runPool(devPlan.waves[w], maxConcurrency, async (task, idx) => {
-            const sub = subCards[offset + idx]
-            if (sub) {
-              completeSubtask(journal, sub.id, false, null, null) // 先标记 running（end 由 complete 设）
-              const store = storeFor(scopeKey)
-              const subLive = store.find('task', sub.id)
-              if (subLive) { subLive.status = 'running'; subLive.startedAt = Date.now(); store.persist(); persistJournal(journal) }
-            }
-            const t0 = Date.now()
-            const devR = await withRetry(journal, parent, t(locale, 'dev.task', { title: task.title }), 'dev', devPrompt(task, tech, prd, root, journal.id, state), signal, task.title, null, task.ids)
-            const devText = stageTextOf(devR)
-            trackDevTouched(task.title, t0, Date.now(), devText)
-            noteVerifyEvidence(devR.stage, devText)
-            const ok = !!devR.text
-            // 完成子卡：记录状态 + childId + 摘要
-            if (sub) {
-              completeSubtask(journal, sub.id, !ok, devText ? snippet(devText, 1000) : null, null)
-              // 把对应 stage 的 usage 累计到子卡（withRetry 返回的 stage 引用——并发下
-              // filter().pop() 会取错 stage：后完成的任务吸收先创建任务的 usage，且被多次累计超计）
-              if (devR.stage) noteSubtaskUsage(journal, sub.id, devR.stage)
-            }
-            return { title: task.title, failed: !ok, output: devText || t(locale, 'dev.failedPlaceholder') }
-          }, () => journal.cancelled)
-          devResults.push(...waveRes)
-          // 失败传播（AC3）：本波有失败 ⇒ 后续波的组是在拿半成品往下做，直接记账跳过（提测门禁会拦住；
-          // resume 按未完成补跑）。这里只**止损**，不做新的语义——不改变「有失败 → 转人工」的门禁行为。
-          const failedHere = waveRes.filter((r) => r && r.failed).length
-          if (failedHere > 0 && w + 1 < devPlan.waves.length) {
-            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.devDepBlocked', { wave: w + 1, failed: failedHere, rest: devPlan.groups.length - devResults.length }) })
-            for (let gi = devResults.length; gi < devPlan.groups.length; gi++) {
-              const g = devPlan.groups[gi]
-              const sub = subCards[gi]
-              if (sub) completeSubtask(journal, sub.id, true, snippet(t(locale, 'dev.depBlocked'), 1000), null)
-              devResults.push({ title: g.title, failed: true, output: t(locale, 'dev.depBlocked') })
-            }
-            break
-          }
-        }
-        reportDevWriteConflicts()
-        timeline.dev = devResults
-        // dev 阶段 state 沉淀：汇总各 dev 产出中提取的 state 块
-        for (const r of devResults) {
-          if (r && r.output) mergeStageState('dev', r.output)
-        }
-        // 累计全部 dev stage usage 到主卡（汇总）
-        noteTaskStageUsage(journal)
-        const devStages = journal.stages.filter((s) => phaseKeyOf(s.phase) === 'dev')
-        noteTaskAssign(journal, 'dev', devStages.map((s) => (s.childId || '').slice(0, 8)).filter(Boolean).join(',') || t(locale, 'role.devTeam'))
-      }
-      /* ── 开发收口：取消检查 + 提测门禁（**两个分支共用**，不可只写在其中之一） ──
-     * 2026-09-16 实测（resume 后中断，dev 全部「已中止」却直接起了 QA 子代理）：这两个判断原先只写在
-     * 「新开发」分支里，resume 补跑分支没有 → 取消/resume 失败都会径直进入 QA（QA 检查轮必然重复报告
-     * 已知缺口，实锤 r26：T2 failed → QA 450k 白烧）。顺序也重要：**先取消检查后门禁**——取消时 dev 任务
-     * 的 failed 只是「没跑完」，不该被记成提测失败转人工。 */
-      if (journal.cancelled) return { cancelled: true }
-      {
-        const failedCount = (devResults || []).filter((r) => r && r.failed).length
-        if (failedCount > 0) {
-          advanceTask(journal, 'needs-human', null, t(locale, 'event.devFail'), { by: 'dev' })
-          const req = storeFor(scopeKey).find('req', journal.reqId)
-          if (req) { req.humanIntervention = true; storeFor(scopeKey).persist() }
-          // 提测门禁（方案 A，实锤 r26）：任务 failed = 已知缺口——QA 检查轮必然重复报告同一缺项
-          // （r26：T2 failed → QA 450k 白烧，D1-D4 全是 T2 缺项；修复子代理补做任务过重复读 27 次挂掉）。
-          // 一律停止流水线不进 QA；人工处理后 teamflow_resume 从开发补跑 failed 任务（done 任务复用）。
-          journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.devFailGate', { failed: failedCount, total: (devResults || []).length }) })
-          throw new Error(t(locale, 'err.devFail', { failed: failedCount, total: (devResults || []).length }))
-        } else {
-          advanceTask(journal, 'testable', null, t(locale, 'event.devTestable'), { by: 'dev' })
-          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devDone') })
-        }
-      }
-      persistJournal(journal)
-      return { cancelled: false }
+    const ctx: PipelineCtx = {
+      journal, parent, requirement, options, signal, resume,
+      locale, scopeKey, root, tasks, maxConcurrency, installCtx,
+      timeline, state,
+      // prd / tech 已由前面的同形阶段产出并写定；qa / qaBlocked 由 QA 阶段回填给验收阶段
+      prd, tech, qa: null, qaBlocked: false,
+      enabled, resumed, logSkip, stageFailError,
+      mergeStageState, noteVerifyEvidence, stageTextOf,
     }
-    const devStage = await runDevStage()
+    const devStage = await runDevPhase(ctx)
     if (devStage.cancelled) return
-
-    /**
-     * QA 测试阶段（打回闭环：QA → 开发修复 → 复验；超 QA_REWORK_LIMIT 转人工）——2026-09-26 同 dev 一样
-     * 包成命名单元（第 ② 步收敛）。函数体一字未改，**唯一语义差异**是把两处 `return` 改成带 `cancelled`
-     * 的返回；`qa` / `qaBlocked` 要交给验收阶段，故一并回传（原来是外层 let，现在是返回值）。
-     * 缩进同 dev：暂保持原样，避免 100+ 行的全量 diff 掩盖语义差异。
-     */
-    const runQaStage = async (): Promise<{ cancelled: boolean; qa: string | null; qaBlocked: boolean }> => {
-    /* ── QA 测试阶段（档位阶段集启用：patch 档不含 qa，见 STAGE_POLICY） ── */
-      let qa = null
-      let qaBlocked = false
-      if (!enabled('qa')) {
-      // 档位阶段集无 QA（patch）或团队未启用 QA：跳过独立 QA
-        journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.qaSkipped') })
-        qa = t(locale, 'qa.skippedValue')
-      } else if (resumed('qa') && !hasOpenBlockingBugs(journal)) {
-      // 复用旧 QA 产物（QA 干净/仅 P3 时续跑）；QA 打回缺陷未闭环时不复用——重走修复-复验闭环
-      // 单轨契约：文件即产物——QA-REPORT.md 优先，journal 兜底（兼容存量 run/文件缺失）
-        qa = artifactText(journal, 'QA-REPORT.md') || resume.products.qa
-        timeline.qa = qa
-        logSkip('qa')
-      } else {
-        journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'qa') }) })
-        advanceTask(journal, 'testing', null, t(locale, 'event.qaStart'), { by: 'qa' })
-        const store = storeFor(scopeKey)
-        const qaStageChildren = () => journal.stages.filter((s) => phaseKeyOf(s.phase) === 'qa').map((s) => (s.childId || '').slice(0, 8)).filter(Boolean).join(',') || t(locale, 'role.qaTeam')
-        // QA → 开发修复 → 复验 打回闭环：QA 发现 P0-P2 缺陷则打回开发确认/修复，干净才进验收；超 QA_REWORK_LIMIT 轮需人工。
-        let round = 0
-        let qaClean = false
-        const devFixRounds = []
-        const qaDevSummary = () => {
-          const src = JSON.stringify(timeline.dev)
-          return devFixRounds.length ? `${src}\n${t(locale, 'ctx.qaFixSummary')}\n${devFixRounds.join('\n---\n')}` : src
-        }
-        let defects = []
-        do {
-          round += 1
-          const isReverify = round > 1
-          const label = isReverify ? t(locale, 'dev.qaReverify', { n: round - 1 }) : t(locale, 'dev.qaTest')
-          // C 方案（2026-09-15）：复验轮必须在 prompt 里显式说明——复用上一轮探针（就在 logs/teamflow/<runId>/scripts/）
-          // 并重跑缺陷行自带的检测命令。经既有 __runCtx 注入通道下发（不改 prompt 工厂签名）。
-          state.__runCtx = { ...(state.__runCtx || {}), qaReverify: isReverify, qaRound: round }
-          const qaR = await withRetry(journal, parent, label, 'qa', qaPrompt(prd, qaDevSummary(), root, journal.id, state, await currentModelSupportsVision(resolveChildRoute(parent).provider, resolveChildRoute(parent).model)), signal)
-          if (!qaR.text) { advanceTask(journal, 'needs-human', null, isReverify ? t(locale, 'event.qaReverifyFail', { round: round - 1 }) : t(locale, 'event.qaFail'), { by: 'qa' }); throw stageFailError('qa', qaR) }
-          // 单轨契约：文件即产物——QA-REPORT.md 是缺陷表/补测清单/结论的唯一事实来源；
-          // state 块仍在回复尾部（host 机器元数据，不进文件）
-          mergeStageState('qa', qaR.text)
-          qa = artifactText(journal, 'QA-REPORT.md')
-          if (!qa) {
-          // 硬失败而非回退解析回复：回复仅摘要无缺陷表，回退=「QA 未发现缺陷」静默假交付（本次要治的病）
-            journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.qaNoFile', { file: `${journal.runDocs ? journal.runDocs + '/' : ''}QA-REPORT.md` }) })
-            advanceTask(journal, 'needs-human', null, t(locale, 'event.qaNoReport'), { by: 'qa' })
-            throw stageFailError('qa', { attempts: qaR.attempts, freshTokens: qaR.freshTokens })
-          }
-          timeline.qa = qa
-          noteTaskStageUsage(journal) // QA 角色的真实 usage 累计
-          noteTaskAssign(journal, 'qa', qaStageChildren())
-          // 用**富行**解析：缺陷卡要存复现/期望/实际（qaFix prompt 也据此给出完整缺陷描述），
-          // parseDefects（瘦身契约）只留给冻结语料比对
-          defects = parseDefectRows(qa)
-          // 登记全部缺陷（含 P3 观察项，幂等）
-          syncQaDefects(journal, defects)
-          // 阻断判定：只认 P0/P1/P2（P3 观察项非阻断，记卡不循环）
-          const blocking = defects.filter((d) => d.severity !== 'P3')
-          /* D 埋点（2026-09-15）：逐轮记录阻断集合的**稳定身份**与增/减/停滞计数（纯函数在 util.qaRoundEntry）。
-         * 目的：为「把 QA_REWORK_LIMIT 硬上限换成收敛判据」攒真实数据（当前 52 个 run 里从未出现
-         * 真正需要第 3 轮的情况，而 id 跨轮不可比——QA 每轮重编号）。只记录、不改变任何行为。 */
-          const qaRoundEntry = buildQaRoundEntry(
-            round,
-            qaR.stage ? qaR.stage.seq : null,
-            defects,
-            journal.qaRounds,
-            qaR.stage && qaR.stage.usage ? qaR.stage.usage.calls : null,
-            QA_REWORK_LIMIT,
-          )
-          journal.qaRounds = [...(journal.qaRounds || []), qaRoundEntry].slice(-12)
-          if (blocking.length === 0) {
-            qaClean = true
-            journal.logs.push({ t: Date.now(), level: 'info', message: defects.length ? t(locale, 'log.qaP3', { ids: defects.map((d) => d.id).join(t(locale, 'log.idSep')) }) : t(locale, 'log.qaClean') })
-            break
-          }
-          if (journal.cancelled) return
-          if (round > QA_REWORK_LIMIT) {
-          // 超过复验轮次上限 → 需人工介入，跳过产品验收（QA 不干净不验收）
-            qaBlocked = true
-            journal.humanIntervention = true
-            journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.qaReworkLimit', { round, n: blocking.length, ids: blocking.map((d) => d.id).join(t(locale, 'log.idSep')), limit: QA_REWORK_LIMIT }) })
-            advanceTask(journal, 'needs-human', snippet(qa, 3000), t(locale, 'event.qaReworkLimit', { round, limit: QA_REWORK_LIMIT }), { by: 'qa' })
-            const req = store.find('req', journal.reqId)
-            if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', t(locale, 'event.qaReworkLimitHuman', { limit: QA_REWORK_LIMIT, list: blocking.map((d) => d.id).join(locale === 'en' ? ', ' : '、') })) }
-            break
-          }
-          // 打回开发确认/修复 → 下一轮复验
-          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.qaRework', { n: blocking.length, round }) })
-          advanceTask(journal, 'rework', snippet(qa, 3000), t(locale, 'event.qaRework', { round, limit: QA_REWORK_LIMIT + 1 }), { by: 'qa' })
-          const fixR = await withRetry(journal, parent, t(locale, 'dev.qaFix', { n: round }), 'dev', qaFixPrompt(blocking, qa, tech, prd, root, journal.id, state), signal, null)
-          noteVerifyEvidence(fixR.stage, stageTextOf(fixR))
-          if (!fixR.text) { advanceTask(journal, 'needs-human', null, t(locale, 'event.qaFixFail'), { by: 'qa' }); throw stageFailError(t(locale, 'dev.qaFixStage'), fixR) }
-          devFixRounds.push(snippet(fixR.text, 3000))
-          // A 方案（2026-09-15）观测：P0–P2 修复要求「类别门禁 + 命中数 before→after」进证据块。
-          // policy 级（host 无法证明门禁真的存在），但**没写就是可见的**——warn 留痕供人工/复验核对。
-          const fixGate = FIX_GATE_PATTERN.test(String(stageTextOf(fixR) || ''))
-          if (!fixGate) {
-            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.noGateEvidence', { n: blocking.length, round }) })
-          }
-          // D 埋点：把本轮修复的代价与「有没有落门禁」补进同一轮记录（收敛判据要同时看质量与成本）
-          qaRoundEntry.fixCalls = fixR.stage && fixR.stage.usage ? fixR.stage.usage.calls : null
-          qaRoundEntry.gate = fixGate
-          noteTaskStageUsage(journal) // 修复子代理真实 usage 累计到任务卡
-          if (journal.cancelled) return { cancelled: true, qa, qaBlocked }
-        } while (true) // 有界循环：round > QA_REWORK_LIMIT → break（勿改 while 形态，见评估「未发现无界循环」）
-        if (!qaBlocked && qaClean) {
-          verifyReqBugs(journal) // 复验通过 → 关闭全部 open 缺陷
-          advanceTask(journal, 'pending-acceptance', snippet(qa, 3000), t(locale, 'event.qaPass'), { by: 'qa' })
-          journal.logs.push({ t: Date.now(), level: 'info', message: round > 1 ? t(locale, 'log.qaPassReverify', { n: round - 1 }) : t(locale, 'log.qaPass') })
-        } else {
-          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.qaBlocked') })
-        }
-        if (journal.cancelled) return { cancelled: true, qa, qaBlocked }
-      }
-      persistJournal(journal)
-      return { cancelled: false, qa, qaBlocked }
-    }
-    const qaStage = await runQaStage()
+    const qaStage = await runQaPhase(ctx)
     if (qaStage.cancelled) return
-    // qa / qaBlocked 交接给验收阶段（原先是 executePipeline 里的外层 let，现由 runQaStage 返回）
-    let qa = qaStage.qa
-    let qaBlocked = qaStage.qaBlocked
-
-    /**
-     * 产品验收阶段（交付判定 + 统一收口提交；QA 打回未超限才执行）——2026-09-26 同 dev / qa 一样包成命名
-     * 单元（第 ② 步收敛）。**本块零语义差异**：段内没有任何顶层 `return`（已逐行核对），函数体一字未改，
-     * 因此包进函数后控制流完全等价。缩进同样暂保持原样（理由见 runDevStage 注释）。
-     */
-    const runAcceptanceStage = async (): Promise<void> => {
-    /* ── 产品验收阶段（QA 打回未超限才执行；超限时需求已置 needs-human，跳过验收） ── */
-      if (!enabled('acceptance')) {
-      // patch 档：单 agent 直改 + 自测即交付（无独立 QA/验收，STAGE_POLICY 兑现 desc）——
-      // dev 成功即收尾（req/task → accepted + run completed），统一收口提交走现有门控
-        journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.patchDone') })
-        advanceTask(journal, 'accepted', null, t(locale, 'event.patchDelivered'), { by: 'dev' })
-        const store = storeFor(scopeKey)
-        const req = store.find('req', journal.reqId)
-        if (req && req.status !== 'accepted') {
-          store.pushEvent(req, req.status, 'accepted', t(locale, 'event.patchAccepted'))
-          req.status = 'accepted'
-          store.persist()
-        }
-        journal.status = 'completed'
-      } else if (qaBlocked) {
-      /* ── E 方案（2026-09-15）：已知问题模式验收 ────────────────────────────
-       * QA 打回超限时不再「验收整段跳过」（旧行为：人工只拿到一个 needs-human 旗标，
-       * 任务夹里连 ACCEPTANCE.md 都没有——实锤 tf-mu2ioilr-95l4th，最后靠人工补写验收记录）。
-       * 这里只读跑一次验收，产出交付级视图 + 未闭环清单。
-       * **硬约束（信息而非判定）**：结论一律强制为「需人工裁定」——绝不产出可据以合回/提交的
-       * accepted；验收失败也不改变 run 结局（保持 completed + needs-human，只记 warn）。 */
-        journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'acceptance') }) })
-        const store = storeFor(scopeKey)
-        const openBlocking = store.bugs.filter((b) => b.reqId === journal.reqId && b.status !== 'verified' && b.status !== 'closed' && b.severity !== 'P3')
-        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.accKnownIssues', { n: openBlocking.length, ids: openBlocking.map((b) => b.defectId || b.id).join(t(locale, 'log.idSep')) }) })
-        state.__runCtx = { ...(state.__runCtx || {}), knownIssues: true }
-        let accR = null
-        try {
-          accR = await withRetry(journal, parent, t(locale, 'dev.acceptance'), 'acceptance', acceptancePrompt(prd, qa, JSON.stringify(timeline.dev), root, journal.id, state, await currentModelSupportsVision(resolveChildRoute(parent).provider, resolveChildRoute(parent).model)), signal)
-        } catch (e) {
-          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.accKnownIssuesFail', { msg: String((e && e.message) || e) }) })
-        }
-        if (accR && accR.text) {
-          try {
-            mergeStageState('acceptance', accR.text)
-            const acceptance = artifactText(journal, 'ACCEPTANCE.md')
-            if (acceptance) {
-              timeline.acceptance = acceptance
-              noteTaskStageUsage(journal) // 验收角色的真实 usage 照常累计（口径不变）
-              const accStage = journal.stages.find((s) => phaseKeyOf(s.phase) === 'acceptance' && s.childId)
-              noteTaskAssign(journal, 'accept', accStage ? String(accStage.childId).slice(0, 8) : t(locale, 'role.acceptTeam'))
-              // 记录模型自己的结论仅供人参考——**host 不采用它**（下面的 knownIssuesAcceptance 才是事实）
-              journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.accKnownIssuesVerdict', { verdict: parseAcceptanceVerdict(acceptance), n: openBlocking.length }) })
-            } else {
-              journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.accKnownIssuesFail', { msg: 'ACCEPTANCE.md missing' }) })
-            }
-          } catch (e) {
-            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.accKnownIssuesFail', { msg: String((e && e.message) || e) }) })
-          }
-        }
-        journal.humanIntervention = true // 不变：需求仍需人工裁定
-        journal.knownIssuesAcceptance = true // 报到 report.ts：给「不要据此合回」的显式提示
-        journal.status = 'completed'
-      } else {
-        journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: phaseLabel(locale, 'acceptance') }) })
-        // 单任务模型：验收前任务置「待验收」（patch/无独立 QA 时 task 仍在 testable）
-        {
-          const curTask = storeFor(scopeKey).find('task', journal.taskId)
-          if (curTask && curTask.status !== 'pending-acceptance' && curTask.status !== 'needs-human' && curTask.status !== 'rework') {
-            advanceTask(journal, 'pending-acceptance', null, t(locale, 'event.acceptEnter'), { by: 'pm' })
-          }
-        }
-        const accR = await withRetry(journal, parent, t(locale, 'dev.acceptance'), 'acceptance', acceptancePrompt(prd, qa, JSON.stringify(timeline.dev), root, journal.id, state, await currentModelSupportsVision(resolveChildRoute(parent).provider, resolveChildRoute(parent).model)), signal)
-        if (!accR.text) { advanceTask(journal, 'needs-human', null, t(locale, 'event.acceptFail'), { by: 'pm' }); throw stageFailError('acceptance', accR) }
-        // 单轨契约：文件即产物——ACCEPTANCE.md 是结论行/核对表唯一事实来源；state 块仍在回复尾部
-        mergeStageState('acceptance', accR.text)
-        const acceptance = artifactText(journal, 'ACCEPTANCE.md')
-        if (!acceptance) {
-        // 硬失败而非回退解析回复：回复仅摘要无结论行，回退=保守 accepted 误放行（无结论行默认过）
-          journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.accNoFile', { file: `${journal.runDocs ? journal.runDocs + '/' : ''}ACCEPTANCE.md` }) })
-          advanceTask(journal, 'needs-human', null, t(locale, 'event.acceptNoReport'), { by: 'pm' })
-          throw stageFailError('acceptance', { attempts: accR.attempts, freshTokens: accR.freshTokens })
-        }
-        timeline.acceptance = acceptance
-        noteTaskStageUsage(journal) // 验收角色的真实 usage 累计
-        const accStage = journal.stages.find((s) => phaseKeyOf(s.phase) === 'acceptance' && s.childId)
-        noteTaskAssign(journal, 'accept', accStage ? String(accStage.childId).slice(0, 8) : t(locale, 'role.acceptTeam'))
-        // 结论解析：见 parseAcceptanceVerdict（只认结论行，避免正文「无需改动」等否定/引用话术误杀整条流水线；
-        // 无结论行 → needs-human，不猜结论——防模型写 ❌ 但漏「验收结论：」前缀被默认 accepted）
-        const accVerdict = parseAcceptanceVerdict(acceptance)
-        if (accVerdict === 'needs-human') {
-        // 契约未兑现：ACCEPTANCE.md 无「验收结论」行（prompt 已强制最后一行字面量模板）。
-        // 宁严勿松：误拦截=人工看一眼，误放行=假交付（旧实现无结论行默认 accepted=漏报）
-          journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.accNoVerdict') })
-          advanceTask(journal, 'needs-human', snippet(acceptance, 3000), t(locale, 'event.acceptNoVerdict'), { by: 'pm' })
-          const store = storeFor(scopeKey)
-          const req = store.find('req', journal.reqId)
-          if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', t(locale, 'event.acceptVerdictMissing')) }
-          journal.humanIntervention = true
-          persistJournal(journal)
-          throw new Error(t(locale, 'err.accNoVerdict'))
-        }
-        if (accVerdict === 'reject') {
-        // 需求与现状不符（无有效变更）→ 拦截：task needs-human、req needs-human、流水线中断（非 accepted）
-          advanceTask(journal, 'needs-human', snippet(acceptance, 3000), t(locale, 'event.reqMismatch'), { by: 'pm' })
-          const store = storeFor(scopeKey)
-          const req = store.find('req', journal.reqId)
-          if (req) { req.humanIntervention = true; store.pushEvent(req, req.status, 'needs-human', t(locale, 'event.reqMismatchHuman')) }
-          // run 级也要置位（2026-09-17 实测 `tf-mu4i779p-kze5kl`：这条路径原先只置 backlog 卡片，
-          // journal.humanIntervention 仍为 false → 汇报/工作台的「需人工」状态线与 error 文案自相矛盾；
-          // rework 分支一直是两边都置的，这里对齐）
-          journal.humanIntervention = true
-          journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.accReject') })
-          persistJournal(journal)
-          throw new Error(t(locale, 'err.accReject'))
-        }
-        advanceTask(journal, accVerdict, snippet(acceptance, 3000), accVerdict === 'rework' ? t(locale, 'event.acceptRework') : t(locale, 'event.acceptDone'), { by: 'pm' })
-        const store = storeFor(scopeKey)
-        const req = store.find('req', journal.reqId)
-        if (req) {
-          const openBugs = store.bugs.filter((b) => b.reqId === req.id && b.status !== 'verified' && b.status !== 'closed' && b.severity !== 'P3')
-          if (accVerdict === 'rework') {
-            req.humanIntervention = true
-            journal.humanIntervention = true // 汇报状态线：completed+humanIntervention → ⚠️ 已完成（需人工介入）
-            store.pushEvent(req, req.status, 'needs-human', t(locale, 'event.acceptRework'))
-          } else if (openBugs.length > 0) {
-            store.pushEvent(req, req.status, 'pending-acceptance', t(locale, 'event.bugsOpen'))
-          } else {
-            verifyReqBugs(journal) // 验收通过 → 关闭遗留 open 缺陷
-            store.pushEvent(req, req.status, 'accepted', t(locale, 'event.acceptPass'))
-          }
-        }
-        journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.allDone') })
-        journal.status = 'completed'
-      }
-    }
+    // qa / qaBlocked 交接给验收阶段
+    ctx.qa = qaStage.qa
+    ctx.qaBlocked = qaStage.qaBlocked
     // 调用点必须留在**大 try 之内**（原代码就在 try 里，异常要落到下面的 catch 做终态归一）
-    await runAcceptanceStage()
+    await runAcceptancePhase(ctx)
   } catch (e) {
     if (journal.cancelled) {
       journal.status = 'cancelled'
@@ -1443,7 +956,7 @@ export async function executePipeline(
       journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.notCommitted', { docs: journal.runDocs }) })
     }
     // 日志生命周期（B 方案 2026-09-15）：暂存日志归档离开项目 → $DSH_HOME/teamflow/<workspace>/logs/<runId>/，
-    // 项目内 **只在 run 进行期间** 存在（子代理沙箱只允许写工作区，见 core/runlogs.ts 的实测依据）。
+    // 项目内 **只在 run 进行期间** 存在（子代理沙箱只允许写工作区，见 core/workspace/runlogs.ts 的实测依据）。
     // 放在收口提交之后：run 期间的 pathspec 排除 + .gitignore 补写仍覆盖「用户自己在 run 中提交」的窗口。
     try { archiveRunLogs(journal, locale) } catch (e) { /* 归档尽力而为，不影响收尾 */ }
     journal.result = { requirement, options: sanitizeSnapOptions(options), timeline: summarizeTimeline(timeline) }
@@ -1568,7 +1081,7 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
   return journal.id
 }
 
-/* 取消运行 `cancelRun` 在 core/context.ts（只操作 runs/inFlight，且无宿主私有依赖 → 可被 tests 直接加载）。 */
+/* 取消运行 `cancelRun` 在 core/agent/context.ts（只操作 runs/inFlight，且无宿主私有依赖 → 可被 tests 直接加载）。 */
 
 /** 从断点续跑：跳过已完成阶段，从第一个未完成阶段重跑（service 与工具共用）。 */
 export function resumeRun(

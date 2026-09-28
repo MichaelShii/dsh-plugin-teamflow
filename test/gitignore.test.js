@@ -16,11 +16,11 @@
  * 真 git 行为矩阵在 `test/commit-path.test.js`（这里只锁参数形状）。
  */
 import { mergeGitignore } from '../host/util.ts'
-import { tfAddArgs, tfUnstageArgs, tfDocAddPlan, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from '../host/core/sanity.ts'
+import { tfAddArgs, tfUnstageArgs, tfDocAddPlan, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from '../host/core/workspace/sanity.ts'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { gitRun as gitRunForTest } from '../host/core/sanity.ts'
+import { gitRun as gitRunForTest } from '../host/core/workspace/sanity.ts'
 
 let failed = 0
 const expect = (actual, expected, msg) => {

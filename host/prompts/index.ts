@@ -1,6 +1,6 @@
 /**
  * dsh-plugin-teamflow — Prompt 模板（阶段提示词 + 团队模板）。
- * 依赖：util.ts（clip）、core/state.ts（stateSliceFor / STATE_BLOCK_INSTRUCTION）。
+ * 依赖：util.ts（clip）、core/domain/state.ts（stateSliceFor / STATE_BLOCK_INSTRUCTION）。
  *
  * 【产物收口约定】（v0.13，ADR-0008 任务夹制）
  * - 每个需求一个自包含任务夹：docs/teamflow/<yyyyMMdd>-r<N>[-<slug>]/，收口本需求的
@@ -31,7 +31,7 @@
  * 列表分隔符随内容语言（文件路径等 ASCII 内容用英文逗号），不混用中文标点。
  */
 import { clip } from '../util.ts'
-import { stateSliceFor, STATE_BLOCK_INSTRUCTION } from '../core/state.ts'
+import { stateSliceFor, STATE_BLOCK_INSTRUCTION } from '../core/domain/state.ts'
 // 形态契约的**参考样本**表（纯数据；core/triage.ts 不 import prompts → 无循环依赖）。
 // 只取样本路径给 PM 去读，**不引入任何判定逻辑**：字段名随宿主版本演进，必须读样本核实。
 import { ARTIFACT_REFERENCE_SAMPLES, LOCAL_PLUGIN_SAMPLES_HINT } from '../core/triage.ts'

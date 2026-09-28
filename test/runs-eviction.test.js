@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os'
 const home = mkdtempSync(join(tmpdir(), 'tf-evict-'))
 process.env.DSH_HOME = home
 
-const { runs, inFlight, activeProducts, evictableRunIds, pruneRuns, getRun } = await import('../host/core/context.ts')
+const { runs, inFlight, activeProducts, evictableRunIds, pruneRuns, getRun } = await import('../host/core/agent/context.ts')
 const { persistJournal, loadJournalById } = await import('../store.ts')
 
 let failed = 0
