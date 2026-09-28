@@ -70,7 +70,11 @@
   - **`tech` 阶段失败错误传本地化 label 而非 phase key** → 现统一传 phase key。A/B 实测：错误文案从「…2 次尝试未交付，**无阶段记录**」变为「…未交付，**末次 completed（未产出有效结果（stopReason=completed））**」，`outcome/summary` 不再丢。
   - **`resume` 复用 tech 产物时不跑蓝图提取** → 现 resume 也照样提取（存档文本无蓝图块则解析为 null，无副作用）。A/B 实测：resume 场景下 `journal.blueprint` 从 `null` 变为注入成功，dev 子代理 label 从「开发 · **整体开发**（补跑）」变为「开发 · **任务一**（补跑）」——即续跑时 dev 不再退化成单任务整体开发（r13 同款症状消除）。
   - 回归面：`patch` / `full` / `fail` 三场景 A/B 仍**全部一致**，修复未波及其它路径。
-- 🔜 **成本从「量」到「钱」（评估改进 #5，阻塞在价格口径）**：现计量只到 token 三桶（input/cacheRead/cacheWrite）+ 命中率，汇报与工作台均无量纲金额。要出金额需 `pricing.json`（per-model 每百万单价），**未做的原因是价格数据源未定**：① 官方 provider 无价格 API（宿主 `dsh-llm` 只给 usage）；② 手抄价目表会随上游调价腐化且无校验。待决策：价格从哪来（手工维护 + 版本号 / 用户 settings 覆盖 / 只按 cacheRead 折算「省了多少」的相对口径）。
+- ⛔ **成本从「量」到「钱」——已否决（2026-09-28 拍板，不再排期）**：出金额需 `pricing.json`（per-model 每百万单价），
+  **判定不做，理由是价格这件事本身不成立为可维护的数据**：① **每个模型单价不同**（同 provider 内部也分层级）；
+  ② **会调价**，任何静态价目表都会腐化且无校验手段；③ **plan / 套餐式计费**（订阅、包月、额度池）下「token × 单价」
+  这个算式**根本不适用**——算出来的金额是假的。**结论：计量就到 token 量为止**（四桶 + 命中率 + 调用数），
+  汇报与工作台维持无量纲口径；用户自己拿量去对账比我们给一个可能错的钱更诚实。以后谁再提这条，先看这三条。
 - 🔜 **`catch (e) {}` 分类 lint 规则（oxlint 现行配置未覆盖）**：全仓大量空 catch（起跑清扫 / 状态记忆 / 资源释放等"失败不影响主流程"处有正当理由，但也可能吞掉真错误）。现 `.oxlintrc.json` 关掉了 `no-empty`（未启用），无分类手段。待做：给正当空 catch 统一加 `// ignore: <理由>` 注释前缀 + 自定义规则/脚本统计无注释空 catch 数量并设上限；**实测基线（2026-09-26，57 文件 / 133 个 catch）**：裸空 `catch (e) {}` **0 个**；注释-only 静默 **81 个**（top：`pipeline.ts` 14、`guard.ts` 13、`index.ts` 7、`panel.tsx` 6、`runlogs.ts` 5），真处理 52 个。**结论：现有纪律已达标（静默处均写了理由，如 `/* 清扫失败不影响起跑 */`）→ 本条降为低优先级**，真要做也不是加规则，而是给这 81 处静默加**可选 warn 级日志**（排障时能看到被吞的异常），不是门禁。
 
 ## 优化候选（2026-09-10 四路调研 + 自查，按收益/成本排序）
@@ -99,3 +103,15 @@
   - 依赖实验性 Agent Teams 包（`@deepseek-ai/dsh-experimental-*` 5 个）：无稳定性承诺、**稳定包被禁止依赖实验包**、用户须显式加 profile → 与「可分发插件」定位冲突。
   - **`subagent.toolFilter` 做宿主强制工具裁剪**：`tools.restrict()` 对**未知工具名 fail-loud 抛错**，而子代理工具集随 preset/深度变化（如 maxDepth 下没有 subagent）→ 跨 profile 会让子代理 **start 直接失败**；`maxDepth` 也不是嵌套约束（`resolveChildDepth` 超限只是抛错，不传播限制）。即「QA 禁改产品代码」这类按名字裁剪无法安全表达。
   - 把阶段指令搬进 system prompt（会作废跨子代理前缀复用，冒烟 93% 命中率靠它）；`contextBreakdown` 当熔断/计费依据（官方明确是启发式）。
+- ✅ **风格门禁已收口（2026-09-27 定案，规范落在 `docs/anchors/code-style.md`）**：
+  - **单一仲裁者**：不引 formatter（Prettier 与 `@stylistic/indent` 在 JSX 缩进上互斥，只能有一个定义源）；
+    格式由 `.oxlintrc.json` 的 `@stylistic/*` 规则裁决，经 oxlint `jsPlugins` 执行。
+  - **行宽 140**（对齐宿主 dsh）：含缩进计数，字符串/模板/URL 豁免；53 处超额已全数手工断行收口。
+  - **执行三层**：`pnpm format`（两遍 `--fix`，一遍不收敛）+ lefthook `pre-commit`（staged 文件自动回灌）+ CI `pnpm lint`（0 warning）。
+    判据是规则数 `64 files with 103 rules`——数字掉下来 = 配置没被吃到（退出码仍可能是 0）。
+  - **`arrow-parens` 用 `always`**（宿主 `as-needed` 会改 270 处写法并炸 12 条源码断言）——与宿主的有意差异已写进规范文档。
+  - **源码断言锁只锁内容不锁排版**：跨行处分隔符写 `\s*`、容忍尾逗号，否则行宽合规与门禁会互相打架。
+  - 另注：`jsPlugins` 在 schema 里明写 **alpha、不受 semver**，所以 `oxlint` devDep 已锁精确版本（宿主 likewise 锁 1.76.0），
+    升级前先在临时目录验一遍规则仍生效（已知 `@stylistic/comma-dangle` 对 interface 成员静默失效）。
+- 🔜 **换行/折行仍无自动手段**（唯一已知缺口）：`max-len` 只报警不修，缩进已由 `@stylistic/indent` 兜住，
+  但「把一行断成两行」仍靠作者/AI 手写。若日后要补，只考虑**可声明、可进门禁**的形态（不是再引一个 printer 与之互斥）。

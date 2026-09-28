@@ -433,7 +433,7 @@ console.log('── 3o-2) 客户端双语（v0.1.9：走宿主 locale 服务，�
   const enKeys = keysOf(enBlock)
   ok(zhKeys.length >= 180 && new Set(zhKeys).size === zhKeys.length, `词典 zh 无重复 key（${zhKeys.length} 条）`)
   // en 是兜底语言：缺 key 会直接显示 key 本身（用户看到 raw key），故两侧必须逐条同形
-  ok(zhKeys.length === enKeys.length && zhKeys.every((k, i) => k === enKeys[i]), `词典 zh/en key 集合完全一致（en 漏 key 会显示 raw key）`)
+  ok(zhKeys.length === enKeys.length && zhKeys.every((k, i) => k === enKeys[i]), '词典 zh/en key 集合完全一致（en 漏 key 会显示 raw key）')
   ok(/export const NS = 'teamflow'/.test(localesSrc), 'locales：命名空间常量 NS（单占位命名空间）')
   // 占位符必须两侧一致：某侧漏了 {n}（或写错名字）→ 该语言下参数不被替换，界面出现残缺句子/裸 {}
   const pairsOf = (block) => [...block.matchAll(/^\s*'([^']+)':\s*'((?:[^'\\]|\\.)*)',/gm)].map((m) => [m[1], m[2]])
@@ -492,7 +492,7 @@ ok(/!verdict\.ok && text && stop === 'completed'/.test(runnerSrc), 'runner：**�
 ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
-ok(/"version": "0\.2\.3"/.test(pkgSrc), 'package.json：版本 0.2.3（release-v0.2.3 开发线）')
+ok(/"version": "0\.2\.4"/.test(pkgSrc), 'package.json：版本 0.2.4（release-v0.2.4 开发线）')
 ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.1\.7-alpha\.1 <0\.2\.0"/.test(pkgSrc), 'package.json：声明 dsh.manifestVersion 与 engines.dsh 兼容窗口（下限 = v4 宿主 0.1.7-alpha.1）')
 // 手工枚举的清单必须配门禁（同型教训：journal 字段 / execOptions / loadState / triageRecordOf）。
 // deploy.mjs FILES 与上面的 CORE_FILES 都是手写清单，领域化拆分后两者都漂移过——实测 FILES 漏了
@@ -682,7 +682,8 @@ ok(/log\.modeUpgraded/.test(pipelineSrc) && /__upgradedFrom/.test(hostSrc) && /_
 // dsh 插件」，但**模型根本没调用 teamflow_start**（0 次调用、该产品线 runs=0）——不复现「抢跑」，可闸门也
 // 就没机会生效。旧注入只写「不明确就别调用」，没写「澄清完要回来开工」→ 这条链没有闭环保证。故补三段。
 // 权威判定在 pipeline（2026-09-16 实测 tf-mu35oza7-wmuckz：预检漏传 signal → 工具内分诊 0.4s 退 fallback，闸门静默失效）
-ok(/clarificationPreflight\(requirement, options as unknown as Record<string, unknown>, parent, exec && exec\.signal, ambientLocale\(\)\)/.test(hostSrc), 'host：预检把工具 signal 传给分诊（漏传会让分诊秒退 fallback）')
+// 源码锁只锁「参数内容与顺序」，不锁排版（换行/缩进归 formatter 与 max-len 管），故分隔符一律写 \s*
+ok(/clarificationPreflight\(\s*requirement,\s*options as unknown as Record<string, unknown>,\s*parent,\s*exec && exec\.signal,\s*ambientLocale\(\)\s*,?\s*\)/.test(hostSrc), 'host：预检把工具 signal 传给分诊（漏传会让分诊秒退 fallback）')
 ok(/verdict: TriageVerdict \| null; error\?: string/.test(hostSrc) && /__triageError/.test(hostSrc), 'host：预检失败返回原因（__triageError），不静默')
 ok(/\} else if \(options\.mode !== 'patch'\) \{/.test(pipelineSrc), 'pipeline：除 patch 外一律跑分诊（含显式 lite/mode —— 权威判定在 pipeline）')
 ok(/function abortForClarification/.test(pipelineSrc) && /return abortForClarification\(journal, locale, verdict\)/.test(pipelineSrc), 'pipeline：闸门兜底 abortForClarification（非明确需求/must-know → 不开工，落可续跑中断态）')

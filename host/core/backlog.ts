@@ -79,7 +79,19 @@ export function backlogSummary(product: string | null | undefined) {
         bugs: store.fileBug,
       },
     },
-    requirements: store.requirements.slice(-20).map((r) => ({ id: r.id, title: r.title, status: r.status, humanIntervention: !!r.humanIntervention, taskIds: (r.taskIds || []).slice(-20), bugIds: (r.bugIds || []).slice(-20), createdAt: r.createdAt, updatedAt: r.updatedAt })).reverse(),
+    requirements: store.requirements
+      .slice(-20)
+      .map((r) => ({
+        id: r.id,
+        title: r.title,
+        status: r.status,
+        humanIntervention: !!r.humanIntervention,
+        taskIds: (r.taskIds || []).slice(-20),
+        bugIds: (r.bugIds || []).slice(-20),
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+      }))
+      .reverse(),
     tasks: store.tasks.slice(-80).map((t) => ({
       id: t.id, type: t.type || 'task', title: t.title, status: t.status,
       reqId: t.reqId || null, bugId: t.bugId || null, owner: t.owner || null,
@@ -93,13 +105,33 @@ export function backlogSummary(product: string | null | undefined) {
       startedAt: t.startedAt || null, endedAt: t.endedAt || null, updatedAt: t.updatedAt || null,
       summary: t.summary || '',
     })).reverse(),
-    bugs: store.bugs.slice(-30).map((b) => ({ id: b.id, reqId: b.reqId || null, severity: b.severity || null, title: b.title, status: b.status, owner: b.owner || null, retries: b.retries || 0, humanIntervention: !!b.humanIntervention, updatedAt: b.updatedAt })).reverse(),
+    bugs: store.bugs
+      .slice(-30)
+      .map((b) => ({
+        id: b.id,
+        reqId: b.reqId || null,
+        severity: b.severity || null,
+        title: b.title,
+        status: b.status,
+        owner: b.owner || null,
+        retries: b.retries || 0,
+        humanIntervention: !!b.humanIntervention,
+        updatedAt: b.updatedAt,
+      }))
+      .reverse(),
   }
 }
 
 /** backlog 状态流转（校验目标状态合法性，合法的终态自动清 needs-human）。
  *  只做 status + humanIntervention，不碰 assign——assign 是独立操作，由 teamflow_assign 工具或 noteTaskAssign 处理。 */
-export function transitionBacklog(product: string | null | undefined, kind, id: string, to: string, reason: string | null | undefined, _meta?) {
+export function transitionBacklog(
+  product: string | null | undefined,
+  kind,
+  id: string,
+  to: string,
+  reason: string | null | undefined,
+  _meta?,
+) {
   const store = storeFor(product)
   const item = store.find(kind, id)
   if (!item) return { ok: false, error: t(ambientLocale(), 'backlog.notFound', { kind, id }) }
@@ -249,7 +281,7 @@ export function initPipelineBacklog(journal, requirement, options) {
   const reqId = store.nextId('req')
   const req = {
     id: reqId, product: key, productRoot: options.productRoot || null,
-      title: String(requirement || t(locale, 'backlog.untitled')).replace(/\s+/g, ' ').trim().slice(0, 120), status: 'created',
+    title: String(requirement || t(locale, 'backlog.untitled')).replace(/\s+/g, ' ').trim().slice(0, 120), status: 'created',
     createdAt: Date.now(), updatedAt: Date.now(), events: [], taskIds: [], bugIds: [], humanIntervention: false,
   }
   store.requirements.push(req)
@@ -460,7 +492,16 @@ export function assignTask(product: string | null | undefined, kind: string, id:
   }
   item.updatedAt = Date.now()
   store.persist()
-  return { ok: true, item: { id: item.id, devAssign: item.devAssign || null, qaAssign: item.qaAssign || null, acceptBy: item.acceptBy || null, owner: item.owner || null } }
+  return {
+    ok: true,
+    item: {
+      id: item.id,
+      devAssign: item.devAssign || null,
+      qaAssign: item.qaAssign || null,
+      acceptBy: item.acceptBy || null,
+      owner: item.owner || null,
+    },
+  }
 }
 
 /**

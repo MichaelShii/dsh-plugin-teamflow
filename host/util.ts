@@ -286,7 +286,10 @@ export function sanitizeSnapOptions(o) {
     lite: opts.lite === true,
     mode: (typeof opts.mode === 'string' && opts.mode) ? opts.mode : undefined,
     productRoot: typeof opts.productRoot === 'string' ? opts.productRoot : null,
-    maxConcurrency: (Number.isFinite(opts.maxConcurrency) && opts.maxConcurrency > 0) ? Math.min(opts.maxConcurrency, DEV_MAX_CONCURRENCY) : null,
+    maxConcurrency:
+      Number.isFinite(opts.maxConcurrency) && opts.maxConcurrency > 0
+        ? Math.min(opts.maxConcurrency, DEV_MAX_CONCURRENCY)
+        : null,
     tasks: Array.isArray(opts.tasks) ? opts.tasks.map((t) => ({ title: String((t && t.title) || ''), spec: String((t && t.spec) || '') })) : [],
   }
 }
@@ -337,7 +340,12 @@ export function mergeGitignore(
 
 /** 分支 slug 派生（ADR-2026-08-27）：branchName > triageSlug > 需求中的英文标识词 > reqId 数字 > 'feature'。
  * 实锤 feat/feature：lite 显式时 triage 不跑（无 slug）+ 分支检查早于 reqId 生成 → fallback 'feature'。 */
-export function deriveBranchSlug(requirement: string | null | undefined, reqId: string | null | undefined, triageSlug?: string | null, branchName?: string | null): string {
+export function deriveBranchSlug(
+  requirement: string | null | undefined,
+  reqId: string | null | undefined,
+  triageSlug?: string | null,
+  branchName?: string | null,
+): string {
   if (branchName && /^[a-z0-9][a-z0-9-_]*$/i.test(branchName)) return String(branchName).replace(/[^a-z0-9-]/gi, '-').toLowerCase().slice(0, 40)
   if (triageSlug && /^[a-z0-9-]{3,24}$/i.test(triageSlug)) return triageSlug
   const en = String(requirement || '').match(/[a-zA-Z][a-zA-Z0-9-]{2,23}/g)
@@ -416,7 +424,10 @@ export const DOC_STAGE_FILES: Record<string, string[]> = {
 
 /** 任务夹产物读取（单轨契约：文件即产物——QA/验收 host 只读文件，回复仅摘要）。
  * 缺失/空/读取异常返回 null（调用方决定硬失败或 journal 兜底）。`pipeline` 与 `runner` 共用。 */
-export function artifactText(journal: { workspacePath?: string | null; runDocs?: string | null } | null | undefined, fileName: string): string | null {
+export function artifactText(
+  journal: { workspacePath?: string | null; runDocs?: string | null } | null | undefined,
+  fileName: string,
+): string | null {
   const path = journal && journal.workspacePath && journal.runDocs ? `${journal.workspacePath}/${journal.runDocs}/${fileName}` : null
   if (!path) return null
   try {
@@ -482,7 +493,13 @@ function fpNorm(s: unknown): string {
 }
 
 /** 缺陷的**稳定身份**（跨轮次可比）：检测命令优先，其次 模块+实际/期望文本，最后回落 id。 */
-export function defectFingerprint(d: { check?: string | null; module?: string | null; actual?: string | null; expected?: string | null; id?: string | null } | null | undefined): string {
+export function defectFingerprint(d: {
+  check?: string | null
+  module?: string | null
+  actual?: string | null
+  expected?: string | null
+  id?: string | null
+} | null | undefined): string {
   if (!d) return ''
   const cmd = fpNorm(d.check)
   if (cmd) return `cmd:${cmd}`.slice(0, 200)
@@ -523,7 +540,15 @@ export function compareDefectRounds(prevFps: string[][], curFps: string[]): { ne
 export function qaRoundEntry(
   round: number,
   seq: number | null,
-  defects: Array<{ id?: string; severity?: string; module?: string; check?: string; criterion?: string; actual?: string; expected?: string }>,
+  defects: Array<{
+    id?: string
+    severity?: string
+    module?: string
+    check?: string
+    criterion?: string
+    actual?: string
+    expected?: string
+  }>,
   prevRounds: Array<Record<string, unknown>> | null | undefined,
   qaCalls: number | null,
   limit: number,
@@ -576,6 +601,22 @@ export function refusalHit(text: string | null | undefined): { phrase: string; c
   return { phrase: m[0], context: s.slice(start, end).replace(/\s+/g, ' ').trim() }
 }
 
+/** 外部故障特征词表（供应商 / 网络 / 额度）：单行正则字面量必然超 max-len，故按语义分组用数组 join 构造。 */
+const EXTERNAL_FAILURE = new RegExp([
+  '\\b429\\b', '\\b402\\b', 'rate[ _-]?limit', 'too many requests', 'insufficient[ _-]?(?:balance|quota|funds)',
+  'quota', 'exceeded[ _-]?(?:your[ _-]?)?(?:quota|limit|rate)',
+  'no[ _-]?(?:available[ _-]?)?(?:quota|balance|credit)', 'out of credit', 'billing', 'payment required', 'overload',
+  'temporarily unavailable', 'service unavailable', '\\b50[234]\\b', 'upstream', 'gateway timeout', '\\b52[0-9]\\b',
+  'timeout', 'timed out', 'ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'socket hang up', 'fetch failed',
+  'network error', '限流', '限速', '频率限制', '请求过于频繁', '额度', '配额', '余额不足', '欠费', '无额度', '暂时不可用', '服务不可用', '上游不可用', '超时',
+  '网络错误', '连接被重置', '过载', '供应商',
+].join('|'), 'i')
+
+/** 内容类故障特征词表（上下文 / 产出长度）：同 EXTERNAL_FAILURE，按语义分组构造。 */
+const CONTENT_FAILURE = new RegExp([
+  'context[ _-]?(?:window|length)', 'too many tokens', 'maximum context', 'prompt is too long', '上下文(?:长度|超限|耗尽)',
+  '护栏', 'degenerated', 'stalled', 'insufficient output', 'too short', '产出过短',
+].join('|'), 'i')
 /**
  * 外部供应商不可用 vs 内容性失败（2026-09-17，实测驱动）。
  *
@@ -592,9 +633,9 @@ export function refusalHit(text: string | null | undefined): { phrase: string; c
 export function classifyExternalFailure(text: string | null | undefined, hint?: string | null): 'external' | 'content' | 'unknown' {
   const s = `${String(text || '')} ${String(hint || '')}`
   if (!s.trim()) return 'unknown'
-  const external = /(?:\b429\b|\b402\b|rate[ _-]?limit|too many requests|insufficient[ _-]?(?:balance|quota|funds)|quota|exceeded[ _-]?(?:your[ _-]?)?(?:quota|limit|rate)|no[ _-]?(?:available[ _-]?)?(?:quota|balance|credit)|out of credit|billing|payment required|overload|temporarily unavailable|service unavailable|\b50[234]\b|upstream|gateway timeout|\b52[0-9]\b|timeout|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|fetch failed|network error|限流|限速|频率限制|请求过于频繁|额度|配额|余额不足|欠费|无额度|暂时不可用|服务不可用|上游不可用|超时|网络错误|连接被重置|过载|供应商)/i.test(s)
+  const external = EXTERNAL_FAILURE.test(s)
   if (external) return 'external'
-  const content = /context[ _-]?(?:window|length)|too many tokens|maximum context|prompt is too long|上下文(?:长度|超限|耗尽)|护栏|degenerated|stalled|insufficient output|too short|产出过短/i.test(s)
+  const content = CONTENT_FAILURE.test(s)
   if (content) return 'content'
   return 'unknown'
 }
@@ -811,7 +852,12 @@ export function extractBlueprint(text: string | null | undefined, locale?: HostL
   const j = s.indexOf(bdClose)
   if (i === -1 || j === -1 || j <= i) return null
   const raw = s.slice(i + bdOpen.length, j).trim()
-  let parsed: { summary?: string; modules?: Record<string, BlueprintModule>; duplications?: string[]; tasks?: BlueprintTask[] } | null = null
+  let parsed: {
+    summary?: string
+    modules?: Record<string, BlueprintModule>
+    duplications?: string[]
+    tasks?: BlueprintTask[]
+  } | null = null
   try { parsed = JSON.parse(raw) } catch (e) {
     const repaired = repairBlueprintJson(raw)
     if (repaired) { try { parsed = JSON.parse(repaired) } catch (e2) { parsed = null } }
@@ -1245,7 +1291,15 @@ const RETRY_SUFFIX_LOCAL = /(?:（(?:第 \d+ 次重试|补跑)）| \((?:retry \d
  * `backfillDevTaskIds` 给存量 stage 补算 id（用蓝图 title 结构化匹配），之后本函数只看到 id。
  * **判定逻辑因此始终只有一个键空间**，不做"双键匹配"、不切分 title。
  */
-export function devTaskStatuses(stages: Array<{ taskKey?: string | null; taskIds?: string[] | null; label?: string; seq?: number; status?: string }>): Map<string, { done: boolean; lastStatus: string | null; lastSeq: number }> {
+type DevStageRow = {
+  taskKey?: string | null
+  taskIds?: string[] | null
+  label?: string
+  seq?: number
+  status?: string
+}
+type DevTaskStatus = { done: boolean; lastStatus: string | null; lastSeq: number }
+export function devTaskStatuses(stages: Array<DevStageRow>): Map<string, DevTaskStatus> {
   const m = new Map<string, { done: boolean; lastStatus: string | null; lastSeq: number }>()
   for (const s of stages || []) {
     const ids = Array.isArray(s.taskIds)

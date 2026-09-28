@@ -68,12 +68,12 @@ export function TeamflowPanelIcon({ size = 16, active = false }) {
     stroke: c, strokeWidth: 1.6, strokeLinecap: 'round', strokeLinejoin: 'round',
     'aria-hidden': 'true', focusable: 'false',
   },
-    h('rect', { x: 3, y: 4, width: 5.2, height: 4, rx: 1.2, opacity: active ? 1 : 0.85 }),
-    h('rect', { x: 9.4, y: 10, width: 5.2, height: 4, rx: 1.2, opacity: active ? 1 : 0.85 }),
-    h('rect', { x: 3, y: 16, width: 5.2, height: 4, rx: 1.2, opacity: active ? 1 : 0.85 }),
-    h('path', { d: 'M8.4 6h3.3a1 1 0 0 1 1 1v3.4' }),
-    h('path', { d: 'M8.4 18h3.3a1 1 0 0 0 1-1v-3.4' }),
-    h('path', { d: 'M14.6 12h4.4' }),
+  h('rect', { x: 3, y: 4, width: 5.2, height: 4, rx: 1.2, opacity: active ? 1 : 0.85 }),
+  h('rect', { x: 9.4, y: 10, width: 5.2, height: 4, rx: 1.2, opacity: active ? 1 : 0.85 }),
+  h('rect', { x: 3, y: 16, width: 5.2, height: 4, rx: 1.2, opacity: active ? 1 : 0.85 }),
+  h('path', { d: 'M8.4 6h3.3a1 1 0 0 1 1 1v3.4' }),
+  h('path', { d: 'M8.4 18h3.3a1 1 0 0 0 1-1v-3.4' }),
+  h('path', { d: 'M14.6 12h4.4' }),
   )
 }
 
@@ -107,37 +107,37 @@ function ProductRail({ products, current, loadingKey, onSelect, onRefresh, busy 
       borderRight: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.layer1} 40%, transparent)`,
     },
   },
-    h('div', { style: { ...flexRow, justifyContent: 'space-between', padding: '10px 12px 8px' } },
-      h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text2 } }, t('panel.railTitle', { n: products.length })),
-      h('button', { style: panelBtn, onClick: onRefresh, disabled: busy, title: t('panel.rescanTip') }, busy ? t('panel.refreshing') : t('panel.refresh'))),
-    h('div', { style: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 8px 12px' } },
-      products.length === 0
-        ? muted(t('panel.noProducts'), { padding: '10px 4px' })
-        : products.map((p) => {
-          const on = p.key === current
-          return h('div', {
-            key: p.key,
-            onClick: () => onSelect(p.key),
-            title: p.path || p.key,
-            style: {
-              padding: '8px 10px', marginBottom: 6, borderRadius: 9, cursor: 'pointer',
-              border: `1px solid ${on ? `color-mix(in srgb, ${T.brand} 45%, transparent)` : T.border}`,
-              background: on ? `color-mix(in srgb, ${T.brand} 10%, ${T.layer1})` : 'transparent',
-            },
+  h('div', { style: { ...flexRow, justifyContent: 'space-between', padding: '10px 12px 8px' } },
+    h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text2 } }, t('panel.railTitle', { n: products.length })),
+    h('button', { style: panelBtn, onClick: onRefresh, disabled: busy, title: t('panel.rescanTip') }, busy ? t('panel.refreshing') : t('panel.refresh'))),
+  h('div', { style: { flex: 1, minHeight: 0, overflowY: 'auto', padding: '0 8px 12px' } },
+    products.length === 0
+      ? muted(t('panel.noProducts'), { padding: '10px 4px' })
+      : products.map((p) => {
+        const on = p.key === current
+        return h('div', {
+          key: p.key,
+          onClick: () => onSelect(p.key),
+          title: p.path || p.key,
+          style: {
+            padding: '8px 10px', marginBottom: 6, borderRadius: 9, cursor: 'pointer',
+            border: `1px solid ${on ? `color-mix(in srgb, ${T.brand} 45%, transparent)` : T.border}`,
+            background: on ? `color-mix(in srgb, ${T.brand} 10%, ${T.layer1})` : 'transparent',
           },
-            h('div', { style: { ...flexRow, justifyContent: 'space-between' } },
-              h('span', { style: { fontSize: 12, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.title || p.key),
-              p.activeRuns > 0 ? chip(t('panel.activeRuns', { n: p.activeRuns }), T.brand, { dot: true }) : null),
-            h('div', { style: { fontSize: 10, color: T.text2, fontFamily: MONO, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.key),
-            h('div', { style: { ...flexRow, gap: 8, marginTop: 3, fontSize: 10, color: T.text2 } },
-              h('span', null, `run ${p.totalRuns}`),
-              p.updatedAt ? h('span', null, t('panel.updated', { time: fmtTime(p.updatedAt) })) : null,
-              // 选中但视图还没回来时给出明确状态：避免"卡片是选中态、右侧却在读取中"的误导
-              p.key === loadingKey ? h('span', { style: { color: T.brand, fontWeight: 600 } }, t('panel.reading')) : null),
-            p.lastRequirement ? h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 3, lineHeight: 1.45, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' } }, p.lastRequirement) : null,
-            p.lastVerdict ? h('div', { style: { marginTop: 4 } }, chip(t('panel.verdict', { v: p.lastVerdict }), stColor(p.lastVerdict === 'accepted' ? 'accepted' : p.lastVerdict))) : null,
-          )
-        })),
+        },
+        h('div', { style: { ...flexRow, justifyContent: 'space-between' } },
+          h('span', { style: { fontSize: 12, fontWeight: 600, color: T.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.title || p.key),
+          p.activeRuns > 0 ? chip(t('panel.activeRuns', { n: p.activeRuns }), T.brand, { dot: true }) : null),
+        h('div', { style: { fontSize: 10, color: T.text2, fontFamily: MONO, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, p.key),
+        h('div', { style: { ...flexRow, gap: 8, marginTop: 3, fontSize: 10, color: T.text2 } },
+          h('span', null, `run ${p.totalRuns}`),
+          p.updatedAt ? h('span', null, t('panel.updated', { time: fmtTime(p.updatedAt) })) : null,
+          // 选中但视图还没回来时给出明确状态：避免"卡片是选中态、右侧却在读取中"的误导
+          p.key === loadingKey ? h('span', { style: { color: T.brand, fontWeight: 600 } }, t('panel.reading')) : null),
+        p.lastRequirement ? h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 3, lineHeight: 1.45, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' } }, p.lastRequirement) : null,
+        p.lastVerdict ? h('div', { style: { marginTop: 4 } }, chip(t('panel.verdict', { v: p.lastVerdict }), stColor(p.lastVerdict === 'accepted' ? 'accepted' : p.lastVerdict))) : null,
+        )
+      })),
   )
 }
 
@@ -158,29 +158,29 @@ function RunList({ runs, activeRunId, onOpenRun, onInlineRun, onCancel }) {
         },
         onClick: () => onInlineRun(r),
       },
-        h('div', { style: { flex: 1, minWidth: 0 } },
-          h('div', { style: { ...flexRow, gap: 6 } },
-            chip(runStatusText(r.status), stColor(r.status), { dot: true }),
-            r.mode ? chip(String(r.mode), T.text2) : null,
-            h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2 } }, r.id),
-            active ? h('span', { style: { fontSize: 10, color: T.brand } }, t('runList.running')) : null),
-          h('div', { style: { fontSize: 11.5, color: T.text, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.requirement || t('runList.noRequirement')),
-          h('div', { style: { ...flexRow, gap: 10, marginTop: 3, fontSize: 10, color: T.text2, fontFamily: MONO } },
-            h('span', null, t('runList.stageProgress', { done: r.doneStages, total: r.stageCount })),
-            h('span', null, runUsageText(r.usage)),
-            h('span', null, `${fmtTime(r.startedAt)}${r.endedAt ? ` → ${fmtTime(r.endedAt)}` : ''} ${fmtDur(r.startedAt, r.endedAt)}`))),
-        /* 中断入口：与「右栏打开」并排（行整行可点开详情，按钮自己 stopPropagation） */
-        r.status === 'running' && onCancel ? h(CancelButton, {
-          runId: r.id,
-          title: t('cancel.tip', { id: r.id }),
-          onConfirm: onCancel,
-          style: { fontSize: 11, padding: '2px 9px' },
-        }) : null,
-        h('button', {
-          style: brandBtn,
-          title: t('runList.openRightBarTip'),
-          onClick: (e) => { e.stopPropagation(); onOpenRun(r) },
-        }, t('runList.openRightBar')),
+      h('div', { style: { flex: 1, minWidth: 0 } },
+        h('div', { style: { ...flexRow, gap: 6 } },
+          chip(runStatusText(r.status), stColor(r.status), { dot: true }),
+          r.mode ? chip(String(r.mode), T.text2) : null,
+          h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2 } }, r.id),
+          active ? h('span', { style: { fontSize: 10, color: T.brand } }, t('runList.running')) : null),
+        h('div', { style: { fontSize: 11.5, color: T.text, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, r.requirement || t('runList.noRequirement')),
+        h('div', { style: { ...flexRow, gap: 10, marginTop: 3, fontSize: 10, color: T.text2, fontFamily: MONO } },
+          h('span', null, t('runList.stageProgress', { done: r.doneStages, total: r.stageCount })),
+          h('span', null, runUsageText(r.usage)),
+          h('span', null, `${fmtTime(r.startedAt)}${r.endedAt ? ` → ${fmtTime(r.endedAt)}` : ''} ${fmtDur(r.startedAt, r.endedAt)}`))),
+      /* 中断入口：与「右栏打开」并排（行整行可点开详情，按钮自己 stopPropagation） */
+      r.status === 'running' && onCancel ? h(CancelButton, {
+        runId: r.id,
+        title: t('cancel.tip', { id: r.id }),
+        onConfirm: onCancel,
+        style: { fontSize: 11, padding: '2px 9px' },
+      }) : null,
+      h('button', {
+        style: brandBtn,
+        title: t('runList.openRightBarTip'),
+        onClick: (e) => { e.stopPropagation(); onOpenRun(r) },
+      }, t('runList.openRightBar')),
       )
     }))
 }
@@ -195,22 +195,22 @@ function BacklogCard({ kind, item, onOpen }) {
       background: T.layer1, cursor: 'pointer', minWidth: 0, boxSizing: 'border-box', maxWidth: '100%', overflow: 'hidden',
     },
   },
-    h('div', { style: { ...flexRow, gap: 5, minWidth: 0 } },
-      h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.id),
-      chip(stText(item.status), color, { dot: true }),
-      kind === 'bug' && item.severity ? chip(String(item.severity), stColor('rework')) : null),
-    h('div', { style: { fontSize: 11.5, color: T.text, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.title || item.id),
-    (() => {
-      const roles = kind === 'task' ? byRoleLine(item) : ''
-      // 等宽数字串（⇅19.7k/127.0k·⬆4.7k·87%）不可断行 → 允许任意处换行，避免顶破卡片
-      return roles ? h('div', { title: roles, style: { fontSize: 10, color: T.text2, fontFamily: MONO, marginTop: 3, minWidth: 0, overflowWrap: 'anywhere', wordBreak: 'break-word' } }, roles) : null
-    })(),
-    h('div', { style: { ...flexRow, gap: 6, marginTop: 3, fontSize: 10, color: T.text2 } },
-      item.devAssign ? h('span', null, `dev ${item.devAssign}`) : null,
-      item.qaAssign ? h('span', null, `qa ${item.qaAssign}`) : null,
-      item.acceptBy ? h('span', null, t('panel.verdict', { v: item.acceptBy })) : null,
-      item.retries ? h('span', { style: { color: T.warn } }, t('board.retries', { n: item.retries })) : null,
-      item.humanIntervention ? h('span', { style: { color: T.error } }, t('status.needs-human')) : null),
+  h('div', { style: { ...flexRow, gap: 5, minWidth: 0 } },
+    h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.id),
+    chip(stText(item.status), color, { dot: true }),
+    kind === 'bug' && item.severity ? chip(String(item.severity), stColor('rework')) : null),
+  h('div', { style: { fontSize: 11.5, color: T.text, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.title || item.id),
+  (() => {
+    const roles = kind === 'task' ? byRoleLine(item) : ''
+    // 等宽数字串（⇅19.7k/127.0k·⬆4.7k·87%）不可断行 → 允许任意处换行，避免顶破卡片
+    return roles ? h('div', { title: roles, style: { fontSize: 10, color: T.text2, fontFamily: MONO, marginTop: 3, minWidth: 0, overflowWrap: 'anywhere', wordBreak: 'break-word' } }, roles) : null
+  })(),
+  h('div', { style: { ...flexRow, gap: 6, marginTop: 3, fontSize: 10, color: T.text2 } },
+    item.devAssign ? h('span', null, `dev ${item.devAssign}`) : null,
+    item.qaAssign ? h('span', null, `qa ${item.qaAssign}`) : null,
+    item.acceptBy ? h('span', null, t('panel.verdict', { v: item.acceptBy })) : null,
+    item.retries ? h('span', { style: { color: T.warn } }, t('board.retries', { n: item.retries })) : null,
+    item.humanIntervention ? h('span', { style: { color: T.error } }, t('status.needs-human')) : null),
   )
 }
 
@@ -331,10 +331,10 @@ function ItemDetailPane({ det, openArtifact, onClose }) {
         h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } }, det.subtasks.map((s) => h('div', {
           key: s.id, style: { ...flexRow, gap: 6, fontSize: 11, padding: '4px 7px', borderRadius: 7, background: T.layer1, border: `1px solid ${T.border}` },
         },
-          h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2 } }, s.id),
-          chip(stText(s.status), stColor(s.status)),
-          h('span', { style: { color: T.text, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, s.title),
-          s.failed ? chip(t('common.failed'), T.error) : null))))
+        h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2 } }, s.id),
+        chip(stText(s.status), stColor(s.status)),
+        h('span', { style: { color: T.text, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, s.title),
+        s.failed ? chip(t('common.failed'), T.error) : null))))
       : null,
     det.bugs && det.bugs.length
       ? h('div', null,
@@ -342,10 +342,10 @@ function ItemDetailPane({ det, openArtifact, onClose }) {
         h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4 } }, det.bugs.map((b) => h('div', {
           key: b.id, style: { ...flexRow, gap: 6, fontSize: 11, padding: '4px 7px', borderRadius: 7, background: T.layer1, border: `1px solid ${T.border}` },
         },
-          h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2 } }, b.id),
-          b.severity ? chip(String(b.severity), T.warn) : null,
-          chip(stText(b.status), stColor(b.status)),
-          h('span', { style: { color: T.text, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, b.title)))))
+        h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2 } }, b.id),
+        b.severity ? chip(String(b.severity), T.warn) : null,
+        chip(stText(b.status), stColor(b.status)),
+        h('span', { style: { color: T.text, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, b.title)))))
       : null,
     det.events && det.events.length
       ? h('div', null,
@@ -365,7 +365,13 @@ function RunDetailPane({ snap, product, api, onCancel }) {
   const stages = snap.stages || []
   const totals = stages.reduce((a, s) => {
     const u = s.usage
-    if (u) { a.input += u.input || 0; a.cacheRead += u.cacheRead || 0; a.cacheWrite += u.cacheWrite || 0; a.output += u.output || 0; a.calls += u.calls || 0 }
+    if (u) {
+      a.input += u.input || 0
+      a.cacheRead += u.cacheRead || 0
+      a.cacheWrite += u.cacheWrite || 0
+      a.output += u.output || 0
+      a.calls += u.calls || 0
+    }
     return a
   }, { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 })
   const openStage = async (s) => {
@@ -412,19 +418,19 @@ function RunDetailPane({ snap, product, api, onCancel }) {
             borderLeft: `3px solid ${color}`, background: on ? `color-mix(in srgb, ${T.brand} 7%, ${T.layer1})` : T.layer1,
           },
         },
-          h('div', { style: { ...flexRow, gap: 6 } },
-            h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2 } }, `#${s.seq}`),
-            h('span', null, phaseIconOf(s.phase)),
-            h('span', { style: { fontSize: 11.5, color: T.text, fontWeight: 500 } }, stageLabelOf(s)),
-            chip(stageStatusText(s.status), color, { dot: true }),
-            /* outcome 是**机器词**（degenerated/stalled/insubstantial…），原文透出是刻意的诊断信息；
+        h('div', { style: { ...flexRow, gap: 6 } },
+          h('span', { style: { fontFamily: MONO, fontSize: 10, color: T.text2 } }, `#${s.seq}`),
+          h('span', null, phaseIconOf(s.phase)),
+          h('span', { style: { fontSize: 11.5, color: T.text, fontWeight: 500 } }, stageLabelOf(s)),
+          chip(stageStatusText(s.status), color, { dot: true }),
+          /* outcome 是**机器词**（degenerated/stalled/insubstantial…），原文透出是刻意的诊断信息；
                但 `cancelled` 已被左侧阶段状态说清（已中止/Stopped），再来一个原文 chip 就是同义重复。 */
-            s.outcome && s.outcome !== 'completed' && s.outcome !== 'cancelled' ? chip(String(s.outcome), stColor(s.outcome)) : null,
-            h('span', { style: { marginLeft: 'auto', fontFamily: MONO, fontSize: 10, color: T.text2 } }, `${fmtTime(s.startedAt)}${s.endedAt ? ` · ${fmtDur(s.startedAt, s.endedAt)}` : ''}`)),
-          h('div', { style: { ...flexRow, gap: 10, marginTop: 3, fontFamily: MONO, fontSize: 10, color: T.text2 } },
-            h('span', null, stageUsageLine(s) || t('common.noUsage')),
-            s.childId ? h('span', { title: s.childId }, t('detail.subagentChip', { id: String(s.childId).slice(0, 14) })) : null),
-          s.summary ? h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 3, lineHeight: 1.45 } }, String(s.summary).slice(0, 200)) : null)
+          s.outcome && s.outcome !== 'completed' && s.outcome !== 'cancelled' ? chip(String(s.outcome), stColor(s.outcome)) : null,
+          h('span', { style: { marginLeft: 'auto', fontFamily: MONO, fontSize: 10, color: T.text2 } }, `${fmtTime(s.startedAt)}${s.endedAt ? ` · ${fmtDur(s.startedAt, s.endedAt)}` : ''}`)),
+        h('div', { style: { ...flexRow, gap: 10, marginTop: 3, fontFamily: MONO, fontSize: 10, color: T.text2 } },
+          h('span', null, stageUsageLine(s) || t('common.noUsage')),
+          s.childId ? h('span', { title: s.childId }, t('detail.subagentChip', { id: String(s.childId).slice(0, 14) })) : null),
+        s.summary ? h('div', { style: { fontSize: 10.5, color: T.text2, marginTop: 3, lineHeight: 1.45 } }, String(s.summary).slice(0, 200)) : null)
       })),
     err ? muted(t('detail.stageFailed', { err }), { color: T.error }) : null,
     sel ? h('div', { style: { padding: '9px 10px', borderRadius: 9, border: `1px solid ${T.border}`, background: T.layer2, display: 'flex', flexDirection: 'column', gap: 8 } },
@@ -448,8 +454,8 @@ function RunDetailPane({ snap, product, api, onCancel }) {
           h('div', { style: { display: 'flex', flexDirection: 'column', gap: 3 } }, sel.attempts.map((a) => h('div', {
             key: a.seq, style: { ...flexRow, gap: 6, fontSize: 10.5, fontFamily: MONO, color: T.text2 },
           },
-            h('span', null, `#${a.seq}`), chip(stageStatusText(a.status), stColor(a.status)), a.outcome && a.outcome !== 'cancelled' ? h('span', null, a.outcome) : null,
-            h('span', { style: { marginLeft: 'auto' } }, `${fmtTime(a.startedAt)} · ${fmtDur(a.startedAt, a.endedAt)}`)))))
+          h('span', null, `#${a.seq}`), chip(stageStatusText(a.status), stColor(a.status)), a.outcome && a.outcome !== 'cancelled' ? h('span', null, a.outcome) : null,
+          h('span', { style: { marginLeft: 'auto' } }, `${fmtTime(a.startedAt)} · ${fmtDur(a.startedAt, a.endedAt)}`)))))
         : null)
       : null,
     logs.length ? h('div', null,
@@ -497,7 +503,17 @@ export function RunDetailTab(props) {
       return undefined
     }
     if (!api) { setSnap(null); setErr(t('tab.remoteUnavailable')); return undefined }
-    api.runDetail(runId).then((v) => { if (alive) { setSnap(v); setErr(null) } }, (e) => { if (alive) setErr(String((e && e.message) || e)) })
+    api.runDetail(runId).then(
+      (v) => {
+        if (alive) {
+          setSnap(v)
+          setErr(null)
+        }
+      },
+      (e) => {
+        if (alive) setErr(String((e && e.message) || e))
+      },
+    )
     const timer = setInterval(() => {
       api.runDetail(runId).then((v) => {
         if (!alive) return
@@ -629,7 +645,8 @@ export function GlobalPanel(props) {
     try {
       const v = unwrap(await remote.products(currentSessionId || null), 'products') || {}
       const list = v.products || []
-      const key = preferKey || state.current || (v.current && list.some((p) => p.key === v.current) ? v.current : (list[0] && list[0].key) || null)
+      const key =
+        preferKey || state.current || (v.current && list.some((p) => p.key === v.current) ? v.current : (list[0] && list[0].key) || null)
       setState({ products: list, current: key, view: key === state.current ? state.view : null, err: null, busy: false })
       setViewTick((t) => t + 1)   // 无论 key 是否变化都要重新拉取（同值点击/会话切换都不能卡在"读取中"）
     } catch (e) {
@@ -700,7 +717,14 @@ export function GlobalPanel(props) {
       setHint(t('cancel.sent'))
     } catch (e) { setState((s) => ({ ...s, err: String((e && e.message) || e) })) }
   }
-  const openRun = (r) => { goOwnerSessionAndOpen({ ownerSession: r.ownerSession, address: r.address, label: r.id, fallback: () => { void showInline(r) } }) }
+  const openRun = (r) => {
+    goOwnerSessionAndOpen({
+      ownerSession: r.ownerSession,
+      address: r.address,
+      label: r.id,
+      fallback: () => { void showInline(r) },
+    })
+  }
   const openArtifactInPanel = (address, name, ownerSession) => {
     goOwnerSessionAndOpen({ ownerSession, address, label: name })
   }
@@ -738,103 +762,115 @@ export function GlobalPanel(props) {
   return h('div', {
     style: { height: '100%', minHeight: 0, display: 'flex', flexDirection: 'column', background: T.bg, color: T.text, fontFamily: SANS, fontSize: 12 },
   },
-    h('div', { style: { ...flexRow, justifyContent: 'space-between', padding: '10px 14px', borderBottom: `1px solid ${T.border}` } },
-      h('div', { style: { ...flexRow, gap: 8 } },
-        h('span', { style: { fontSize: 13, fontWeight: 700 } }, t('panel.title')),
-        h('span', { style: { fontSize: 11, color: T.text2 } }, t('panel.subtitle')),
-        currentSessionId ? h('span', { style: { fontSize: 10, color: T.text2, fontFamily: MONO } }, t('panel.currentSession', { sid: String(currentSessionId).slice(0, 8) })) : h('span', { style: { fontSize: 10, color: T.text2 } }, t('panel.noSession'))),
-      h('div', { style: { ...flexRow, gap: 6 } },
-        product ? h('button', { style: panelBtn, onClick: () => loadView(state.current) }, t('panel.reload')) : null,
-        h('button', {
-          style: panelBtn,
-          title: t('panel.backToChatTip'),
-          onClick: () => { try { const layout = props.layout; if (layout && layout.selectPanel) layout.selectPanel(null) } catch (e) { /* ignore */ } },
-        }, t('panel.backToChat')))),
-    state.err ? h('div', { style: { padding: '6px 14px', fontSize: 11, color: T.error, borderBottom: `1px solid ${T.border}` } }, state.err) : null,
-    hint ? h('div', { style: { ...flexRow, justifyContent: 'space-between', gap: 8, padding: '6px 14px', fontSize: 11, color: T.warn, borderBottom: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.warn} 8%, transparent)` } },
-      h('span', null, hint),
-      h('button', { style: panelBtn, onClick: () => setHint(null) }, t('common.gotIt'))) : null,
-    h('div', { style: { flex: 1, minHeight: 0, display: 'flex', position: 'relative' } },
-      h(ProductRail, { products: state.products, current: state.current, loadingKey: state.view ? null : state.current, busy: state.busy, onRefresh: () => loadProducts(state.current), onSelect: selectProduct }),
-      h('div', { style: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' } },
-        !state.current
-          ? h('div', { style: { padding: '12px 14px' } }, muted(t('panel.pickProduct')))
-          : !view
-            ? h('div', { style: { padding: '12px 14px' } }, muted(t('panel.loadingView')))
-            : h(React.Fragment, null,
-              /* 产品头：固定（不参与滚动） */
-              h('div', { style: { ...flexRow, justifyContent: 'space-between', gap: 10, padding: '12px 14px 6px' } },
-                h('div', { style: { minWidth: 0 } },
-                  h('div', { style: { fontSize: 15, fontWeight: 700, color: T.text } }, product.title || product.key),
-                  h('div', { style: { fontSize: 10.5, color: T.text2, fontFamily: MONO, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, product.path || product.key)),
-                h('div', { style: { ...flexRow, gap: 6, flex: '0 0 auto' } },
-                  chip(t('panel.runChip', { n: product.totalRuns }), T.text2),
-                  product.activeRuns > 0 ? chip(t('panel.activeChip', { n: product.activeRuns }), T.brand, { dot: true }) : null,
-                  product.lastVerdict ? chip(t('panel.verdictChip', { v: product.lastVerdict }), stColor('accepted')) : null)),
-              /* 标签页：一次只显示一个列表 —— 宽度全给它，不再多栏挤压（第三版布局） */
-              h('div', { style: { display: 'flex', alignItems: 'flex-end', gap: 2, padding: '0 14px', borderBottom: `1px solid ${T.border}` } },
-                panelTabBtn('run', t('panel.tabRuns', { n: runs.length })),
-                panelTabBtn('backlog', t('panel.tabBacklog', { n: backlogCount })),
-                h('div', { style: { marginLeft: 'auto', ...flexRow, gap: 6, paddingBottom: 7 } },
-                  panelTab === 'run' && !runsExpanded && pinnedActive.length > 0 ? chip(t('panel.pinnedActive', { n: pinnedActive.length }), T.brand, { dot: true }) : null,
-                  panelTab === 'run' && runsMatched.length > RUN_PREVIEW
-                    ? h('button', { style: panelBtn, onClick: () => setRunsExpanded((v) => !v) },
-                      runsExpanded ? t('panel.showRecent', { n: RUN_PREVIEW }) : t('panel.showAll', { n: runsMatched.length }))
-                    : null)),
-              /* 单一滚动区（自己滚；页面级滚动条不会出现） */
-              h('div', { style: { flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '12px 14px 18px' } },
-                panelTab === 'run'
-                  ? h(React.Fragment, null,
-                    /* run 状态筛选（多选；与 backlog 侧同款交互） */
-                    h('div', { style: { ...flexRow, gap: 6, marginBottom: 8 } },
-                      ...RUN_STATUS_ORDER.filter((st) => runStatusCounts[st]).map((st) => filterChip(
-                        `${runStatusText(st)} ${runStatusCounts[st]}`, stColor(st), runSelSet.has(st), () => toggleRunStatus(st))),
-                      runFiltering
-                        ? h('button', {
-                          style: panelBtn,
-                          title: t('panel.clearRunFilterTip'),
-                          onClick: () => setRunFilter([]),
-                        }, t('panel.filtered', { sel: runSel.length, shown: runsMatched.length, total: runs.length }))
-                        : null),
-                    visibleRuns.length
-                      ? h(RunList, { runs: visibleRuns, activeRunId: detail && detail.kind === 'run' && detail.run ? detail.run.id : null, onOpenRun: openRun, onInlineRun: showInline, onCancel: cancelRun })
-                      : muted(t('panel.emptyRunFilter'), { fontSize: 10.5 }),
-                    muted(t('panel.runHint'), { fontSize: 10, marginTop: 8 }))
-                  : h(React.Fragment, null,
-                    muted(t('panel.boardHint'), { fontSize: 10, marginBottom: 8 }),
-                    h(BacklogGroups, { backlog: view.backlog, onOpen: openItem, productKey: state.current }))),
-            ),
-      ),
-      /* 详情：**覆盖式浮层**（绝对定位、自己滚动，不挤压列表宽度）——与会话内工作台的两个抽屉同款 */
-      detailOpen
-        ? h('div', {
-          style: {
-            position: 'absolute', top: 8, right: 12, bottom: 8, width: 440, zIndex: 9,
-            overflowY: 'auto', overflowX: 'hidden', borderRadius: 12,
-            border: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.layer1} 96%, transparent)`,
-            backdropFilter: 'blur(12px)', boxShadow: '0 14px 44px rgba(0,0,0,.28)',
-          },
+  h('div', { style: { ...flexRow, justifyContent: 'space-between', padding: '10px 14px', borderBottom: `1px solid ${T.border}` } },
+    h('div', { style: { ...flexRow, gap: 8 } },
+      h('span', { style: { fontSize: 13, fontWeight: 700 } }, t('panel.title')),
+      h('span', { style: { fontSize: 11, color: T.text2 } }, t('panel.subtitle')),
+      currentSessionId ? h('span', { style: { fontSize: 10, color: T.text2, fontFamily: MONO } }, t('panel.currentSession', { sid: String(currentSessionId).slice(0, 8) })) : h('span', { style: { fontSize: 10, color: T.text2 } }, t('panel.noSession'))),
+    h('div', { style: { ...flexRow, gap: 6 } },
+      product ? h('button', { style: panelBtn, onClick: () => loadView(state.current) }, t('panel.reload')) : null,
+      h('button', {
+        style: panelBtn,
+        title: t('panel.backToChatTip'),
+        onClick: () => {
+          try {
+            const layout = props.layout
+            if (layout && layout.selectPanel) layout.selectPanel(null)
+          } catch (e) { /* ignore */ }
         },
-          detail && detail.kind === 'item'
-            ? h(ItemDetailPane, { det: detail.data, openArtifact: openArtifactInPanel, onClose: closeDetail })
-            : h('div', null,
-              h('div', { style: { ...flexRow, justifyContent: 'space-between', padding: '10px 12px 0' } },
-                h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text } }, t('panel.runDetail')),
-                h('div', { style: { ...flexRow, gap: 6 } },
-                  detail && detail.data && detail.data.address
-                    ? h('button', {
-                      style: brandBtn,
-                      title: t('panel.goOwnerSessionTip'),
-                      onClick: () => goOwnerSessionAndOpen({
-                        ownerSession: detail.data.ownerSession,
-                        address: detail.data.address,
-                        label: detail.data.id,
-                      }),
-                    }, t('panel.goOwnerSession'))
-                    : null,
-                  h('button', { style: panelBtn, onClick: closeDetail }, t('common.close')))),
-              h(RunDetailPane, { snap: detail && detail.data, product: state.current, api, onCancel: cancelRun })))
-        : null,
+      }, t('panel.backToChat')))),
+  state.err ? h('div', { style: { padding: '6px 14px', fontSize: 11, color: T.error, borderBottom: `1px solid ${T.border}` } }, state.err) : null,
+  hint ? h('div', { style: { ...flexRow, justifyContent: 'space-between', gap: 8, padding: '6px 14px', fontSize: 11, color: T.warn, borderBottom: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.warn} 8%, transparent)` } },
+    h('span', null, hint),
+    h('button', { style: panelBtn, onClick: () => setHint(null) }, t('common.gotIt'))) : null,
+  h('div', { style: { flex: 1, minHeight: 0, display: 'flex', position: 'relative' } },
+    h(ProductRail, {
+      products: state.products,
+      current: state.current,
+      loadingKey: state.view ? null : state.current,
+      busy: state.busy,
+      onRefresh: () => loadProducts(state.current),
+      onSelect: selectProduct,
+    }),
+    h('div', { style: { flex: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' } },
+      !state.current
+        ? h('div', { style: { padding: '12px 14px' } }, muted(t('panel.pickProduct')))
+        : !view
+          ? h('div', { style: { padding: '12px 14px' } }, muted(t('panel.loadingView')))
+          : h(React.Fragment, null,
+            /* 产品头：固定（不参与滚动） */
+            h('div', { style: { ...flexRow, justifyContent: 'space-between', gap: 10, padding: '12px 14px 6px' } },
+              h('div', { style: { minWidth: 0 } },
+                h('div', { style: { fontSize: 15, fontWeight: 700, color: T.text } }, product.title || product.key),
+                h('div', { style: { fontSize: 10.5, color: T.text2, fontFamily: MONO, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, product.path || product.key)),
+              h('div', { style: { ...flexRow, gap: 6, flex: '0 0 auto' } },
+                chip(t('panel.runChip', { n: product.totalRuns }), T.text2),
+                product.activeRuns > 0 ? chip(t('panel.activeChip', { n: product.activeRuns }), T.brand, { dot: true }) : null,
+                product.lastVerdict ? chip(t('panel.verdictChip', { v: product.lastVerdict }), stColor('accepted')) : null)),
+            /* 标签页：一次只显示一个列表 —— 宽度全给它，不再多栏挤压（第三版布局） */
+            h('div', { style: { display: 'flex', alignItems: 'flex-end', gap: 2, padding: '0 14px', borderBottom: `1px solid ${T.border}` } },
+              panelTabBtn('run', t('panel.tabRuns', { n: runs.length })),
+              panelTabBtn('backlog', t('panel.tabBacklog', { n: backlogCount })),
+              h('div', { style: { marginLeft: 'auto', ...flexRow, gap: 6, paddingBottom: 7 } },
+                panelTab === 'run' && !runsExpanded && pinnedActive.length > 0 ? chip(t('panel.pinnedActive', { n: pinnedActive.length }), T.brand, { dot: true }) : null,
+                panelTab === 'run' && runsMatched.length > RUN_PREVIEW
+                  ? h('button', { style: panelBtn, onClick: () => setRunsExpanded((v) => !v) },
+                    runsExpanded ? t('panel.showRecent', { n: RUN_PREVIEW }) : t('panel.showAll', { n: runsMatched.length }))
+                  : null)),
+            /* 单一滚动区（自己滚；页面级滚动条不会出现） */
+            h('div', { style: { flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '12px 14px 18px' } },
+              panelTab === 'run'
+                ? h(React.Fragment, null,
+                  /* run 状态筛选（多选；与 backlog 侧同款交互） */
+                  h('div', { style: { ...flexRow, gap: 6, marginBottom: 8 } },
+                    ...RUN_STATUS_ORDER.filter((st) => runStatusCounts[st]).map((st) => filterChip(
+                      `${runStatusText(st)} ${runStatusCounts[st]}`, stColor(st), runSelSet.has(st), () => toggleRunStatus(st))),
+                    runFiltering
+                      ? h('button', {
+                        style: panelBtn,
+                        title: t('panel.clearRunFilterTip'),
+                        onClick: () => setRunFilter([]),
+                      }, t('panel.filtered', { sel: runSel.length, shown: runsMatched.length, total: runs.length }))
+                      : null),
+                  visibleRuns.length
+                    ? h(RunList, { runs: visibleRuns, activeRunId: detail && detail.kind === 'run' && detail.run ? detail.run.id : null, onOpenRun: openRun, onInlineRun: showInline, onCancel: cancelRun })
+                    : muted(t('panel.emptyRunFilter'), { fontSize: 10.5 }),
+                  muted(t('panel.runHint'), { fontSize: 10, marginTop: 8 }))
+                : h(React.Fragment, null,
+                  muted(t('panel.boardHint'), { fontSize: 10, marginBottom: 8 }),
+                  h(BacklogGroups, { backlog: view.backlog, onOpen: openItem, productKey: state.current }))),
+          ),
     ),
+    /* 详情：**覆盖式浮层**（绝对定位、自己滚动，不挤压列表宽度）——与会话内工作台的两个抽屉同款 */
+    detailOpen
+      ? h('div', {
+        style: {
+          position: 'absolute', top: 8, right: 12, bottom: 8, width: 440, zIndex: 9,
+          overflowY: 'auto', overflowX: 'hidden', borderRadius: 12,
+          border: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.layer1} 96%, transparent)`,
+          backdropFilter: 'blur(12px)', boxShadow: '0 14px 44px rgba(0,0,0,.28)',
+        },
+      },
+      detail && detail.kind === 'item'
+        ? h(ItemDetailPane, { det: detail.data, openArtifact: openArtifactInPanel, onClose: closeDetail })
+        : h('div', null,
+          h('div', { style: { ...flexRow, justifyContent: 'space-between', padding: '10px 12px 0' } },
+            h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text } }, t('panel.runDetail')),
+            h('div', { style: { ...flexRow, gap: 6 } },
+              detail && detail.data && detail.data.address
+                ? h('button', {
+                  style: brandBtn,
+                  title: t('panel.goOwnerSessionTip'),
+                  onClick: () => goOwnerSessionAndOpen({
+                    ownerSession: detail.data.ownerSession,
+                    address: detail.data.address,
+                    label: detail.data.id,
+                  }),
+                }, t('panel.goOwnerSession'))
+                : null,
+              h('button', { style: panelBtn, onClick: closeDetail }, t('common.close')))),
+          h(RunDetailPane, { snap: detail && detail.data, product: state.current, api, onCancel: cancelRun })))
+      : null,
+  ),
   )
 }

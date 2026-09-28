@@ -93,7 +93,13 @@ export function normalizeMode(v: unknown): PipelineMode | null {
 }
 
 /** 由 mode 推导执行选项（needDesign/lite 映射；供 start 前归一）。 */
-export function modeToOptions(mode: PipelineMode, provided?: PipelineOptions): { needDesign: boolean; lite: boolean; techDoc: boolean; independentQA: boolean; mode: PipelineMode } {
+export function modeToOptions(mode: PipelineMode, provided?: PipelineOptions): {
+  needDesign: boolean
+  lite: boolean
+  techDoc: boolean
+  independentQA: boolean
+  mode: PipelineMode
+} {
   const spec = MODE_REGISTRY[mode]
   const wantDesign = spec.needDesignDefault && !!(provided && provided.productRoot) || !!(provided && provided.needDesign)
   return {
@@ -198,7 +204,10 @@ export function hostResearchRequired(host: ArtifactHost, kind: ArtifactKind): bo
  * （`hostResearch: true`，PRD 必须含对应段落，硬门禁在 pipeline）。其余情况照旧取形态契约
  * （`cli`/`lib` 的"有 bin / 有 main 且可 import"是通用判据，与宿主无关，不误伤）。
  */
-export function contractsForDeliverable(host: ArtifactHost, kind: ArtifactKind, installable: boolean): { items: ArtifactContractItem[]; hostResearch: boolean } {
+export function contractsForDeliverable(host: ArtifactHost, kind: ArtifactKind, installable: boolean): {
+  items: ArtifactContractItem[]
+  hostResearch: boolean
+} {
   if (hostResearchRequired(host, kind)) return { items: [], hostResearch: true }
   return { items: artifactContractsFor(kind, installable), hostResearch: false }
 }
@@ -358,7 +367,12 @@ export const MODE_RANK: Record<PipelineMode, number> = { patch: 0, lite: 1, tech
  * 宿主判定：**未给档位时显式 needDesign 拖到 ≥medium**。调用方显式给了 `mode`/`lite` 时依旧以调用方为准
  * （`lite` + `needDesign` 由 `resolveStages` 按 flag 追加设计阶段，不吞显式请求，也不改档位标签）。
  */
-export function guardrailUpgrade(explicit: PipelineMode | undefined, lite: boolean, triaged: PipelineMode, opts?: { needDesign?: boolean }): PipelineMode | null {
+export function guardrailUpgrade(
+  explicit: PipelineMode | undefined,
+  lite: boolean,
+  triaged: PipelineMode,
+  opts?: { needDesign?: boolean },
+): PipelineMode | null {
   const want = MODE_RANK[triaged] || 0
   // 调用方没给档位 → 直接用分诊的（但显式 needDesign 与轻档位的「无设计阶段」定义冲突时抬到 medium）
   if (!explicit && !lite) {
@@ -389,7 +403,10 @@ export const normalizeIntent = (raw: unknown): TriageIntent =>
  * 注意只按 `true` 判：`false` 是"模型没给这个字段"的默认值，既可能是「不需要装」也可能是「还不知道」——
  * 后者正是 must-ask 缺口的合法形态，丢了它就会重演 dddd「插件装不进 profile」。
  */
-export function qualifyBlockers(raw: unknown, ctx?: { installable?: boolean; host?: ArtifactHost }): { blockers: TriageBlocker[]; dropped: number } {
+export function qualifyBlockers(
+  raw: unknown,
+  ctx?: { installable?: boolean; host?: ArtifactHost },
+): { blockers: TriageBlocker[]; dropped: number } {
   const arr = Array.isArray(raw) ? raw : []
   const good: TriageBlocker[] = []
   let dropped = 0
@@ -611,7 +628,9 @@ export async function runTriage(
   signal?: unknown,
   locale: HostLocale = 'zh',
 ): Promise<TriageVerdict> {
-  const subagents = runtime.subagents as { start?: (provider: string, init: unknown) => Promise<{ result: Promise<{ output?: unknown; stopReason?: string }>; dispose?: () => Promise<void> | void }> } | undefined
+  type Started = { result: Promise<{ output?: unknown; stopReason?: string }>; dispose?: () => Promise<void> | void }
+  type Starters = { start?: (provider: string, init: unknown) => Promise<Started> }
+  const subagents = runtime.subagents as Starters | undefined
   if (!subagents || typeof subagents.start !== 'function') return fallbackVerdict(requirement, opts, locale, 'subagents service unavailable')
   const pre = suggestMode(requirement, opts, locale)
   let lastReason = ''

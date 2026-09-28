@@ -28,9 +28,9 @@ const ok = (cond, msg) => {
 }
 
 console.log('\n[1] 意图归一：非法/缺失一律 requirement（绝不因模型没给字段就拦启动）')
-ok(normalizeIntent('requirement') === 'requirement', "requirement → requirement")
-ok(normalizeIntent('exploration') === 'exploration', "exploration → exploration")
-ok(normalizeIntent('feedback') === 'feedback', "feedback → feedback")
+ok(normalizeIntent('requirement') === 'requirement', 'requirement → requirement')
+ok(normalizeIntent('exploration') === 'exploration', 'exploration → exploration')
+ok(normalizeIntent('feedback') === 'feedback', 'feedback → feedback')
 ok(normalizeIntent(undefined) === 'requirement', 'undefined → requirement')
 ok(normalizeIntent(null) === 'requirement', 'null → requirement')
 ok(normalizeIntent('') === 'requirement', '空串 → requirement')
@@ -250,7 +250,7 @@ ok(!triageCacheIsPending(triageCacheKey('fb2', '')), 'fallback 裁决仍不入�
 triageCacheClear()
 
 console.log('\n[10] journal.triage 落盘完整性（第五次「白名单漏字段」→ 形态契约注入整条链失效）')
-console.log("     实锤：旧 triageRecordOf 漏搬 artifact/installable → pipeline 注入读 journal.triage.artifact")
+console.log('     实锤：旧 triageRecordOf 漏搬 artifact/installable → pipeline 注入读 journal.triage.artifact')
 console.log("     永远 undefined → artifactContractsFor('other') 恒为 [] → [交付形态契约] 从未注入过任何 PRD")
 console.log('     （全部 64/64 个 run 的 triage 不带 artifact；log.artifactContract 一次都没落过）')
 {

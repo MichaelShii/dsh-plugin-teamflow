@@ -86,8 +86,8 @@ if (skipBuild) {
   console.log('⏭ 跳过构建（--sync）。\n')
 } else {
   console.log('1/3 📦 构建 client + host ...\n')
-  sh(`npx tsdown`)
-  sh(`npx tsdown -c tsdown.host.config.ts`)
+  sh('npx tsdown')
+  sh('npx tsdown -c tsdown.host.config.ts')
   console.log('')
 }
 
@@ -96,8 +96,8 @@ if (skipTest) {
   console.log('⏭ 跳过测试。\n')
 } else {
   console.log('2/3 🧪 运行测试 ...\n')
-  sh(`node test/smoke.js`)
-  sh(`node test/journal.test.js`)
+  sh('node test/smoke.js')
+  sh('node test/journal.test.js')
   console.log('')
 }
 

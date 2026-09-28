@@ -243,8 +243,8 @@ function main() {
   if (!orphans.length) say('无。')
   for (const s of orphans) {
     say(`- \`${s.key}\` — ${s.runCount === 0 ? '空目录（0 run）' : `${s.runCount} 个 run 但 journal 无 \`workspacePath\``}，体积 ${fmtBytes(s.bytes)}，文件 ${s.files} 个`)
-    if (s.runCount === 0 && s.bytes < 64 * 1024) say(`  - 建议：确认无用后手工归档到 \`_archive/\`（本脚本不删）`)
-    else say(`  - 建议：人工比对 run 里的 \`requirement\` / \`runDocs\` 字段找回归属路径`)
+    if (s.runCount === 0 && s.bytes < 64 * 1024) say('  - 建议：确认无用后手工归档到 `_archive/`（本脚本不删）')
+    else say('  - 建议：人工比对 run 里的 `requirement` / `runDocs` 字段找回归属路径')
   }
   say('')
 

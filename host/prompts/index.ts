@@ -42,7 +42,8 @@ const TF_DOCS = 'docs/teamflow'
 
 /** 本次任务产物夹相对路径（ADR-0008）：host 在启动时注入 state.__runCtx.runDocs。 */
 function RUN(state: unknown): string {
-  const rd = state && (state as { __runCtx?: { runDocs?: unknown } }).__runCtx && (state as { __runCtx?: { runDocs?: unknown } }).__runCtx!.runDocs
+  const rcDocs = state as { __runCtx?: { runDocs?: unknown } } | undefined
+  const rd = rcDocs && rcDocs.__runCtx ? rcDocs.__runCtx.runDocs : undefined
   return typeof rd === 'string' && rd ? rd : `${TF_DOCS}/current-run`
 }
 
@@ -53,7 +54,8 @@ function RUN(state: unknown): string {
  * - 经 state 读取而非新增工厂参数：11 个 prompt 工厂签名与全部调用点零连锁改动（AC-4）。
  */
 function LOCALE(state: unknown): HostLocale {
-  const l = state && (state as { __runCtx?: { locale?: unknown } }).__runCtx && (state as { __runCtx?: { locale?: unknown } }).__runCtx!.locale
+  const rcLocale = state as { __runCtx?: { locale?: unknown } } | undefined
+  const l = rcLocale && rcLocale.__runCtx ? rcLocale.__runCtx.locale : undefined
   return l === 'en' ? 'en' : 'zh'
 }
 
@@ -71,7 +73,8 @@ function replyLang(state: unknown): string {
  * 并重跑缺陷行自带的检测命令——否则「上一轮的面没覆盖到」这件事没人会发现（r9 实测）。
  */
 function QAREVERIFY(state: unknown): boolean {
-  const v = state && (state as { __runCtx?: { qaReverify?: unknown } }).__runCtx && (state as { __runCtx?: { qaReverify?: unknown } }).__runCtx!.qaReverify
+  const rcQa = state as { __runCtx?: { qaReverify?: unknown } } | undefined
+  const v = rcQa && rcQa.__runCtx ? rcQa.__runCtx.qaReverify : undefined
   return v === true
 }
 
@@ -81,8 +84,9 @@ function QAREVERIFY(state: unknown): boolean {
  * 由 pipeline 写 `state.__runCtx.knownIssues`（同一注入通道，不改工厂签名）；缺省 = 常规验收。
  */
 function KNOWNISSUES(state: unknown): boolean {
-  const v = state && (state as { __runCtx?: { knownIssues?: unknown } }).__runCtx && (state as { __runCtx?: { knownIssues?: unknown } }).__runCtx!.knownIssues
-  return v === true
+  type RunCtxHost = { __runCtx?: { knownIssues?: unknown } }
+  const rc = ((state || {}) as RunCtxHost).__runCtx
+  return rc ? rc.knownIssues === true : false
 }
 
 /**
@@ -354,7 +358,8 @@ export const ONCE_DISCIPLINE = `[ONE-SHOT WRITE · policy] The most important ef
  * 写成一个**给主 agent 执行的步骤**，而不是"请用户手动测试"。
  */
 function installBlock(en: boolean, rc: Record<string, unknown>): string {
-  const env = (rc && rc.installEnv) as { ok?: boolean; profile?: string; profileDir?: string; cliOnPath?: boolean; dshHome?: string } | undefined
+  type InstallEnv = { ok?: boolean; profile?: string; profileDir?: string; cliOnPath?: boolean; dshHome?: string }
+  const env = (rc && rc.installEnv) as InstallEnv | undefined
   if (!env) return ''
   const ok = env.ok === true
   const p = env.profile || '?'
@@ -363,11 +368,11 @@ function installBlock(en: boolean, rc: Record<string, unknown>): string {
   if (en) {
     return ok
       ? `\n   [THIS MACHINE · install environment, probed at run start — never assume a profile name or path] DSH_HOME=\`${env.dshHome}\`; profile=\`${p}\`; profile dir=\`${dir}\`; \`dsh\` on PATH: ${cli ? 'yes (use the CLI)' : 'NO (source-run — use the equivalent manual steps)'}.\n   **Who installs**: pipeline subagents CANNOT write outside the workspace (their permission scope is fixed) — so the PRD must specify the install as a step **for the main agent to execute** (it can request a one-shot escalation, which the user approves), not as "please test it manually". Write the concrete command for THIS machine (CLI form, or \`pnpm add\` inside the profile dir + the \`dsh.profile.bundles\` entry, which is auto-derived from the package's \`dsh.bundle.patch\`), plus the exact rollback.`
-      : `\n   [THIS MACHINE · install environment] Could NOT be probed (DSH_HOME / profile name unavailable) → the PRD must instruct the main agent to **ASK THE USER** for the profile location; never invent a path. Subagents cannot install (their permission scope is fixed); the install step is for the main agent.`
+      : '\n   [THIS MACHINE · install environment] Could NOT be probed (DSH_HOME / profile name unavailable) → the PRD must instruct the main agent to **ASK THE USER** for the profile location; never invent a path. Subagents cannot install (their permission scope is fixed); the install step is for the main agent.'
   }
   return ok
     ? `\n   【本机环境 · 起跑时探测，禁止假设 profile 名或路径】DSH_HOME=\`${env.dshHome}\`；profile=\`${p}\`；profile 目录=\`${dir}\`；\`dsh\` 在 PATH：${cli ? '是（用 CLI）' : '**否**（源码运行 → 走等价手动步骤）'}。\n   **谁执行安装**：流水线子代理**写不了**工作区之外（权限启动即固定）——所以 PRD 必须把安装写成**给主 agent 执行的步骤**（主 agent 可申请一次性升级授权，由用户批准），而不是"请用户手动测试"。请按**本机**实际情况给出可照做的命令（CLI 形式，或在 profile 目录内 \`pnpm add\` + \`dsh.profile.bundles\` 条目——后者由包的 \`dsh.bundle.patch\` 声明自动推导），并给出精确回滚。`
-    : `\n   【本机环境】探测失败（DSH_HOME / profile 名不可得）→ PRD 必须指示主 agent **先问用户** profile 位置，**绝不许编路径**。子代理装不了（权限固定）；安装步骤归主 agent。`
+    : '\n   【本机环境】探测失败（DSH_HOME / profile 名不可得）→ PRD 必须指示主 agent **先问用户** profile 位置，**绝不许编路径**。子代理装不了（权限固定）；安装步骤归主 agent。'
 }
 
 export const prdPrompt = (requirement, root, runId, state) => {
@@ -678,14 +683,20 @@ ${ARTIFACT_DELIVERY(RUN(state))}
 }
 
 /** 需求分诊模型 prompt（模型驱动 triage；供 core/triage.runTriage 使用）。 */
-export const TRIAGE_PROMPT = (requirement: string, opts: { needDesign?: boolean } | undefined, pre: { rationale: string[] }, retryHint?: string, locale?: HostLocale): string => {
+export const TRIAGE_PROMPT = (
+  requirement: string,
+  opts: { needDesign?: boolean } | undefined,
+  pre: { rationale: string[] },
+  retryHint?: string,
+  locale?: HostLocale,
+): string => {
   const en = locale === 'en'
   /** 英文档位等价示例与 rationale 语言指令（AC-7 增补）；zh 分支不追加 → 输出与现状逐字一致。 */
   const langNote = en
-    ? `\n[LANGUAGE] English requirements are first-class: judge modes on semantics regardless of language; rationale strings must be written in English.\n`
+    ? '\n[LANGUAGE] English requirements are first-class: judge modes on semantics regardless of language; rationale strings must be written in English.\n'
     : ''
   const enExamples = en
-    ? `\n6. [ENGLISH EQUIVALENTS] "hotfix" / "one-line fix" / "typo" → patch; "refactor" / "optimize" / "upgrade dependencies" → tech; "add a settings page" / "new modal" / "new screen" → medium (lite when the interaction logic is trivial); "storage layer" / "abstraction" / "cross-module" → at least medium.`
+    ? '\n6. [ENGLISH EQUIVALENTS] "hotfix" / "one-line fix" / "typo" → patch; "refactor" / "optimize" / "upgrade dependencies" → tech; "add a settings page" / "new modal" / "new screen" → medium (lite when the interaction logic is trivial); "storage layer" / "abstraction" / "cross-module" → at least medium.'
     : ''
   return `You are a senior research-dev triage analyst. Do ONE thing: analyze which pipeline mode this dev requirement fits, then give the conclusion. No code, no scope speculation.
 ${retryHint ? `[RETRY — YOUR LAST REPLY FAILED]\n${retryHint}\n` : ''}[RAW REQUIREMENT]

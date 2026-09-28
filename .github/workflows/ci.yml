@@ -23,7 +23,9 @@ jobs:
           cache: pnpm
 
       - name: Install (frozen lockfile)
-        run: pnpm install --frozen-lockfile
+        # --ignore-scripts：CI 不需要 git hooks（postinstall 会装 lefthook 并拉二进制），
+        # 跳过更快也不受二进制下载影响；git hooks 是本地的事，门禁靠下面的 `pnpm lint`。
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Lint（oxlint，0 warning 门禁；2026-09-26 引入，存量违规已清零）
         run: pnpm lint

@@ -62,11 +62,20 @@ export interface PipelineOptions {
   mode?: PipelineMode
   /** 团队 id：指定走哪个团队的流水线（从 teams.json 读取阶段配置）。 */
   teamId?: string
-  /** 分支策略（ADR-2026-08-27 基调：启动前用户决策）：'auto'（默认）——建特性分支 feat/<branchName|slug>（从当前 HEAD 派生）；'keep'——沿用当前分支不建。需要决策的场景由 teamflow_start 返回 needs-decision，用户选择后带本参数重发。 */
+  /** 分支策略（ADR-2026-08-27 基调：启动前用户决策）：
+   *  - 'auto'（默认）——建特性分支 feat/<branchName|slug>（从当前 HEAD 派生）；
+   *  - 'keep'——沿用当前分支不建。
+   *  需要决策的场景由 teamflow_start 返回 needs-decision，用户选择后带本参数重发。 */
   branchPolicy?: 'auto' | 'keep'
   /** 自定义分支名（branchPolicy=auto 时生效；缺省用 triage slug；仅 [a-z0-9-_]，host 校验）。 */
   branchName?: string | null
-  /** 脏工作区的启动前处理（配合 needs-decision 选择）：'stash'（推荐，改动暂存，完成后 git stash pop）；'commit'（提交现有改动，commitMessage 缺省用默认信息）；'init'（2026-09-17 改动存档：非 git 工作区用户选"开启存档" → git init +（目录不大时）基线提交，执行期二次校验危险路径/大目录）；'keep-nogit'（用户明确选"不用版本控制" → gitMode='none'，出口不尝试提交）；缺省不处理（改动混入开发）。 */
+  /** 脏工作区的启动前处理（配合 needs-decision 选择）：
+   *  - 'stash'（推荐，改动暂存，完成后 git stash pop）；
+   *  - 'commit'（提交现有改动，commitMessage 缺省用默认信息）；
+   *  - 'init'（2026-09-17 改动存档：非 git 工作区用户选「开启存档」 → git init +（目录不大时）基线提交，
+   *    执行期二次校验危险路径/大目录）；
+   *  - 'keep-nogit'（用户明确选「不用版本控制」 → gitMode='none'，出口不尝试提交）；
+   *  缺省不处理（改动混入开发）。 */
   preAction?: 'stash' | 'commit' | 'init' | 'keep-nogit' | null
   /** preAction=commit 时的提交信息。 */
   commitMessage?: string | null

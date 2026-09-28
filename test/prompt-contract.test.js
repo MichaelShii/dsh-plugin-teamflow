@@ -33,8 +33,8 @@ const ST = {
   acIndex: { 'AC-1': '最高分持久化' }, stages: { prd: '摘要' }, lastRun: null,
   __runCtx: { runDocs: 'docs/teamflow/20260910-r9-persist', blueprint: '<!-- blueprint -->{"summary":"s"}<!-- /blueprint -->' },
 }
-const PRD = `# PRD\n基线依赖：无\nAC-1：最高分 localStorage 持久化（reload 后保留）`
-const QA_REPORT = `# QA-REPORT\n## 结论：通过\n| 编号 | 严重级(P0/P1/P2/P3) | 功能模块 | 复现步骤 | 期望行为 | 实际行为 | 关联验收项 |\n| BUG-1 | **P1** | persist.js | reload | 保留 | 丢失 | AC-1 |`
+const PRD = '# PRD\n基线依赖：无\nAC-1：最高分 localStorage 持久化（reload 后保留）'
+const QA_REPORT = '# QA-REPORT\n## 结论：通过\n| 编号 | 严重级(P0/P1/P2/P3) | 功能模块 | 复现步骤 | 期望行为 | 实际行为 | 关联验收项 |\n| BUG-1 | **P1** | persist.js | reload | 保留 | 丢失 | AC-1 |'
 const DEV_SUMMARY = '实现完成，verify 全绿'
 const ROOT = 'products/tetris'
 const RUN_ID = 'tf-eval-run'

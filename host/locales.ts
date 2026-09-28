@@ -66,7 +66,8 @@ export function dictKeys(locale: HostLocale): string[] {
  */
 export function t(locale: HostLocale, key: string, params?: Record<string, string | number> | null): string {
   const dict = LOCALE_DICTS[locale] || LOCALE_DICTS.zh
-  const raw = dict[key] !== undefined ? dict[key] : (LOCALE_DICTS[FALLBACK_LOCALE][key] !== undefined ? LOCALE_DICTS[FALLBACK_LOCALE][key] : key)
+  const fallback = LOCALE_DICTS[FALLBACK_LOCALE][key]
+  const raw = dict[key] !== undefined ? dict[key] : fallback !== undefined ? fallback : key
   if (!params) return raw
   return String(raw).replace(/\{(\w+)\}/g, (m, name) => (params[name] === undefined || params[name] === null ? m : String(params[name])))
 }
