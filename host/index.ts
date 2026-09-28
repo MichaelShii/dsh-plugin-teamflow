@@ -28,6 +28,7 @@ import { loadTeams, findTeam, teamNameOf, teamDescOf, type TeamConfig } from './
 
 
 import { runSanityCheck, gitCmd } from './core/workspace/sanity.ts'
+import { probeHostBrowserAndLog } from './core/workspace/browser-probe.ts'
 import { loadState } from './core/domain/state.ts'
 import { isDangerousVcsRoot, dirTooLargeForBaseline } from './util.ts'
 import { join } from 'node:path'
@@ -754,6 +755,11 @@ export class TeamflowService extends TypertRemoteService {
       `[teamflow] host 就绪：backlog 根 ${teamflowRoot()}，Remote ${TEAMFLOW_DESCRIPTORS.length} 个，`
       + `工具 ${modelTools} 个${interruptedCount > 0 ? `，⚠ 发现 ${interruptedCount} 条中断的流水线（可用 teamflow_resume 从断点重跑）` : ''}`,
     )
+    // 浏览器可用性探测（2026-09-29）：agent 在受限令牌下**确定**起不了任何 Chromium 系（crashpad 需要
+    // PROCESS_ALL_ACCESS 开自身，受限令牌缺 0x200/0x800 ⇒ 恒 DENY）。而插件自己的 spawn 不经过
+    // sandbox runner 那层 ⇒ 机制上应不受限，但**必须实测**（已因「别处测通当本环境事实」栽过一次）。
+    // 异步跑、结果落 $DSH_HOME/teamflow/host-browser-probe.json —— 不拖慢插件加载、绝不抛错。
+    setTimeout(() => { try { console.log(`[teamflow] ${probeHostBrowserAndLog()}`) } catch (e) { /* best-effort */ } }, 800)
   }
 
   /* ── Remote 方法（client 经 ctx.remote.teamflow.* 调用） ─────────── */

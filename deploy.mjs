@@ -50,6 +50,7 @@ const FILES = [
   'host/core/workspace/runlogs.ts',
   'host/core/workspace/acl-preflight.ts',
   'host/core/workspace/products.ts',
+  'host/core/workspace/browser-probe.ts',
   'host/core/domain/state.ts',
   'host/core/domain/teams.ts',
   'client/index.tsx',
