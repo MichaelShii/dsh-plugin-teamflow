@@ -382,6 +382,7 @@ ok(/empty-turn\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8
 ok(/orchestration\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：编排套件登记双链')
 ok(/interface-check\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：接口核对套件登记双链')
 ok(/smoke-check\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：host 冒烟套件登记双链')
+ok(/viewport\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：画布视图套件登记双链')
 ok(/响应块构成：\{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')) && /response blocks: \{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')), 'locales：diag.emptyTurn 带块构成占位（zh/en 齐备——诊断必须自证，2026-09-26 tf-muigy5eq r12 实踩）')
 ok(/const beforeLen = journal\.stages\.length/.test(runnerSrc) && /lastStage = journal\.stages\[beforeLen\] \|\| null/.test(runnerSrc), 'runner：withRetry 按调用前长度取本次尝试 stage——并发安全（防证据/重试诊断/usage 累计串位）')
 ok(/stage: JournalStage \| null/.test(runnerSrc), 'runner：withRetry 返回携带 stage 引用')

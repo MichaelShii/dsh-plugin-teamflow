@@ -60,11 +60,15 @@ if (!Chrome) {
   skip('本机未找到 Chromium 可执行 → 跳过真实冒烟断言（**非通过**）')
 } else {
   const Live = mktmp('live')
+  // ⚠️ 语料必须**同步先画一笔**再进 rAF 循环：实测 headless 下 rAF 只是被**调度**，
+  // 回调不保证执行（同一个机制让贪吃蛇 A 组呈现 raf=2/draw=0）——只靠 rAF 画的语料是 flaky 的，
+  // 首版就因此在「有动画的页面」上偶发红。同步那笔使 draw≥1 成为确定性事实。
   put(Live, 'index.html',
     '<!doctype html><meta charset="utf-8"><body style="margin:0">'
     + '<canvas id="c" width="200" height="200"></canvas>'
     + '<script>const g=document.getElementById("c").getContext("2d");'
-    + 'let i=0;function f(){g.fillStyle="#22c55e";g.fillRect(i%180,10,20,20);i++;requestAnimationFrame(f)}'
+    + 'g.fillStyle="#22c55e";g.fillRect(0,0,20,20);'
+    + 'let i=0;function f(){g.fillRect(i%180,10,20,20);i++;requestAnimationFrame(f)}'
     + 'requestAnimationFrame(f);</script></body>')
   // 环境容忍：浏览器起不来（skip）→ 大声跳过，**不算通过**；但 error（副本/解析失败）
   // 是代码问题，必须红 —— 否则代码坏了也会因为“环境跳过”而蒙混过关。

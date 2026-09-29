@@ -59,6 +59,7 @@ const FILES = [
   'client/panel.tsx',
   'client/shared.tsx',
   'client/locales.ts',
+  'client/viewport.ts',
   'lib/host.mjs',
   'lib/store.mjs',
   'lib/descriptors.mjs',
