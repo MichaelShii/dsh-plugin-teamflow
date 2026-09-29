@@ -51,6 +51,7 @@ const FILES = [
   'host/core/workspace/acl-preflight.ts',
   'host/core/workspace/products.ts',
   'host/core/workspace/browser-probe.ts',
+  'host/core/workspace/interface-check.ts',
   'host/core/domain/state.ts',
   'host/core/domain/teams.ts',
   'client/index.tsx',

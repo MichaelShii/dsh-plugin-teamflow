@@ -14,6 +14,7 @@ import { QA_REWORK_LIMIT, phaseKeyOf, FIX_GATE_PATTERN } from '../../constants.t
 import { persistJournal } from '../../../store.ts'
 import { currentModelSupportsVision } from '../agent/context.ts'
 import { captureLoadCheck } from '../workspace/browser-probe.ts'
+import { checkDeliverableInterfaces } from '../workspace/interface-check.ts'
 import { phaseLabel, t } from '../../locales.ts'
 import type { PipelineCtx } from '../pipeline.ts'
 /**
@@ -62,6 +63,29 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
         })
       } else {
         journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.hostLoadOk', { file: lc.entry || '' }) })
+      }
+    } catch (e) { /* 纯记录，绝不因此影响流水线 */ }
+    // host 侧接口一致性核对（2026-09-29，**纯记录、零行为影响**）：把「接口对不对」从
+    // 「要求 QA 自己核对」（0a：概率、且无法判断依据来源）补一条**机器判定** —— 两端事实
+    // 都来自产物代码，不依赖模型配合。同样每种结局都留痕，杜绝静默空转。
+    try {
+      const ic = checkDeliverableInterfaces(fsRoot)
+      if (ic.status === 'mismatch') {
+        const first = ic.issues[0]
+        journal.logs.push({
+          t: Date.now(), level: 'warn',
+          message: t(locale, 'log.hostInterfaceMismatch', {
+            n: ic.issues.length,
+            first: `${first.file}:${first.line} ${first.expr}`,
+          }),
+        })
+      } else if (ic.status === 'ok') {
+        journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.hostInterfaceOk', { n: ic.files }) })
+      } else {
+        journal.logs.push({
+          t: Date.now(), level: 'info',
+          message: t(locale, 'log.hostInterfaceSkip', { reason: ic.status, n: ic.files }),
+        })
       }
     } catch (e) { /* 纯记录，绝不因此影响流水线 */ }
     advanceTask(journal, 'testing', null, t(locale, 'event.qaStart'), { by: 'qa' })

@@ -141,6 +141,7 @@ const CORE_FILES = [
   'stages/dev', 'stages/qa', 'stages/acceptance', // stages/：流水线各阶段的实现
   'agent/context', 'agent/runner', 'agent/guard', 'agent/metering', // agent/：子代理生命周期
   'workspace/sanity', 'workspace/runlogs', 'workspace/acl-preflight', 'workspace/products', 'workspace/browser-probe', // workspace/
+  'workspace/interface-check', // host 侧接口一致性核对（把 0a 从「要求 QA 核对」补成机器判定）
   'domain/backlog', 'domain/state', 'domain/teams', // domain/：业务实体与累积状态
 ]
 const hostSrc = [
@@ -378,6 +379,7 @@ ok(/export function emptyTurnDocVerdict/.test(utilSrc) && /emptyTurnDocVerdict\(
 ok(/empty-turn\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：empty-turn 行为级套件已登记 test/prepublishOnly 双链')
 // v0.2.5：编排行为级套件（stub 子代理驱动真实 executePipeline）同样必须进双链——登记了才等于真跑
 ok(/orchestration\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：编排套件登记双链')
+ok(/interface-check\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：接口核对套件登记双链')
 ok(/响应块构成：\{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')) && /response blocks: \{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')), 'locales：diag.emptyTurn 带块构成占位（zh/en 齐备——诊断必须自证，2026-09-26 tf-muigy5eq r12 实踩）')
 ok(/const beforeLen = journal\.stages\.length/.test(runnerSrc) && /lastStage = journal\.stages\[beforeLen\] \|\| null/.test(runnerSrc), 'runner：withRetry 按调用前长度取本次尝试 stage——并发安全（防证据/重试诊断/usage 累计串位）')
 ok(/stage: JournalStage \| null/.test(runnerSrc), 'runner：withRetry 返回携带 stage 引用')
