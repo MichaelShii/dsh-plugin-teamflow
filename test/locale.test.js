@@ -26,8 +26,8 @@ import {
 } from '../host/core/locale.ts'
 import { zh as clientZh, en as clientEn } from '../client/locales.ts'
 import { serializeJournal } from '../store.ts'
-import { stateSliceFor } from '../host/core/state.ts'
-import { teamNameOf, teamDescOf } from '../host/core/teams.ts'
+import { stateSliceFor } from '../host/core/domain/state.ts'
+import { teamNameOf, teamDescOf } from '../host/core/domain/teams.ts'
 import * as P from '../host/prompts/index.ts'
 
 let failed = 0
@@ -158,24 +158,24 @@ const OWNERSHIP = [
   ['../host/core/report.ts', '【团队研发流水线汇报】'],
   ['../host/core/report.ts', '合回决策：'],
   ['../host/core/report.ts', '尚未进入任何阶段'],
-  ['../host/core/state.ts', '【预编译产品状态'],
-  ['../host/core/state.ts', '本次任务产物夹'],
-  ['../host/core/sanity.ts', '【状态核对】'],
-  ['../host/core/sanity.ts', '状态核对不可用'],
-  ['../host/core/runner.ts', '（机械阶段降档）'],
-  ['../host/core/runner.ts', '累计新增 token'],
-  ['../host/core/runner.ts', '进行中护栏中止（'],
-  ['../host/core/guard.ts', '触发进行中护栏并中止本次尝试'],
-  ['../host/core/guard.ts', '[token 观测]'],
-  ['../host/core/guard.ts', '护栏轻提醒'],
+  ['../host/core/domain/state.ts', '【预编译产品状态'],
+  ['../host/core/domain/state.ts', '本次任务产物夹'],
+  ['../host/core/workspace/sanity.ts', '【状态核对】'],
+  ['../host/core/workspace/sanity.ts', '状态核对不可用'],
+  ['../host/core/agent/runner.ts', '（机械阶段降档）'],
+  ['../host/core/agent/runner.ts', '累计新增 token'],
+  ['../host/core/agent/runner.ts', '进行中护栏中止（'],
+  ['../host/core/agent/guard.ts', '触发进行中护栏并中止本次尝试'],
+  ['../host/core/agent/guard.ts', '[token 观测]'],
+  ['../host/core/agent/guard.ts', '护栏轻提醒'],
   ['../host/core/triage.ts', '架构护栏：需求含'],
   ['../host/index.ts', '【分支决策】'],
   ['../host/index.ts', '【需求确认】'],
   ['../host/index.ts', '已请求取消流水线'],
   ['../host/index.ts', '请先通过输入框旁的'],
   ['../host/index.ts', '(未提供需求)'],
-  ['../host/core/backlog.ts', '未知角色 '],
-  ['../host/core/backlog.ts', '非法状态 '],
+  ['../host/core/domain/backlog.ts', '未知角色 '],
+  ['../host/core/domain/backlog.ts', '非法状态 '],
 ]
 for (const [file, literal] of OWNERSHIP) {
   const src = read(file)

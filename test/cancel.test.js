@@ -17,14 +17,14 @@
  * - wire 面锁定：descriptor `teamflow/cancel` 参数恰为 `[runId]`，host 服务方法与三处 UI 入口都接同一条。
  *
  * 本文件自带 $DSH_HOME 临时目录：cancelRun 会 persistJournal 落盘，绝不能碰真实 home。
- * 这也是 cancelRun / runPool 住在无宿主私有依赖的模块（core/context.ts、util.ts）的原因——pipeline/runner
+ * 这也是 cancelRun / runPool 住在无宿主私有依赖的模块（core/agent/context.ts、util.ts）的原因——pipeline/runner
  * 链到 guard→`@deepseek-ai/dsh-llm`（宿主私有 peer，仓库内未安装），行为级断言取不到它们。
  */
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { cancelRun, runs, inFlight, trackInFlight, untrackInFlight } from '../host/core/context.ts'
+import { cancelRun, runs, inFlight, trackInFlight, untrackInFlight } from '../host/core/agent/context.ts'
 import { runPool } from '../host/util.ts'
 import { readJsonAny } from '../store.ts'
 
@@ -145,7 +145,12 @@ const descriptorSrc = readFileSync(join(here, '../descriptors.ts'), 'utf8')
 const hostSrc = readFileSync(join(here, '../host/index.ts'), 'utf8')
 const indexSrc = readFileSync(join(here, '../client/index.tsx'), 'utf8')
 const panelSrc = readFileSync(join(here, '../client/panel.tsx'), 'utf8')
-const pipelineSrc = readFileSync(join(here, '../host/core/pipeline.ts'), 'utf8')
+// v0.2.5：两处 runPool（dev 主路径 + resume 补跑）随 dev 阶段搬到了 host/core/stages/dev.ts，
+// 这里改成按流水线家族聚合后读取——要锁的是「两处并发池都接了 shouldStop」这件事本身。
+const PIPELINE_PARTS = ['pipeline', 'stages/dev', 'stages/qa', 'stages/acceptance']
+const pipelineSrc = PIPELINE_PARTS
+  .map((f) => readFileSync(join(here, `../host/core/${f}.ts`), 'utf8'))
+  .join('\n')
 const reportSrc = readFileSync(join(here, '../host/core/report.ts'), 'utf8')
 const block = /id: 'dsh-plugin-teamflow#teamflow\/cancel',[\s\S]*?\n  \}/.exec(descriptorSrc)
 ok(!!block, 'descriptors.ts 声明 teamflow/cancel')

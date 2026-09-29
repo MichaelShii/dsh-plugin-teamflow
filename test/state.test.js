@@ -19,7 +19,7 @@ import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { loadState, saveState } from '../host/core/state.ts'
+import { loadState, saveState, stateSliceFor } from '../host/core/domain/state.ts'
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -36,7 +36,7 @@ const cleanup = () => { try { rmSync(home, { recursive: true, force: true }) } c
 const EXEMPT = new Set(['__runCtx', 'version'])
 
 console.log('── 1) 结构化门禁：TeamflowState 的每个持久化字段都必须被 loadState 搬运 ──')
-const src = readFileSync(join(here, '../host/core/state.ts'), 'utf8')
+const src = readFileSync(join(here, '../host/core/domain/state.ts'), 'utf8')
 // 抽出 interface TeamflowState { ... } 的顶层键（只取 2 空格缩进的 `key?:` / `key:` 行）
 const iface = (src.match(/export interface TeamflowState \{[\s\S]*?\n\}/) || [''])[0]
 const topKeys = []
@@ -87,11 +87,30 @@ ok(loadState(KEY).gitMode === undefined, '非法值被过滤（脏数据不写�
 console.log('\n── 4) 「合并阶段 state 块」不得弄丢 gitMode（实锤的丢失路径）──')
 // 实锤路径：pipeline 写 gitMode → 之后任一阶段产出 state 块 → mergeStateBlock(load→save) 往返
 saveState(KEY, { ...full, gitMode: 'repo' })
-const { mergeStateBlock } = await import('../host/core/state.ts')
+const { mergeStateBlock } = await import('../host/core/domain/state.ts')
 mergeStateBlock(KEY, { phase: 'prd', summary: '阶段结论', extra: { acIndex: { 'AC-9': '新增' } } })
 const afterMerge = loadState(KEY)
 ok(afterMerge.gitMode === 'repo', '**合并 state 块后 gitMode 仍在**（修复前正是这一步把它抹掉）')
 ok(afterMerge.stages.prd === '阶段结论' && afterMerge.acIndex['AC-9'] === '新增', '合并本身照常生效（不是靠跳过合并来保住 gitMode）')
+
+/* ── 架构蓝图的角色可见性路由（2026-09-29 修）──
+ * 事故：白名单只有 arch/tech/dev，而 qaPrompt 的 0a「接口一致性核对」与 acceptancePrompt 的
+ * 模块抽取核对都写成 "if the injected blueprint JSON is present" ⇒ 条件**永远为假**，
+ * QA 只能退回 ARCHITECTURE.md 猜契约（观察期 run 的 QA 报告自己点出了这一点）。
+ * 这两条断言在修复前必红 —— 它们锁的是「声明与投递必须一致」这件事本身。 */
+console.log('\n── stateSliceFor：架构蓝图可见性（qa/acceptance 曾收不到）──')
+const BP = '<!-- blueprint -->{"summary":"s"}<!-- /blueprint -->'
+const bpState = (blueprint = BP) => ({
+  __runCtx: { runDocs: 'docs/teamflow/x', blueprint },
+  product: {}, modules: {}, verifyScripts: [], acIndex: {}, stages: {}, lastRun: null,
+})
+const sees = (role) => stateSliceFor(bpState(), role).includes(BP)
+ok(sees('dev'), 'dev 能看到蓝图（依它实现：模块划分 / 装配顺序 / api 逐字调用）')
+ok(sees('qa'), '**qa 必须能看到蓝图** —— 否则 0a「接口一致性核对」永远无从核对（修复前为假）')
+ok(sees('acceptance'), '**acceptance 必须能看到蓝图** —— 模块抽取核对同理（修复前为假）')
+ok(sees('arch') && sees('tech'), 'arch / tech 仍能看到（原有行为不回退）')
+ok(!stateSliceFor(bpState(''), 'qa').includes('blueprint'), '无蓝图时不得凭空注入（条件式契约的「条件」仍要真判）')
+ok(!sees('pm') && !sees('design'), 'pm / design 不注入（它们跑在 tech 之前，此时蓝图尚不存在）')
 
 cleanup()
 console.log(failed ? `\n✗ state：${failed} 条失败\n` : '\n✓ state：全部通过\n')

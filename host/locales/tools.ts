@@ -2,7 +2,7 @@
  * dsh-plugin-teamflow — 工具与分诊面词典（zh / en）。
  *
  * 消费区：host/index.ts（`teamflow_*` 工具返回/render/错误串、分支决策问句与选项）、
- * core/triage.ts（分诊理由与档位词表）、core/backlog.ts（工具面错误串与默认 reason）。
+ * core/triage.ts（分诊理由与档位词表）、core/domain/backlog.ts（工具面错误串与默认 reason）。
  *
  * 语言规则（与流水线面不同，勿混）：**工具返回面向「当前界面」→ 环境语言 `ambientLocale()`**；
  * 流水线产出（日志/prompt/产物/汇报）面向「某个 run」→ run 快照 `journal.locale`。

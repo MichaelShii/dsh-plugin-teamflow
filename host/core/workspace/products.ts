@@ -9,11 +9,11 @@
  */
 import { join } from 'node:path'
 import { readdirSync } from 'node:fs'
-import { teamflowRoot } from '../../store.ts'
-import type { JournalRecord } from '../../store.ts'
-import { clip, normalizeRoot } from '../util.ts'
-import { runs } from './context.ts'
-import { loadState } from './state.ts'
+import { teamflowRoot } from '../../../store.ts'
+import type { JournalRecord } from '../../../store.ts'
+import { clip, normalizeRoot } from '../../util.ts'
+import { runs } from '../agent/context.ts'
+import { loadState } from '../domain/state.ts'
 
 /** 按产品线 key 过滤运行（未落 workspace 的旧运行只见于 default）。 */
 export function runsFor(ws: string | null | undefined) {

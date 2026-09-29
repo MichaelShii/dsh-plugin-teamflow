@@ -18,7 +18,7 @@
  *     标记为 deprecated（存量可留、新调用禁止），本路径仅为无投影宿主保底，不再扩展（见 docs/TODO.md）。
  */
 import { runtime } from './context.ts'
-import type { SubagentRunLike, UsageBuckets } from '../types.ts'
+import type { SubagentRunLike, UsageBuckets } from '../../types.ts'
 
 /** 投影字段读数（宽进严出：非法/非正一律 0，不虚报）。 */
 function countOf(value: unknown): number {

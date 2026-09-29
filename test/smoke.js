@@ -134,7 +134,17 @@ ok(/phaseKeyOf\(s\.phase\) === 'dev' && raw/.test(sharedSrc), 'shared：stageLab
 console.log('── 3) host 模块结构 ──')
 // host/core 领域文件清单（聚合进 hostSrc 供源码断言；新增领域文件必须加进来，否则断言读不到它）。
 // 完整性由下面「清单完整性门禁」用真实目录校验——不靠人记（此前实测漏过 sanity.ts）。
-const CORE_FILES = ['context', 'backlog', 'metering', 'runner', 'guard', 'report', 'pipeline', 'teams', 'state', 'products', 'triage', 'locale', 'runlogs', 'sanity', 'acl-preflight']
+// v0.2.5：core 已按职责分子目录（stages/ agent/ workspace/ domain/，pipeline/triage/locale/report 留根）；
+// 这里写**相对 core 的路径**（含子目录），与 smoke 的「真实文件 ⊆ 清单」门禁同一坐标系。
+const CORE_FILES = [
+  'pipeline', 'triage', 'locale', 'report', // core 根：编排门面 + 分诊决策 + 语言/汇报横切
+  'stages/dev', 'stages/qa', 'stages/acceptance', // stages/：流水线各阶段的实现
+  'agent/context', 'agent/runner', 'agent/guard', 'agent/metering', // agent/：子代理生命周期
+  'workspace/sanity', 'workspace/runlogs', 'workspace/acl-preflight', 'workspace/products', 'workspace/browser-probe', // workspace/
+  'workspace/interface-check', // host 侧接口一致性核对（把 0a 从「要求 QA 核对」补成机器判定）
+  'workspace/smoke-check', // host 侧冒烟（把 0a2「有没有跑起来」从模型自律补成机器取证）
+  'domain/backlog', 'domain/state', 'domain/teams', // domain/：业务实体与累积状态
+]
 const hostSrc = [
   readFileSync(join(here, '../host/index.ts'), 'utf8'),
   readFileSync(join(here, '../host/util.ts'), 'utf8'),
@@ -205,10 +215,17 @@ ok(/summarizeTimeline\(/.test(hostSrc) && !/delete s\.output/.test(hostSrc), '�
 ok(/loadJournalById\(id\)/.test(hostSrc) && /export function loadJournalById/.test(storeSrc), 'resume 从磁盘加载完整 journal（双路径：per-project + 全局）')
 
 console.log('── 3e) 工作区隔离 + 单任务模型 + 真实 token（v0.9）──')
-const contextSrc = readFileSync(join(here, '../host/core/context.ts'), 'utf8')
-const backlogSrc = readFileSync(join(here, '../host/core/backlog.ts'), 'utf8')
-const pipelineSrc = readFileSync(join(here, '../host/core/pipeline.ts'), 'utf8')
-const runnerSrc = readFileSync(join(here, '../host/core/runner.ts'), 'utf8')
+const contextSrc = readFileSync(join(here, '../host/core/agent/context.ts'), 'utf8')
+const backlogSrc = readFileSync(join(here, '../host/core/domain/backlog.ts'), 'utf8')
+// v0.2.5：dev / qa / acceptance 三块已从 pipeline.ts 外移到同名下的独立文件——
+// 但**它们仍是同一条流水线的编排代码**。下面几十条 `pipeline：…` 源码锁，锁的是
+// 「某个行为在这套编排里存在」，不该因为搬个家就集体失效 ⇒ 这里聚成「流水线家族」视图。
+// 顺序按阶段次序（dev → qa → acceptance），跨文件的结构提取（如 devSeg）才不会错位。
+const PIPELINE_PARTS = ['pipeline', 'stages/dev', 'stages/qa', 'stages/acceptance']
+const pipelineSrc = PIPELINE_PARTS
+  .map((f) => readFileSync(join(here, `../host/core/${f}.ts`), 'utf8'))
+  .join('\n')
+const runnerSrc = readFileSync(join(here, '../host/core/agent/runner.ts'), 'utf8')
 const promptsSrc = readFileSync(join(here, '../host/prompts/index.ts'), 'utf8')
 const triageSrc = readFileSync(join(here, '../host/core/triage.ts'), 'utf8')
 // 1) workspace 级团队工作台（workspace = 项目根 = 会话 cwd，无需额外声明）
@@ -282,7 +299,7 @@ const reportSrc = readFileSync(join(here, '../host/core/report.ts'), 'utf8')
 ok(/journal\.humanIntervention \? t\(locale, 'report\.status\.completedHuman'\)/.test(reportSrc) && /⚠️ 已完成（需人工介入）/.test(hostSrc), 'report：completed+humanIntervention → ⚠️ 已完成（需人工介入），不再误报 ✅')
 
 console.log('── 3h) 子代理进行中护栏 v2（纯进度信号） + resume 标志复位 + 工程动作承接 ──')
-const guardSrc = readFileSync(join(here, '../host/core/guard.ts'), 'utf8')
+const guardSrc = readFileSync(join(here, '../host/core/agent/guard.ts'), 'utf8')
 ok(/export function startStageGuard/.test(guardSrc) && /GUARD_REPEAT_LIMIT/.test(guardSrc) && /GUARD_SILENCE_MS/.test(guardSrc) && /GUARD_NO_TOOL_MS/.test(guardSrc), 'guard：护栏 v2（复读/挂死/空转三信号，无时间配额——慢吞吐合法任务不误杀）')
 ok(/GUARD_POLL_MS/.test(constantsSrc) && /GUARD_REPEAT_LIMIT = 12/.test(constantsSrc) && /GUARD_SILENCE_MS/.test(constantsSrc) && /GUARD_NO_TOOL_MS/.test(constantsSrc) && !/GUARD_WALL_CLOCK_MS/.test(constantsSrc), 'constants：护栏阈值常量（裸墙钟已废除）')
 ok(/startStageGuard\(\{ run, journal, label, stage \}\)/.test(hostSrc), 'runner：runAgent 接入单调用护栏')
@@ -308,7 +325,7 @@ console.log('── 3i) 任务夹文档制（ADR-0008：活文档版本制 → �
 ok(/runFolderName/.test(utilSrc) && /runFolderName\(new Date\(\), journal\.reqId/.test(pipelineSrc), 'util/pipeline：任务夹命名 <yyyyMMdd>-r<N>[-<slug>]，host 建夹')
 ok(/runDocs: journal\.runDocs \|\| null/.test(storeSrc), 'store：journal.runDocs 持久化（需求级身份，续跑复用同夹）')
 ok(/mkdirSync\(abs, \{ recursive: true \}\)/.test(pipelineSrc) && /meta\.json/.test(pipelineSrc) && !/status: journal\.status/.test(pipelineSrc), 'pipeline：建夹 + meta.json 静态标识卡（reqId/runId/title/mode/createdAt 建夹即定；终态回写已废——status/endedAt 权威在 journal，避免提交后再脏/快照过时）')
-ok(/state\.__runCtx\.runDocs = journal\.runDocs/.test(pipelineSrc) && /runDocs\?: string/.test(join(here, '../host/core/state.ts') ? readFileSync(join(here, '../host/core/state.ts'), 'utf8') : ''), 'pipeline/state：runDocs 注入 __runCtx（所有阶段可见）')
+ok(/state\.__runCtx\.runDocs = journal\.runDocs/.test(pipelineSrc) && /runDocs\?: string/.test(join(here, '../host/core/domain/state.ts') ? readFileSync(join(here, '../host/core/domain/state.ts'), 'utf8') : ''), 'pipeline/state：runDocs 注入 __runCtx（所有阶段可见）')
 ok(!/VERSION_SLICE_BLOCK|mv 归档|history\/v<旧版>/.test(promptsSrc), 'prompts：版本切片/归档话术已整体移除（结构性幂等，不再靠提示词）')
 ok(/基线依赖|取代：/.test(promptsSrc) && /Number ACs from AC-1/.test(promptsSrc), 'prompts：局部 AC 编号（本夹内 AC-1 起）+ 基线依赖/取代声明')
 ok(/slug/.test(readFileSync(join(here, '../host/core/triage.ts'), 'utf8')) && /TRIAGE_PROMPT/.test(promptsSrc) && /topic words/.test(promptsSrc), 'triage：slug 输出字段（受控命名来源）')
@@ -361,6 +378,10 @@ ok(/const shape = blockShape\(result && result\.output\)/.test(runnerSrc) && /\?
 ok(/let emptyTurnDoc/.test(runnerSrc) && /if \(emptyTurnDoc\) \{[\s\S]{0,400}diag\.emptyTurnDelivered/.test(runnerSrc) && /stageText = emptyTurnDoc\.text/.test(runnerSrc), 'runner：空收尾 + 任务夹产物已合格 → 按文件判交付不再重跑（A 档止损；返回值用文件内容顶替空回复，state 合并走宽容语义）')
 ok(/export function emptyTurnDocVerdict/.test(utilSrc) && /emptyTurnDocVerdict\(stop, text, verdict\.min, stageDocText\(journal, phase\)\)/.test(runnerSrc), 'runner/util：空收尾兜底判定抽纯函数（runner 链宿主私有 peer 不可 import，行为级测试走 util——cancel.test.js 头注释纪律）')
 ok(/empty-turn\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：empty-turn 行为级套件已登记 test/prepublishOnly 双链')
+// v0.2.5：编排行为级套件（stub 子代理驱动真实 executePipeline）同样必须进双链——登记了才等于真跑
+ok(/orchestration\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：编排套件登记双链')
+ok(/interface-check\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：接口核对套件登记双链')
+ok(/smoke-check\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：host 冒烟套件登记双链')
 ok(/响应块构成：\{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')) && /response blocks: \{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')), 'locales：diag.emptyTurn 带块构成占位（zh/en 齐备——诊断必须自证，2026-09-26 tf-muigy5eq r12 实踩）')
 ok(/const beforeLen = journal\.stages\.length/.test(runnerSrc) && /lastStage = journal\.stages\[beforeLen\] \|\| null/.test(runnerSrc), 'runner：withRetry 按调用前长度取本次尝试 stage——并发安全（防证据/重试诊断/usage 累计串位）')
 ok(/stage: JournalStage \| null/.test(runnerSrc), 'runner：withRetry 返回携带 stage 引用')
@@ -476,7 +497,7 @@ ok(/const taskKeyOf = \(s\) => String\(s\.taskKey \|\| String\(s\.label/.test(cl
 }
 
 console.log('── 3p) dsh 0.1.5-rc.2 适配：计量改走官方 Session 投影（同步事件读取器已弃用）──')
-const meteringSrc = readFileSync(join(here, '../host/core/metering.ts'), 'utf8')
+const meteringSrc = readFileSync(join(here, '../host/core/agent/metering.ts'), 'utf8')
 ok(/function projectedUsageOf/.test(meteringSrc) && /stateOf\(session, 'tokenUsage'\)/.test(meteringSrc) && /stateOf\(session, 'sessionStats'\)/.test(meteringSrc), 'metering：投影路径优先（tokenUsage 四桶 + sessionStats 调用数）')
 ok(/export function accumulateSessionUsage/.test(meteringSrc) && /const projected = projectedUsageOf\(run\)/.test(meteringSrc) && /function scannedUsageOf/.test(meteringSrc), 'metering：投影优先 → 事件扫描降级为回退（弃用 API 不再扩展）')
 ok(/function freshTokensOf/.test(meteringSrc) && /return \(usage\.input \|\| 0\) \+ \(usage\.cacheWrite \|\| 0\) \+ \(usage\.output \|\| 0\)/.test(meteringSrc), 'metering：熔断口径 freshTokensOf（排除 cacheRead；汇报口径 totalTokensOf 不变）')
@@ -492,7 +513,7 @@ ok(/!verdict\.ok && text && stop === 'completed'/.test(runnerSrc), 'runner：**�
 ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
-ok(/"version": "0\.2\.4"/.test(pkgSrc), 'package.json：版本 0.2.4（release-v0.2.4 开发线）')
+ok(/"version": "0\.2\.5"/.test(pkgSrc), 'package.json：版本 0.2.5（release-v0.2.5 开发线）')
 ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.1\.7-alpha\.1 <0\.2\.0"/.test(pkgSrc), 'package.json：声明 dsh.manifestVersion 与 engines.dsh 兼容窗口（下限 = v4 宿主 0.1.7-alpha.1）')
 // 手工枚举的清单必须配门禁（同型教训：journal 字段 / execOptions / loadState / triageRecordOf）。
 // deploy.mjs FILES 与上面的 CORE_FILES 都是手写清单，领域化拆分后两者都漂移过——实测 FILES 漏了
@@ -543,7 +564,7 @@ ok(/reasoningEffort: effort/.test(runnerSrc) && /effortHint/.test(runnerSrc) && 
 ok(/options\.mode === 'patch' \? MECHANICAL_STAGE_EFFORT : null/.test(pipelineSrc) && /'scaffold', scaffoldPrompt\([\s\S]{0,200}MECHANICAL_STAGE_EFFORT/.test(pipelineSrc), 'pipeline：仅 patch 单点确认 + scaffold 两处降档（判据类阶段保持宿主默认 high）')
 
 console.log('── 3t) 收口提交面：插件自有日志不进提交（2026-09-11 实锤 assetd 92% 噪音）──')
-const sanitySrc = readFileSync(join(here, '../host/core/sanity.ts'), 'utf8')
+const sanitySrc = readFileSync(join(here, '../host/core/workspace/sanity.ts'), 'utf8')
 ok(/TF_LOG_DIR = 'logs\/teamflow'/.test(constantsSrc) && /export \{ TF_LOG_DIR \}/.test(sanitySrc), 'sanity/constants：自有日志命名空间常量（与 prompts 的 Log discipline 同址；常量归 constants，sanity 转出）')
 ok(/export function tfAddArgs/.test(sanitySrc) && /return \['add', '-A', '--', '\.'/.test(sanitySrc), 'sanity：tfAddArgs = 工作区整树 add（-- . 收敛提交面；前缀不变）')
 // 只看代码行：sanity.ts 的**注释**里必须保留 `:(exclude)logs/teamflow` 这个坑的说明（历史证据），
@@ -578,7 +599,7 @@ ok(/journal\.locale === 'en' \? `# TeamFlow run log/.test(storeSrc), 'store：�
 ok(!/✅ Pass ／ / .test(promptsSrc) && /Acceptance verdict: ✅ Pass \/ /.test(promptsSrc), 'prompts：en 验收档位行用半角斜杠（zh 侧 ／ 逐字不变）')
 
 console.log('── 3v) 2026-09-15 第二批：回复语言 + 团队展示名（实锤 slugkit-en tf-mu2m1r2p）──')
-const teamsSrc = readFileSync(join(here, '../host/core/teams.ts'), 'utf8')
+const teamsSrc = readFileSync(join(here, '../host/core/domain/teams.ts'), 'utf8')
 const toolsSrc = readFileSync(join(here, '../host/locales/tools.ts'), 'utf8')
 ok(/Reply language · policy/.test(promptsSrc) && /\$\{replyName\}/.test(promptsSrc) && /'doc\.replyLanguage'/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')), 'prompts：回复语言收口在 productCtx（11 个工厂共用前缀，避免逐 prompt 再漏）')
 ok(/export function teamNameOf/.test(teamsSrc) && /BUILTIN_EN/.test(teamsSrc) && /export function teamDescOf/.test(teamsSrc), 'teams：展示名双语解析（nameEn → 内置回落表 → 中文，永不返回空）')
@@ -602,7 +623,7 @@ ok(/function splitTableRow/.test(backlogSrc), 'backlog：表格行按未转义�
 ok(/check: pick\(\/检测命令/.test(backlogSrc) && /criterion: pick\(\/通过判据/.test(backlogSrc), 'backlog：富行取检测命令/通过判据（parseDefects 瘦身形状不变）')
 ok(/exist\.check = String\(d\.check/.test(backlogSrc) && /check: String\(d\.check/.test(backlogSrc), 'backlog：缺陷卡持久化检测命令/通过判据（幂等刷新 + 建卡两处）')
 ok(/FIX_GATE_PATTERN/.test(constantsSrc) && /FIX_GATE_PATTERN\.test\(String\(stageTextOf\(fixR\)/.test(pipelineSrc), 'pipeline：修复轮无类别门禁证据 → warn 留痕（A 方案观测）')
-ok(/qaReverify: isReverify/.test(pipelineSrc) && /function QAREVERIFY/.test(promptsSrc) && /qaReverify\?: boolean/.test(readFileSync(join(here, '../host/core/state.ts'), 'utf8')), 'pipeline/state/prompts：复验轮标志经 __runCtx 下发（C 方案；不改工厂签名）')
+ok(/qaReverify: isReverify/.test(pipelineSrc) && /function QAREVERIFY/.test(promptsSrc) && /qaReverify\?: boolean/.test(readFileSync(join(here, '../host/core/domain/state.ts'), 'utf8')), 'pipeline/state/prompts：复验轮标志经 __runCtx 下发（C 方案；不改工厂签名）')
 ok(/Class gate · policy, mandatory for P0\/P1\/P2/.test(promptsSrc) && /class sweep:/.test(promptsSrc), 'prompts：qaFix 要求类别门禁 + 命中数 before→after（A 方案）')
 ok(/Re-verification round · policy/.test(promptsSrc) && /FIRST re-run every probe/.test(promptsSrc), 'prompts：复验轮纪律（先重跑上一轮探针、再补未覆盖的面）')
 // E 方案（2026-09-15：QA 打回超限时验收不再整段跳过）
@@ -712,7 +733,7 @@ ok(/st\.gitMode === 'none' \|\| options\.preAction === 'keep-nogit'/.test(hostSr
 // pipeline 写了也被下一次 state 块合并抹掉 → 每次 run 重复问存档。`test/state.test.js` 静态断言
 // 「TeamflowState 每个持久化字段都被 loadState 搬运」+ 行为往返 + 合并后仍在；此处只做指针性守门）
 {
-  const stateSrc2 = readFileSync(join(here, '../host/core/state.ts'), 'utf8')
+  const stateSrc2 = readFileSync(join(here, '../host/core/domain/state.ts'), 'utf8')
   ok(/raw\.gitMode === 'repo' \|\| raw\.gitMode === 'none'/.test(stateSrc2), 'state：loadState 显式搬运 gitMode（逐字段重建漏一个 = 该字段永远存不住——白名单漏字段已第四次）')
   ok(existsSync(join(here, 'state.test.js')), 'state.test.js 存在（字段完整性门禁：静态解析接口顶层键逐个断言被搬运 + 往返 + 合并后仍在）')
 }
@@ -757,7 +778,7 @@ ok(/args\.preAction === 'stash' \|\| args\.preAction === 'commit' \|\| args\.pre
   ok(!/ensureCommonNoiseIgnores/.test(pipeCode), 'pipeline：**不得**回退为写用户 .gitignore 的噪音排除（ensureCommonNoiseIgnores 已从代码删除）')
   ok(!/mergeGitignore\([^)]*'\.pnpm-store'/.test(pipeCode) && !/mergeGitignore\([^)]*node_modules/.test(pipeCode), 'pipeline：噪音项**不得**经由 mergeGitignore 落进用户 .gitignore（只允许 logs/teamflow 那条自有日志规则）')
   ok((pipeCode.match(/writeFileSync\(/g) || []).length <= 2, 'pipeline：写文件处收敛（仅 .gitignore 自有日志规则 + 任务夹/产物写入，不得新增"替用户写文件"的点）')
-  const sanitySrc = readFileSync(join(here, '../host/core/sanity.ts'), 'utf8')
+  const sanitySrc = readFileSync(join(here, '../host/core/workspace/sanity.ts'), 'utf8')
   ok(/export const BASELINE_NOISE_EXCLUDES[^=]*=\s*\[/.test(sanitySrc), 'sanity：BASELINE_NOISE_EXCLUDES 常量（排除清单数据化，一处可改）')
   ok(/check-ignore/.test(sanitySrc), 'sanity：用 `git check-ignore` 判"是否已被忽略"（以目标仓库为根；自读 .gitignore 会读成宿主 cwd → 两个方向同时错，2026-09-18 实测）')
   ok(!/readFileSync\('\.gitignore'\)/.test(sanitySrc), 'sanity：**不得**再用相对路径读 .gitignore 做忽略判定（那是宿主 cwd，不是目标仓库）')

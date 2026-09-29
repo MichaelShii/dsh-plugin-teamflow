@@ -2,13 +2,13 @@
  * dsh-plugin-teamflow core — Backlog 数据层与状态机（$DSH_HOME/teamflow/<product>/backlog/*）。
  * 依赖：store.ts（原子读写）、context.ts（stores 缓存）。
  */
-import { fileFor, readJson, writeJson, teamflowRoot, persistJournal } from '../../store.ts'
-import type { BacklogItem } from '../types.ts'
-import { stores } from './context.ts'
-import { STATUS, PHASE_ROLE } from '../constants.ts'
-import { snippet } from '../util.ts'
-import { t } from '../locales.ts'
-import { ambientLocale, runLocaleOf } from './locale.ts'
+import { fileFor, readJson, writeJson, teamflowRoot, persistJournal } from '../../../store.ts'
+import type { BacklogItem } from '../../types.ts'
+import { stores } from '../agent/context.ts'
+import { STATUS, PHASE_ROLE } from '../../constants.ts'
+import { snippet } from '../../util.ts'
+import { t } from '../../locales.ts'
+import { ambientLocale, runLocaleOf } from '../locale.ts'
 
 export class BacklogStore {
   product: string

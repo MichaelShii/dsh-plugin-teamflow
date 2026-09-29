@@ -5,12 +5,12 @@
 import { runtime, providerName, trackInFlight, untrackInFlight } from './context.ts'
 import { accumulateSessionUsage, freshTokensOf, effectiveFreshBudget } from './metering.ts'
 import { startStageGuard } from './guard.ts'
-import { clip, extractText, blockShape, emptyTurnDocVerdict, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs, stageDocText } from '../util.ts'
-import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../constants.ts'
-import { t, type HostLocale } from '../locales.ts'
-import { runLocaleOf } from './locale.ts'
-import type { Journal, ParentAgentLike, UsageBuckets } from '../types.ts'
-import type { JournalStage } from '../../store.ts'
+import { clip, extractText, blockShape, emptyTurnDocVerdict, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs, stageDocText } from '../../util.ts'
+import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../../constants.ts'
+import { t, type HostLocale } from '../../locales.ts'
+import { runLocaleOf } from '../locale.ts'
+import type { Journal, ParentAgentLike, UsageBuckets } from '../../types.ts'
+import type { JournalStage } from '../../../store.ts'
 
 /**
  * 推理强度能力探测（缓存，2026-09-11）：只有宿主明确声明该路由支持某档位才下发。

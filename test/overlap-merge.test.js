@@ -27,7 +27,12 @@ const ok = (cond, msg) => {
 }
 const groups = (files) => files.map((f, i) => ({ id: `dt-${i + 1}`, title: `T${i}`, files: f, spec: `spec-${i}` }))
 
-const pipeSrc = readFileSync(new URL('../host/core/pipeline.ts', import.meta.url), 'utf8')
+// v0.2.5：dev 阶段实现搬到 host/core/stages/dev.ts（同族还有 qa / acceptance）；
+// 下面这些源码锁锁的是「某个行为在这套编排里存在」，故按流水线家族聚合成一个视图再读。
+const PIPELINE_PARTS = ['pipeline', 'stages/dev', 'stages/qa', 'stages/acceptance']
+const pipeSrc = PIPELINE_PARTS
+  .map((f) => readFileSync(new URL(`../host/core/${f}.ts`, import.meta.url), 'utf8'))
+  .join('\n')
 
 // ── 1) 无交集 → 不合并（并行度不受损） ──
 console.log('\n[1] 无交集时不合并')
@@ -98,7 +103,11 @@ ok(g.reduce((n, x) => n + x.ids.length, 0) === 40, '所有任务都被分配到�
 
 // ── 6) 源码级：resume 补跑分支必须共用同一个函数 ──
 console.log('\n[6] 源码级：两条路径共用实现（防再次绕过）')
-const src = readFileSync(new URL('../host/core/pipeline.ts', import.meta.url), 'utf8')
+// v0.2.5：resume 补跑分支已搬到 host/core/stages/dev.ts（planDevWaves 的两次调用都在那里）；
+// 这里同样按流水线家族聚合，锁的语义不变：**两条 dev 路径都必须过 planDevWaves**。
+const src = ['pipeline', 'stages/dev']
+  .map((f) => readFileSync(new URL(`../host/core/${f}.ts`, import.meta.url), 'utf8'))
+  .join('\n')
 const resumeBranch = (() => {
   const i = src.indexOf('devTaskDefsWithBackfill(journal, tasks, locale)')
   const j = src.indexOf('if (todoDefs.length === 0)', i)
@@ -154,7 +163,7 @@ ok(/files: t\.files \|\| \(\[\] as string\[\]\)/.test(pipeSrc), 'pipeline：调�
 ok(/reads: Array\.isArray\(t\.reads\)/.test(pipeSrc), 'pipeline：蓝图任务的 reads 透传（存量无该字段 → 空数组 ⇒ 行为不变）')
 ok(/READ-ONLY CONTEXT/.test(devSection), 'devPrompt：下发只读上下文段（可看不可改）')
 
-const pipe2 = readFileSync(new URL('../host/core/pipeline.ts', import.meta.url), 'utf8')
+const pipe2 = pipeSrc // 同一份流水线家族视图（见上方 pipeSrc 的聚合说明）
 ok(/reportDevWriteConflicts\(\)/.test(pipe2), 'pipeline：两条 dev 路径都会在收尾调用 reportDevWriteConflicts')
 ok((pipe2.match(/reportDevWriteConflicts\(\)/g) || []).length === 2, '收尾调用恰好 2 处 = 正常路径 + resume 路径（少一处即漏一条执行路径）')
 ok(/trackDevTouched\(task\.title, t0, Date\.now\(\), devText\)/.test(pipe2), '正常路径：子代理返回后用真实执行窗口记账 touched')

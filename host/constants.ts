@@ -50,7 +50,7 @@ export const TEAMFLOW_ARTIFACT_ORDER = ['PRD.md', 'DESIGN.md', 'TECHNICAL.md', '
  * 与平台临时区，写 `$DSH_HOME` 直接 `FS_SANDBOX_DENIED`（实测：子代理写 `C:\Users\<u>\.dsh\...`
  * 三步全拒，写工作区内同构命令 exit 0）。所以命令日志只能在项目内暂存。
  * **终态不在这里**：run 结束 host 把本目录归档到 `$DSH_HOME/teamflow/<workspace>/logs/<runId>/`
- * 并删除项目内副本（见 `host/core/runlogs.ts`）——项目里不留存，超额归档按最近 K 次淘汰。
+ * 并删除项目内副本（见 `host/core/workspace/runlogs.ts`）——项目里不留存，超额归档按最近 K 次淘汰。
  * 与 store.runLogStagingDir 的路径段必须一致（test/runlogs.test.js 守门）。
  */
 export const TF_LOG_DIR = 'logs/teamflow'

@@ -11,8 +11,8 @@
  * 产出 externalDiffs 摘要注入到后续所有阶段 prompt。
  */
 import { execFileSync } from 'node:child_process'
-import { t, type HostLocale } from '../locales.ts'
-import { TF_LOG_DIR } from '../constants.ts'
+import { t, type HostLocale } from '../../locales.ts'
+import { TF_LOG_DIR } from '../../constants.ts'
 
 /** 单条 git 命令的结构化结果：`ok=false` 时 `error` 带真实原因（截断到 300 字符）。 */
 export interface GitResult {

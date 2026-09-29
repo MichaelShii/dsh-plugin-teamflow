@@ -5,7 +5,7 @@
  * 修复原则：只以显式「验收结论 / 整体结论」行为准，正文散文不做朴素子串匹配。
  */
 import { parseAcceptanceVerdict, extractBlueprint, defectFingerprint, qaRoundEntry, classifyExternalFailure, externalBackoffMs, EXTERNAL_BACKOFF_MS, isDangerousVcsRoot, dirTooLargeForBaseline, judgeDeliverable, DOC_STAGE_FILES, stageDocText, artifactText } from '../host/util.ts'
-import { parseDefects, parseDefectRows } from '../host/core/backlog.ts'
+import { parseDefects, parseDefectRows } from '../host/core/domain/backlog.ts'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'

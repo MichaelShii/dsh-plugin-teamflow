@@ -17,8 +17,8 @@ import { tmpdir } from 'node:os'
 import {
   runLogFile, runLogArchiveDir, runLogStagingDir, logsArchiveRoot,
 } from '../store.ts'
-import { archiveRunLogs, sweepWorkspaceLogs, pruneLogArchives, stagingRoot, keepInArchive } from '../host/core/runlogs.ts'
-import { runs } from '../host/core/context.ts'
+import { archiveRunLogs, sweepWorkspaceLogs, pruneLogArchives, stagingRoot, keepInArchive } from '../host/core/workspace/runlogs.ts'
+import { runs } from '../host/core/agent/context.ts'
 import { TF_LOG_DIR, LOG_ARCHIVE_KEEP } from '../host/constants.ts'
 
 let failed = 0

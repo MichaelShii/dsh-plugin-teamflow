@@ -1,8 +1,8 @@
 /**
  * dsh-plugin-teamflow — 流水线面词典（zh / en）。
  *
- * 消费区：core/pipeline.ts、core/state.ts、core/sanity.ts、core/runner.ts、
- * core/guard.ts、core/report.ts（流水线日志 / 阶段 label / 状态注入块 / 护栏与重试诊断 /
+ * 消费区：core/pipeline.ts、core/domain/state.ts、core/workspace/sanity.ts、core/agent/runner.ts、
+ * core/agent/guard.ts、core/report.ts（流水线日志 / 阶段 label / 状态注入块 / 护栏与重试诊断 /
  * 完成汇报与合回邀请）。
  *
  * 约定（与 locales.ts 的机制配套）：
@@ -107,6 +107,18 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.qaNoFile': 'QA 子代理回复成功但 {file}未落盘/为空——单轨契约（文件即产物）未兑现，需人工介入',
     'log.qaP3': 'QA 仅有 P3 观察项 {ids}（非阻断）',
     'log.qaClean': 'QA 未发现阻断缺陷',
+    'log.qaVerificationEvidenceMiss': 'QA 验证证据观察（warn-only，暂不阻断）：交付含可执行入口，但报告未见「命令+结果」类证据（命令={cmd}/结果={res}）——若确无可自动验证路径，请显式写 N/A + 理由',
+    'log.qaVerificationEvidenceNa': 'QA 验证证据：报告以 N/A 声明无可自动验证路径（观察期记录，不阻断）',
+    'log.hostLoadErrors': 'host 侧加载检查（warn-only，纯记录）：{file} 打开时抛未捕获错误 {n} 处 —— 首条：{first}',
+    'log.hostLoadOk': 'host 侧加载检查：{file} 加载无未捕获错误',
+    'log.hostLoadSkipped': 'host 侧加载检查：本次未执行（{reason}；根={root}）—— no-html=交付无可加载 HTML 入口；spawn-failed=浏览器没起来；error=检查自身异常',
+    'log.hostInterfaceMismatch': 'host 侧接口核对（warn-only，纯记录）：{n} 处跨模块调用指向不存在的成员 —— 首处：{first}',
+    'log.hostInterfaceOk': 'host 侧接口核对：{n} 个源文件，跨模块调用用到的成员全部存在',
+    'log.hostInterfaceSkip': 'host 侧接口核对：本次未执行（{reason}；源文件 {n} 个）—— skip=不足两个源文件（无可查的跨模块调用）；error=检查自身异常',
+    'log.hostSmokeOk': 'host 侧冒烟：{entry} 真浏览器加载后有可观测变化（绘制 {draw} / rAF {raf} / DOM 变更 {mut}，耗时 {ms}ms）',
+    'log.hostSmokeNoMotion': 'host 侧冒烟（warn-only，纯记录）：{entry} 加载后**全程无绘制、无 rAF、无 DOM 变更**（耗时 {ms}ms）—— 页面可能静止不动',
+    'log.hostSmokeSkip': 'host 侧冒烟：本次未执行（{reason}）—— no-html=无 HTML 入口；no-script=入口无脚本；no-browser=没找到浏览器；spawn-failed=浏览器没起来',
+    'log.qaVerificationEvidenceSkip': 'QA 验证证据观察：交付未见可执行入口（扫到 {n} 个交付文件），本项跳过',
     'log.qaReworkLimit': 'QA 连续 {round} 轮（含复验）仍有 {n} 个阻断缺陷（{ids}），超出复验上限 {limit}，需人工介入',
     'log.qaRework': 'QA 发现 {n} 个阻断缺陷（第 {round} 轮），打回开发确认修复后复验',
     'log.qaPassReverify': 'QA 复验通过（第 {n} 轮修复后），无阻断缺陷',
@@ -500,6 +512,18 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.qaNoFile': 'QA subagent replied successfully but {file}was not written or is empty — the single-track contract (file is the artifact) is not honored; human intervention required',
     'log.qaP3': 'QA found only P3 observations {ids} (non-blocking)',
     'log.qaClean': 'QA found no blocking defects',
+    'log.qaVerificationEvidenceMiss': 'QA verification-evidence probe (warn-only, non-blocking): the deliverable has a runnable entry but the report shows no command+result evidence (cmd={cmd}/result={res}) — if nothing is auto-verifiable, state N/A + a reason explicitly',
+    'log.qaVerificationEvidenceNa': 'QA verification evidence: report declares N/A (nothing auto-verifiable) — observation only, non-blocking',
+    'log.hostLoadErrors': 'host-side load check (warn-only, record only): {file} threw {n} uncaught error(s) on open — first: {first}',
+    'log.hostLoadOk': 'host-side load check: {file} loaded with no uncaught errors',
+    'log.hostLoadSkipped': 'host-side load check: not run this time ({reason}; root={root}) — no-html=no loadable HTML entry, spawn-failed=browser did not launch, error=the check itself threw',
+    'log.hostInterfaceMismatch': 'host-side interface check (warn-only, record only): {n} cross-module call(s) point at members that do not exist — first: {first}',
+    'log.hostInterfaceOk': 'host-side interface check: {n} source files, every cross-module member resolves',
+    'log.hostInterfaceSkip': 'host-side interface check: not run ({reason}; {n} source files) — skip=fewer than two source files to compare, error=the check itself threw',
+    'log.hostSmokeOk': 'host-side smoke: {entry} loaded in a real browser with observable change (draw {draw} / rAF {raf} / DOM mutations {mut}, {ms}ms)',
+    'log.hostSmokeNoMotion': 'host-side smoke (warn-only, record only): {entry} showed **no draw, no rAF and no DOM mutation at all** ({ms}ms) — the page may be inert',
+    'log.hostSmokeSkip': 'host-side smoke: not run ({reason}) — no-html, no-script, no-browser or the browser did not launch',
+    'log.qaVerificationEvidenceSkip': 'QA verification-evidence probe: no runnable entry in the delivery ({n} deliverable files scanned) — skipped',
     'log.qaReworkLimit': 'After {round} consecutive QA rounds (including re-verification) {n} blocking defect(s) remain ({ids}), exceeding the rework limit {limit}; human intervention required',
     'log.qaRework': 'QA found {n} blocking defect(s) (round {round}); sending back to development for confirmation and fixes before re-verification',
     'log.qaPassReverify': 'QA re-verification passed (after fix round {n}), no blocking defects',

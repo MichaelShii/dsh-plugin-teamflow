@@ -26,11 +26,11 @@
  */
 import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { JournalRecord } from '../../store.ts'
-import { logsArchiveRoot, runLogArchiveDir, runLogStagingDir } from '../../store.ts'
-import { LOG_ARCHIVE_KEEP, TF_LOG_DIR } from '../constants.ts'
-import { t, type HostLocale } from '../locales.ts'
-import { runs } from './context.ts'
+import type { JournalRecord } from '../../../store.ts'
+import { logsArchiveRoot, runLogArchiveDir, runLogStagingDir } from '../../../store.ts'
+import { LOG_ARCHIVE_KEEP, TF_LOG_DIR } from '../../constants.ts'
+import { t, type HostLocale } from '../../locales.ts'
+import { runs } from '../agent/context.ts'
 
 /** 工作区内暂存根：`<workspacePath>/logs/teamflow`（无 workspacePath → null）。 */
 export function stagingRoot(workspacePath: string | null | undefined): string | null {

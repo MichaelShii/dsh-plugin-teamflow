@@ -7,7 +7,7 @@
  * owner 隐式权利只有 READ_CONTROL+WRITE_DAC → 首跑必败 Win32 5 → 子代理 env-unavailable、
  * 主会话逐轮排查提权。
  *
- * **修法**：`host/core/acl-preflight.ts` 在 executePipeline 任何阶段之前用宿主自己的
+ * **修法**：`host/core/workspace/acl-preflight.ts` 在 executePipeline 任何阶段之前用宿主自己的
  * `@deepseek-ai/dsh-sandbox-windows-acl`（workspace SID = sha256(realpathSync.native(root))
  * 确定性派生）把 standing grant 提前物化；失败时用 icacls 补一条 user:(WO) DACL ACE
  * （该写只需 WRITE_DAC，无需提权）后重试；仍失败 → run 立即失败并给可复制命令。
@@ -20,7 +20,7 @@
  * ④ 修复 ACE 是 `(WO)`（WRITE_OWNER），不是 F/提权。
  */
 import { readFileSync } from 'node:fs'
-import { preflightWorkspaceAcl } from '../host/core/acl-preflight.ts'
+import { preflightWorkspaceAcl } from '../host/core/workspace/acl-preflight.ts'
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -29,7 +29,7 @@ const ok = (cond, msg) => {
 }
 
 const pipeSrc = readFileSync(new URL('../host/core/pipeline.ts', import.meta.url), 'utf8')
-const pfSrc = readFileSync(new URL('../host/core/acl-preflight.ts', import.meta.url), 'utf8')
+const pfSrc = readFileSync(new URL('../host/core/workspace/acl-preflight.ts', import.meta.url), 'utf8')
 const localeSrc = readFileSync(new URL('../host/locales/pipeline.ts', import.meta.url), 'utf8')
 
 console.log('[1] 挂载点：预检在任何阶段/模型调用之前')

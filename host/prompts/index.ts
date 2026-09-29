@@ -1,6 +1,6 @@
 /**
  * dsh-plugin-teamflow — Prompt 模板（阶段提示词 + 团队模板）。
- * 依赖：util.ts（clip）、core/state.ts（stateSliceFor / STATE_BLOCK_INSTRUCTION）。
+ * 依赖：util.ts（clip）、core/domain/state.ts（stateSliceFor / STATE_BLOCK_INSTRUCTION）。
  *
  * 【产物收口约定】（v0.13，ADR-0008 任务夹制）
  * - 每个需求一个自包含任务夹：docs/teamflow/<yyyyMMdd>-r<N>[-<slug>]/，收口本需求的
@@ -31,7 +31,7 @@
  * 列表分隔符随内容语言（文件路径等 ASCII 内容用英文逗号），不混用中文标点。
  */
 import { clip } from '../util.ts'
-import { stateSliceFor, STATE_BLOCK_INSTRUCTION } from '../core/state.ts'
+import { stateSliceFor, STATE_BLOCK_INSTRUCTION } from '../core/domain/state.ts'
 // 形态契约的**参考样本**表（纯数据；core/triage.ts 不 import prompts → 无循环依赖）。
 // 只取样本路径给 PM 去读，**不引入任何判定逻辑**：字段名随宿主版本演进，必须读样本核实。
 import { ARTIFACT_REFERENCE_SAMPLES, LOCAL_PLUGIN_SAMPLES_HINT } from '../core/triage.ts'
@@ -490,8 +490,9 @@ ${JSON.stringify(tasks)}
 3. Task split: if [PIPELINE-DISPATCHED TASKS] above exists, your split MUST align with it — verify/refine each dispatched task (file boundaries, interface contracts, acceptance criteria) rather than creating a separate task system; if none dispatched, provide a parallelizable task list. git actions from the PRD "${L(state, 'doc.engConstraints')}" section (branch/commit requirements) MUST be carried into tasks (into the matching task spec or a separate list) — never lost.
 4. ${langDirective(LOCALE(state))}, tight & complete; write to ${RUN(state)}/TECHNICAL.md (write once). [Boundary] only under ${TF_DOCS}/.
 5. [ARCHITECTURE BLUEPRINT JSON · mandatory (for dev inheritance / acceptance verification, M1/M2)] After the document, additionally output an architecture blueprint JSON block (same output, at the end of the document):
-<!-- blueprint -->{"summary":"one-sentence architecture judgment","modules":{"/relative.js":{"responsibility":"responsibility","dependsOn":["dep files"],"assemblyOrder":1,"why":"why designed this way / why separate"},"/another.js":{"responsibility":"","why":""}},"duplications":["detected duplication / adapter drift risks"],"tasks":[{"title":"task name (by file boundary)","files":["/a.js"],"reads":["/types.js"],"spec":"one-sentence task brief"}]}<!-- /blueprint -->
-   - modules: per touched file — responsibility + deps + assembly order + **architecture rationale (why)**.
+<!-- blueprint -->{"summary":"one-sentence architecture judgment","modules":{"/relative.js":{"responsibility":"responsibility","api":["export class Foo","foo(a, b) -> Bar"],"dependsOn":["dep files"],"assemblyOrder":1,"why":"why designed this way / why separate"},"/another.js":{"responsibility":"","api":[],"why":""}},"duplications":["detected duplication / adapter drift risks"],"tasks":[{"title":"task name (by file boundary)","files":["/a.js"],"reads":["/types.js"],"spec":"one-sentence task brief"}]}<!-- /blueprint -->
+   - modules: per touched file — responsibility + **api** + deps + assembly order + **architecture rationale (why)**.
+   - **api (mandatory per module)**: the module's exact public signatures (class / function / method **names** + params + return). Downstream dev tasks MUST call these **verbatim** — a member name invented locally (e.g. calling 'move()' where the blueprint says 'update()') is a real defect QA will file as P1, because the app crashes on the first call. A few stable, accurate names beat a rich guess.
    - tasks: parallelizable tasks split by file boundary (disjoint files → parallel); merge or sequence where dependencies/conflicts exist.
    - **files = files the task will MODIFY (ownership)**; add **reads** for files it only needs to READ (types, existing module interfaces, shared constants). Two tasks may run in parallel when their files sets are disjoint — reads never blocks parallelism. Omit reads when unsure: anything unmarked is treated as owned (safe default).
    - If you find duplication or a module that should be extracted (e.g. unified storage wrapper), add it to modules with the why.
@@ -514,8 +515,9 @@ ${clip(prd, 12000)}
    - Identify duplicated implementations (e.g. multiple security wrappers / storage utilities), blurred boundaries, extractable modules.
 2. [Architecture decision] Based on global awareness, judge: should this change extract a standalone module (e.g. independent storage/localStorage wrapper), dependency direction, assembly order, which files must change together, which can go parallel.
 3. [OUTPUT · one JSON block only (no prose, no Markdown code fences)]:
-<!-- blueprint -->{"summary":"one-sentence architecture judgment","modules":{"/relative.js":{"responsibility":"responsibility","dependsOn":["dep files"],"assemblyOrder":1,"why":"why designed this way / why separate"},"/another.js":{"responsibility":"","why":""}},"duplications":["detected duplication / adapter drift risk 1","risk 2"],"tasks":[{"title":"task name (by file boundary)","files":["/a.js"],"reads":["/types.js"],"spec":"one-sentence task brief"}]}<!-- /blueprint -->
-   - modules: per involved file — responsibility + deps + assembly order + **why** (architecture rationale so devs understand, not blindly follow).
+<!-- blueprint -->{"summary":"one-sentence architecture judgment","modules":{"/relative.js":{"responsibility":"responsibility","api":["export class Foo","foo(a, b) -> Bar"],"dependsOn":["dep files"],"assemblyOrder":1,"why":"why designed this way / why separate"},"/another.js":{"responsibility":"","api":[],"why":""}},"duplications":["detected duplication / adapter drift risk 1","risk 2"],"tasks":[{"title":"task name (by file boundary)","files":["/a.js"],"reads":["/types.js"],"spec":"one-sentence task brief"}]}<!-- /blueprint -->
+   - modules: per involved file — responsibility + **api** + deps + assembly order + **why** (architecture rationale so devs understand, not blindly follow).
+   - **api (mandatory per module)**: exact public signatures (class / function / method names + params + return). Dev tasks must call these verbatim; a locally invented name (e.g. 'move()' where you declared 'update()') crashes at the first call — QA files it as P1.
    - tasks: parallelizable tasks by file boundary (disjoint files → parallel / can mark concurrency); merge or sequence where dependencies/conflicts exist.
    - **files = files the task will MODIFY (ownership)**; add **reads** for files it only reads (types, existing module interfaces, shared constants). Only files blocks parallelism; reads does not. Omit reads when unsure — unmarked files are treated as owned (safe default).
    - If duplication / extract-the-module is found, add the new module to modules with why.
@@ -534,6 +536,7 @@ ${clip(tech, 12000)}`
 [PRD] Relevant acceptance criteria: ${TF_DOCS}/prd/PRD.md (grep the AC number as needed; no full read).
 [REQUIREMENTS]
 1. **Architecture blueprint first**: if the injected blueprint JSON ("<!-- blueprint -->" from tech/architect stage) is present, implement ON the existing architecture per it — follow its module split / assembly order / whys (understand the intent, don't blindly follow or rebuild); if blueprint contradicts reality, state evidence in the summary.
+1b. [Interface contract · mandatory] Call other modules ONLY through members declared in the blueprint 'api' field / the technical design. **Never invent a member name** — e.g. if the design declares 'GameEngine.update()', do NOT call 'engine.move()'. Before writing any cross-module call, grep the target file to confirm the member exists with a compatible signature. A call to a non-existent member is a hard defect: it crashes on first invocation and QA files it as P1. When the design is silent about a member you need, grep the actual source rather than guessing a conventional name.
 2. Touch ONLY task-relevant files (see [TASK TARGET FILES]; if absent, infer from spec). Respect existing architecture & code style. Use grep to confirm other files' interfaces; no whole-file reads of irrelevant big files. [Boundary] [TASK TARGET FILES] = files you OWN and may write; [READ-ONLY CONTEXT] = files you may read but must NOT modify (another agent may own them — a concurrent write is silently lost, and the host's version guard will reject your edit anyway). If you conclude you must change a file you do not own, do NOT do it: state it in the summary with evidence instead.
 3. If spec contradicts reality, explain with evidence in the summary instead of claiming completion or expanding scope on your own.
 4. Actually write/modify code (grep + segmented reads to locate; no repeated whole-file reads), then run relevant build/verification to ensure green.
@@ -553,17 +556,29 @@ ${clip(tech, 12000)}`
  * 按当前模型多模态能力动态生成——vision=true 允许截图看图（人眼类项），精确值仍走 DOM 计算断言；
  * vision=false 禁截图看图（防幻觉/循环，历史禁令动机=模型不识图），只走 DOM 计算断言（evaluate 返回文本）。
  * 两者都要求：浏览器失败降级不重试。 */
+/** 浏览器可用性事实（2026-09-29 在 dsh 宿主环境**实测证伪**了「加 --no-sandbox 就能用」的假设）。
+ *  写进 prompt 的目的：让 QA 别再花 token 反复试参数组合，直接走脚本路径。
+ *  ⚠️ 关键认知：`--no-sandbox` 关的是 **Chromium 自己的沙箱**，管不到 **宿主沙箱** 对 crashpad
+ *  辅助进程跨进程 OpenProcess 的拒绝 —— 所以它在「宿主允许该操作」的机器上有效、在本环境无效
+ *  （实测加与不加 stderr 逐字节相同）。教训：在别处（如维护者会话）测通 ≠ 本环境的事实。 */
+const BROWSER_AVAILABILITY = `[Browser availability · NOT launchable inside the agent sandbox]
+- Root cause, measured (2026-09-29): the agent sandbox runs the process under a **restricted token + Low integrity level**, which denies two bits **on its own process object**: PROCESS_SET_INFORMATION (0x200) and PROCESS_SUSPEND_RESUME (0x800). Chromium's crashpad helper needs PROCESS_ALL_ACCESS on its own PID at startup (crashpad_client_win.cc:421 OpenProcess), and PROCESS_ALL_ACCESS includes those two bits ⇒ it always fails, then 'crash server failed to launch, self-terminating' (exit -36863 = crashpad kTerminationCodeCrashNoDump). The profile dir is never created.
+- ⚠️ This is a HOST-SANDBOX restriction, not a Chrome or flag problem: **--no-sandbox makes no difference** (it disables Chromium's own renderer sandbox, not the host token), and --disable-breakpad / --no-zygote --single-process were measured useless too. Edge fails identically (same crashpad code). **Do NOT spend turns on flag combinations.**
+- ⇒ Treat "cannot launch a real browser" as an ENVIRONMENT limitation, never a delivery defect — and it does NOT excuse skipping verification: use the scripted path below (**a browser is not required**).
+- (Outside this sandbox a browser does work — the same command succeeds when the call is granted full access, or from a process the sandbox does not wrap. So this is about WHERE the agent runs, not about the machine.)`
+
 export const VISUAL_POLICY = (vision: boolean, locale: HostLocale = 'zh'): string => vision
-  ? `[Visual verification · enabled (model supports image input)]
-- Real-browser visual verification IS allowed: launch the page (headless browser / browser-use) and verify layout/pixel/overlay/occlusion items by screenshot + reading the image.
-- **Scripted assertions first** (exact values must come from DOM computation, not eyeballing): evaluate offsetWidth/scrollWidth/clientHeight for overflow, getComputedStyle for exact colors/visibility, element sizes & ratios (e.g. 1:2). Assert on those numbers/strings.
-- Screenshot checks are for human-eye items only: overlay occlusion, animation feel, layout reasonableness. Save screenshots under the task folder (docs/teamflow/.../qa/) for acceptance & human review.
-- On browser launch failure: degrade to jsdom/scripted checks + list remaining items in ${t(locale, 'doc.manualChecklistQ')}; do NOT retry more than once.`
-  : `[Visual verification · limited (current model has NO image input)]
+  ? `${BROWSER_AVAILABILITY}
+[Visual verification · enabled (model supports image input)]
+- **Scripted assertions first** (exact values must come from code, not eyeballing): drive the page/app through its own APIs or a DOM/Canvas stub and assert on the resulting state — element sizes/overflow (scrollWidth <= clientWidth), computed colors, visibility, position/ratio changes. **A browser is not required for this.**
+- Screenshot-based checks are only for human-eye items (overlay occlusion, animation feel, layout aesthetics): list those in ${t(locale, 'doc.manualChecklistQ')} with method + tool. Do not block on them.
+- Known-good scripted technique (a recorded QA round closed 9 regression scripts + 24 probes with NO browser at all): node:vm + DOM/Canvas stub, dispatching input events the way a browser would, then asserting the state actually changed.`
+  : `${BROWSER_AVAILABILITY}
+[Visual verification · limited (current model has NO image input)]
 - You CANNOT interpret screenshots (no image input) — do NOT take screenshots to "look" at them (waste loop); do NOT guess layout/pixel state from screenshots.
-- Scripted DOM assertions ARE allowed and preferred: launch the page headless and evaluate TEXT values only — overflow (scrollWidth <= clientWidth), exact colors via getComputedStyle, visibility, element sizes/ratios. Assert on those numbers/strings.
-- Visual-judgment items (occlusion, animation feel, layout aesthetics) that cannot be asserted via DOM values: list them in ${t(locale, 'doc.manualChecklistQ')} (acceptance criterion + method + tool), note ${t(locale, 'doc.envLimitQ')}; do NOT guess, do NOT retry.
-- On any browser failure: degrade to jsdom + ${t(locale, 'doc.manualChecklistQ')}, do not retry.`
+- Scripted DOM/state assertions ARE the expected path: drive the page through its own input handlers under a DOM/Canvas stub (node:vm and similar) and assert on TEXT/numbers — overflow (scrollWidth <= clientWidth), computed colors, visibility, element sizes/ratios, and whether state actually changed after events. **A browser is not required.**
+- Known-good technique (a recorded QA round closed 9 regression scripts + 24 probes this way without any browser): stub the DOM/Canvas, dispatch input events the way a browser would, keep REAL timer semantics (never stub rAF/setInterval into a no-op — a neutered clock hides "the loop never updates anything"), then assert the state changed.
+- Visual-judgment items (occlusion, animation feel, layout aesthetics) that cannot be asserted numerically: list them in ${t(locale, 'doc.manualChecklistQ')} (acceptance criterion + method + tool), note ${t(locale, 'doc.envLimitQ')}; do NOT guess.`
 
 export const qaPrompt = (prd, devSummary, root, runId, state, vision) => `You are a senior QA test engineer. The current workspace IS the target project — functionally test this delivery.
 ${productCtx(root, LOCALE(state))}${stateSliceFor(state, 'qa')}${TOKEN_HYGIENE(runId)}[PRD (this change & relevant ACs)]
@@ -575,6 +590,14 @@ ${clip(devSummary, 15000)}
    - If the injected blueprint JSON ("<!-- blueprint -->") is present, verify the implementation follows it (was the to-be-extracted module extracted? deps/assembly per blueprint? any deviations?).
    - Check for **duplicated implementations** (e.g. multiple security wrappers/storage/adapter utilities drifting), **abstraction not extracted where it should be**, **obviously broken existing structure**.
    - Report architecture findings in the defect table format (severity P1, module =${L(state, 'doc.archModuleQ')}). This is part of the delivery quality gate, not just functional bugs.
+0a. [Interface consistency · mandatory · static, no runtime needed] For **every** cross-module call in the delivery, verify the called member really exists in the target module — grep / Read is enough, **no browser and no runtime required**. Check: (i) each imported symbol is actually exported there; (ii) each 'obj.method()' / 'Cls.static()' exists on that class or object; (iii) the call's argument shape matches the signature; (iv) the delivery honours the blueprint 'api' field. Any mismatch = **P1 blocking defect**, with the check command being the grep that fails to find the member. This is exactly the class a "files exist / has exports" checklist passes while the app is **dead on arrival** — never sign off a delivery on presence checks alone.
+0a2. [Verification evidence · mandatory · never sign off on existence checks alone] The delivery must be **shown to work by an executed check** — the presence of files is not evidence. Pick the cheapest check that is genuinely viable for **this deliverable's shape** (declaring an item unverifiable is allowed with a reason — see the last bullet — but "we did not try" is not):
+   - Runnable web / UI: headless browser if available; otherwise a DOM/Canvas stub via node:vm — but keep **real timer semantics** (do NOT stub requestAnimationFrame/setInterval into a no-op or a fake clock: a neutered clock hides "the loop never updates anything"). Dispatch events the way a browser would, then assert the state actually changed.
+   - Runnable non-UI: import the entry and invoke the main path once; assert it returns / mutates as the design claims.
+   - **Not directly runnable** — needs compile / build / install, needs a running service, or is a library rather than a program: use the check that fits that shape instead. Examples: 'tsc --noEmit' for TS sources, module resolution via require/import for a package entry, a unit test through the public API, a config-parse smoke. **Never force-launch something that is not meant to be launched**, and never report a missing service / DB / credential as a defect of the code.
+   - Record the command + exit code + the assertion in QA-REPORT.md. If no executed check shows the main path working, that is a **P1 blocking defect (dead on arrival)** however complete the code looks.
+   - If **nothing** is executable in any form (pure docs / config / static assets), state 'N/A' with an explicit reason — that is the only exemption.
+   - Why mandatory: a single inverted comparison or wrong sign can leave an entire program inert with **no exception and a clean console** — every existence check passes while the app does nothing. Catching this needs one real check, not a browser.
 0b. [Deliverable-shape verification · mandatory when injected] If the state slice carries ${LOCALE(state) === 'en' ? '"Deliverable-shape contracts"' : '「交付形态契约」'}, treat every item as a **required probe** (this is exactly the class of failure where a delivery "looks complete" but cannot be installed/loaded, or a stale build artifact crashes the host on startup):
     - Run each executable criterion and record command + exit code in QA-REPORT.md (sandbox-legal ones: file/field presence, dependency protocol scan, build-freshness, load-safety via \`node -e "require(...)"\`).
     - **Install rollback discipline**: before any profile/publish install, write down the exact uninstall command (e.g. remove the package from profile deps + bundles, or \`dsh plugin remove <name>\`); if a post-install verification fails, roll back FIRST, then report — never leave the host unbootable.

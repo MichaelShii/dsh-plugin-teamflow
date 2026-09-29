@@ -2,7 +2,7 @@
  * dsh-plugin-teamflow — 产品线装配（全局面板数据面）测试。
  *
  * 全局面板（侧边栏图标 + root `main` 面板）没有会话上下文，宿主改由「产品线 key」
- * 装配数据：本测试覆盖 core/products.ts 的纯装配逻辑 + 两个空态：
+ * 装配数据：本测试覆盖 core/workspace/products.ts 的纯装配逻辑 + 两个空态：
  *   1) runAddress：host 生成的右栏 tab 地址（编码 + 形状）
  *   2) productKeyOf：产品线 key 白名单（拒绝盘符/穿越/空白）
  *   3) runsFor：按产品线过滤 + 按 startedAt 倒序
@@ -14,10 +14,10 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { runs } from '../host/core/context.ts'
+import { runs } from '../host/core/agent/context.ts'
 import {
   runsFor, runAddress, productKeyOf, runVisibleIn, runUsageSum, runBrief, productMetaOf, listProducts,
-} from '../host/core/products.ts'
+} from '../host/core/workspace/products.ts'
 import { teamflowRoot } from '../store.ts'
 
 let failed = 0

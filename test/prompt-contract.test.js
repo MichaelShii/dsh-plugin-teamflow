@@ -515,14 +515,27 @@ assertContract({
 
 // ── 视觉能力条款（按模型多模态能力动态生成，两分支互斥）──
 assertContract({
+  id: 'BROWSER-AVAILABILITY-KNOWN', level: 'policy', targets: ['visualOn', 'visualOff'],
+  intent: '视觉两分支都写明「在 agent 沙箱内浏览器不可启动」+ 根因（受限令牌缺 0x200/0x800）+ 实测无效的'
+    + '绕法清单 —— 防 QA 反复试参数白烧 token、或把它当交付缺陷',
+  include: [
+    /Browser availability · NOT launchable inside the agent sandbox/,
+    /crashpad_client_win\.cc:421 OpenProcess/,
+    /PROCESS_SET_INFORMATION \(0x200\)/,
+    /--no-sandbox makes no difference/,
+    /Do NOT spend turns on flag combinations/,
+    /a browser is not required/,
+  ],
+})
+assertContract({
   id: 'VISUAL-ON-SCRIPTED-FIRST', level: 'policy', targets: 'visualOn',
-  intent: 'vision=true：截图仅限人眼类项，精确值仍走 DOM 计算断言；浏览器失败降级不重试',
-  include: [/Visual verification · enabled/, /Scripted assertions first/, /offsetWidth/, /人工补测清单/, /do NOT retry more than once/],
+  intent: 'vision=true：脚本断言为主（浏览器不可用也照做），截图仅限人眼类项并入人工补测清单',
+  include: [/Visual verification · enabled/, /Scripted assertions first/, /人工补测清单/, /A browser is not required/],
 })
 assertContract({
   id: 'VISUAL-OFF-NO-SCREENSHOT', level: 'policy', targets: 'visualOff',
-  intent: 'vision=false：禁截图看图（防幻觉/循环），只走 DOM 文本断言，目测项进人工补测',
-  include: [/Visual verification · limited/, /You CANNOT interpret screenshots/, /do NOT take screenshots/, /人工补测清单/, /do NOT guess, do NOT retry/],
+  intent: 'vision=false：禁截图看图（防幻觉/循环），走 DOM/Canvas 桩的脚本断言（不需要浏览器），目测项进人工补测',
+  include: [/Visual verification · limited/, /You CANNOT interpret screenshots/, /do NOT take screenshots/, /人工补测清单/, /do NOT guess/, /A browser is not required/],
 })
 
 // ── policy：产物交付（官方 present 工具 → 交付文件卡）──
@@ -673,6 +686,53 @@ assertContract({
   id: 'EN-CONFIRM-SHEET-LABEL', level: 'policy', targets: 'patchConfirmPrompt', en: true,
   intent: 'QA-3：确认单标签英文（patch 档产物标题随 run 语言）',
   include: [/confirmation sheet/],
+})
+
+// ── 接口契约（2026-09-28，复盘 tf-mul4t5ga-ajs4i4 贪吃蛇）──
+// 事故：蓝图只定「文件边界」不定「接口」⇒ 两个任务对同一模块各写一套方法名
+// （main.js 调 GameEngine.move/render/toggleRunning，实际是 update/draw/start|stop）→ 打开页面首帧
+// TypeError；而 QA 的「文件存在 / 有 export」清单全绿放行。三条锁分别对应三层修复：
+// 蓝图必须给 api 签名 → dev 必须逐字使用 → QA 必须做静态接口一致性核对（不需要浏览器/运行时）。
+/* 声明与投递必须一致（2026-09-29 修）：
+ * devPrompt / qaPrompt / acceptancePrompt 三处都写着「if the injected blueprint JSON
+ * ("<!-- blueprint -->") is present」，但 stateSliceFor 的白名单只有 arch/tech/dev ⇒
+ * qa 与 acceptance 那两句**永远为假**，只能退回 ARCHITECTURE.md 猜契约
+ * （观察期 run tf-muliqvaq 的 QA 报告自己点出「本阶段上下文未注入 <!-- blueprint --> JSON」）。
+ * 修在 host/core/domain/state.ts 的 BLUEPRINT_ROLES；此锁防它被改回去。 */
+assertContract({
+  id: 'BLUEPRINT-REACHES-DECLARED-ROLES', level: 'structural',
+  targets: ['devPrompt', 'qaPrompt', 'qaPromptReverify', 'acceptancePrompt'],
+  intent: '凡声明「若注入蓝图则依它核对」的角色，必须真的收到蓝图（dev 依它实现；qa/acceptance 依它核对接口一致性与模块抽取）',
+  // ⚠️ 必须匹配**注入载荷**而不是 `<!-- blueprint -->` 字面量 —— 后者的标记语在 prompt 正文里也有
+  // （"if the injected blueprint JSON (<!-- blueprint -->) is present"），拿它当锚点会永远为真、锁等于没有。
+  // 这行锚点经过「临时回退修复 → 断言必须变红」验证，不是想当然。
+  include: [/\{"summary":"s"\}/],
+})
+assertContract({
+  id: 'BLUEPRINT-API-SIGNATURES', level: 'structural', targets: ['techPrompt', 'architectPrompt'],
+  intent: '蓝图 schema 与说明都要求 modules 给出 api 精确签名（下游逐字使用，不得自创成员名）',
+  include: [/"api":\[/, /api \(mandatory per module\)/],
+})
+assertContract({
+  id: 'DEV-INTERFACE-CONTRACT', level: 'policy', targets: 'devPrompt',
+  intent: 'dev 只许调用蓝图/设计里声明的成员；禁止自创方法名（写调用前先 grep 目标文件确认存在）',
+  include: [/\[Interface contract · mandatory\]/, /Never invent a member name/],
+})
+assertContract({
+  id: 'QA-INTERFACE-CONSISTENCY', level: 'policy', targets: 'qaPrompt',
+  intent: 'QA 必须做接口一致性核对（静态 grep 即可）；不匹配 = P1 阻断——「文件存在/有 export」清单拦不住这类死机',
+  include: [/\[Interface consistency · mandatory · static, no runtime needed\]/, /P1 blocking defect/],
+})
+assertContract({
+  id: 'QA-VERIFICATION-EVIDENCE', level: 'policy', targets: 'qaPrompt',
+  intent: 'QA 必须用一次真实执行过的检查证明交付可用（命令+结果），跑不动 = P1（专治「一个符号反了、全程无异常」'
+    + '的静默失效）；同时锁住「不得强行执行不该执行的交付」—— 需编译/依赖服务/纯库的形态走等价检查',
+  include: [
+    /\[Verification evidence · mandatory · never sign off on existence checks alone\]/,
+    /dead on arrival/,
+    /real timer semantics/,
+    /Never force-launch something that is not meant to be launched/,
+  ],
 })
 
 console.log(failed === 0 ? '\n✅ prompt-contract 全部通过' : `\n❌ prompt-contract ${failed} 项契约失败`)
