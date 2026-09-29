@@ -42,7 +42,8 @@ const CANDIDATES = [
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
 ]
 
-function findBrowser(): string | null {
+/** 定位一个可用的 Chromium 系可执行文件（先常见路径，再 where/which）。找不到返回 null。 */
+export function findBrowser(): string | null {
   for (const c of CANDIDATES) {
     try { if (existsSync(c)) return c } catch (e) { /* 忽略 */ }
   }
@@ -151,7 +152,7 @@ export interface LoadCheck {
 const HTML_ENTRY = /\.html?$/i
 
 /** 挑一个入口：优先 index.html，其次任意 html（相对 root）。 */
-function pickHtmlEntry(root: string): string | null {
+export function pickHtmlEntry(root: string): string | null {
   const files = listDeliverableFiles(root)
   const htmls = files.filter((f) => HTML_ENTRY.test(f))
   if (!htmls.length) return null

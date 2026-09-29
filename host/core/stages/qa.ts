@@ -15,6 +15,7 @@ import { persistJournal } from '../../../store.ts'
 import { currentModelSupportsVision } from '../agent/context.ts'
 import { captureLoadCheck } from '../workspace/browser-probe.ts'
 import { checkDeliverableInterfaces } from '../workspace/interface-check.ts'
+import { runHostSmoke } from '../workspace/smoke-check.ts'
 import { phaseLabel, t } from '../../locales.ts'
 import type { PipelineCtx } from '../pipeline.ts'
 /**
@@ -85,6 +86,31 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
         journal.logs.push({
           t: Date.now(), level: 'info',
           message: t(locale, 'log.hostInterfaceSkip', { reason: ic.status, n: ic.files }),
+        })
+      }
+    } catch (e) { /* 纯记录，绝不因此影响流水线 */ }
+    // host 侧冒烟（2026-09-29，**纯记录、零行为影响**）：host 自己用真浏览器加载一次交付，
+    // 数「绘制调用 / rAF 调度 / DOM 变更」—— 三者全 0 意味着页面**全程没有任何可观测变化**
+    // （贪吃蛇那次就是循环空转、控制台干净但画面不动）。
+    // 为什么必须 host 做：0a2 与证据探针都是「要求模型自己写证据」，而本插件面向任意模型
+    // （含本地小模型）—— 弱模型实测三次全写不出 ⇒ 靠模型自律的门禁对一半用户无效，
+    // 且绝不能升成硬失败（否则不会写的模型每个 run 都失败）。机器取证与模型能力无关。
+    try {
+      const sm = runHostSmoke(fsRoot)
+      if (sm.status === 'no-motion') {
+        journal.logs.push({
+          t: Date.now(), level: 'warn',
+          message: t(locale, 'log.hostSmokeNoMotion', { entry: sm.entry || '', ms: sm.ms }),
+        })
+      } else if (sm.status === 'ok') {
+        journal.logs.push({
+          t: Date.now(), level: 'info',
+          message: t(locale, 'log.hostSmokeOk', { draw: sm.draw, raf: sm.raf, mut: sm.mutations, ms: sm.ms }),
+        })
+      } else {
+        journal.logs.push({
+          t: Date.now(), level: 'info',
+          message: t(locale, 'log.hostSmokeSkip', { reason: sm.note || sm.status }),
         })
       }
     } catch (e) { /* 纯记录，绝不因此影响流水线 */ }

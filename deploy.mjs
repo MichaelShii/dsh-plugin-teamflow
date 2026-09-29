@@ -52,6 +52,7 @@ const FILES = [
   'host/core/workspace/products.ts',
   'host/core/workspace/browser-probe.ts',
   'host/core/workspace/interface-check.ts',
+  'host/core/workspace/smoke-check.ts',
   'host/core/domain/state.ts',
   'host/core/domain/teams.ts',
   'client/index.tsx',
