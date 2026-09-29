@@ -17,7 +17,7 @@ import { TEAMFLOW_REMOTE_CONTRIBUTION } from '../descriptors.js'
 import { T, phaseNameOf, phaseIconOf, phaseKeyOf, COLUMNS, h, MONO, SANS, flexRow, chip, FoldableText, CancelButton, fmtDur, fmtTokens, totalTokens, usageDetail, stageUsageLine, byRoleLine, totalUsage, stText, stColor, runStatusText, kindTitle, roleChip, stageLabelOf, stageStatusText, t, setTranslator, localeTag } from './shared.js'
 import { NS, zh, en } from './locales.js'
 import { GlobalPanel, TeamflowPanelIcon, RunDetailTab, runTabDefinition, RUN_TAB_ID } from './panel.js'
-import { fitScale, zoomBy as applyZoomFactor, pinchView, pointerDist, pickViewMode } from './viewport.js'
+import { fitScale, zoomBy as applyZoomFactor, pinchView, pointerDist, pickViewMode, LIST_BREAKPOINT } from './viewport.js'
 
 // uiWorkspace：跳会话唯一入口（0.1.7-alpha.1 起 `uiWorkspace.openSession(target)` 取代已移除的 `sessions.openSubagent` / `sessions.open`）
 export const inject = ['remote', 'slots', 'uiWorkspace', 'locale']
@@ -562,8 +562,9 @@ function PipelinePanel({ active, api, runId, sessionId, uiWorkspace }) {
   h('button', { title: t('pipeline.zoomIn'), onClick: () => zoomBy(1.16), style: zoomStyle }, '+'),
   h('span', { style: { width: 1, height: 14, background: T.border } }),
   h('button', { title: t('pipeline.fitCanvas'), onClick: fitNow, style: { ...zoomStyle, fontSize: 13 } }, '⤢'),
-  h('span', { style: { width: 1, height: 14, background: T.border } }),
-  h('span', { style: { fontSize: 10.5, color: T.text2, paddingRight: 4, opacity: 0.85 } }, t('pipeline.canvasHint')),
+  // 窄容器（= 列表区间）不显示操作提示：那里没有滚轮（触屏），提示还会把控制簇挤满一行。
+  vw < LIST_BREAKPOINT ? null : h('span', { style: { width: 1, height: 14, background: T.border } }),
+  vw < LIST_BREAKPOINT ? null : h('span', { style: { fontSize: 10.5, color: T.text2, paddingRight: 4, opacity: 0.85 } }, t('pipeline.canvasHint')),
   ),
   ),
   /* 阶段详情浮层：悬浮于画布右上，不挤占画布宽度；浮层内滚轮只滚正文（原生 stopPropagation），不触发画布缩放。
