@@ -546,6 +546,9 @@ ok(/来源：subagentTiming 投影/.test(hostSrc) && /投影不可用，回退�
 ok(!/runtime\.tokenMeter/.test(contextSrc) && !/tokenMeter\?: any/.test(contextSrc), 'context：tokenMeter 死注入已清理（static inject / setRuntime / runtime 三处）')
 ok(/const FS_CONTENTION = \//.test(guardSrc) && /file no longer exists/.test(guardSrc), 'guard：fs 竞争类错误不进环境指纹（obs-r5 T3 实锤：单文件级可自愈冲突被误判成 env-unavailable，而活已干完）')
 ok(/lastSuccessAt = Date\.now\(\)/.test(guardSrc) && /GUARD_ENV_PROGRESS_GRACE_MS/.test(guardSrc), 'guard：env-unavailable 前有进展豁免（用**成功**调用判定，不用 lastMutationAt —— 后者在 tool/call 就更新，反复失败的 write 会让检测永不触发）')
+ok(/TOOL_SCOPE_LIMIT/.test(guardSrc) && /not a member of an active Agent Team/.test(guardSrc) && /TOOL_SCOPE_LIMIT\.test/.test(guardSrc), 'guard：\u300c工具在这一层不适用\u300d（Agent Team 成员身份 / maxDepth）不进环境指纹 —— obs-r5 实锤：QA 复验调 send_message 连错 3 次被 abort，整个 run failed')
+ok(/7c\. \[End-to-end coverage/.test(promptsSrc), 'prompts：dev 有状态交付物必须给端到端运行证据（obs-r5 实锤：单元断言全绿但首关永不可清空，QA 400k 帧模拟才暴露）')
+ok(/\[No collaboration tools/.test(promptsSrc) && /send_message \/ interrupt_agent \/ list_agents \/ subagent/.test(promptsSrc), 'prompts：禁调协作工具（depth-1 子代理无 Agent Team 身份，调用必失败且会被 env guard 误读）')
 
 console.log('── 3r) 产物一键预览（host 出 dsh-resource 地址 → 工作台交右侧栏）──')
 ok(/TEAMFLOW_ARTIFACT_ORDER/.test(constantsSrc) && /fileAddressFor/.test(hostSrc) && /artifacts: runArtifacts/.test(hostSrc), 'host：itemDetail 返回任务夹产物清单（官方 fileAddressFor 地址 + 展示顺序）')

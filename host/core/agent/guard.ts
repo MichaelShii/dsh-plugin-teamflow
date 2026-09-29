@@ -55,6 +55,14 @@ const PROGRESS_TOOLS = /^(edit|write|create|apply_patch|patch|remove|delete|rm|m
  * failed + needs-human。**而它随后换个文件名就写成功了、检查器 33/33 全过** —— 活是干完了的。 */
 const FS_CONTENTION = /file no longer exists|file changed|FS_STALE_VERSION|re-read the file, then retry/i
 
+/** 「工具在这一层不适用」类错误（2026-09-30 实锤 obs-r5 QA 复验轮）：**权限/能力边界**，不是环境故障。
+ * 流水线子代理是 depth-1、无 Agent Team 成员身份，调用协作工具必然失败；但它**换个工具就能继续**
+ * —— 与「工作区全废」（重试/绕道/推理都救不了）不是一回事。
+ * 实锤代价：QA 复验子代理连调 send_message / list_agents（同一个 "not a member of an active Agent Team"）
+ * 共 3 次 → 被 abort → 整个 run failed，而它连一个 checker 都还没跑（回归契约复跑为零）。
+ * 注：进展豁免救不了这种 —— 它从第一次调用就失败，全程没有任何**成功**调用。 */
+const TOOL_SCOPE_LIMIT = /is not a member of an active Agent Team|exceeds maxDepth|subagent depth \d+/i
+
 /** Agent 活动守卫（2026-09-06 实锤 r1）：QA 子代理正常干活却被判「10 分钟无事件」——
  * 事件视图可能失明（session.events 缓存快照不增长）。若 agent 仍非 idle（phase 在跑）
  * 且本会话动过手（lastMutationAt>0）→ 不是挂死，跳过本次判定（不中止）。
@@ -416,7 +424,7 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
       if (!isToolErrorResult(e.data)) { lastSuccessAt = Date.now(); continue }
       const text = toolResultText(e.data)
       // fs 竞争类错误不进环境指纹（见 FS_CONTENTION 注释）：它是文件级可自愈冲突，不是工作区级故障。
-      if (FS_CONTENTION.test(String(text))) {
+      if (FS_CONTENTION.test(String(text)) || TOOL_SCOPE_LIMIT.test(String(text))) {
         if (!fsContentionWarned) {
           fsContentionWarned = true
           try { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.fsContention', { detail: clip(String(text).replace(/\s+/g, ' ').trim(), 160) }) }) } catch (e2) { /* ignore */ }
