@@ -32,7 +32,7 @@
  * /token|context|limit/ 正则；只有 'degenerated' 享受干净重试豁免（runner.withRetry）。
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { GUARD_NO_TOOL_MS, GUARD_POLL_MS, GUARD_REPEAT_LIMIT, GUARD_SILENCE_MS, GUARD_TOOL_FAIL_ABORT, GUARD_TOOL_FAIL_WARN, GUARD_WINDOW_SIZE } from '../../constants.ts'
+import { GUARD_ENV_PROGRESS_GRACE_MS, GUARD_NO_TOOL_MS, GUARD_POLL_MS, GUARD_REPEAT_LIMIT, GUARD_SILENCE_MS, GUARD_TOOL_FAIL_ABORT, GUARD_TOOL_FAIL_WARN, GUARD_WINDOW_SIZE } from '../../constants.ts'
 import { clip, isToolErrorResult, toolFailureAction, toolFailureSignature, toolResultText } from '../../util.ts'
 import { t, type HostLocale } from '../../locales.ts'
 import { runtime } from './context.ts'
@@ -45,6 +45,15 @@ import type { JournalStage } from '../../../store.ts'
  * 纯 read 循环（反复整读同一文件却无变更/无脚本执行）= 真退化。实锤 run tf-mte906e9：QA 重跑
  * 只读分析（不 edit）→ 旧判定「零变更进展」误杀，第 2 次 provider error 后 450k 熔断。 */
 const PROGRESS_TOOLS = /^(edit|write|create|apply_patch|patch|remove|delete|rm|mkdir|move|rename|append|bash|pwsh|shell|powershell)$/i
+
+/** fs 竞争类错误（2026-09-30 实锤 obs-r5 T3）：**单文件级、可自愈**，与「工作区全废」的环境故障
+ * （ACL provision 失败 / shell 不可用）不是一回事，不得据此早停。来源是宿主 fs-observation-policy
+ * 的版本检查（写一个被观察过但已变化的文件时拒绝）。
+ * 实锤代价：T3 用 `Get-Content -Raw | Set-Content` 把自建检查器损坏成非法 UTF-8 → 删掉 → 之后反复
+ * write 同一路径 → 每次报 `file no longer exists — re-read the file, then retry`（该指引对「新建文件」
+ * 场景本身是死循环：文件不存在，无从 re-read）→ 累计 3 次被 abort（env-unavailable，不重试）→ 阶段
+ * failed + needs-human。**而它随后换个文件名就写成功了、检查器 33/33 全过** —— 活是干完了的。 */
+const FS_CONTENTION = /file no longer exists|file changed|FS_STALE_VERSION|re-read the file, then retry/i
 
 /** Agent 活动守卫（2026-09-06 实锤 r1）：QA 子代理正常干活却被判「10 分钟无事件」——
  * 事件视图可能失明（session.events 缓存快照不增长）。若 agent 仍非 idle（phase 在跑）
@@ -178,6 +187,11 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
   // 失败指纹 → 累计次数（跨轮询持久）+ 已提醒过的指纹（同一指纹只提醒一次，避免刷屏）
   const toolFailures = new Map<string, number>()
   const toolFailWarned = new Set<string>()
+  // 进展信号（env-unavailable 判定用）：最近一次**成功**的工具调用时间。刻意不复用 lastMutationAt ——
+  // 后者在 tool/call 就更新，而「反复调用 write 且每次都失败」恰是被误判的形态，用它等于让检测永不触发。
+  let lastSuccessAt = 0
+  let envProgressWarned = false
+  let fsContentionWarned = false
 
   function warnOnce(key: string, set: Set<string>, message: string, hint?: string) {
     if (set.has(key)) return
@@ -398,10 +412,19 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
         continue
       }
       if (e.type !== 'tool/result') continue
-      if (!isToolErrorResult(e.data)) continue
+      // 成功调用 = 会话仍在产出（进展豁免的依据）
+      if (!isToolErrorResult(e.data)) { lastSuccessAt = Date.now(); continue }
+      const text = toolResultText(e.data)
+      // fs 竞争类错误不进环境指纹（见 FS_CONTENTION 注释）：它是文件级可自愈冲突，不是工作区级故障。
+      if (FS_CONTENTION.test(String(text))) {
+        if (!fsContentionWarned) {
+          fsContentionWarned = true
+          try { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.fsContention', { detail: clip(String(text).replace(/\s+/g, ' ').trim(), 160) }) }) } catch (e2) { /* ignore */ }
+        }
+        continue
+      }
       const callId = (e.data as { message?: { toolCallId?: unknown } } | null)?.message?.toolCallId
       const tool = (typeof callId === 'string' && callNames.get(callId)) || 'command'
-      const text = toolResultText(e.data)
       const sig = toolFailureSignature(tool, text)
       const n = (toolFailures.get(sig) || 0) + 1
       toolFailures.set(sig, n)
@@ -415,6 +438,16 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
         try { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.toolFail', { label, tool, n, detail }) }) } catch (err) { /* ignore */ }
         injectReminder(run, `[ENV GUARD · reminder] ${t(locale, 'guard.reminderToolFail', { tool, n, detail })}`, locale)
       } else if (action === 'abort') {
+        // 进展豁免（2026-09-30 实锤 obs-r5 T3）：最近仍有成功调用 → 会话在推进，不是「工作区全废」型故障，
+        // 不早停（与复读检测的 lastMutationAt 豁免同款意图；差异见 lastSuccessAt 的注释）。
+        if (Date.now() - lastSuccessAt < GUARD_ENV_PROGRESS_GRACE_MS) {
+          if (!envProgressWarned) {
+            envProgressWarned = true
+            try { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.envProgress', { tool, n, detail }) }) } catch (e2) { /* ignore */ }
+          }
+          toolFailures.set(sig, GUARD_TOOL_FAIL_ABORT - 1) // 压回阈值下：有进展就不判死，下轮可再判
+          continue
+        }
         stage.envUnavailable = `${tool}: ${detail}`
         fire(t(locale, 'guard.reasonToolFail', { tool, n, detail }), 'env-unavailable')
         return

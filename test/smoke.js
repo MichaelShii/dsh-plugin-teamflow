@@ -543,6 +543,8 @@ ok(!/queue as \{ __teamflowPending/.test(guardSrc) && !/function flushReminders/
 ok(/function timingOf/.test(guardSrc) && /stateOf\(session, 'subagentTiming'\)/.test(guardSrc) && /activeThrough/.test(guardSrc), 'guard：挂死检测首选 subagentTiming 投影（active.through）')
 ok(/来源：subagentTiming 投影/.test(hostSrc) && /投影不可用，回退事件视图/.test(hostSrc), 'guard：投影不可用才回退事件视图启发式（诊断区分两条路径）')
 ok(!/runtime\.tokenMeter/.test(contextSrc) && !/tokenMeter\?: any/.test(contextSrc), 'context：tokenMeter 死注入已清理（static inject / setRuntime / runtime 三处）')
+ok(/const FS_CONTENTION = \//.test(guardSrc) && /file no longer exists/.test(guardSrc), 'guard：fs 竞争类错误不进环境指纹（obs-r5 T3 实锤：单文件级可自愈冲突被误判成 env-unavailable，而活已干完）')
+ok(/lastSuccessAt = Date\.now\(\)/.test(guardSrc) && /GUARD_ENV_PROGRESS_GRACE_MS/.test(guardSrc), 'guard：env-unavailable 前有进展豁免（用**成功**调用判定，不用 lastMutationAt —— 后者在 tool/call 就更新，反复失败的 write 会让检测永不触发）')
 
 console.log('── 3r) 产物一键预览（host 出 dsh-resource 地址 → 工作台交右侧栏）──')
 ok(/TEAMFLOW_ARTIFACT_ORDER/.test(constantsSrc) && /fileAddressFor/.test(hostSrc) && /artifacts: runArtifacts/.test(hostSrc), 'host：itemDetail 返回任务夹产物清单（官方 fileAddressFor 地址 + 展示顺序）')
