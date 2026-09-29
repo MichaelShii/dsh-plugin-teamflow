@@ -45,6 +45,7 @@ const FILES = [
   'host/core/stages/dev.ts',
   'host/core/stages/qa.ts',
   'host/core/stages/acceptance.ts',
+  'host/core/clarify-log.ts',
   'host/core/triage.ts',
   'host/core/workspace/sanity.ts',
   'host/core/workspace/runlogs.ts',

@@ -5,6 +5,19 @@
 
 ## 真待办（需人决策/行动）
 
+- 🔜 **澄清的可观测性与失效路径（ADR-0010，2026-09-30 立项）**：顺序已定 —— ① **补澄清埋点**；② **修分诊 fallback 时闸门静默失效**；③ 再定澄清强度策略（`interview` 档 + 硬终止）。**前两步未完成前不实现 `interview`**（否则无法验收）。
+  **纠错背景（勿再犯）**：`journal.triage.blockers` 恒为 0 是**结构性盲区**——澄清命中时 `needs-clarification` **不建 run**，那次裁决不落盘；落盘的是澄清后建 run 那次（blockers 已被收敛规则放过）。据此统计会得出「闸门从未触发」的**反结论**（实测 28 run 全 0）。真实澄清至少 **4 例**（贪吃蛇 ×2 的运行形态/技术栈/玩法范围、返工方式裁定、插件安装形态）⇒ **统计前先问「该字段在哪条路径上被写入」**。
+  **失效路径实证**：28 个有 triage 记录的 run 里 **4 个 `source: fallback`**，而 `fallbackVerdict` 硬编码「永不拦启动」——含 `tf-mu4bve7t-duux2k`「我想开发一个 dsh 插件」→ **直接跑完**（即社区 #6405 那例）。
+  **设计约束（ADR-0010 D5）**：访谈只能发生在主会话（子代理不能提问），故 issue #11 的「新增前置阶段 `discovery`」不成立。
+  详见 `docs/adr/0010-clarification-observability.md`（含 5 项待定：埋点落点/字段、fallback 行为、`interview` 默认矩阵、去交互化机制的取舍）。
+
+- 🔜 **子代理形态按阶段选择（continuable 试点；2026-09-30 立项，含 fork 评估结论）**：
+  **宿主事实（2026-09-30 查实，勿再当「几种模式」）**：子代理 = 两个正交维度 —— 形态（one-shot / continuable）× 后端（spawn = 全新 / fork = 以父级**已完成轮次**为初始内容）。本机 `dsh-base` 组合**两个后端都注册**（`dsh-base/cordis.patch.yml:351-359`）；模型侧工具 `subagent` = spawn + **continuable**、`subagent_fork` = fork + one-shot。本插件走 `subagents.start()` 直连 API = **spawn + one-shot**（调用点仅 `runner.ts:165` 与 `triage.ts:644`）。
+  **fork 已评估 → 对本插件不适用**：它继承的是「发起委派那个 agent」的已完成轮次，而我们的阶段子代理由 **主会话 agent** 发起 ⇒ 继承的是用户对话而非上游阶段产物；且 token 暴增（复制整段历史）、一次性快照、工具作用域与权限全不继承。
+  **continuable 的真实成本**（⚠️ 勿引用已作废的旧版「撞 8 / 无 outputSchema」论证：8 是**按父池**的驻留上限、混合方案不撞；`outputSchema` 全仓 0 命中 = 假障碍）：① 必须主动 `drainContinuableChildren`（驻留不释放会累积到 `maxActiveSubagents=8` → `ACTIVATION_LIMIT_REACHED`，**不排队**）；② **结算通知会进父级上下文**（每个结算 Activation 往父级塞一条 `Background subagent X finished…` user 消息 → 主会话 token 成本）；③ `run.result` → inbox/turn 适配层；④ `interrupt` 只停当前轮不销毁 → 取消 run 要补 drain 才是真停。
+  **前提 = 按阶段选择，不是一刀切**（用户主张）：真正需要「续」的只有 **dev**（空收尾）与 **qa / qa-fix**（复用同一 dev 子代理）；prd / design / scaffold / tech / acceptance / 分诊 都是一次产出 → 保持 one-shot（且**不占池**）。**机制可行性**：`sendMessage` 要求 sender = 确切在线 Agent —— 我们**有**（`runtime.agents.get(sessionId)` → 主会话 agent，`host/index.ts:997` 已在用）。
+  **⚠️ 判据待定（先攒数据）—— tf-obs-r1 实测给出的反证**（`tf-muliqvaq-v8c58b`：medium，16 阶段 / 50 min / 369 调用 / 2424 万 token / ⚠️需人工）：① 该 run **无空收尾**（16 阶段全 done）⇒ continuable 的主要目标场景**未发生**；② 「省重灌」的**可确证部分极小** —— 打回修复两轮（seq12/14）的 fresh input 仅 3.0 万 + 3.5 万，**占总 token 0.27%**（prefill 的 ~95% 已落在廉价的 cacheRead 上）；而「复用上下文 → 减少重复探索调用」的收益**无法从现有数据推出**，须实测；③ 真实大头是 **QA 闭环 41.7%** 与 **scaffold 15.4%（48 调用 / 327s，机械阶段却第三贵）** —— 两者都与子代理形态无关。**⇒ 继续攒空收尾样本；本条优先级低于对「scaffold 成本」与「QA 三轮 + 复验超限」的评估。**
+
 - 🔜 **空收尾续跑（B 档，continuable 换轨）——2026-09-27 立项，实测依据 tf-muigy5eq-dw5dv0**：推理模型空收尾（DeepSeek `deepseek-flash`：`finish kind=stop`，reasoning 之后、正文之前被服务端收尾，非宿主动手——宿主中断走 `aborted`、预算截断走 `max-tokens`，均有源码锚点）当前只能整轮重跑自愈，QA 一次实测浪费 **112 万 token + 2 分钟**（重跑那次又花 147 万）。已落地的 A 档（runner 文件兜底判交付）只救「文件已合格、只差说话」的变体；**「干到一半死掉」（实锤：attempt3 死在第 19 步，只写了验证脚本、QA-REPORT.md 未动）只有续跑能救**。宿主能力已查实：`sendMessage`/`coldResume`（`dsh-subagent/lib/types/continuation.js`）可对已持久化的子会话投消息再跑一轮，**但只覆盖 `startContinuable` 创建的驻留子代理；one-shot（`subagents.start`）在 `run.dispose()` 后不可续**。改造内容 = 子代理生命周期从 one-shot 换轨 continuable：驻留占 `maxActiveSubagents=8` 配额、管线收口须主动 drain 防泄漏、`withRetry` 的 `run.result` 语义改 inbox/turn 模型、父代理须处 admitting 态。**先定判据再动**（回滚成本高）：预计空收尾在 dev 阶段的频率（本轮 4 dev 0 命中）攒到实测样本后再排期。
 
 - 🔜 **v0.2.0 对外通稿投放（本次默认发英文稿）**：两份完整正文已定稿于 `docs/announcement/show-your-plugin-v0.2.0.{zh,en}.md`（2026-09-23，锚定 v0.2.0），**投放平台仍待定**——上一版（v0.1.8）发在上游 `deepseek-ai/deepseek-harness` Discussions [#6405](https://github.com/deepseek-ai/deepseek-harness/discussions/6405)（2026-09-12），该帖评论里的「有英文版吗」正是本次默认发英文稿的依据。待办动作：① 选定平台并发布；② **发布后把英文稿正文第一行的相对路径换成中文版帖子 URL**（`[中文](<URL>) | English`；文件头注释已写模板与理由——相对路径贴进 Discussion / 站外即死链）；③ 两个帖子 URL 与投放日期回填 `docs/devlog.md`。

@@ -45,6 +45,7 @@ import { archiveRunLogs, sweepWorkspaceLogs } from './workspace/runlogs.ts'
 import { preflightWorkspaceAcl } from './workspace/acl-preflight.ts'
 import { parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
 import { ambientLocale, localeForMissingSnapshot, runLocaleOf } from './locale.ts'
+import { noteClarifyAnswered, noteClarifyProceeded } from './clarify-log.ts'
 
 /** dev 子卡/阶段 label 的「开发 · 」前缀与重试后缀：zh 存量兼容 + en 新增（QA-2：既有解析契约只增不改）。
  *  en 侧必须覆盖词典 `dev.taskRetry` 的实际产出 `(attempt N)`（R3-2 实锤：只写 retry \d+ 时，
@@ -346,6 +347,14 @@ export async function executePipeline(
   journal.product = root
   // 澄清答复随 run 落盘（可审计：这份需求在对齐阶段补过什么）；PRD 阶段会作为权威输入下发。
   journal.requirementSupplement = options.requirementSupplement ? String(options.requirementSupplement) : null
+  // 澄清埋点（ADR-0010 D2）：**答复真的随 run 落盘**才算一次闭环 —— 与「问了但用户没答」区分开。
+  // 需求原文用未加 `[CLARIFIED]` 的 `requirement`，与 tool 侧 `asked` 的指纹保持一致。
+  if (journal.requirementSupplement) {
+    noteClarifyAnswered(journal.workspace || root, requirement, {
+      runId: String(journal.id), supplement: String(journal.requirementSupplement),
+      mode: String((journal.options && journal.options.mode) || '') || undefined,
+    })
+  }
   // 工作区（项目）作用域：workspace slug 同时是并发锁与 backlog 的隔离键
   const scopeKey = journal.workspace || root || 'default'
   // 产品级并发限制（防御：正常入口 startPipeline/resumeRun 已预检；按工作区隔离，互不阻塞）
@@ -447,6 +456,8 @@ export async function executePipeline(
       if (verdict.intent !== 'requirement' || verdict.blockers.length > 0) {
         if (!clarified) return abortForClarification(journal, locale, verdict)
         journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyProceedWithAssumptions', { n: verdict.blockers.length }) })
+        // 澄清埋点（ADR-0010）：已答过仍有残余 blocker → 按假设开工（PRD 假设段 + 汇报高亮兜底）
+        noteClarifyProceeded(journal.workspace || root, requirement, { runId: journal.id, assumed: verdict.blockers.length })
       }
     } catch (e) {
       journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageFail', { msg: String((e && e.message) || e) }) })

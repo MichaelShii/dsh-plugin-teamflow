@@ -56,9 +56,14 @@ import { cancelRun } from './core/agent/context.ts'
 import { MODE_REGISTRY, PIPELINE_MODES, MODE_RANK, normalizeMode, runTriage, guardrailUpgrade, triageCacheKey, triageCacheGet, triageCachePut, triageCacheMarkPending, triageCacheSettle, type TriageVerdict } from './core/triage.ts'
 import { t, modeDesc } from './locales.ts'
 import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.ts'
+import { noteClarifyAsked, noteTriageFallback } from './core/clarify-log.ts'
 
 /* BacklogStore / storeFor 见 core/domain/backlog.ts（数据层与状态机）。 */
 
+/** 澄清埋点用的产品键（安全取值：取不到一律 default —— 埋点绝不因取值失败而抛错）。 */
+function clarifyProductOf(agent: unknown): string {
+  try { return workspaceScopeOf(agent || undefined).projectKey } catch (e) { return 'default' }
+}
 /**
  * 需求澄清闸门 · 启动前预检（2026-09-16 Phase 1，**快路径**）。
  *
@@ -115,11 +120,23 @@ async function clarificationPreflight(
     }
   }
   if (!verdict) return { verdict: null, error, cacheKey }
+  // 澄清埋点（ADR-0010）：分诊退兜底 = 闸门**静默失效**（`fallbackVerdict` 硬编码「永不拦启动」）。
+  // 这是「说不清的需求被直接放行」的主要来源（2026-09-30 实测 4 例，含「我想开发一个 dsh 插件」那一例）。
+  if (verdict.source === 'fallback') {
+    const fbReason = (verdict as { fallbackReason?: string }).fallbackReason
+    noteTriageFallback(clarifyProductOf(parent), requirement, { reason: fbReason, mode: verdict.mode }, 'preflight')
+  }
   // **收敛规则**（2026-09-16 dddd 实测）：调用方**还没给过**澄清答复时才拦；已给过（说明用户已澄清一轮）
   // → 不再拦，残余 blocker 当作假设开工（PRD 写进「假设与待澄清」段、完成汇报高亮）。否则同一个问题会被
   // 反复问、永不收敛（实测 6 轮、零 run）。
   const alreadyClarified = !!String(options.requirementSupplement || '').trim()
   if ((verdict.intent !== 'requirement' || verdict.blockers.length > 0) && !alreadyClarified) {
+    // 澄清埋点（ADR-0010 D2）：**这是 journal 结构上记不到的那一次** —— 命中即不建 run，
+    // 故 `journal.triage.blockers` 对它恒为 0（据此统计会得出「闸门从未触发」的反结论）。
+    noteClarifyAsked(clarifyProductOf(parent), requirement, {
+      intent: verdict.intent, blockers: verdict.blockers, blockersDropped: verdict.blockersDropped,
+      source: verdict.source, mode: verdict.mode, confidence: verdict.confidence,
+    }, 'preflight')
     return { needsClarification: { intent: verdict.intent, blockers: verdict.blockers }, cacheKey }
   }
   if (alreadyClarified && verdict.blockers.length > 0) {
