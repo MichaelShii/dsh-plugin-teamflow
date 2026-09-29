@@ -21,16 +21,19 @@ const ok = (cond, msg) => {
 const near = (a, b, eps = 1e-6) => Math.abs(a - b) < eps
 
 console.log('\n── clampScale：区间 [MIN, MAX] ──')
-ok(clampScale(0.001) === MIN_SCALE, `低于下限 → 抬到 ${MIN_SCALE}（旧值是 0.5：看不全的根因）`)
+ok(clampScale(0.001) === MIN_SCALE, `低于下限 → 抬到 ${MIN_SCALE}（结构可辨门槛，理由见 viewport.ts）`)
 ok(clampScale(5) === MAX_SCALE, `高于上限 → 压到 ${MAX_SCALE}（沿用既有上限，零回归）`)
 ok(clampScale(1) === 1, '区间内原样')
 ok(clampScale(NaN) === 1, 'NaN → 1（不得让退化值污染视图）')
 
-console.log('\n── fitScale：装得下全部内容 ──')
-// 关键回归：手机上的大流程图。旧实现 raw≈0.17 会被抬到 0.5 → 只能看到局部
+console.log('\n── fitScale：装得下内容，但不低于「结构可辨」下限 ──')
+// 关键回归（2026-09-29 复核后**翻转**）：我曾把下限降到 0.08 想让大图"一次看全"，算过账后推翻 ——
+// 0.12 时卡片只剩 37×7px、字号 1.5px、间距 0.9px，**糊成一团连几张都数不清**，图形就此失去唯一
+// 的独有价值（结构）。所以「大图被夹到 0.5、需要拖动或改用列表」是**有意的**，不是遗留缺陷。
 const phone = fitScale(2000, 400, 380, 600)
-ok(phone < 0.5, `手机大图不再被抬到 0.5（实测 ${phone.toFixed(3)}）`)
-ok(near(phone, (380 - 40) / 2000), '取宽度约束（40 边距与旧 doFit 一致）')
+ok(phone === MIN_SCALE, `手机大图被夹到下限 ${MIN_SCALE}（实测 ${phone.toFixed(3)}）—— 保住结构可辨`)
+ok(phone * 54 >= 27, `下限处卡片高仍 ≥27px（实测 ${(phone * 54).toFixed(1)}px）：数得清几张卡`)
+ok(phone * 7 >= 3.5, `下限处卡间距仍 ≥3.5px（实测 ${(phone * 7).toFixed(2)}px）：卡片不粘连`)
 // 正常尺寸零回归：旧算法 min((H-46)/worldH, (W-40)/worldW, 1) 后 max(0.5, ·) = 1
 ok(fitScale(200, 100, 900, 600) === 1, '正常尺寸 → 1（与旧行为一致，零回归）')
 ok(fitScale(900, 600, 900, 600) === (600 - 46) / 600, '高度成为约束时取高度项')

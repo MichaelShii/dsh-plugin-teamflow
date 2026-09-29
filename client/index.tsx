@@ -389,8 +389,9 @@ function PipelinePanel({ active, api, runId, sessionId, uiWorkspace }) {
       if (W <= 0) return
       if (!fittedRef.current) {
         const lay = layoutFlow(groups, W)
-        // 缩放交给 fitScale（纯函数）：**不再 `Math.max(0.5, raw)`** —— 那个抬升是「大流程图在
-        // 任何设备上都看不全」的根因；下限改由 MIN_SCALE 兜底（见 client/viewport.ts）。
+        // 缩放交给 fitScale（纯函数）：下限 = MIN_SCALE(0.5)。**低于 0.5 卡片会糊成一团**
+        // （300×54 → 37×7、字号 1.5px），图形会失去唯一的独有价值 —— 结构。
+        // 所以大图在窄容器上"看不全"是有意为之：想一眼看全请用列表视图。理由与实测账见 client/viewport.ts。
         const s = fitScale(lay.worldW, lay.worldH, W, H)
         setView({ x: (W - lay.worldW * s) / 2, y: (H - lay.worldH * s) / 2, s })
         fittedRef.current = true
