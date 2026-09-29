@@ -208,7 +208,9 @@ function StageDetailDrawer({ det, onClose, sessionId, uiWorkspace }) {
   return h('div', {
     ref: pRef,
     style: {
-      position: 'absolute', top: 10, right: 12, bottom: 10, width: 384, zIndex: 8,
+      // 宽度必须**跟着容器收**：固定 384px 在手机（面板内宽 ≈330px）上会从左边溢出，
+      // 正文被裁掉一截（2026-09-29 真机截图实锤）。`min()` 让宽屏仍是 384、窄屏自适应。
+      position: 'absolute', top: 10, right: 12, bottom: 10, width: 'min(384px, calc(100% - 24px))', zIndex: 8,
       borderRadius: 14, overflow: 'hidden',
       display: 'flex', flexDirection: 'column',
       border: `1px solid ${T.border}`,
@@ -772,7 +774,8 @@ function ItemDetailDrawer({ det, onClose, onShowRun, openArtifact }) {
   )
   return h('div', {
     style: {
-      position: 'absolute', top: 10, right: 12, bottom: 10, width: 400, zIndex: 9,
+      // 同 StageDetailDrawer：固定 400px 在窄容器上左侧溢出、正文被裁 → 跟着容器收。
+      position: 'absolute', top: 10, right: 12, bottom: 10, width: 'min(400px, calc(100% - 24px))', zIndex: 9,
       borderRadius: 14, overflow: 'hidden',
       display: 'flex', flexDirection: 'column',
       border: `1px solid ${T.border}`,
