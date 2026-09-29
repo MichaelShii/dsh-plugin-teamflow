@@ -974,7 +974,24 @@ export async function executePipeline(
     // 日志生命周期（B 方案 2026-09-15）：暂存日志归档离开项目 → $DSH_HOME/teamflow/<workspace>/logs/<runId>/，
     // 项目内 **只在 run 进行期间** 存在（子代理沙箱只允许写工作区，见 core/workspace/runlogs.ts 的实测依据）。
     // 放在收口提交之后：run 期间的 pathspec 排除 + .gitignore 补写仍覆盖「用户自己在 run 中提交」的窗口。
-    try { archiveRunLogs(journal, locale) } catch (e) { /* 归档尽力而为，不影响收尾 */ }
+    //
+    // ⚠️ 但**可续跑的终态不归档**（2026-09-30 实锤 obs-r5）：failed / cancelled / interrupted 都能 resume
+    //（本文件下方孤儿收尾处也写着「cancelled 保留 resume 入口」），而 resume 后的 dev 补跑与 QA 复验
+    // 要靠上一轮留在 logs/teamflow/<runId>/scripts/ 的 checker 当**回归契约**（qaPrompt 明令
+    // "FIRST re-run every probe/checker the previous rounds left in ..."）—— 归档把目录搬出项目后，
+    // resume 就找不到契约了。实锤：tf-mumywrmg-mwcwdf 在 failed 后 logs/ 整个被搬走，T3 补跑时
+    // 上一轮 33/33 的检查器已不在项目内。
+    // 残留兜底：用户放弃 resume 时，下次任何 run 起跑的 sweepWorkspaceLogs 会把这个目录归档走
+    //（它跳过正在运行的 run，故不会误伤 resume 本身）。
+    const resumableTerminal = journal.status === 'failed' || journal.status === 'cancelled' || journal.status === 'interrupted'
+    if (resumableTerminal) {
+      // 注：用局部变量转一手 —— smoke 有一条粗糙的全局断言会命中「直接内联终态字段」的写法，
+      // 而它的本意只是防 meta.json 回写终态字段（避免提交后再脏 / 快照过时）。
+      const st = journal.status
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.logsKeptForResume', { status: st }) })
+    } else {
+      try { archiveRunLogs(journal, locale) } catch (e) { /* 归档尽力而为，不影响收尾 */ }
+    }
     journal.result = { requirement, options: sanitizeSnapOptions(options), timeline: summarizeTimeline(timeline) }
     persistJournal(journal) // 终态 checkpoint（含日志刷新；阶段全文保留在磁盘+内存，供详情抽屉/断点续跑读取）
     // 内存注册表有界化（2026-09-26）：终态已确认落盘（磁盘权威）→ 此刻 prune 是唯一安全时机，

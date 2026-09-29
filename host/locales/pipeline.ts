@@ -150,6 +150,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.commitDone': '统一收口提交完成（代码 + 任务夹产物，验收通过后一个 commit）',
     'log.commitSkip': '统一收口提交：无待提交改动（跳过）',
     'log.commitFail': '统一收口提交失败（忽略）：{msg}',
+    'log.logsKeptForResume': '本 run 处于可续跑终态（{status}）→ 暂存日志保留在项目内 logs/teamflow/ 供 resume 复用（上一轮的 checker 是回归契约）；若不再续跑，下次运行起跑时会自动归档掉',
     /* ── 改动存档（2026-09-17 方案 A：入口定/出口遵） ── */
     'log.gitInitDone': '「改动存档」已开启（git init 完成；{baseline}）',
     'log.gitBaselineDone': '现有内容已记录为初始状态（基线提交）',
@@ -554,6 +555,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.commitDone': 'Unified closing commit done (code + task-folder artifacts, one commit after acceptance)',
     'log.commitSkip': 'Unified closing commit: nothing to commit (skipped)',
     'log.commitFail': 'Unified closing commit failed (ignored): {msg}',
+    'log.logsKeptForResume': 'run ended in a RESUMABLE state ({status}) → staged logs stay inside the project at logs/teamflow/ so resume can reuse them (the regression contract is the checkers left by earlier rounds); if you never resume, the next run archives them automatically',
     /* ── Change archiving (2026-09-17, plan A: decided at entry, honored at exit) ── */
     'log.gitInitDone': '"Change archiving" is now on (git init done; {baseline})',
     'log.gitBaselineDone': 'existing content recorded as the initial state (baseline commit)',

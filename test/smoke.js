@@ -239,6 +239,7 @@ ok(/LOG_LIFECYCLE/.test(promptsSrc) && /TRANSIENT scratch inside the project/.te
 ok(/persistRunLog/.test(storeSrc) && /runLogFile/.test(storeSrc), 'host 端 run 日志落归档位')
 ok(/runLogArchiveDir\(journal\)/.test(storeSrc) && /logsArchiveRoot/.test(storeSrc), 'store：归档落点 = $DSH_HOME/teamflow/<workspace>/logs/<runId>（日志根离开用户项目）')
 ok(/archiveRunLogs\(journal, locale\)/.test(pipelineSrc) && /sweepWorkspaceLogs\(journal, locale\)/.test(pipelineSrc), 'pipeline：终态归档 + 起跑清扫残留（自愈）')
+ok(/resumableTerminal/.test(pipelineSrc) && /journal\.status === 'failed'/.test(pipelineSrc) && /log\.logsKeptForResume/.test(pipelineSrc), 'pipeline：**可续跑终态不归档**暂存日志（failed/cancelled/interrupted 都能 resume，QA 复验要靠上一轮 checker 当回归契约 —— obs-r5 实锤）')
 // 交付文档入库：尊重 .gitignore（不 -f）+ add 结果必须可见（2026-09-26 两条锁，缺一就会回到「静默」）
 // ① plan 侧永不出现 -f/-A；② 调用侧必须读 docAdd.ok——否则 add 失败仍写「已入库」，日志说谎比不写更糟。
 ok(/tfDocAddPlan\(/.test(pipelineSrc) && !/tfDocAddArgs/.test(pipelineSrc), 'pipeline：交付文档入库走 tfDocAddPlan（逐路径查忽略状态，不再 -f 强加）')
