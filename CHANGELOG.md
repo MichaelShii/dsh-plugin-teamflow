@@ -2,6 +2,46 @@
 
 > 本插件首次公开发布版本为 **v0.1.0**；发布前的内部迭代（v0.3~v0.13）记录于 `AGENTS.md` §5，对外统一归到 v0.1.0。
 
+## [0.2.5] - 2026-09-29
+
+> 逐条变更说明与验证数据见 `docs/releases/v0.2.5.md`。**无破坏性**：宿主窗口不变（`>=0.1.7-alpha.1 <0.2.0`），journal / 任务夹 / 工具参数全部向后兼容。三条主线 = ① 编排可测（拆分 + 分目录 + 编排行为测试）；② 交付质量契约（接口契约三层 + 冒烟要求 + 证据探针）；③ host 侧三条客观检查（能否打开 / 接口对不对 / 有没有真动），**与模型能力无关**，全部只记录不阻断。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **无破坏性**：宿主窗口不变；journal 格式、任务夹契约、`teamflow_*` 工具参数全部向后兼容。
+- **升完重启 `dsh --profile web` 生效**（本版含 host 运行时改动）。
+- 新增的 host 侧检查**纯记录、不阻断**，处于观察期；新增日志键：`log.hostLoadOk/hostLoadErrors/hostLoadSkipped`、`log.hostInterfaceOk/hostInterfaceMismatch/hostInterfaceSkip`、`log.hostSmokeOk/hostSmokeNoMotion/hostSmokeSkip`。
+- 蓝图（`api` 签名）现在也注入 QA / 验收上下文，单次约 +1.4k tokens。
+
+### 编排可测
+
+- `executePipeline` 1646 → 1159 行：dev / qa / acceptance 外移到 `host/core/stages/`，函数体按行切片搬运一字未改；共享状态收进 `PipelineCtx`（`import type` 反向引类型 ⇒ 无运行时回边）。
+- `host/core` 按职责分组：`stages/` `agent/` `workspace/` `domain/`。
+- 新增 `test/orchestration.test.js`：stub 子代理驱动真实流水线，覆盖 17 个场景；对拆分前后两份代码各跑一遍均全绿。
+
+### 交付质量契约
+
+- **接口契约三层**：蓝图给精确 `api` 签名 → dev 逐字调用、禁自创成员名 → QA 静态核对（不匹配 = P1）。
+- **冒烟运行（0a2）**：交付须被证明「主路径产生可观测状态变化」；无浏览器时用 DOM/Canvas 桩但保留真实定时器语义。
+- **运行证据探针（warn-only）**：含可执行入口时报告应给「命令 + 结果」类证据；同时锁住「不得强行执行不该执行的交付」。
+
+### host 侧客观检查（不依赖模型能力）
+
+- **浏览器可用性探测**：host 进程可起浏览器（截图 447B / exit 0），而 agent 子代理在受限令牌下恒不能（crashpad 需 `PROCESS_ALL_ACCESS`，受限令牌缺 `0x200/0x800`）。
+- **加载检查**：真浏览器加载交付，抓未捕获错误 —— 专治「打开就崩」，子代理做不到。
+- **接口核对**：解析产物真实导出 vs 跨模块调用点；事故 run 命中 5 处、健康 run 0 处。
+- **冒烟**：「页面有 canvas 却从未绘制」= 空转；四个真实交付复核 **4/4 判定正确**。
+
+### 修复
+
+- **两项 host 检查静默空转**：误把 `root`(= `options.productRoot`) 当文件系统路径（工作区模式下恒为 null，连查 5 个 run）⇒ 从未执行且零日志。改为 `fsRootOf(root, workspacePath)` 解析，并让每种结局都留痕。
+- **蓝图收不到**：`stateSliceFor` 角色白名单缺 `qa`/`acceptance`，而两处 prompt 都写「若注入蓝图则依它核对」⇒ 恒为假。已补。
+- **撤回浏览器配方**：宿主实测证明 `--no-sandbox` 无效（加不加输出逐字节相同），改为写明「agent 沙箱内不可用 + 证据 + 不要再试参数组合」。
+
+### 验证
+
+- 30 个测试套件全绿，断言 **2177** 条（v0.2.4 为 2013）；`tsc` 0 错；`oxlint` 0/0（73 文件）；CI（ubuntu-latest）全绿。
+
 ## [0.2.4] - 2026-09-28
 
 > 逐条变更说明与验证数据见 `docs/releases/v0.2.4.md`。**无破坏性**：宿主窗口不变（`>=0.1.7-alpha.1 <0.2.0`），journal/任务夹/参数全部向后兼容。性质 = 工程基建（代码格式单一仲裁者 + max-len 对齐宿主 140 + lefthook 预提交自动修 + @stylistic/oxlint 风格门禁），零功能性变更、零用户可见行为变化。
