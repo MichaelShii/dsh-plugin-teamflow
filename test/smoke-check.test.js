@@ -66,10 +66,16 @@ if (!Chrome) {
     + '<script>const g=document.getElementById("c").getContext("2d");'
     + 'let i=0;function f(){g.fillStyle="#22c55e";g.fillRect(i%180,10,20,20);i++;requestAnimationFrame(f)}'
     + 'requestAnimationFrame(f);</script></body>')
+  // 环境容忍：浏览器起不来（skip）→ 大声跳过，**不算通过**；但 error（副本/解析失败）
+  // 是代码问题，必须红 —— 否则代码坏了也会因为“环境跳过”而蒙混过关。
   const live = runHostSmoke(Live)
-  ok(live.status === 'ok', `有动画的页面 → ok（实测 ${live.status}）`)
-  ok(live.draw > 0, `绘制调用 > 0（实测 ${live.draw}）`)
-  ok(live.raf > 0, `rAF 被调度（实测 ${live.raf}）`)
+  if (live.status === 'skip') {
+    skip(`浏览器未产出结论（${live.note || 'skip'}）→ 跳过真实冒烟断言（**非通过**）`)
+  } else {
+    ok(live.status === 'ok', `有动画的页面 → ok（实测 ${live.status}）`)
+    ok(live.draw > 0, `绘制调用 > 0（实测 ${live.draw}）`)
+    ok(live.raf > 0, `rAF 被调度（实测 ${live.raf}）`)
+  }
 
   // 复刻贪吃蛇 A 组的事故形态：**有 canvas，脚本也在跑，但 draw() 永不执行** ——
   // 画面全黑、控制台干净，「文件存在 / 有 export」级别的检查全绿。
@@ -82,9 +88,13 @@ if (!Chrome) {
     + '<script>window.__ctx=document.getElementById("c").getContext("2d");'
     + 'var n=0;function f(){n++;requestAnimationFrame(f)}requestAnimationFrame(f);</script></body>')
   const inert = runHostSmoke(Inert)
-  ok(inert.status === 'no-motion', `**有 canvas 但从未绘制 → no-motion**（实测 ${inert.status}）`)
-  ok(inert.draw === 0, `绘制数为 0（实测 ${inert.draw}）`)
-  ok(inert.canvas >= 1, `canvas 被识别到（实测 ${inert.canvas}）`)
+  if (inert.status === 'skip') {
+    skip(`浏览器未产出结论（${inert.note || 'skip'}）→ 跳过事故形态断言（**非通过**）`)
+  } else {
+    ok(inert.status === 'no-motion', `**有 canvas 但从未绘制 → no-motion**（实测 ${inert.status}）`)
+    ok(inert.draw === 0, `绘制数为 0（实测 ${inert.draw}）`)
+    ok(inert.canvas >= 1, `canvas 被识别到（实测 ${inert.canvas}）`)
+  }
   rmSync(Live, { recursive: true, force: true })
   rmSync(Inert, { recursive: true, force: true })
 }

@@ -3,7 +3,7 @@
  * extractVerificationEvidence 从回复中提取 [Verification evidence] 块（审计存证用）。
  */
 import { extractVerificationEvidence, assessQaVerificationEvidence, fsRootOf } from '../host/util.ts'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 let failed = 0
 function expect(actual, expected, label) {
@@ -73,7 +73,10 @@ const WS = join('E:', 'Code', 'Probe', 'ws')
 expect(fsRootOf(null, WS), WS, 'root=null（工作区模式）→ 回落 workspacePath：这是最常见的真实情形')
 expect(fsRootOf(undefined, WS), WS, 'root=undefined → 同样回落 workspacePath')
 expect(fsRootOf('products/tetris', WS), join(WS, 'products', 'tetris'), '产品线模式：root 是 workspacePath 下的相对子目录')
-expect(fsRootOf('E:/abs/prod', WS), 'E:/abs/prod', '绝对路径 root → 直接采用')
+// ⚠️ 绝对路径**必须用 resolve 生成**，不能写死盘符：'E:/abs/prod' 在 Linux 上不是绝对路径
+// （isAbsolute 为 false）→ 会被当相对路径拼到 workspacePath 后面。CI 就是这么红的（本机 Windows 绿）。
+const ABS = resolve(WS, 'abs-prod')
+expect(fsRootOf(ABS, WS), ABS, '绝对路径 root → 直接采用（路径由 resolve 生成，跨平台成立）')
 expect(fsRootOf(null, null), null, '两者皆空 → null（调用方必须容忍）')
 expect(fsRootOf('products/x', null), null, '有 root 却无 workspacePath → null，不得凭相对路径瞎猜')
 
