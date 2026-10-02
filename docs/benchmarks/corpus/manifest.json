@@ -211,6 +211,24 @@
           }
         ]
       }
+    },
+    {
+      "id": "tech-blueprint-valid",
+      "file": "tech-blueprint-valid.md",
+      "parser": "extractBlueprint",
+      "note": "**合法**蓝图 JSON（正常路径，一次 JSON.parse 成功，不经过 repairBlueprintJson）：3 模块 / 3 任务，摘要含 sliderMath。与 tech-blueprint-malformed（畸形但可抢救）互补 —— 抢救逻辑被误用到合法 JSON 上、或正常解析路径本身回归，只有本条会红",
+      "expect": {
+        "nonNull": true,
+        "taskCount": 3,
+        "summaryContains": "sliderMath"
+      }
+    },
+    {
+      "id": "tech-blueprint-unrepairable",
+      "file": "tech-blueprint-unrepairable.md",
+      "parser": "extractBlueprint",
+      "note": "蓝图标记齐全但 **JSON 被拦腰截断**（末尾截断，非提前闭合）⇒ repairBlueprintJson 修不了 ⇒ **返回 null**。钉住「null = 本 run 无可用蓝图，dev 按无蓝图继续」；若改成「修不出来就返回部分内容」，本条变红（部分蓝图比没有更危险：dev 照着半个模块清单装配，缺的那半不报错）",
+      "expect": null
     }
   ]
 }
