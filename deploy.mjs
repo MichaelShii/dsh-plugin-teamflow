@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * deploy.mjs — 一条龙：构建 + 测试 + 同步到 web profile 副本。
+ * deploy.mjs — 一条龙：构建 + 测试 + 同步到 profile 副本（DSH_PROFILE 决定，默认 web）。
  *
  * 用法：
  *   node deploy.mjs          — 构建(client+host) → 测试 → 同步   （推荐）
@@ -18,7 +18,11 @@ import { homedir } from 'node:os'
 
 const ROOT = import.meta.dirname ?? process.cwd()
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
-const PROFILE = join(DSH_HOME, 'profiles', 'web', 'node_modules', 'dsh-plugin-teamflow')
+// 目标 profile 可选：dsh 0.2.0 起桌面版用**独立的 `desktop` profile**（`~/.dsh/profiles/desktop`），
+// 与跑 Web 的 `web` profile 各自一份 node_modules ⇒ 插件要分别装、分别同步，否则桌面版里那份会静默陈旧。
+// 用法：`DSH_PROFILE=desktop node deploy.mjs --sync`；不给则仍同步 web（保持既有调用不变）。
+const PROFILE_NAME = process.env.DSH_PROFILE || 'web'
+const PROFILE = join(DSH_HOME, 'profiles', PROFILE_NAME, 'node_modules', 'dsh-plugin-teamflow')
 
 const FILES = [
   'package.json',
@@ -69,7 +73,7 @@ const FILES = [
 
 if (!existsSync(PROFILE)) {
   console.error(`❌ profile 副本不存在：${PROFILE}`)
-  console.error('   请先运行：dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow')
+  console.error(`   请先运行：dsh plugin --profile ${PROFILE_NAME} add file:./plugins/dsh-plugin-teamflow`)
   process.exit(1)
 }
 
@@ -110,7 +114,7 @@ if (skipTest) {
 }
 
 /* ── 3) 同步 ─────────────────────────────────────────────────── */
-console.log('3/3 📂 同步到 profile ...')
+console.log(`3/3 📂 同步到 profile (${PROFILE_NAME}) ...`)
 
 /**
  * 3a) 先删「源里已经没有」的副本文件。
@@ -189,4 +193,4 @@ try {
     console.log(msg)
   }
 } catch (e) { /* 平台无 netstat/findstr 时静默 */ }
-console.log('重启 dsh --profile web 生效。')
+console.log(`重启后生效：dsh --profile ${PROFILE_NAME}（桌面版请重启桌面应用）。`)
