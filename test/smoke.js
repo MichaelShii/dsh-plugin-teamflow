@@ -387,7 +387,7 @@ ok(/viewport\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')
 ok(/响应块构成：\{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')) && /response blocks: \{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')), 'locales：diag.emptyTurn 带块构成占位（zh/en 齐备——诊断必须自证，2026-09-26 tf-muigy5eq r12 实踩）')
 ok(/const beforeLen = journal\.stages\.length/.test(runnerSrc) && /lastStage = journal\.stages\[beforeLen\] \|\| null/.test(runnerSrc), 'runner：withRetry 按调用前长度取本次尝试 stage——并发安全（防证据/重试诊断/usage 累计串位）')
 ok(/stage: JournalStage \| null/.test(runnerSrc), 'runner：withRetry 返回携带 stage 引用')
-ok(/resumePrompt = devPrompt\(task, tech, prd, root, journal\.id, state\) \+ \(prevStage \? buildRetryDiagnostic\(2, prevStage\) : ''\)/.test(pipelineSrc), 'pipeline：resume 补跑附上次失败诊断（全新会话不再盲试——r37 实证 PowerShell 坑第三次踩）')
+ok(/resumePrompt = devPrompt\(task, tech, prd, design, root, journal\.id, state\) \+ \(prevStage \? buildRetryDiagnostic\(2, prevStage\) : ''\)/.test(pipelineSrc), 'pipeline：resume 补跑附上次失败诊断（全新会话不再盲试——r37 实证 PowerShell 坑第三次踩）')
 ok(/throwIfAborted: \(\) => \{\}/.test(utilSrc) && /typeof s\.throwIfAborted === 'function'/.test(utilSrc), 'util：SAFE_SIGNAL 补 throwIfAborted + 真 AbortSignal 判定（宿主 09-04+ 硬依赖——r1 json 树图 3 任务 3 轮 resume 全失败 root cause）')
 ok(/export function devTaskStatuses/.test(utilSrc) && /有 done stage = 该任务已成功/.test(utilSrc), 'util：任务级聚合 devTaskStatuses（放 util 以便行为级测试直接 import——pipeline 链宿主私有 peer 取不到）')
 // 任务身份 = host 生成的 dt-N（2026-09-18 实锤 probe-cache tf-mu6tb281：合并执行把 title 拼成
@@ -877,6 +877,13 @@ for (const [f, marker, want, cap] of docFiles) {
   const n = body.split(marker).length - 1
   ok(n === want && body.length <= cap, `文档完整性：${f} 「${marker}」出现 ${n} 次（期望 ${want}）、${(body.length / 1024).toFixed(0)}KB ≤ ${(cap / 1024).toFixed(0)}KB`)
 }
+
+// ── 大文档注入必须是「小 teaser + 磁盘完整文件路径」，不许退回裸 clip ──
+// 裸 clip(tech, 12000) 会把**修缺陷要照着看的 spec 尾部**截掉（10-02 实测 TECHNICAL.md 14.3k / 15.7k 字符 > 12000）。
+// devPrompt 于 2026-09-30 修成 4000 + 磁盘路径；qaFixPrompt 于 2026-10-02 跟进（信息缺失代价最大的正是修复路径）。
+// 这里锁住「tech 只用小 teaser」+「两处都有完整文件路径指引」，防止任一处悄悄退回。
+ok(!/clip\(tech,\s*(?!4000\b)\d+/.test(promptsSrc), 'prompts：tech 注入只用小 teaser（4000），不得裸 clip 大数值（会截断修缺陷要照看的 spec）')
+ok(promptsSrc.split('TECHNICAL.md  — the COMPLETE technical design').length - 1 === 2, 'prompts：TECHNICAL.md 完整文件路径指引覆盖 dev + qaFix 两处（实测两处都在照 spec 改代码）')
 
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

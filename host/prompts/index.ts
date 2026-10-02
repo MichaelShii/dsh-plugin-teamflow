@@ -312,30 +312,46 @@ export const ARTIFACT_DELIVERY = (runDocs: string): string => `[Artifact deliver
  * （提交/清理/写进文档），或反过来因为「非交付物」而干脆不写日志。TOKEN_HYGIENE 与三处
  * `[Log discipline]` 共用同一句，措辞一致。
  */
-export const LOG_LIFECYCLE = (runId) => `[Log lifecycle · policy] logs/teamflow/${runId || '<runId>'}/ is TRANSIENT scratch inside the project **in LOCATION, not in VALUE**: for the whole run it is ONE shared area every stage reads and writes — a later stage MUST re-run and EXTEND the checkers already there (they are this requirement's regression contract) and must NOT rebuild them (one run burned 33 model calls re-creating three checkers that already existed and passed). At run end the host archives it to $DSH_HOME/teamflow/<workspace>/logs/${runId || '<runId>'}/ — checkers/notes are KEPT there for audit — and deletes only the in-project copy. **Only your checkers and notes survive** (code extensions .mjs/.cjs/.js/.sh/.ps1/.py/.md + captures.json); raw command output (*.log/*.out/*.txt) and copied snapshots are DROPPED — never treat a dump as evidence that outlives the run: your reply's [Verification evidence] block is the durable claim. Never commit it, never delete it yourself, never list it as a project artifact — the host owns its whole lifecycle (staging → filter → archive → retention).`
+export const LOG_LIFECYCLE = (runId) => `[Log lifecycle · policy] logs/teamflow/${runId || '<runId>'}/ is TRANSIENT scratch inside the project, in LOCATION not in VALUE: one shared area for the whole run — later stages re-run and EXTEND the checkers already there (this requirement's regression contract), never rebuild them. At run end the host archives it to $DSH_HOME/teamflow/<workspace>/logs/${runId || '<runId>'}/ — checkers/notes KEPT for audit, and deletes the in-project copy. Only your checkers and notes survive (code extensions .mjs/.cjs/.js/.sh/.ps1/.py/.md + captures.json); raw command output (*.log/*.out/*.txt) and copied snapshots are DROPPED — your reply's [Verification evidence] block is the durable claim. Never commit it, never delete it yourself, never list it as a project artifact — the host owns its whole lifecycle.`
 
 /** 三处 `[Log discipline]` 共用的短句（与 LOG_LIFECYCLE 同义，避免每个阶段重复整段）。 */
 const LOG_TRANSIENT = 'shared across the whole run — reuse and EXTEND the checkers already there, never rebuild them; at run end the host archives your checkers/notes to $DSH_HOME (kept for audit) and drops everything else; never commit it or clean it yourself'
 
+/**
+ * 上下文预算纪律 —— 注入 dev / qa / qaFix / acceptance 四条热路径（一次改动四处受益）。
+ *
+ * **2026-09-30 措辞原则（勿回退）**：规则正文要和它的「事故叙事」分开。
+ * `Observed cost …` / `one run …` 这类带 run id 与实测数字的段落是**给维护者的论证**，
+ * 不是给模型的指令 —— 模型照做不需要知道上一次发生了什么，却要为它付 token。
+ * 故统一移出 prompt，沉淀到下面《实测依据》。加规则前先查这张表，不要凭直觉把叙事加回去。
+ *
+ * **实测依据（每条对应上面一条仍然生效的规则）**：
+ * - `[No dump manufacturing]`：一次 run 写了 23 个 .out + 5 个 regression-<phase>.log
+ *   （1.2 MB，占其产出文件的 41%），run 结束时全部丢弃 —— 写、存、扔，三次白花。
+ * - `[No collaboration tools]`：一次 QA 复核阶段这样死掉 —— 36 秒后中止，checker 一次都没跑
+ *   （regression-contract 重跑数为 0），整条 run 判失败。
+ * - `[Never rewrite files through the shell]`：一次 run 用 PowerShell 管道改写自己的 checker，
+ *   非 ASCII 内容损坏 → 删档 → 在「文件不存在」上反复打转，直到 env guard 中止该阶段
+ *   —— 而活其实已经干完了。Windows 管道往返会把非 ASCII 静默写成非法 UTF-8。
+ * - `[Log layout]`：一次 run 留下 49 个散装脚本；另一次仍有 6 个根目录草稿混进交付提交。
+ * - `[Before/after comparison]`：一次 run 因后一轮重做前一轮已完成的活，产出两份完整 HEAD
+ *   副本（50 文件 / 1 MB）。
+ * - `[Log lifecycle]` 检查器复用：一次 run 花 33 次模型调用重建三个已存在且已通过的 checker。
+ */
 export const TOKEN_HYGIENE = (runId) => `[TOKEN HYGIENE · policy] Context is expensive. Budget discipline below — host enforcement is warn + live reminder only (never interrupts), follow it as self-discipline:
-- [File scope] Whole-file read is allowed ONLY for target files explicitly listed in the task spec. To understand other files' interfaces, use grep for keywords (do not read whole files). Never whole-file read source files outside the task scope.
-- [No duplicate reads] Same file: read ≤1 times. To verify a change, grep the change point instead of re-reading the whole file.
-- [grep first] Before writing code, locate with one comprehensive grep pass, then batch-read in segments; avoid repeated small read/grep passes on the same file.
+- [File scope · grep first · no duplicate reads] Whole-file read is allowed ONLY for the ≤2 target files named in the task spec (never a file over 200 lines), at most once per file. Everything else: one comprehensive grep pass, then batch-read the segments you actually need; verify your own edits by grepping the change point, never by re-reading the file.
 - [Batch fixes] When verification fails: read ALL failing cases at once → fix them ALL in one edit → run verification once more. Never "fix one → run → fix one → run". At most 3 fix-verify rounds; beyond that, output a diagnostic summary and stop.
-- Never whole-file read a file over 200 lines (use grep + limit segments for the rest); whole-file read targets ≤2 files; everything else: grep + limited segments.
-- [No dump manufacturing] Do NOT redirect full command/suite output into files, and never create per-command .out files. The host already truncates long tool output to its tail and spills the complete text to a path it reports in that result — read or grep that path only when you genuinely need more detail. Observed cost of ignoring this: one run wrote 23 .out + 5 regression-<phase>.log files (1.2 MB, 41% of every file it produced) and ALL of them were discarded at run end — wasted twice.
-- [Never rewrite files through the shell · policy] Do NOT change file contents with shell text round-trips (Get-Content -Raw | Set-Content, cat > f, sed -i, a python one-liner overwrite). On Windows a PowerShell pipe round-trip silently corrupts non-ASCII content into invalid UTF-8 — one run destroyed its own checker that way, deleted it, then looped on "file no longer exists" until the env guard aborted the stage (the work was actually finished). Use the write/edit tools.
-- [No collaboration tools · policy] Do NOT call send_message / interrupt_agent / list_agents / subagent. You are a depth-1 subagent: no Agent Team membership, no delegation depth, so these always fail ("agent ... is not a member of an active Agent Team" / "subagent depth 2 exceeds maxDepth 1") — and repeating such a failure can be misread by the env guard as "environment unavailable", which aborts the whole run. Observed cost: a QA re-verification stage died this way after 36s and never ran a single checker (regression-contract re-runs: zero), failing the entire run. You have no peer to coordinate with; report in your reply instead.
-- [Log layout · policy] What the run actually KEEPS goes into logs/teamflow/${runId || '<runId>'}/ — one file per purpose, never numbered variants of the same purpose (-run2 / -nopipe / -shim / dbg-repro2 / dbg-scan3): overwrite the same file instead of adding a sibling. **Every path below is INSIDE logs/teamflow/${runId || '<runId>'}/ — never create scripts/ or probe/ at the project root** (they land in the delivery commit as pollution; the Doc boundary already forbids scattering there). Observed cost of ignoring this: one run left 49 loose scripts, and a later run still leaked 6 root-level scratch files into its commit.
+- [No dump manufacturing] Do NOT redirect full command/suite output into files, and never create per-command .out files. The host already truncates long tool output to its tail and spills the complete text to a path it reports in that result — read or grep that path only when you genuinely need more detail.
+- [Never rewrite files through the shell · policy] Do NOT change file contents with shell text round-trips (Get-Content -Raw | Set-Content, cat > f, sed -i, a python one-liner overwrite). On Windows a PowerShell pipe round-trip silently corrupts non-ASCII content into invalid UTF-8. Use the write/edit tools.
+- [No collaboration tools · policy] Do NOT call send_message / interrupt_agent / list_agents / subagent. You are a depth-1 subagent: no Agent Team membership, no delegation depth, so these always fail ("agent ... is not a member of an active Agent Team" / "subagent depth 2 exceeds maxDepth 1") — and repeating such a failure can be misread by the env guard as "environment unavailable", which aborts the whole run. You have no peer to coordinate with; report in your reply instead.
+- [Log layout · policy] What the run actually KEEPS goes into logs/teamflow/${runId || '<runId>'}/ — one file per purpose, never numbered variants of the same purpose (-run2 / -nopipe / -shim / dbg-repro2 / dbg-scan3): overwrite the same file instead of adding a sibling. **Every path below is INSIDE logs/teamflow/${runId || '<runId>'}/ — never create scripts/ or probe/ at the project root** (they land in the delivery commit as pollution; the Doc boundary already forbids scattering there).
   - Your own one-off checkers → logs/teamflow/${runId || '<runId>'}/scripts/ (name each for what it checks; a check that supersedes an earlier one overwrites it, it does not get a new number).
   - Non-derivable payloads (captured HTTP bodies, a fixture that cannot be regenerated) → logs/teamflow/${runId || '<runId>'}/captures.json, appended — not one file per invocation.
   - Conclusions a human will read → a .md next to them.
-  - [Before/after comparison] When you must compare against the pre-change tree, materialize HEAD ONCE under logs/teamflow/${runId || '<runId>'}/probe/head/ and let EVERY stage read that same copy — one run produced two complete copies (50 files / 1 MB) only because a later stage re-did the work the first one had already done.
+  - [Before/after comparison] When you must compare against the pre-change tree, materialize HEAD ONCE under logs/teamflow/${runId || '<runId>'}/probe/head/ and let EVERY stage read that same copy.
   - Anything else scattered in the run root is noise that the next agent — and the human auditing your [Verification evidence] — has to wade through.
 - ${LOG_LIFECYCLE(runId)}
-- Keep reports/summaries tight (QA ≤150 lines, acceptance ≤80 lines, dev ≤40 lines); put details in files.
-- AGENTS.md and the memory index are already injected above — no call needed to read them in full; grep keywords if you need a particular rule.
-- The contract/AC for this iteration is in the context/handoff below or in this task folder's PRD: do NOT whole-file re-read PRD.md / DESIGN.md / TECHNICAL.md from the task folder; grep/read only the code you need.
+- [Report budget] Keep replies tight (QA ≤150 lines, acceptance ≤80, dev ≤40); put details in files. AGENTS.md and the memory index are already injected above — grep them rather than reading them in full. Same for this task folder's PRD.md / DESIGN.md / TECHNICAL.md: this iteration's contract/AC is in the handoff below, so grep/read only what you need.
 `
 
 /** 一次成型纪律：目标文档 write ≤1 次 + read ≤2 次，严禁 read→edit→read 循环。 */
@@ -446,6 +462,15 @@ ${clip(prd, 15000)}
 [REQUIREMENTS]
 1. If the project already has frontend code/design system or a ${TF_DOCS}/design/DESIGN.md history, grep the key conventions — do not full-read; the design must fit existing style & component norms (for iterations, keep existing norms; mark added/revised parts explicitly).
 2. Output: page/module list & information architecture, key-page wireframe descriptions (layout/components/states), interaction & motion notes, visual spec (colors/fonts/spacing — reuse existing tokens where possible), accessibility essentials.
+${CRAFT(state) ? `2b. [Visual quality spec · mandatory when the deliverable has any visible UI] Layout + colors/fonts/spacing are the FLOOR: DESIGN.md MUST also carry a dedicated section stating the **look-and-feel intent concretely enough to implement without guessing**. This is the only channel that carries "craft" to the dev stage — dev never sees the requirement as a whole and optimizes for contract compliance, so an abstract "make it look good" is lost in serialization. State, per component class:
+   - Surface treatment: corner radius, border/stroke weight & color, shadow/elevation, gradient/glow (cards, buttons, HUD/badges, canvas/game objects).
+   - State feedback: hover / active / focus / pressed / disabled / hit-flash — what changes, and the transition duration/easing.
+   - Motion & empty states: enter/exit, loading/skeleton, empty, error.
+   - Typography roles: emphasis, weight/size steps, numeric alignment (e.g. tabular/monospace digits for scores).
+   - Anti-patterns for THIS product — what to explicitly avoid (e.g. flat unstyled rectangles, no hover feedback, HUD invisible while idle).
+   For canvas/WebGL/game surfaces the same applies to drawn shapes: rounding, outline, highlight band, trail/glow, background treatment. Write concrete implementable statements (numbers, tokens, named treatments) — not adjectives like "modern" or "beautiful". **Placement is not cosmetic**: write this section FIRST in DESIGN.md, before IA/wireframes/component lists — downstream stages read this file from the top and a long file's tail is never seen (the dev stage receives only the head of this file).
+   - Geometrically self-consistent by construction: when a component puts text or a label inside a bounded shape (progress ring + MM:SS, badge + caption, HUD slot + value), the numbers must actually hold at the **largest value the size function can resolve to** (e.g. a clamp() upper bound), not at the average — ring radius minus stroke width must stay above the text's half-diagonal, container height above the label block height. If two of your own sub-sections disagree, restate them so they fit and write the resolved numbers down; a spec that cannot both hold is a defective spec, not a stricter one.
+   - This section is the **floor for interaction feedback and state visibility** (hover / focus / pressed / disabled / persistent info visible in every state), not an aesthetic verdict: judge against the AC and the numbers above, never by taste.` : ''}
 3. ${langDirective(LOCALE(state))}, concrete enough to directly guide frontend implementation; brevity first.
 4. Write to ${RUN(state)}/DESIGN.md (write once). [Boundary] only under ${TF_DOCS}/.
 5. [State] End with a state block (phase="design"), summary = key design decisions.${STATE_BLOCK_INSTRUCTION}`
@@ -527,23 +552,34 @@ ${clip(prd, 12000)}
    - If duplication / extract-the-module is found, add the new module to modules with why.
 4. Read-only: do not modify code; write NO document files.${LOCALE(state) === 'en' ? ` ${langDirective('en')} (including every JSON string value).` : ''}${STATE_BLOCK_INSTRUCTION}`
 
-export const devPrompt = (task, tech, prd, root, runId, state) => `You are a senior full-stack engineer (implementation executor). The current workspace IS the target project — actually implement the following task.
+export const devPrompt = (task, tech, prd, design, root, runId, state) => `You are a senior full-stack engineer (implementation executor). The current workspace IS the target project — actually implement the following task.
 ${productCtx(root, LOCALE(state))}${stateSliceFor(state, 'dev')}${TOKEN_HYGIENE(runId)}[CONTEXT PACK]
 [TASK TITLE] ${task.title}
 ${task.files && task.files.length ? `[TASK TARGET FILES (you own these — you may write them)] ${task.files.join(', ')}` : ''}
 ${task.reads && task.reads.length ? `[READ-ONLY CONTEXT (read to understand the interface; DO NOT modify — another agent may be rewriting it right now)] ${task.reads.join(', ')}` : ''}
 [TASK BRIEF] ${task.spec || '(see technical design)'}
 ${(tech && String(tech).trim())
-  ? `[TECH DESIGN SUMMARY (grep details on demand, don't full re-read)]
-${clip(tech, 12000)}`
+  ? `[TECH DESIGN (full source lives on disk — read/grep the sections your task needs; do NOT rely on this truncated head)
+Path: ${RUN(state)}/TECHNICAL.md  — the COMPLETE technical design is there; this inline clip is only a starting taste, not the whole spec]
+${clip(tech, 4000)}`
   : ''}
-[PRD] Relevant acceptance criteria: ${TF_DOCS}/prd/PRD.md (grep the AC number as needed; no full read).
+${(design && String(design).trim())
+  ? `[DESIGN NOTES (the visual quality spec is written FIRST in DESIGN.md — read that section before writing anything visible; if the clip below is cut off mid-section, open the file and read it. Avoid relying on this truncated head)
+Path: ${RUN(state)}/DESIGN.md — the COMPLETE design is there; this inline clip is only a starting taste, not the whole spec]
+${clip(design, 4000)}`
+  : ''}
+[PRD] Relevant acceptance criteria: ${RUN(state)}/PRD.md (grep the AC number as needed; no full read).
 [REQUIREMENTS]
 1. **Architecture blueprint first**: if the injected blueprint JSON ("<!-- blueprint -->" from tech/architect stage) is present, implement ON the existing architecture per it — follow its module split / assembly order / whys (understand the intent, don't blindly follow or rebuild); if blueprint contradicts reality, state evidence in the summary.
 1b. [Interface contract · mandatory] Call other modules ONLY through members declared in the blueprint 'api' field / the technical design. **Never invent a member name** — e.g. if the design declares 'GameEngine.update()', do NOT call 'engine.move()'. Before writing any cross-module call, grep the target file to confirm the member exists with a compatible signature. A call to a non-existent member is a hard defect: it crashes on first invocation and QA files it as P1. When the design is silent about a member you need, grep the actual source rather than guessing a conventional name.
 2. Touch ONLY task-relevant files (see [TASK TARGET FILES]; if absent, infer from spec). Respect existing architecture & code style. Use grep to confirm other files' interfaces; no whole-file reads of irrelevant big files. [Boundary] [TASK TARGET FILES] = files you OWN and may write; [READ-ONLY CONTEXT] = files you may read but must NOT modify (another agent may own them — a concurrent write is silently lost, and the host's version guard will reject your edit anyway). If you conclude you must change a file you do not own, do NOT do it: state it in the summary with evidence instead.
 3. If spec contradicts reality, explain with evidence in the summary instead of claiming completion or expanding scope on your own.
 4. Actually write/modify code (grep + segmented reads to locate; no repeated whole-file reads), then run relevant build/verification to ensure green.
+${CRAFT(state) ? `4b. [Craft bar · guidance — the AC is the floor, not the ceiling] A delivery that satisfies the letter of the AC while looking/feeling unpolished is a weak delivery. When the task touches anything visible or interactive:
+   - Follow the visual spec in ${RUN(state)}/DESIGN.md when present (surface treatment, state feedback, motion) instead of the bare-minimum literal reading; where it is absent or silent on a detail you own, choose a treatment consistent with the existing codebase and state the choice in the summary — do not leave it unstyled by default.
+   - Give visible feedback for interactive states (hover / pressed / focus / disabled / hit) and keep persistent info (score / lives / status / level) visible in EVERY state, including idle and pre-launch — a HUD that vanishes when nothing is happening defeats its purpose.
+   - Fit the text before you fit the numbers: if a DESIGN.md container/surface value and the text that sits inside it cannot both hold at the resolved size (e.g. ring radius − stroke width < text half-diagonal, or a fixed-height slot shorter than its label block), keep the numbers, fit the content, and state the conflict in the summary — never ship a layout where numbers overlap or clip.
+   - Guidance, not a gate: correctness, the interface contract (1b) and file boundaries (2) always outrank polish; never buy polish by writing files you do not own or by skipping the verification evidence (7b / 7c).` : ''}
 5. [Engineering action execution] If task spec or PRD ${L(state, 'doc.engConstraints')} includes git actions (e.g. new branch): **execute the action BEFORE writing code** (e.g. git checkout -b <branch>); if the workspace carries unrelated uncommitted changes, do NOT commit/clean them — state the situation in the summary.
 5b. [Write path · policy] Change source files ONLY through the file-editing tools (**write / edit / str_replace_editor**). **Never** create or rewrite source files from a shell (> / >> redirection, heredocs, node -e fs.writeFileSync(...), sed -i, python one-liners). Why this is hard: those paths bypass the host's version guard, so if a parallel agent wrote the same file seconds earlier your version silently replaces theirs (or vice versa) — no error, just lost work. Running a script **that is itself the deliverable** is fine; using a script as a shortcut to write files is not.
 5c. [Git discipline · policy (ADR-2026-08-27, ${L(state, 'doc.finalCommit')})] Work ONLY on the current branch: **never** git checkout main / merge / rebase / delete-branch / commit — main-branch actions and the final commit are performed by the host after acceptance (one commit per run: code + task-folder docs together). Just write/modify files; leave everything uncommitted. If a task asks for "merge back to main" or "commit", treat it as "prepare the delivery" (files ready + summary of what was done), do NOT commit or merge.
@@ -554,7 +590,7 @@ ${clip(tech, 12000)}`
 - cmd: <exact command> → exit <code>, <passed>/<failed> asserts (<file>:<line> for failures)
 - ...（one line per verification run）
 - N/A: <explicit reason>（when nothing runnable — pure config/docs change, no test suite, etc.）
-7c. [End-to-end coverage · when the deliverable has runtime state · policy] Per-function assertions are NOT sufficient when this deliverable involves **stateful flow, a long-running loop/timer, or multi-step interaction** (games, engines, pipelines, installers — anything with a state machine). For those, [Verification evidence] MUST also include one **end-to-end run that drives the real main path to a terminal condition** (win / game over / all items processed / flow finished) and reports the actual terminal state (status, counters, level...). Observed cost of stopping at unit assertions: one run shipped a game whose first level could never be cleared — every function passed its own test, but the bounce formula decayed |vx| multiplicatively while the unlock guard tested for exactly 0 (never reached), so the ball collapsed to half the board and the edge bricks were unreachable; QA needed a 400,000-frame simulation to expose it, and dev had reported only point assertions. Pure config / docs / rename deliverables genuinely without runtime state may declare N/A with the reason.
+7c. [End-to-end coverage · when the deliverable has runtime state · policy] Per-function assertions are NOT sufficient when this deliverable involves **stateful flow, a long-running loop/timer, or multi-step interaction** (games, engines, pipelines, installers — anything with a state machine). For those, [Verification evidence] MUST also include one **end-to-end run that drives the real main path to a terminal condition** (win / game over / all items processed / flow finished) and reports the actual terminal state (status, counters, level...). Unit assertions can all pass while the whole path is broken — e.g. a bounce formula decaying |vx| multiplicatively never reaches the 0 an unlock guard tests for, so the level becomes unclearable. Pure config / docs / rename deliverables genuinely without runtime state may declare N/A with the reason.
 8. [State] End with a state block (phase="dev"), touched = array of changed files, summary = implementation conclusion.${STATE_BLOCK_INSTRUCTION}`
 
 /** 视觉验证能力条款（ADR-2026-08-27，解锁 browser-use 视觉验证）：
@@ -608,6 +644,11 @@ ${clip(devSummary, 15000)}
     - **Install rollback discipline**: before any profile/publish install, write down the exact uninstall command (e.g. remove the package from profile deps + bundles, or \`dsh plugin remove <name>\`); if a post-install verification fails, roll back FIRST, then report — never leave the host unbootable.
     - Environment-blocked items (e.g. needs a host restart to verify real loading) → list them in the ${L(state, 'doc.manualChecklistQ')} with method + tool, for human review. Never silently skip.
 0c. [Commit-surface hygiene probe · when the workspace is versioned] If version control is in play (host log mentions 改动存档/git, or a .gitignore exists): before signing off, run \`git status --porcelain\` and verify it contains **no dependency dirs, build outputs, tool caches, IDE files or local secrets** (per this project's stack — e.g. node_modules/, .pnpm-store/, __pycache__/, target/, dist/, .idea/, .env). Missing/incorrect .gitignore coverage → file it as a P1 defect (module = 版本控制), because the closing commit stages the whole tree and noise becomes permanent history.
+${CRAFT(state) ? `0d. [Craft grade · observation, never a blocking gate · when the delivery has visible UI] Correctness and craft are separate dimensions, and QA grades only correctness today — which is why an unpolished delivery is never filed as a defect. Grade craft as **P3 observation** rows only (never P0-P2), judged against ${RUN(state)}/DESIGN.md when present, else the PRD's interaction/visual expectations:
+   - Persistent info visible in every state (idle / pre-launch included) — score / lives / status / level must not vanish when nothing is happening.
+   - Interactive feedback present (hover / pressed / focus / disabled / hit) on interactive elements; empty / loading / error states handled rather than blank.
+   - Visual treatment applied per the design (surface, elevation, motion) rather than flat unstyled primitives where the platform allows it.
+   File each gap as a P3 observation naming the concrete element; do NOT fail or block the run on it. Why observation-only: the pipeline is model-agnostic and weak/local models cannot produce craft — a blocking craft gate would make the plugin unusable for them. These rows exist so craft gaps become visible and auditable rather than silently accepted.` : ''}
 1. [Environment limits · dynamic by model capability]${VISUAL_POLICY(!!vision, LOCALE(state))}
    - Always-available sandbox-legal paths: build/assembly checks, unit tests, DOM-level E2E (jsdom or equivalent), static audit, adversarial spot-checks.
 2. [${t(LOCALE(state), 'doc.manualChecklist')}] Items that cannot be auto-verified (audio output / real-device: 100dvh dynamic toolbar, safe-area, multi-touch / FPS performance / screen-reader): do NOT fail them — instead list each in the report's ${L(state, 'doc.manualChecklistQ')} section (acceptance criteria + method + tool), note ${L(state, 'doc.envLimitQ')}, for human review.
@@ -624,7 +665,7 @@ ${QAREVERIFY(state) ? `6b. [Re-verification round · policy] This round is a RE-
    - THEN add probes only for surfaces the previous round did NOT cover, and state which surface was missed and why. A defect class that reappears on a new surface means the earlier scan scope was too narrow, not that the fix was wrong.
    - Recompute each defect class's hit count after the fix (the same sweep the fix summary reports) and compare: a disagreement is itself a finding — report it as a defect.
    - Re-run each defect row's **Check command** / **Pass criterion** as written; do not substitute your own equivalent and call it verified.
-   - Do NOT re-invent a probe or a baseline that already exists (one run produced two complete HEAD copies — 50 files / 1 MB — only because a later round redid the earlier round's work).` : ''}
+   - Do NOT re-invent a probe or a baseline that already exists (redoing an earlier round's work is pure waste — materialize it ONCE below).` : ''}
 7. ${langDirective(LOCALE(state))}, concrete & executable; write the **complete** report to ${RUN(state)}/QA-REPORT.md (write once, tight body) — **this file IS the deliverable**: scope & environment, cases & results (pass/fail/blocked), ${t(LOCALE(state), 'doc.manualChecklist')}, defect table (if any), conclusion (whether acceptance-ready). [Boundary] only under ${TF_DOCS}/.
 ${ARTIFACT_DELIVERY(RUN(state))}
 8. [State] End with a state block (phase="qa"), summary = test conclusion / blocked items, extra = { "verifyScripts": [...] }.${STATE_BLOCK_INSTRUCTION}`
@@ -637,7 +678,14 @@ ${clip(qa, 12000)}
 [DEFECTS POINTED OUT BY QA]
 ${JSON.stringify(defects, null, 2)}
 [TECH DESIGN / BLUEPRINT SUMMARY (fix ON the existing architecture — don't rebuild)]
-${(tech && String(tech).trim()) ? clip(tech, 12000) : ''}
+${(tech && String(tech).trim())
+  // ⚠ 与 devPrompt 同款「小 teaser + 指向磁盘完整文件」，不许退回裸 clip：
+  // 实测 TECHNICAL.md 常在 14k~15k 字符，裸 clip(12000) 会把**修缺陷要照着看的 spec 尾部**截掉，
+  // 而这条路径正是信息缺失代价最大的一处（模型要按 spec 改，不是照 AC 从零写）。
+  ? `[Full source lives on disk — read/grep the sections your fix needs; do NOT rely on this truncated head.
+Path: ${RUN(state)}/TECHNICAL.md  — the COMPLETE technical design is there; this inline clip is only a starting taste, not the whole spec]
+${clip(tech, 4000)}`
+  : ''}
 [PRD] Relevant acceptance criteria: ${RUN(state)}/PRD.md (grep the AC number as needed; no full read).
 [REQUIREMENTS]
 1. [Confirm first, then fix] For each defect, verify one by one whether it truly holds (read code / reproduce / compare actual vs expected):
@@ -648,7 +696,7 @@ ${(tech && String(tech).trim()) ? clip(tech, 12000) : ''}
    (a) locate the whole class with ONE search — use the defect row's **Check command** when QA supplied one, otherwise derive the pattern and say so — and count every hit across the repo;
    (b) land a **permanent executable gate** for it: an assertion in the repo's verify suite (preferred), or a grep/script assertion committed next to the checks when the repo has none — it must FAIL before your change and PASS after;
    (c) report the hit count **before → after** and the gate command, both in the fix summary and in the evidence block below.
-   If a gate is genuinely impossible for a given defect, say so explicitly and leave the Check command as the standing proof. Observed cost of skipping this (run tf-mu2ioilr-95l4th): round-1 fixed only the instances it could see, 4 more of the same class stayed in prompts/index.ts, and QA round 2 sent the same defect straight back — one extra full round over a defect that was already "fixed".
+   If a gate is genuinely impossible for a given defect, say so explicitly and leave the Check command as the standing proof. Partial fixes cost a whole extra round.
 3. [Log discipline] After fixing, run relevant verification to ensure green (regression floor: existing verify suites pass untouched). Do NOT redirect command/suite output into files (the host truncates long output to its tail and spills the full text to a reported path); only what must survive goes into logs/teamflow/${runId || '<runId>'}/: checkers → .../scripts/ (overwrite, never numbered variants), payloads → .../captures.json, conclusions → .md. Never create scripts/ or probe/ at the project root. The log dir is ${LOG_TRANSIENT}.
 4. Output a fix summary (≤40 lines, ${replyLang(state)}): per defect —${L(state, 'qa.fixSummaryQ')}, changed files, leftovers. No big code pastes.
 4b. [Verification evidence · policy] **Mandatory block at the end of the reply (before the state block)** — host stores it verbatim for audit; each line is cross-checkable by re-running the listed command (the host keeps a bounded tail of every tool result, and the full text of a truncated one at the path it reported); missing block = contract not honored (warn only, never interrupts):
@@ -708,6 +756,23 @@ ${vision ? `[Visual re-check] If QA saved screenshots under the task folder, spo
 5. ${langDirective(LOCALE(state))}.
 ${ARTIFACT_DELIVERY(RUN(state))}
 6. [State] End with a state block (phase="acceptance"), summary = acceptance conclusion, verdict = "accepted/rework/reject/needs-human", extra.done = confirmation of this delivery.${STATE_BLOCK_INSTRUCTION}`
+}
+
+/**
+ * craft 引导通道开关（2026-09-30 立）——服务于 ±craft 的 A/B 对照实验。
+ *
+ * 受控的三处条款：design `2b`（视觉规格）/ dev `4b`（craft bar）/ QA `0d`（craft 观察评级）。
+ * 三者都是**引导或观察**、不是硬门禁，所以关掉它们不会移除任何 host 强制能力，
+ * 只是让「质感」这条通道回到它不存在时的形态（＝这三轮改动之前的基线）。
+ *
+ * **缺省＝开**（只有显式 `craft: false` 才关）：与 `QAREVERIFY` 的缺省语义相反（那里缺省＝首轮），
+ * 因为这是产品出厂行为 —— 夹具/老快照不该仅仅因为缺字段就退回旧形态。
+ * 经 `state.__runCtx.craft` 下发（同 qaReverify/locale 的既有注入通道，不改任何工厂签名）。
+ */
+function CRAFT(state: unknown): boolean {
+  const rc = state as { __runCtx?: { craft?: unknown } } | undefined
+  const v = rc && rc.__runCtx ? rc.__runCtx.craft : undefined
+  return v !== false
 }
 
 /** 需求分诊模型 prompt（模型驱动 triage；供 core/triage.runTriage 使用）。 */
