@@ -28,7 +28,7 @@
 |---|---|---|
 | **摘要索引** | 本文件 | 先读：现状 / 结构 / 工程约定 / 行为锚点 |
 | 使用与架构 | `README.md` | 安装、契约速览、token/lite 说明、ADR 索引 |
-| 决策记录 | `docs/adr/0001~0009` | 自研 journal(不引 LangGraph) / AGENTS 最小侵入 / 部署+token 口径 / triage+共享状态 / 需求无效→验收「需求不适用」拦截 / 认知前置+架构落地重构(质量优先) / QA 打回修复有界闭环(ADR-0007) / 任务夹文档制(ADR-0008) / **不做插件级用户记忆层——已否决(ADR-0009)** |
+| 决策记录 | `docs/adr/0001~0010` | 自研 journal(不引 LangGraph) / AGENTS 最小侵入 / 部署+token 口径 / triage+共享状态 / 需求无效→验收「需求不适用」拦截 / 认知前置+架构落地重构(质量优先) / QA 打回修复有界闭环(ADR-0007) / 任务夹文档制(ADR-0008) / **不做插件级用户记忆层——已否决(ADR-0009)** / 澄清可观测性与失效路径(ADR-0010) |
 | 开发日志 | `docs/devlog.md` | 迭代变更流水 + 功能演进史（历史；不注入会话，按需查阅） |
 | 待办 | `docs/TODO.md` | 未完成事项（需人决策；不注入会话——agent 不主动做产品改进） |
 | 测试 | `test/smoke.js` `test/locale.test.js` `test/stages.test.js` `test/verdict.test.js` `test/journal.test.js` `test/runlogs.test.js` `test/cancel.test.js` `test/diagnostic.test.js` `test/evidence.test.js` `test/metering.test.js` `test/gitignore.test.js` `test/commit-path.test.js` `test/product-scope.test.js` `test/state.test.js` `test/dev-task-id.test.js` `test/overlap-merge.test.js` `test/triage-gate.test.js` `test/instruction-budget.test.js` `test/client-host-api.test.js` `test/runs-eviction.test.js` | `smoke` 结构/描述符/源码断言 · `locale` 语言层 · `stages` 档位阶段集 · `verdict` 验收结论 · `journal` journal 行为 · `runlogs` 日志生命周期 · `cancel` 中断语义 · `diagnostic` 重试/交付判定 · `evidence` 证据块 · `metering` token 计量 · `gitignore`+`commit-path` 收口提交 · `product-scope` 产品线数据面 · `state`/`dev-task-id`/`triage-gate` 状态与分诊 · `overlap-merge` dev 文件交集合并护栏（`util.mergeFileOverlaps` 不变量 + resume 补跑路径必须共用同一函数） · `instruction-budget` 本文件体积守门（体积/§5 行长/禁写历史/指针双向） · `client-host-api` 宿主服务 API 面（成员白名单 + 禁已移除成员 + inject/桥接一致） · `runs-eviction` 内存 run 注册表有界化（淘汰决策真值表 + 磁盘回读/不回填） · **L1 `prompt-contract` + L2 `conformance`**（改 prompt/注入必跑）→ 覆盖明细见 `anchors/tests-coverage.md` |
@@ -121,6 +121,7 @@ client/
 | 重试/护栏 | 外部供应商故障 ≠ 交付缺陷（长退避、不计熔断，用尽落 `externalFailure`）；退化/挂死/空转不自动重试；门序 = 不可重试/外部中止/护栏中止 → 熔断预算门 → 自动重试；**环境不可用（`env-unavailable`）是第五个早停信号**（连续 2 次提醒 / 3 次中止、不自动重试、**优先于「完成了」**）。`anchors/retry-guard.md` |
 | prompt 约束分级 | prompt 内禁止自称 hard constraint；只分 `[HOST-ENFORCED]`（host 真强制，须写真实后果）与 `[policy]`（自律 + guard warn/轻提醒）。`anchors/prompt-constraint-levels.md` |
 | 验证证据块 | dev/qaFix 回复末尾强制 `[Verification evidence]`（命令+退出码+断言计数，或显式 N/A）→ host 提取存证；policy 级缺失只 warn；**不制造输出 dump**：三类留存、项目根不得出现 `scripts/`/`probe/`。`anchors/verification-evidence.md` |
+| 交付枚举与截断 | 上限 400、点目录不遍历；命中上限时三条「未执行」**不是事实**，由后一条 `log.hostScanTruncated` 撤回（顺序即契约）。`anchors/log-lifecycle.md` |
 
 ## 6. 变更记录（指针）
 

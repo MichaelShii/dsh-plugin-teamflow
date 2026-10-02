@@ -17,6 +17,7 @@ import { TEAMFLOW_REMOTE_CONTRIBUTION } from '../descriptors.js'
 import { T, phaseNameOf, phaseIconOf, phaseKeyOf, COLUMNS, h, MONO, SANS, flexRow, chip, FoldableText, CancelButton, fmtDur, fmtTokens, totalTokens, usageDetail, stageUsageLine, byRoleLine, totalUsage, stText, stColor, runStatusText, kindTitle, roleChip, stageLabelOf, stageStatusText, t, setTranslator, localeTag } from './shared.js'
 import { NS, zh, en } from './locales.js'
 import { GlobalPanel, TeamflowPanelIcon, RunDetailTab, runTabDefinition, RUN_TAB_ID } from './panel.js'
+import { fitScale, zoomBy as applyZoomFactor, pinchView, pointerDist, pickViewMode, LIST_BREAKPOINT } from './viewport.js'
 
 // uiWorkspace：跳会话唯一入口（0.1.7-alpha.1 起 `uiWorkspace.openSession(target)` 取代已移除的 `sessions.openSubagent` / `sessions.open`）
 export const inject = ['remote', 'slots', 'uiWorkspace', 'locale']
@@ -37,6 +38,13 @@ const PAD_R = 72
 const PAD_T = 42
 const PAD_B = 46
 const cardH = (s) => (s.status === 'running' ? CARD_H_RUN : CARD_H)
+
+/**
+ * 用户在本次客户端会话里的**显式**视图选择（`null` = 按容器宽度自动：窄 → 列表）。
+ * 模块级：切 tab / 重渲染不丢；刷新页面重置（够用，且不必引入持久化依赖）。
+ * 记住它是必须的 —— 否则用户在窄面板上手动切到图形，下一次渲染又被自动判定改回列表。
+ */
+let viewModeChoice: 'graph' | 'list' | null = null
 
 /** 横向布局：相位从左至右一排，上下轻微波浪错位（弧线自然成形）+ 绝对定位节点 + 连接锚点。
  *  返回 nodes/conns/worldW/worldH。 */
@@ -85,7 +93,9 @@ function FlowStageCard(s, key, onOpen) {
   return h('div', {
     key,
     title: t('stage.cardTip', { label: stageLabelOf(s) }),
-    onMouseDown: (e) => e.stopPropagation(), // 不触发画布拖动，允许点击
+    // 不触发画布拖动/捏合，允许点击（mouse 与 pointer 都要拦：手势已迁到 Pointer Events）
+    onMouseDown: (e) => e.stopPropagation(),
+    onPointerDown: (e) => e.stopPropagation(),
     onClick: () => onOpen && onOpen(s),
     style: {
       boxSizing: 'border-box', height: cardH(s), borderRadius: 10, position: 'relative', overflow: 'hidden',
@@ -198,7 +208,9 @@ function StageDetailDrawer({ det, onClose, sessionId, uiWorkspace }) {
   return h('div', {
     ref: pRef,
     style: {
-      position: 'absolute', top: 10, right: 12, bottom: 10, width: 384, zIndex: 8,
+      // 宽度必须**跟着容器收**：固定 384px 在手机（面板内宽 ≈330px）上会从左边溢出，
+      // 正文被裁掉一截（2026-09-29 真机截图实锤）。`min()` 让宽屏仍是 384、窄屏自适应。
+      position: 'absolute', top: 10, right: 12, bottom: 10, width: 'min(384px, calc(100% - 24px))', zIndex: 8,
       borderRadius: 14, overflow: 'hidden',
       display: 'flex', flexDirection: 'column',
       border: `1px solid ${T.border}`,
@@ -290,6 +302,32 @@ function StageDetailDrawer({ det, onClose, sessionId, uiWorkspace }) {
   )
 }
 
+/**
+ * 流水线**列表**视图（与图形视图同源数据 `groups`，一行一个阶段、点击开同一个详情浮层）。
+ *
+ * 为什么需要（issue #10 第二层，与触摸缺失是两回事）：
+ * 图节点 `NODE_W=300 / CARD_H=54`，手机容器 ≈380px 时 fit 缩放 ≈0.19 ⇒ 节点只剩约 57×10px、
+ * 字号≈2px、点按高度 10px（远低于 44px 可用下限）。**缩到"能看全"只能得到缩略图，不是可用界面** ——
+ * 而这个问题**不会**被触摸/缩放下限修复解决（那两个修的是"能动"，列表修的是"能读、能点"）。
+ *
+ * 顺序沿用既有 `groups`（= 阶段顺序，与图形一致）；**依赖结构仍是图形独有** —— 列表不假装能表达它。
+ */
+function PipelineList({ groups, onOpen }) {
+  return h('div', {
+    style: { flex: 1, minHeight: 0, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 12, padding: '2px 2px 10px' },
+  },
+  h('div', { style: { fontSize: 10.5, color: T.text2, opacity: 0.75 } }, t('pipeline.listHint')),
+  groups.map((g, gi) => h('div', { key: 'g' + gi, style: { display: 'flex', flexDirection: 'column', gap: 6 } },
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, fontWeight: 700, color: T.text2 } },
+      h('span', null, phaseIconOf(g.phase)),
+      h('span', null, phaseNameOf(g.phase)),
+      g.stages.length > 1 ? chip(`×${g.stages.length}`, T.text2) : null,
+    ),
+    g.stages.map((s, si) => FlowStageCard(s, 'l' + gi + '-' + si, onOpen)),
+  )),
+  )
+}
+
 function PipelinePanel({ active, api, runId, sessionId, uiWorkspace }) {
   if (!active) return h('div', { style: { color: T.text2, fontSize: 13, padding: '28px 20px', textAlign: 'center' } },
     h('div', { style: { fontSize: 28, marginBottom: 8 } }, '🏭'),
@@ -316,13 +354,34 @@ function PipelinePanel({ active, api, runId, sessionId, uiWorkspace }) {
       g.stages.push({ ...st, __taskKey: key, attempts: [st] })
     }
   }
-  const wrapRef = React.useRef(null)
+  const outerRef = React.useRef(null) // 外层（头部 + 画布/列表）：宽度决定布局与视图模式
+  const wrapRef = React.useRef(null) // 画布体：fit / 滚轮 / 指针手势的作用域
   const [vw, setVw] = React.useState(900)
   const [view, setView] = React.useState({ x: 0, y: 44, s: 1 })
   const [grabbing, setGrabbing] = React.useState(false)
   const dragRef = React.useRef(null)
   const fittedRef = React.useRef(false)
   const [det, setDet] = React.useState(null) // { seq, stage, loading, data, err } —— 阶段详情浮层
+  /* 触摸兼容（issue #10）：指针集合 + 捏合快照。mouse-only 事件在触屏上什么都不会发生。 */
+  const pointersRef = React.useRef(new Map())
+  const pinchRef = React.useRef(null)
+  const viewRef = React.useRef(view)
+  /* 视图模式：用户显式选择（模块级记住，切 tab 回来不丢）优先于宽度自动判定。 */
+  const [userMode, setUserMode] = React.useState(viewModeChoice)
+  const mode = pickViewMode(vw, userMode)
+  React.useEffect(() => { viewRef.current = view }, [view])
+
+  /* 宽度观测挂在**外层**（画布体在列表模式下不存在，挂它会导致宽度拿不到、模式切不回来）。
+     用容器宽度而不是 `@media` 视口宽度：同一面板在右栏 / 会话 tab 下宽度差异极大。 */
+  React.useEffect(() => {
+    const el = outerRef.current
+    if (!el) return
+    const measure = () => { const W = el.clientWidth; if (W > 0) setVw(W) }
+    measure()
+    const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null
+    if (ro) ro.observe(el)
+    return () => { if (ro) ro.disconnect() }
+  }, [active, mode])
 
   React.useEffect(() => {
     const el = wrapRef.current
@@ -330,11 +389,12 @@ function PipelinePanel({ active, api, runId, sessionId, uiWorkspace }) {
     const doFit = () => {
       const W = el.clientWidth, H = el.clientHeight
       if (W <= 0) return
-      if (W !== vw) setVw(W)
       if (!fittedRef.current) {
         const lay = layoutFlow(groups, W)
-        const raw = Math.min((H - 46) / lay.worldH, (W - 40) / lay.worldW, 1)
-        const s = Math.max(0.5, raw)
+        // 缩放交给 fitScale（纯函数）：下限 = MIN_SCALE(0.5)。**低于 0.5 卡片会糊成一团**
+        // （300×54 → 37×7、字号 1.5px），图形会失去唯一的独有价值 —— 结构。
+        // 所以大图在窄容器上"看不全"是有意为之：想一眼看全请用列表视图。理由与实测账见 client/viewport.ts。
+        const s = fitScale(lay.worldW, lay.worldH, W, H)
         setView({ x: (W - lay.worldW * s) / 2, y: (H - lay.worldH * s) / 2, s })
         fittedRef.current = true
       }
@@ -343,7 +403,7 @@ function PipelinePanel({ active, api, runId, sessionId, uiWorkspace }) {
     const ro = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(doFit) : null
     if (ro) ro.observe(el)
     return () => { if (ro) ro.disconnect() }
-  }, [active])
+  }, [active, mode])
 
   React.useEffect(() => {
     const el = wrapRef.current
@@ -352,15 +412,12 @@ function PipelinePanel({ active, api, runId, sessionId, uiWorkspace }) {
       e.preventDefault()
       const rect = el.getBoundingClientRect()
       const px = e.clientX - rect.left, py = e.clientY - rect.top
-      setView((v) => {
-        const ns = Math.min(1.65, Math.max(0.5, v.s * (e.deltaY < 0 ? 1.12 : 0.89)))
-        const k = ns / v.s
-        return { s: ns, x: px - (px - v.x) * k, y: py - (py - v.y) * k }
-      })
+      setView((v) => applyZoomFactor(v, e.deltaY < 0 ? 1.12 : 0.89, px, py))
     }
     el.addEventListener('wheel', onWheel, { passive: false })
     return () => el.removeEventListener('wheel', onWheel)
-  }, [])
+    // 依赖 mode：列表↔图形切换时画布会卸载/重挂，[] 会让监听器落在已卸载的旧节点上。
+  }, [mode])
 
   // 切换 run 时关闭详情抽屉
   React.useEffect(() => { setDet(null) }, [active && active.id, runId])
@@ -382,37 +439,93 @@ function PipelinePanel({ active, api, runId, sessionId, uiWorkspace }) {
     const el = wrapRef.current
     if (!el) return
     const W = el.clientWidth, H = el.clientHeight
-    const raw = Math.min((H - 46) / layout.worldH, (W - 40) / layout.worldW, 1)
-    const s = Math.max(0.5, raw)
+    const s = fitScale(layout.worldW, layout.worldH, W, H)
     setView({ x: (W - layout.worldW * s) / 2, y: (H - layout.worldH * s) / 2, s })
   }
   const zoomBy = (f) => {
-    setView((v) => {
-      const ns = Math.min(1.65, Math.max(0.5, v.s * f))
-      const k = ns / v.s
-      const el = wrapRef.current
-      const px = el ? el.clientWidth / 2 : layout.worldW / 2
-      const py = el ? el.clientHeight / 2 : 64
-      return { s: ns, x: px - (px - v.x) * k, y: py - (py - v.y) * k }
-    })
+    const el = wrapRef.current
+    const px = el ? el.clientWidth / 2 : layout.worldW / 2
+    const py = el ? el.clientHeight / 2 : 64
+    setView((v) => applyZoomFactor(v, f, px, py))
   }
   const zoomStyle = { font: 'inherit', fontSize: 13, width: 26, height: 24, borderRadius: 7, cursor: 'pointer', border: `1px solid ${T.border}`, background: T.layer1, color: T.text, display: 'flex', alignItems: 'center', justifyContent: 'center', lineHeight: 1 }
-  const onDown = (e) => {
-    if (e.button !== 0) return
-    dragRef.current = { sx: e.clientX, sy: e.clientY, ox: view.x, oy: view.y }
-    setGrabbing(true)
+  /* 指针手势（鼠标 / 触控笔 / 手指**一套代码**）：单指拖动平移、双指捏合缩放。
+     原实现只挂 onMouse*，而容器同时设了 touchAction:'none'（关掉浏览器原生手势）——
+     触屏上既没有原生滚动也没有应用层处理 = **完全不能动**（issue #10 的根因）。
+     用 Pointer Events 后，`touch-action:none` 才真正有意义（事件归我们，不再被原生手势抢走）。 */
+  const localPoint = (clientX, clientY) => {
+    const el = wrapRef.current
+    const rect = el ? el.getBoundingClientRect() : null
+    return rect ? { x: clientX - rect.left, y: clientY - rect.top } : { x: clientX, y: clientY }
+  }
+  const onPointerDown = (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return
+    const el = wrapRef.current
+    try { if (el && el.setPointerCapture) el.setPointerCapture(e.pointerId) } catch (err) { /* 捕获失败不致命 */ }
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    const ps = [...pointersRef.current.values()]
+    if (ps.length === 1) {
+      dragRef.current = { sx: e.clientX, sy: e.clientY, ox: viewRef.current.x, oy: viewRef.current.y }
+      setGrabbing(true)
+    } else if (ps.length === 2) {
+      // 起手快照：捏合期间用「起始视图 × 距离比」直接算绝对视图，避免累积误差
+      pinchRef.current = { dist: pointerDist(ps[0], ps[1]), view: viewRef.current }
+      dragRef.current = null
+      setGrabbing(false)
+    }
     e.preventDefault()
   }
-  const onMove = (e) => {
+  const onPointerMove = (e) => {
+    if (!pointersRef.current.has(e.pointerId)) return
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    const ps = [...pointersRef.current.values()]
+    if (ps.length >= 2 && pinchRef.current) {
+      const mid = localPoint((ps[0].x + ps[1].x) / 2, (ps[0].y + ps[1].y) / 2)
+      setView(pinchView(pinchRef.current.view, pinchRef.current.dist, pointerDist(ps[0], ps[1]), mid.x, mid.y))
+      return
+    }
     const d = dragRef.current
     if (!d) return
     setView((v) => ({ ...v, x: d.ox + (e.clientX - d.sx), y: d.oy + (e.clientY - d.sy) }))
   }
-  const onUp = () => { dragRef.current = null; setGrabbing(false) }
+  const onPointerUp = (e) => {
+    pointersRef.current.delete(e.pointerId)
+    const ps = [...pointersRef.current.values()]
+    if (ps.length >= 2) return
+    pinchRef.current = null
+    if (ps.length === 1) {
+      // 双指松开一指 → 用剩下那指**重新锚定**拖动，否则会跳一下（起始点还是旧的）
+      dragRef.current = { sx: ps[0].x, sy: ps[0].y, ox: viewRef.current.x, oy: viewRef.current.y }
+      setGrabbing(true)
+    } else {
+      dragRef.current = null
+      setGrabbing(false)
+    }
+  }
+
+  const viewBtn = (m, label) => h('button', {
+    onClick: () => { viewModeChoice = m; setUserMode(m) },
+    style: {
+      ...zoomStyle, width: 'auto', padding: '0 9px', fontSize: 11, fontWeight: 600,
+      background: mode === m ? `color-mix(in srgb, ${T.text} 12%, ${T.layer1})` : T.layer1,
+      color: mode === m ? T.text : T.text2,
+    },
+  }, label)
 
   return h('div', {
+    ref: outerRef,
+    style: { position: 'relative', flex: 1, minHeight: 320, display: 'flex', flexDirection: 'column' },
+  },
+  /* 视图切换（图形 / 列表）。窄容器默认列表：图节点 300×54px，手机 fit 后仅约 57×10px
+     （字号≈2px）——缩到"能看全"得到的是缩略图，不可读也不可点（issue #10 的第二层）。 */
+  h('div', { style: { display: 'flex', alignItems: 'center', gap: 6, padding: '0 2px 6px', flex: '0 0 auto' } },
+    h('span', { style: { fontSize: 10.5, color: T.text2, opacity: 0.8, marginRight: 'auto' } }, t('pipeline.viewHint')),
+    viewBtn('graph', t('pipeline.viewGraph')),
+    viewBtn('list', t('pipeline.viewList')),
+  ),
+  mode === 'list' ? h(PipelineList, { groups, onOpen: openDetail }) : h('div', {
     ref: wrapRef,
-    onMouseDown: onDown, onMouseMove: onMove, onMouseUp: onUp, onMouseLeave: onUp,
+    onPointerDown, onPointerMove, onPointerUp, onPointerCancel: onPointerUp,
     style: {
       position: 'relative', flex: 1, minHeight: 320, borderRadius: 12, overflow: 'hidden', touchAction: 'none',
       border: `1px solid ${T.border}`, userSelect: 'none',
@@ -440,9 +553,10 @@ function PipelinePanel({ active, api, runId, sessionId, uiWorkspace }) {
   ),
   ),
   layout.nodes.length === 0 ? h('div', { style: { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.text2, fontSize: 13 } }, t('pipeline.noNodes')) : null,
-  /* 浮层控制簇（不参与画布拖拽） */
+  /* 浮层控制簇（不参与画布拖拽/捏合） */
   h('div', {
     onMouseDown: (e) => e.stopPropagation(),
+    onPointerDown: (e) => e.stopPropagation(),
     style: { position: 'absolute', top: 10, right: 12, zIndex: 6, display: 'flex', alignItems: 'center', gap: 6, padding: 5, borderRadius: 11, border: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.layer1} 82%, transparent)`, backdropFilter: 'blur(8px)', boxShadow: '0 6px 20px rgba(0,0,0,.16)' },
   },
   h('button', { title: t('pipeline.zoomOut'), onClick: () => zoomBy(0.86), style: zoomStyle }, '−'),
@@ -450,10 +564,13 @@ function PipelinePanel({ active, api, runId, sessionId, uiWorkspace }) {
   h('button', { title: t('pipeline.zoomIn'), onClick: () => zoomBy(1.16), style: zoomStyle }, '+'),
   h('span', { style: { width: 1, height: 14, background: T.border } }),
   h('button', { title: t('pipeline.fitCanvas'), onClick: fitNow, style: { ...zoomStyle, fontSize: 13 } }, '⤢'),
-  h('span', { style: { width: 1, height: 14, background: T.border } }),
-  h('span', { style: { fontSize: 10.5, color: T.text2, paddingRight: 4, opacity: 0.85 } }, t('pipeline.canvasHint')),
+  // 窄容器（= 列表区间）不显示操作提示：那里没有滚轮（触屏），提示还会把控制簇挤满一行。
+  vw < LIST_BREAKPOINT ? null : h('span', { style: { width: 1, height: 14, background: T.border } }),
+  vw < LIST_BREAKPOINT ? null : h('span', { style: { fontSize: 10.5, color: T.text2, paddingRight: 4, opacity: 0.85 } }, t('pipeline.canvasHint')),
   ),
-  /* 阶段详情浮层：悬浮于画布右上，不挤占画布宽度；浮层内滚轮只滚正文（原生 stopPropagation），不触发画布缩放 */
+  ),
+  /* 阶段详情浮层：悬浮于画布右上，不挤占画布宽度；浮层内滚轮只滚正文（原生 stopPropagation），不触发画布缩放。
+     提到视图层（图形/列表之外）—— 列表模式下点行也会打开同一个浮层。 */
   det ? h(StageDetailDrawer, { det, onClose: closeDet, sessionId, uiWorkspace }) : null,
   )
 }
@@ -657,7 +774,8 @@ function ItemDetailDrawer({ det, onClose, onShowRun, openArtifact }) {
   )
   return h('div', {
     style: {
-      position: 'absolute', top: 10, right: 12, bottom: 10, width: 400, zIndex: 9,
+      // 同 StageDetailDrawer：固定 400px 在窄容器上左侧溢出、正文被裁 → 跟着容器收。
+      position: 'absolute', top: 10, right: 12, bottom: 10, width: 'min(400px, calc(100% - 24px))', zIndex: 9,
       borderRadius: 14, overflow: 'hidden',
       display: 'flex', flexDirection: 'column',
       border: `1px solid ${T.border}`,

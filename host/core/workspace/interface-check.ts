@@ -22,7 +22,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { dirname, extname, relative, resolve, sep } from 'node:path'
-import { listDeliverableFiles } from '../../util.ts'
+import { scanDeliverableFiles } from '../../util.ts'
 
 const SRC_EXT = new Set(['.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx'])
 const MAX_ISSUES = 20
@@ -40,6 +40,8 @@ export interface InterfaceCheck {
   files: number
   issues: InterfaceIssue[]
   ms: number
+  /** 交付枚举被上限截断 ⇒ `skip`（源文件不足）可能只是「没枚举到」，调用方须显式上报 */
+  truncated: boolean
 }
 
 const norm = (p: string): string => p.split(sep).join('/')
@@ -79,10 +81,12 @@ export function checkDeliverableInterfaces(
   maxIssues: number = MAX_ISSUES,
 ): InterfaceCheck {
   const t0 = Date.now()
-  const out: InterfaceCheck = { status: 'error', files: 0, issues: [], ms: 0 }
+  const out: InterfaceCheck = { status: 'error', files: 0, issues: [], ms: 0, truncated: false }
   try {
     if (!root) { out.status = 'skip'; out.ms = Date.now() - t0; return out }
-    const rels = listDeliverableFiles(root).filter((f) => SRC_EXT.has(extname(String(f)).toLowerCase()))
+    const scan = scanDeliverableFiles(root)
+    out.truncated = scan.truncated
+    const rels = scan.files.filter((f) => SRC_EXT.has(extname(String(f)).toLowerCase()))
     out.files = rels.length
     if (rels.length < 2) { out.status = 'skip'; out.ms = Date.now() - t0; return out }
 

@@ -109,13 +109,13 @@ The whole repo is TS/TSX: **the host must be built** (Node's type stripping does
 
 ### Version anchor (dsh host compatibility)
 
-This plugin is developed and verified against **dsh v0.1.7-alpha.1** (session format v4). **That is also the floor for running a pipeline**: every message the plugin injects must carry a producer-owned `source.kind` (`plugin:dsh-plugin-teamflow`), while a v3 host validates `source.kind` against a **closed vocabulary** (`SOURCE_KINDS` contains no `plugin:*`) — the old form `{kind:'plugin', plugin:…}` is rejected outright by a v4 host, and the new form is equally illegal on a v3 host, so the two shapes are **mutually incompatible**; the plugin therefore no longer claims it can run back to v0.1.5-rc.2. The Remote descriptors still expose both `schema` and `create()` for hosts of either generation, see "typert descriptor contract" below. `package.json`'s `engines.dsh: ">=0.1.7-alpha.1 <0.2.0"` (**narrowed to this floor** — see the measurement below) and `dsh.manifestVersion: 1` are declarative author metadata (the host neither reads nor validates them).
+Baseline **dsh v0.2.0-rc.2** (preview); **floor v0.1.7-alpha.1** — a v3 host validates `source.kind` against a closed vocabulary without `plugin:*`, so there is no fallback to 0.1.5-rc.2.
 
-⚠️ **How the prerelease-tuple rule interacts with this range** (verified 2026-09-23 with semver 7.7.4's `satisfies`): a prerelease only matches a range carrying a prerelease on the **same `[major,minor,patch]` tuple** — `>=0.1.7-alpha.1 <0.2.0` evaluates to **PASS for `0.1.7-alpha.1` / `0.1.7-alpha.2` / `0.1.7` / `0.1.8` / `0.1.9`** and **fail for `0.1.6-alpha.2` / `0.1.6` / `0.2.0-rc.1` / `0.2.0`** (exactly the v4 floor above). Note the old range `>=0.1.5-rc.2 <0.2.0` judged even the then-current `0.1.6-alpha.2` false under the same rule, so a field like this only states compatibility **against stable releases**; the host does not validate it anyway, and day to day you should go by **`next`**: `latest` lags behind it, so don't use `latest` to judge the release line.
+`engines.dsh` is declared as a **union** range, `">=0.1.7-alpha.1 <0.3.0 || >=0.2.0-rc.1 <0.3.0"`: a prerelease only matches a range carrying a prerelease on the same tuple, so **simply widening the upper bound still fails for `0.2.0-rc.x`** (measured with semver 7.7.4). The host **never validates** this field — it only states compatibility against stable releases; judge the release line by `next` (`latest` lags behind it).
 
-**Breaking surface of v0.1.7-alpha.1 (this audit)**: the session event format moved to **v4** — before adopting an event the host validates every message's `source.kind` and **refuses the retired v3 plugin wrapper** (`{kind:'plugin', plugin:…}` → `format v4 message requires a producer-owned source kind`), requiring `kind:'plugin:<name>'` instead. All four injection sites (team context ×2 / completion report / guard reminder) still wrote the old wrapper, so a fresh run failed at the write step (the journal never even landed). They now emit `plugin:dsh-plugin-teamflow`. Every other surface re-checked (typert strict descriptors still require `create()`, `subagents.start`/`SubagentRun`, the `tokenUsage` four buckets + `sessionStats.steps`, `agent.inject/followup/steer`, the `settings.locale` read-only port, `remote.$mount`, `sessions.openSubagent`, `sidebarRight.openResource`) showed **no breakage**.
+**0.2.0 audit: no breakage found** — `tsc` compiles against the installed 0.2.0-rc.2 with 0 errors, the four host packages we import have no missing exports, and `inject` semantics, the manifest schema and the patch `insert:` row are all unchanged (the new optional `external` is not needed). ⚠ This is a **static** audit; runtime still needs a host restart.
 
-**Breaking surface of v0.1.6-alpha.2 (previous audit)**: the typert strict codec changed from `{ mode, typeSymbol, schema }` to `{ mode, typeSymbol, create: () => Schema }` (lazy materialisation — `materializeSchema` does `record.value ??= record.create()`); `validateCodec` **throws at registration** for a strict codec missing `create()` — `"strict codec has no create() factory"`. Combined with dsh-app-boot's policy (a required plugin failing to activate fails the whole profile with `startup failed`), the symptom is **"dsh won't start"** (`web boot: N entries did not activate`). A full diff of the other surfaces (client-modules / subagent / agent runtime / manifest / the tools llm projection) found no further breakage for this plugin, and the three UI slot packages have zero changes in `src/index.ts` → slot names are safe.
+May help / needs re-checking: 0.2.0 ships Windows ACL fixes (re-test the "fresh directory on E: fails grantWrite with Win32 5" issue) and `user-questions` gained timed waits and late replies (our clarification gate needs its call contract re-checked).
 
 If behaviour looks wrong after a dsh upgrade, check two things first: ① the session events this plugin injects (`tool-workflow/agent-start`, `user/message` with `source.kind='plugin:dsh-plugin-teamflow'`) must sit inside the host's event vocabulary — **a v4 host only accepts producer-owned source kinds (the v3 `plugin` wrapper is retired)**, and a v3 host's closed vocabulary does not accept `plugin:*` either (hence the v4 floor); `tool-workflow/agent-start` carries no message/source slot and is outside that check. **New custom event types must carry `ignorable: true`**, and known types must not add keys outside it; ② metering reads the host **projection keys** (`tokenUsage` / `sessionStats`), so if the host renames them or bumps their state version, `host/core/metering.ts` has to be updated in step. Compatibility checks and open follow-ups are recorded in `CHANGELOG.md` (0.1.6–0.1.9) and `docs/TODO.md` (for example, repeat detection still reads the deprecated event readers).
 
@@ -123,14 +123,20 @@ If behaviour looks wrong after a dsh upgrade, check two things first: ① the se
 ## Install (for users)
 
 ```bash
-# Install from npm (after publish)
+# Install from npm (after publish) — into the web profile
 dsh plugin --profile web add dsh-plugin-teamflow
 
 # Or local directory install (during development)
 dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 ```
 
-After install, **restart** `dsh --profile web` for the host `teamflow-host` to take effect:
+> ⚠️ **The desktop app (dsh 0.2.0+) needs its own install**: it runs from a separate `desktop`
+> profile (`~/.dsh/profiles/desktop`) with its own `node_modules` — install it only into `web` and
+> **the desktop app will not show the plugin** (nothing is broken). The CLI also **refuses**
+> `--profile desktop` (`managed exclusively by the Electron application`) ⇒ **install it from the
+> desktop app's own plugin management UI**.
+
+After install, **restart** `dsh --profile web` (or restart the desktop app) for the host `teamflow-host` to take effect:
 - The model side gains 12 `teamflow_*` tools: `start / triage / status / backlog / claim / update / assign / cancel / resume / pause / resume_session / merge`;
 - The browser session header shows the "🏭 Team Workspace" tab (in-session) **and the "Team Workspace" icon in the left sidebar** (the global panel: product-line view, cross-session);
 - Backlog is written to `$DSH_HOME/teamflow/<product>/backlog/*.json`.
@@ -167,7 +173,7 @@ node --check lib/host.mjs lib/client.js lib/store.mjs lib/descriptors.mjs
 pnpm run bundle         # build client (tsdown → lib/client.js, registered via __ModuleLoader__.load)
 ```
 
-**For plugin developers** (the local dev loop of THIS plugin): see [`AGENTS.md`](./AGENTS.md) and [`docs/adr/`](./docs/adr) in the repo — deployment sync (`node deploy.mjs` → restart `dsh --profile web`), the "running web loads the host from the profile deployment copy, building source alone does not take effect" caveat, design decision records (ADR-0001~0009) and benchmarks (`docs/benchmarks/`). All repo source is TS/TSX and must be built first (`pnpm bundle`) to run (`strip-types` does not apply under `node_modules`).
+**For plugin developers** (the local dev loop of THIS plugin): see [`AGENTS.md`](./AGENTS.md) and [`docs/adr/`](./docs/adr) in the repo — deployment sync (`node deploy.mjs` → restart `dsh --profile web`), the "running web loads the host from the profile deployment copy, building source alone does not take effect" caveat, design decision records (ADR-0001~0010) and benchmarks (`docs/benchmarks/`). All repo source is TS/TSX and must be built first (`pnpm bundle`) to run (`strip-types` does not apply under `node_modules`).
 
 Note: `lib/` is excluded by `.gitignore` but must ship with the package (`files` whitelist includes `lib/`; `exports["./client"]` points to `./lib/client.js`).
 

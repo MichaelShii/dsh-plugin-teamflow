@@ -101,6 +101,11 @@ export const GUARD_TOOL_FAIL_WARN = 2
  * （probe-v4 第二次实机：它手写 13 个文件 / 69.8k 输出，其中一个 18.7KB 自测脚本从没跑过），
  * 所以提醒要早于它放弃（2 次），中止也要在它绕道成规模之前（3 次）。 */
 export const GUARD_TOOL_FAIL_ABORT = 3
+
+/** 进展豁免窗口（env-unavailable 判定用，2026-09-30 实锤 obs-r5 T3）：最近这么多毫秒内出现过
+ *  **成功**的工具调用 → 会话在推进，不判「环境不可用」。用成功调用而非「调用过」：反复调用 write
+ *  且每次都失败恰是被误判的形态。 */
+export const GUARD_ENV_PROGRESS_GRACE_MS = 90000
 /**
  * 拒绝/放弃措辞词表（诊断信号 + 兜底判据，**不再是唯一的交付门禁**）。
  *

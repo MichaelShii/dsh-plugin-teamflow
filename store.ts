@@ -10,7 +10,7 @@
 import { join, dirname } from 'node:path'
 import { createHash } from 'node:crypto'
 import {
-  mkdirSync, readFileSync, writeFileSync, existsSync, copyFileSync, renameSync, readdirSync,
+  mkdirSync, readFileSync, writeFileSync, appendFileSync, existsSync, copyFileSync, renameSync, readdirSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
 
@@ -320,6 +320,29 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
       newFps: r.newFps, repeats: r.repeats, resolved: r.resolved,
       outcome: r.outcome,
     })),
+  }
+}
+
+/**
+ * **追加一行 JSONL**（append-only 事件流；ADR-0010 D2）。
+ *
+ * 与 `writeJson` 的区别不是风格而是**语义**：`writeJson` 是快照（覆盖，只保留最新状态），
+ * 本函数是**事件流**（每次调用留一行，早期事件永不丢失）。
+ *
+ * 为什么必须存在（2026-09-30 实锤）：澄清闸门命中时**不建 run**，此时 journal 还不存在；
+ * 若只把「澄清成功并建了 run」的样本记下来，就看不到「问了但用户没答」「反复问直到放弃」——
+ * 幸存者偏差，正是那次「闸门从未触发」错误统计的同型成因。
+ *
+ * 单行写入不产生半截文件，故不做 tmp+rename；失败返回 false 不抛（观测是旁路，不得拦住主流程）。
+ */
+export function appendJsonl(file: string, obj: unknown): boolean {
+  try {
+    mkdirSync(dirname(file), { recursive: true })
+    appendFileSync(file, JSON.stringify(obj) + '\n', 'utf8')
+    return true
+  } catch (e) {
+    console.error('[teamflow] appendJsonl failed', file, (e as Error)?.message)
+    return false
   }
 }
 

@@ -88,6 +88,10 @@ export interface TeamflowState {
     /** **本机安装环境**（2026-09-21）：`$DSH_HOME` + 插件自身路径反推的 profile 名/目录 + `dsh` 是否在 PATH。
      *  路径全为运行时探测（用户环境各异，不得写死）；探测失败时 PRD 必须改为"问用户"。 */
     installEnv?: { dshHome?: string; profile?: string; profileDir?: string; cliOnPath?: boolean; ok?: boolean } | null
+    /** **craft 引导通道**（2026-09-30）：options.craft 经 __runCtx 下发；**缺省/undefined＝开**，
+     *  只有显式 `false` 才关闭 design 视觉规格（2b）/ dev craft bar（4b）/ QA craft 评级（0d）三处引导。
+     *  真值在 pipeline 每次执行开头写入，故 resume/复验轮都 inherits 同一次 run 的设置。 */
+    craft?: boolean
   } | null
   /** **版本控制模式**（2026-09-17 方案 A：入口定、出口遵）：'repo'=是仓库/已初始化（出口正常收口提交）；
    *  'none'=用户明确选择不用版本控制（出口**不尝试提交**，汇报明写"未存档"）。缺省=未知（按旧逻辑探测）。 */

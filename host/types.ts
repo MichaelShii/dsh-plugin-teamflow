@@ -62,6 +62,12 @@ export interface PipelineOptions {
   mode?: PipelineMode
   /** 团队 id：指定走哪个团队的流水线（从 teams.json 读取阶段配置）。 */
   teamId?: string
+  /** craft 引导通道（2026-09-30 立）：**缺省 true**；显式 `false` 关闭三处「引导/观察」条款——
+   *  design 视觉规格（2b）/ dev craft bar（4b）/ QA craft 观察评级（0d）。三者都不是硬门禁，
+   *  故关闭后丢失的只是质感引导，主机强制的正确性契约一条不少（用于 ±craft 的 A/B 对照实验）。
+   *  ⚠ **不是工具参数**：由环境变量 `TEAMFLOW_CRAFT=0` 传入（见 `util.envFlagOn`）——
+   *  工具 description 每次都进主会话上下文，而这个开关大概率是临时物，不值得常驻。 */
+  craft?: boolean
   /** 分支策略（ADR-2026-08-27 基调：启动前用户决策）：
    *  - 'auto'（默认）——建特性分支 feat/<branchName|slug>（从当前 HEAD 派生）；
    *  - 'keep'——沿用当前分支不建。

@@ -137,7 +137,7 @@ console.log('── 3) host 模块结构 ──')
 // v0.2.5：core 已按职责分子目录（stages/ agent/ workspace/ domain/，pipeline/triage/locale/report 留根）；
 // 这里写**相对 core 的路径**（含子目录），与 smoke 的「真实文件 ⊆ 清单」门禁同一坐标系。
 const CORE_FILES = [
-  'pipeline', 'triage', 'locale', 'report', // core 根：编排门面 + 分诊决策 + 语言/汇报横切
+  'pipeline', 'triage', 'clarify-log', 'locale', 'report', // core 根：编排门面 + 分诊决策 + 澄清埋点 + 语言/汇报横切
   'stages/dev', 'stages/qa', 'stages/acceptance', // stages/：流水线各阶段的实现
   'agent/context', 'agent/runner', 'agent/guard', 'agent/metering', // agent/：子代理生命周期
   'workspace/sanity', 'workspace/runlogs', 'workspace/acl-preflight', 'workspace/products', 'workspace/browser-probe', // workspace/
@@ -239,6 +239,7 @@ ok(/LOG_LIFECYCLE/.test(promptsSrc) && /TRANSIENT scratch inside the project/.te
 ok(/persistRunLog/.test(storeSrc) && /runLogFile/.test(storeSrc), 'host 端 run 日志落归档位')
 ok(/runLogArchiveDir\(journal\)/.test(storeSrc) && /logsArchiveRoot/.test(storeSrc), 'store：归档落点 = $DSH_HOME/teamflow/<workspace>/logs/<runId>（日志根离开用户项目）')
 ok(/archiveRunLogs\(journal, locale\)/.test(pipelineSrc) && /sweepWorkspaceLogs\(journal, locale\)/.test(pipelineSrc), 'pipeline：终态归档 + 起跑清扫残留（自愈）')
+ok(/resumableTerminal/.test(pipelineSrc) && /journal\.status === 'failed'/.test(pipelineSrc) && /log\.logsKeptForResume/.test(pipelineSrc), 'pipeline：**可续跑终态不归档**暂存日志（failed/cancelled/interrupted 都能 resume，QA 复验要靠上一轮 checker 当回归契约 —— obs-r5 实锤）')
 // 交付文档入库：尊重 .gitignore（不 -f）+ add 结果必须可见（2026-09-26 两条锁，缺一就会回到「静默」）
 // ① plan 侧永不出现 -f/-A；② 调用侧必须读 docAdd.ok——否则 add 失败仍写「已入库」，日志说谎比不写更糟。
 ok(/tfDocAddPlan\(/.test(pipelineSrc) && !/tfDocAddArgs/.test(pipelineSrc), 'pipeline：交付文档入库走 tfDocAddPlan（逐路径查忽略状态，不再 -f 强加）')
@@ -382,10 +383,11 @@ ok(/empty-turn\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8
 ok(/orchestration\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：编排套件登记双链')
 ok(/interface-check\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：接口核对套件登记双链')
 ok(/smoke-check\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：host 冒烟套件登记双链')
+ok(/viewport\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：画布视图套件登记双链')
 ok(/响应块构成：\{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')) && /response blocks: \{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')), 'locales：diag.emptyTurn 带块构成占位（zh/en 齐备——诊断必须自证，2026-09-26 tf-muigy5eq r12 实踩）')
 ok(/const beforeLen = journal\.stages\.length/.test(runnerSrc) && /lastStage = journal\.stages\[beforeLen\] \|\| null/.test(runnerSrc), 'runner：withRetry 按调用前长度取本次尝试 stage——并发安全（防证据/重试诊断/usage 累计串位）')
 ok(/stage: JournalStage \| null/.test(runnerSrc), 'runner：withRetry 返回携带 stage 引用')
-ok(/resumePrompt = devPrompt\(task, tech, prd, root, journal\.id, state\) \+ \(prevStage \? buildRetryDiagnostic\(2, prevStage\) : ''\)/.test(pipelineSrc), 'pipeline：resume 补跑附上次失败诊断（全新会话不再盲试——r37 实证 PowerShell 坑第三次踩）')
+ok(/resumePrompt = devPrompt\(task, tech, prd, design, root, journal\.id, state\) \+ \(prevStage \? buildRetryDiagnostic\(2, prevStage\) : ''\)/.test(pipelineSrc), 'pipeline：resume 补跑附上次失败诊断（全新会话不再盲试——r37 实证 PowerShell 坑第三次踩）')
 ok(/throwIfAborted: \(\) => \{\}/.test(utilSrc) && /typeof s\.throwIfAborted === 'function'/.test(utilSrc), 'util：SAFE_SIGNAL 补 throwIfAborted + 真 AbortSignal 判定（宿主 09-04+ 硬依赖——r1 json 树图 3 任务 3 轮 resume 全失败 root cause）')
 ok(/export function devTaskStatuses/.test(utilSrc) && /有 done stage = 该任务已成功/.test(utilSrc), 'util：任务级聚合 devTaskStatuses（放 util 以便行为级测试直接 import——pipeline 链宿主私有 peer 取不到）')
 // 任务身份 = host 生成的 dt-N（2026-09-18 实锤 probe-cache tf-mu6tb281：合并执行把 title 拼成
@@ -513,8 +515,22 @@ ok(/!verdict\.ok && text && stop === 'completed'/.test(runnerSrc), 'runner：**�
 ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
-ok(/"version": "0\.2\.5"/.test(pkgSrc), 'package.json：版本 0.2.5（release-v0.2.5 开发线）')
-ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.1\.7-alpha\.1 <0\.2\.0"/.test(pkgSrc), 'package.json：声明 dsh.manifestVersion 与 engines.dsh 兼容窗口（下限 = v4 宿主 0.1.7-alpha.1）')
+ok(/"version": "0\.2\.6"/.test(pkgSrc), 'package.json：版本 0.2.6（release-v0.2.6 开发线）')
+// 安装期钩子白名单：只有 prepare 可以在消费者安装时**不**运行。
+// 实锤（2026-10-03 用户实锤）：v0.2.5 的 `postinstall: lefthook install` 在**消费者从 registry 安装**时也会跑，
+// 而 lefthook 是 devDependency（tarball 里不存在）⇒ `npm error 'lefthook' 不是内部或外部命令` ⇒ **整个安装失败**。
+// `prepare` 只在本地 install / pack / publish 时跑，消费者安装不跑 ⇒ git hook 仍自动装、发布却不再炸。
+{
+  const pkgJson = JSON.parse(pkgSrc)
+  const consumerTime = ['preinstall', 'install', 'postinstall']
+  const bad = consumerTime.filter((k) => typeof pkgJson.scripts?.[k] === 'string')
+  ok(bad.length === 0, `package.json：消费者安装期钩子（${consumerTime.join('/')}）必须为空 —— 它们在 tarball 里跑，而 devDependencies 不在（实得：${bad.join(',') || '无'}）`)
+  ok(pkgJson.scripts?.prepare === 'lefthook install', 'package.json：git hook 走 prepare（本地/pack/publish 才跑）')
+}
+// ⚠ engines.dsh 的上界**不能简单放宽**：semver 的「预发布只匹配同 tuple 区间」规则下，
+// `>=0.1.7-alpha.1 <0.3.0` 对 `0.2.0-rc.2` 判 **fail**（semver 7.7.4 实测）——
+// 必须写成并集才能同时覆盖 0.1.7 系与 0.2.0 系。语义矩阵见 README「版本锚定」小节。
+ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.1\.7-alpha\.1 <0\.3\.0 \|\| >=0\.2\.0-rc\.1 <0\.3\.0"/.test(pkgSrc), 'package.json：声明 dsh.manifestVersion 与 engines.dsh 兼容窗口（下限 = v4 宿主 0.1.7-alpha.1；上界为并集区间，简单放宽会让 0.2.0-rc.x 判 fail）')
 // 手工枚举的清单必须配门禁（同型教训：journal 字段 / execOptions / loadState / triageRecordOf）。
 // deploy.mjs FILES 与上面的 CORE_FILES 都是手写清单，领域化拆分后两者都漂移过——实测 FILES 漏了
 // guard/products/runlogs/state/teams 五个（profile 副本里那份源码因此永久陈旧），CORE_FILES 漏了 sanity。
@@ -542,6 +558,11 @@ ok(!/queue as \{ __teamflowPending/.test(guardSrc) && !/function flushReminders/
 ok(/function timingOf/.test(guardSrc) && /stateOf\(session, 'subagentTiming'\)/.test(guardSrc) && /activeThrough/.test(guardSrc), 'guard：挂死检测首选 subagentTiming 投影（active.through）')
 ok(/来源：subagentTiming 投影/.test(hostSrc) && /投影不可用，回退事件视图/.test(hostSrc), 'guard：投影不可用才回退事件视图启发式（诊断区分两条路径）')
 ok(!/runtime\.tokenMeter/.test(contextSrc) && !/tokenMeter\?: any/.test(contextSrc), 'context：tokenMeter 死注入已清理（static inject / setRuntime / runtime 三处）')
+ok(/const FS_CONTENTION = \//.test(guardSrc) && /file no longer exists/.test(guardSrc), 'guard：fs 竞争类错误不进环境指纹（obs-r5 T3 实锤：单文件级可自愈冲突被误判成 env-unavailable，而活已干完）')
+ok(/lastSuccessAt = Date\.now\(\)/.test(guardSrc) && /GUARD_ENV_PROGRESS_GRACE_MS/.test(guardSrc), 'guard：env-unavailable 前有进展豁免（用**成功**调用判定，不用 lastMutationAt —— 后者在 tool/call 就更新，反复失败的 write 会让检测永不触发）')
+ok(/TOOL_SCOPE_LIMIT/.test(guardSrc) && /not a member of an active Agent Team/.test(guardSrc) && /TOOL_SCOPE_LIMIT\.test/.test(guardSrc), 'guard：\u300c工具在这一层不适用\u300d（Agent Team 成员身份 / maxDepth）不进环境指纹 —— obs-r5 实锤：QA 复验调 send_message 连错 3 次被 abort，整个 run failed')
+ok(/7c\. \[End-to-end coverage/.test(promptsSrc), 'prompts：dev 有状态交付物必须给端到端运行证据（obs-r5 实锤：单元断言全绿但首关永不可清空，QA 400k 帧模拟才暴露）')
+ok(/\[No collaboration tools/.test(promptsSrc) && /send_message \/ interrupt_agent \/ list_agents \/ subagent/.test(promptsSrc), 'prompts：禁调协作工具（depth-1 子代理无 Agent Team 身份，调用必失败且会被 env guard 误读）')
 
 console.log('── 3r) 产物一键预览（host 出 dsh-resource 地址 → 工作台交右侧栏）──')
 ok(/TEAMFLOW_ARTIFACT_ORDER/.test(constantsSrc) && /fileAddressFor/.test(hostSrc) && /artifacts: runArtifacts/.test(hostSrc), 'host：itemDetail 返回任务夹产物清单（官方 fileAddressFor 地址 + 展示顺序）')
@@ -870,6 +891,21 @@ for (const [f, marker, want, cap] of docFiles) {
   const n = body.split(marker).length - 1
   ok(n === want && body.length <= cap, `文档完整性：${f} 「${marker}」出现 ${n} 次（期望 ${want}）、${(body.length / 1024).toFixed(0)}KB ≤ ${(cap / 1024).toFixed(0)}KB`)
 }
+
+// ── 大文档注入必须是「小 teaser + 磁盘完整文件路径」，不许退回裸 clip ──
+// 体量实测（2026-10-02，扫 256 份真实任务夹文档）：TECHNICAL.md 中位 19075 / 最大 35547，
+// DESIGN.md 中位 9338 / 最大 23603 ⇒ 旧的 clip(tech,12000) 会截 47/50、clip(design,10000) 会截 11/31。
+// 裸 clip 只给顶部 N 字符且**无回落通道**，模型无从知道后面还有内容。
+// devPrompt/qaFixPrompt（TECHNICAL，2026-09-30 / 10-02）与 scaffoldPrompt/techPrompt（DESIGN，10-02）已修；
+// 这里锁住两处都不许悄悄退回。
+ok(!/clip\(tech,\s*(?!4000\b)\d+/.test(promptsSrc), 'prompts：tech 注入只用小 teaser（4000），不得裸 clip 大数值（会截断修缺陷要照看的 spec）')
+ok(promptsSrc.split('TECHNICAL.md  — the COMPLETE technical design').length - 1 === 2, 'prompts：TECHNICAL.md 完整文件路径指引覆盖 dev + qaFix 两处（实测两处都在照 spec 改代码）')
+ok(!/clip\(design,\s*(?!4000\b)\d+/.test(promptsSrc), 'prompts：design 注入只用小 teaser（4000），不得裸 clip 大数值（实测 10000 会截 11/31 份真实设计文档）')
+ok(promptsSrc.split('DESIGN.md — the COMPLETE design is there').length - 1 === 3, 'prompts：DESIGN.md 完整文件路径指引覆盖 scaffold + tech + dev 三处')
+// PRD / QA 报告：阈值不动（体量小，PRD 中位 6334、QA 中位 4430），但**三处 PRD 注入原本零路径兜底** ——
+// 尾部装着「优先级 / 依赖与风险 / 验收总则」，截断了永久不可补救 ⇒ 补路径（2026-10-02）。
+ok(promptsSrc.split('PRD.md — the COMPLETE PRD is there').length - 1 === 3, 'prompts：PRD.md 完整文件路径指引覆盖 design + tech + architect 三处（原本只有 dev / qaFix 有）')
+ok(promptsSrc.split('QA-REPORT.md — the COMPLETE report is there').length - 1 === 1, 'prompts：QA 报告完整文件路径指引覆盖 qaFix（修缺陷最需要完整报告与历轮复验结论）')
 
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

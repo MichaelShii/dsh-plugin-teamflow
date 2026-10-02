@@ -109,28 +109,33 @@ dsh-plugin-teamflow/
 
 ### 版本锚定（dsh 宿主兼容性）
 
-本插件开发与验证基于 **dsh v0.1.7-alpha.1**（session 格式 v4）。**这也是「能跑流水线」的宿主下限**：插件注入的每条 message 必须带 producer-owned 的 `source.kind`（`plugin:dsh-plugin-teamflow`），而 v3 宿主把 `source.kind` 校验为**封闭词表**（`SOURCE_KINDS` 不含 `plugin:*`）——旧写法 `{kind:'plugin', plugin:…}` 在 v4 宿主当场被拒，新写法在 v3 宿主同样非法，两种形态**互不兼容**，故不再声称可回退到 v0.1.5-rc.2 运行。Remote 描述符仍同时提供 `schema` 与 `create()` 两个字段（供不同代际的宿主读取），见下「typert 描述符契约」。`package.json` 的 `engines.dsh: ">=0.1.7-alpha.1 <0.2.0"`（**已随本次下限收窄**，见下条实测）与 `dsh.manifestVersion: 1` 是作者声明性元数据（宿主不读取/校验）。
+基线 **dsh v0.2.0-rc.2**（预览版），**下限 v0.1.7-alpha.1**（v3 宿主的 `source.kind` 是封闭词表、不收 `plugin:*`，故不可回退到 0.1.5-rc.2）。
 
-⚠️ **预发布 tuple 规则与本次区间的实测关系**（2026-09-23 用 semver 7.7.4 的 `satisfies` 实测）：受「预发布版本只匹配同 `[major,minor,patch]` tuple 的区间」规则约束——`>=0.1.7-alpha.1 <0.2.0` 对 **`0.1.7-alpha.1` / `0.1.7-alpha.2` / `0.1.7` / `0.1.8` / `0.1.9` 判 PASS**，对 **`0.1.6-alpha.2` / `0.1.6` / `0.2.0-rc.1` / `0.2.0` 判 fail**（与上条 v4 下限恰好一致）。注意旧区间 `>=0.1.5-rc.2 <0.2.0` 在同一 rule 下连**当时正在用的 `0.1.6-alpha.2` 都判 false**，所以这类字段只表达**对正式版的兼容声明**；宿主既不校验它，日常应以 **`next`** 为准——`latest` 常滞后于 `next`，不要用 `latest` 判断发布线。
+**`engines.dsh` 声明为并集区间** `">=0.1.7-alpha.1 <0.3.0 || >=0.2.0-rc.1 <0.3.0"`：预发布只匹配同 tuple 区间，**简单放宽上界会让 `0.2.0-rc.x` 判 fail**（semver 7.7.4 实测）。宿主**不校验**该字段，它只表达对正式版的兼容声明；判断发布线以 `next` 为准（`latest` 滞后）。
 
-**v0.1.7-alpha.1 的 breaking 面（本次核对）**：session 事件格式升到 **v4**——宿主在事件被 Session 采纳前校验每条 message 的 `source.kind`，**拒绝 v3 退役的 plugin wrapper**（`{kind:'plugin', plugin:…}` → 抛 `format v4 message requires a producer-owned source kind`），要求 `kind:'plugin:<name>'`。插件原先四处注入（团队上下文 ×2 / 完成汇报 / 护栏提醒）写的都是旧 wrapper → 新 run 在写入阶段即失败（journal 都落不了盘）。现已全部改为 `plugin:dsh-plugin-teamflow`。全量核对其余面（typert 严格描述符仍要 `create()`、`subagents.start`/`SubagentRun`、`tokenUsage` 四桶 + `sessionStats.steps`、`agent.inject/followup/steer`、`settings.locale` 只读端口、`remote.$mount`、`sessions.openSubagent`、`sidebarRight.openResource`）**均无破坏**。
+**0.2.0 逐项核对：未发现破坏**（tsc 对着已装的 0.2.0-rc.2 编译 0 错；实际 import 的 4 个宿主包导出 0 缺失；`inject` 语义、manifest schema、patch 的 `insert:` 均未变；新增的可选 `external` 本插件用不上）。⚠ 这是**静态**核对，运行时仍以重启实测为准。
 
-**v0.1.6-alpha.2 的 breaking 面（上次核对）**：typert strict codec 由 `{ mode, typeSymbol, schema }` 变为 `{ mode, typeSymbol, create: () => Schema }`（懒物化，`materializeSchema` 里 `record.value ??= record.create()`）；`validateCodec` 对缺 `create()` 的 strict codec **注册即抛** `"strict codec has no create() factory"`。叠加 dsh-app-boot 的策略（required 插件 activate 失败 → 整个 profile `startup failed`），表现为**插件一挂就是「dsh 起不来」**（`web boot: N entries did not activate`）。全量 diff 其余面（client-modules / subagent / agent runtime / manifest / tools 的 llm 投影）对本插件无破坏，三个 UI slot 包的 `src/index.ts` 零变更 → slot 名安全。
+可能受益：0.2.0 的 Windows ACL 修复（可重测「E: 盘 fresh 目录 grantWrite 必败 Win32 5」）；`user-questions` 的定时等待与迟到回复（澄清闸门需复验调用契约）。
 
-升级 dsh 后若行为异常，先核对两处：① 插件注入的 session 事件（`tool-workflow/agent-start`、`user/message` + `source.kind='plugin:dsh-plugin-teamflow'`）必须落在宿主事件词表内——**v4 宿主只收 producer-owned 的 source kind（`plugin` 这个 v3 wrapper 已退役）**，而 v3 宿主的封闭词表也不收 `plugin:*`（因此下限是 v4 宿主）；`tool-workflow/agent-start` 不带 message/source 槽位，不在该校验范围内。**新增自定义事件类型要带 `ignorable: true`**、已知类型不要加词表外的键；② 计量读的是**宿主投影 key**（`tokenUsage` / `sessionStats`），宿主改 key 或 state 版本时需同步 `host/core/metering.ts`。历次兼容核对结论与待跟进项见 `CHANGELOG.md`（0.1.6–0.1.9 段）与 `docs/TODO.md`（例如复读检测仍读已弃用的事件读取器）。
+升级 dsh 后若行为异常，先核对两处：① 注入的 session 事件必须用 producer-owned 的 `source.kind='plugin:dsh-plugin-teamflow'`（v3 的 `plugin` wrapper 已退役）；② 计量读宿主投影 key（`tokenUsage` / `sessionStats`），宿主改 key 时需同步 `host/core/metering.ts`。**历次兼容核对的逐项证据见 `CHANGELOG.md`**（v0.1.6 / v0.1.7 / 0.2.0 三次审计）与 `docs/TODO.md`。
 
 
 ## 安装（对使用者）
 
 ```bash
-# 从 npm 安装（发布后）
+# 从 npm 安装（发布后）—— 装到 web profile
 dsh plugin --profile web add dsh-plugin-teamflow
 
 # 或本地目录安装（开发时）
 dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 ```
 
-安装后**重启** `dsh --profile web`，宿主行 `teamflow-host` 生效：
+> ⚠️ **桌面版（dsh 0.2.0 起）要单独装一次**：它用独立的 `desktop` profile（`~/.dsh/profiles/desktop`），
+> 与 `web` 各自一份 node_modules —— 只装在 `web` 上，桌面版里**看不到本插件**（不是插件坏了）。
+> 且 CLI **明确拒绝** `--profile desktop`（`managed exclusively by the Electron application`）
+> ⇒ **桌面版请用应用内的插件管理界面安装**。
+
+安装后**重启** `dsh --profile web`（桌面版则重启桌面应用），宿主行 `teamflow-host` 生效：
 - 模型侧出现 12 个 `teamflow_*` 工具：`start / triage / status / backlog / claim / update / assign / cancel / resume / pause / resume_session / merge`；
 - 浏览器侧：会话头部「🏭 团队工作台」tab（会话内）+ **左侧边栏「团队工作台」图标**（全局面板，产品线视角）；
 - backlog 写入 `$DSH_HOME/teamflow/<product>/backlog/*.json`。
@@ -167,7 +172,7 @@ node --check lib/host.mjs lib/client.js lib/store.mjs lib/descriptors.mjs
 pnpm run bundle         # 构建 client（tsdown → lib/client.js，__ModuleLoader__.load 注册）
 ```
 
-**插件开发者**（本插件的本地开发链路）见仓库内 [`AGENTS.md`](./AGENTS.md) 与 [`docs/adr/`](./docs/adr)——含部署同步（`node deploy.mjs` → 重启 `dsh --profile web`）、生效前提（运行中 web 从 profile 部署副本加载 host，只构建源码不生效）、设计决策记录（ADR-0001~0009）与基准对比（`docs/benchmarks/`）。本仓库其余源码均为 TS/TSX，需先 `pnpm bundle` 构建后再运行（`node_modules` 下 strip-types 不生效）。
+**插件开发者**（本插件的本地开发链路）见仓库内 [`AGENTS.md`](./AGENTS.md) 与 [`docs/adr/`](./docs/adr)——含部署同步（`node deploy.mjs` → 重启 `dsh --profile web`）、生效前提（运行中 web 从 profile 部署副本加载 host，只构建源码不生效）、设计决策记录（ADR-0001~0010）与基准对比（`docs/benchmarks/`）。本仓库其余源码均为 TS/TSX，需先 `pnpm bundle` 构建后再运行（`node_modules` 下 strip-types 不生效）。
 
 注意：`lib/` 被 `.gitignore` 排除，但发布必须带上构建产物（`files` 白名单已含 `lib/`；`exports["./client"]` 指向 `./lib/client.js`）。
 

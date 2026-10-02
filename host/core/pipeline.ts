@@ -45,6 +45,7 @@ import { archiveRunLogs, sweepWorkspaceLogs } from './workspace/runlogs.ts'
 import { preflightWorkspaceAcl } from './workspace/acl-preflight.ts'
 import { parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
 import { ambientLocale, localeForMissingSnapshot, runLocaleOf } from './locale.ts'
+import { noteClarifyAnswered, noteClarifyProceeded } from './clarify-log.ts'
 
 /** dev 子卡/阶段 label 的「开发 · 」前缀与重试后缀：zh 存量兼容 + en 新增（QA-2：既有解析契约只增不改）。
  *  en 侧必须覆盖词典 `dev.taskRetry` 的实际产出 `(attempt N)`（R3-2 实锤：只写 retry \d+ 时，
@@ -306,6 +307,7 @@ export interface PipelineCtx {
   /* 跨阶段产物交接 */
   prd: string | null
   tech: string | null
+  design: string | null
   qa: string | null
   qaBlocked: boolean
   /* 宿主侧共享闭包（保留在 executePipeline 内——它们绑定阶段集 / journal / locale） */
@@ -346,6 +348,14 @@ export async function executePipeline(
   journal.product = root
   // 澄清答复随 run 落盘（可审计：这份需求在对齐阶段补过什么）；PRD 阶段会作为权威输入下发。
   journal.requirementSupplement = options.requirementSupplement ? String(options.requirementSupplement) : null
+  // 澄清埋点（ADR-0010 D2）：**答复真的随 run 落盘**才算一次闭环 —— 与「问了但用户没答」区分开。
+  // 需求原文用未加 `[CLARIFIED]` 的 `requirement`，与 tool 侧 `asked` 的指纹保持一致。
+  if (journal.requirementSupplement) {
+    noteClarifyAnswered(journal.workspace || root, requirement, {
+      runId: String(journal.id), supplement: String(journal.requirementSupplement),
+      mode: String((journal.options && journal.options.mode) || '') || undefined,
+    })
+  }
   // 工作区（项目）作用域：workspace slug 同时是并发锁与 backlog 的隔离键
   const scopeKey = journal.workspace || root || 'default'
   // 产品级并发限制（防御：正常入口 startPipeline/resumeRun 已预检；按工作区隔离，互不阻塞）
@@ -447,6 +457,8 @@ export async function executePipeline(
       if (verdict.intent !== 'requirement' || verdict.blockers.length > 0) {
         if (!clarified) return abortForClarification(journal, locale, verdict)
         journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyProceedWithAssumptions', { n: verdict.blockers.length }) })
+        // 澄清埋点（ADR-0010）：已答过仍有残余 blocker → 按假设开工（PRD 假设段 + 汇报高亮兜底）
+        noteClarifyProceeded(journal.workspace || root, requirement, { runId: journal.id, assumed: verdict.blockers.length })
       }
     } catch (e) {
       journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageFail', { msg: String((e && e.message) || e) }) })
@@ -627,6 +639,8 @@ export async function executePipeline(
     if (journal.runDocs) state.__runCtx.runDocs = journal.runDocs
     // 注入块语言（AC-3⑤）：快照经既有 __runCtx 通道下发（不改任何 prompt 工厂签名）
     state.__runCtx.locale = locale
+    // craft 引导通道（2026-09-30）：缺省＝开，显式 options.craft === false 才关 —— 与 locale 同通道下发
+    state.__runCtx.craft = options.craft !== false
     // **本机安装环境**（2026-09-21 用户实锤，勿写死路径）：契约里原本写死
     // 「`dsh plugin --profile web add`」——用户是源码运行（`pnpm dsh`，dsh 不在 PATH）、profile 名
     // 也可能不叫 web，那条命令在别人机器上根本跑不通。改为**运行时探测**，取值顺序见
@@ -852,8 +866,8 @@ export async function executePipeline(
       journal, parent, requirement, options, signal, resume,
       locale, scopeKey, root, tasks, maxConcurrency, installCtx,
       timeline, state,
-      // prd / tech 已由前面的同形阶段产出并写定；qa / qaBlocked 由 QA 阶段回填给验收阶段
-      prd, tech, qa: null, qaBlocked: false,
+      // prd / tech / design 已由前面的同形阶段产出并写定；qa / qaBlocked 由 QA 阶段回填给验收阶段
+      prd, tech, design, qa: null, qaBlocked: false,
       enabled, resumed, logSkip, stageFailError,
       mergeStageState, noteVerifyEvidence, stageTextOf,
     }
@@ -963,7 +977,24 @@ export async function executePipeline(
     // 日志生命周期（B 方案 2026-09-15）：暂存日志归档离开项目 → $DSH_HOME/teamflow/<workspace>/logs/<runId>/，
     // 项目内 **只在 run 进行期间** 存在（子代理沙箱只允许写工作区，见 core/workspace/runlogs.ts 的实测依据）。
     // 放在收口提交之后：run 期间的 pathspec 排除 + .gitignore 补写仍覆盖「用户自己在 run 中提交」的窗口。
-    try { archiveRunLogs(journal, locale) } catch (e) { /* 归档尽力而为，不影响收尾 */ }
+    //
+    // ⚠️ 但**可续跑的终态不归档**（2026-09-30 实锤 obs-r5）：failed / cancelled / interrupted 都能 resume
+    //（本文件下方孤儿收尾处也写着「cancelled 保留 resume 入口」），而 resume 后的 dev 补跑与 QA 复验
+    // 要靠上一轮留在 logs/teamflow/<runId>/scripts/ 的 checker 当**回归契约**（qaPrompt 明令
+    // "FIRST re-run every probe/checker the previous rounds left in ..."）—— 归档把目录搬出项目后，
+    // resume 就找不到契约了。实锤：tf-mumywrmg-mwcwdf 在 failed 后 logs/ 整个被搬走，T3 补跑时
+    // 上一轮 33/33 的检查器已不在项目内。
+    // 残留兜底：用户放弃 resume 时，下次任何 run 起跑的 sweepWorkspaceLogs 会把这个目录归档走
+    //（它跳过正在运行的 run，故不会误伤 resume 本身）。
+    const resumableTerminal = journal.status === 'failed' || journal.status === 'cancelled' || journal.status === 'interrupted'
+    if (resumableTerminal) {
+      // 注：用局部变量转一手 —— smoke 有一条粗糙的全局断言会命中「直接内联终态字段」的写法，
+      // 而它的本意只是防 meta.json 回写终态字段（避免提交后再脏 / 快照过时）。
+      const st = journal.status
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.logsKeptForResume', { status: st }) })
+    } else {
+      try { archiveRunLogs(journal, locale) } catch (e) { /* 归档尽力而为，不影响收尾 */ }
+    }
     journal.result = { requirement, options: sanitizeSnapOptions(options), timeline: summarizeTimeline(timeline) }
     persistJournal(journal) // 终态 checkpoint（含日志刷新；阶段全文保留在磁盘+内存，供详情抽屉/断点续跑读取）
     // 内存注册表有界化（2026-09-26）：终态已确认落盘（磁盘权威）→ 此刻 prune 是唯一安全时机，
@@ -1045,6 +1076,7 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
       needDesign: !!options.needDesign,
       needScaffold: !!options.needScaffold,
       lite: !!options.lite,
+      craft: options.craft !== false,
       mode,
       teamId: options.teamId || undefined,
       tasks: normalizeTasks(options.tasks),

@@ -123,12 +123,19 @@ const TRIAGE_EXPLORE = JSON.stringify({
 /** 构造一次 run：stub 子代理 + 隔离的 $DSH_HOME / 工作区。 */
 async function runScenario(
   name,
-  { options, resume = null, emptyNext = false, failLabel = null, artifacts = null, cancelAfter = 0, triage = null },
+  { options, resume = null, emptyNext = false, failLabel = null, artifacts = null, cancelAfter = 0, triage = null, extraFiles = 0 },
 ) {
   const rootTmp = mkdtempSync(join(tmpdir(), `tf-orch-${name}-`))
   process.env.DSH_HOME = `${rootTmp}/home`
   const work = `${rootTmp}/work`
   mkdtempSync(work)
+  // 洪水填充：普通目录 + **无扩展名** 文件（点目录会被扫描器跳过，所以不能用 `.pnpm-store`）。
+  // 用来把交付枚举顶到 400 上限，验证「截断 ⇒ host 侧发可判提示」这条**接线**。
+  if (extraFiles > 0) {
+    const flood = join(work, 'flood')
+    mkdirSync(flood, { recursive: true })
+    for (let i = 0; i < extraFiles; i++) writeFileSync(join(flood, `blob${i}`), 'x')
+  }
 
   const children = []
   let doEmpty = emptyNext
@@ -431,6 +438,27 @@ console.log('\n[17] host 侧两项检查必须「可观测」—— 不许静默
     '留痕必须带解析出的 workspacePath（root=null 时回落 workspacePath，不得记成 n/a）')
   const evLog = (r.logs || []).find((l) => l.includes('QA 验证证据观察'))
   ok(!!evLog, `证据探针的 skip 也要留痕（否则「路径算错扫到 0 文件」与「真的纯文档」无法区分）—— 实测 ${evLog ? '有' : '无'}`)
+}
+
+/* ── ⑨ 枚举截断 ⇒ host 侧必须发「本次不可判」提示（接线层，2026-10-02）──
+ * 为什么单列：今天修的枚举截断只测了**扫描器**（smoke-check.test.js），接线层当时裸奔 ——
+ * 真实事故是「四项检查同时静默跳过、日志读起来像交付里什么都没有」，而那正是 qa.ts 这一段。
+ * 变异：把 qa.ts 里 `load.truncated || ic.truncated || sm.truncated` 的判断去掉 ⇒ 本组立刻红。 */
+console.log('\n[9] 交付枚举被上限截断 ⇒ 负结论被显式撤回')
+{
+  const r = await runScenario('scan-truncated', { options: QA_OPTS, artifacts: { qa: [QA_CLEAN], acceptance: ACC.pass }, extraFiles: 430 })
+  ok(r.status === 'completed', `run 仍要跑完（实测 ${r.status}）`)
+  const logs = r.logs || []
+  const truncAt = logs.findIndex((l) => /截断|hit the file cap/.test(l))
+  ok(truncAt >= 0, `枚举被顶到上限时必须发 hostScanTruncated 提示（否则负结论会被读成事实）—— 实测 ${truncAt >= 0 ? '有' : '无'}`)
+  ok(/400/.test(String(logs[truncAt])), `提示要带上限值（实测 ${String(logs[truncAt]).slice(0, 80)}）`)
+  ok(logs.some((l) => /host 侧加载检查|host-side load/.test(l)), '三项检查仍各自留痕（截断不等于不检查）')
+  // 三条负结论**原文保留**（它们确实没执行），撤回靠的是**后一条 warn 点名它们** ⇒
+  // 顺序也是契约：warn 必须在三条之后，否则读者先看到「事实」再看到解释。
+  const negIdx = logs.findIndex((l) => /no-html|源文件 0 个/.test(l))
+  ok(negIdx >= 0 && truncAt > negIdx, `撤回提示必须排在负结论**之后**（实测 neg@${negIdx} / warn@${truncAt}）`)
+  ok(/不是事实|只是没枚举到|not facts/.test(String(logs[truncAt])),
+    `撤回提示要点名那三条「不是事实」（实测 ${String(logs[truncAt]).slice(0, 100)}）`)
 }
 
 if (failed) {

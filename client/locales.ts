@@ -151,7 +151,11 @@ export const zh = {
   'pipeline.zoomOut': '缩小',
   'pipeline.zoomIn': '放大',
   'pipeline.fitCanvas': '适应画布',
-  'pipeline.canvasHint': '✥ 拖动画布 · 滚轮缩放',
+  'pipeline.canvasHint': '✥ 拖动平移 · 双指/滚轮缩放',
+  'pipeline.viewHint': '视图',
+  'pipeline.viewGraph': '图形',
+  'pipeline.viewList': '列表',
+  'pipeline.listHint': '按阶段顺序列出；依赖结构（分波 / 连线）请切到「图形」视图',
 
   /* ── 会话内工作台：顶栏 / 看板 ─────────────────────────── */
   'workbench.title': '团队工作台',
@@ -452,7 +456,11 @@ export const en: Record<keyof typeof zh, string> = {
   'pipeline.zoomOut': 'Zoom out',
   'pipeline.zoomIn': 'Zoom in',
   'pipeline.fitCanvas': 'Fit canvas',
-  'pipeline.canvasHint': '✥ Drag to pan · scroll to zoom',
+  'pipeline.canvasHint': '✥ Drag to pan · pinch or scroll to zoom',
+  'pipeline.viewHint': 'View',
+  'pipeline.viewGraph': 'Graph',
+  'pipeline.viewList': 'List',
+  'pipeline.listHint': 'Stages in order; switch to Graph for dependency structure (waves / edges)',
 
   'workbench.title': 'Team Workbench',
   'workbench.running': 'Pipeline running',

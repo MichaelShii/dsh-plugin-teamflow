@@ -7,7 +7,8 @@
     "extractVerificationEvidence": "host/util.ts（dev/qaFix 回复 → 证据块原文或 null）",
     "extractBlueprint": "host/util.ts（tech/architect 产出 → 架构蓝图对象或 null；含畸形 JSON 抢救）",
     "judgeDeliverable": "host/util.ts（阶段产出 → 交付判定 {ok,reason,refusal}；信号分级=客观形态→证据块→措辞兜底）",
-    "extractHostResearchSection": "host/util.ts（PRD → 「宿主契约调研」段原文或 null；非 dsh 宿主 + 插件形态时的硬门禁判据）"
+    "extractHostResearchSection": "host/util.ts（PRD → 「宿主契约调研」段原文或 null；非 dsh 宿主 + 插件形态时的硬门禁判据）",
+    "parseDefectRows": "host/core/domain/backlog.ts（QA 缺陷表 → **富行** DefectRow：三要素 + 复现/期望/实际/关联验收/检测命令/通过判据 + 整张 columns 映射；parseDefects 是它的三要素投影）"
   },
   "cases": [
     {
@@ -182,6 +183,51 @@
       "file": "prd-host-research-empty.md",
       "parser": "extractHostResearchSection",
       "note": "最隐蔽的漏做：标题在、正文空 → 必须判 null（否则模型学会「只写标题」就能过门禁；与假设段同一判定纪律）",
+      "expect": null
+    },
+    {
+      "id": "qa-defect-rich-columns",
+      "file": "qa-defect-rich-columns.md",
+      "parser": "parseDefectRows",
+      "note": "富列 + 列序由表头决定（严重级刻意放最后一列）+ 转义 | 还原：断言 parseDefects 投影后**被丢掉的那些列**（reproduce/expected/actual/ac/check/criterion 与整张 columns 映射）。历史三条：四列被整列丢弃、R3-2 转义错列、位置式认表把复验对照表登记成新缺陷。OBS 行必须跳过、P3 必须保留。期望值按 cellText 剥离后的形式断言（顺带钉住「markdown 修饰必须剥掉」）。",
+      "expect": {
+        "count": 3,
+        "rows": [
+          {
+            "id": "D-1", "severity": "P1", "module": "解析层",
+            "reproduce": "跑 node tools/scan.mjs 喂含转义的缺陷行", "expected": "只出 1 条缺陷", "actual": "多出 1 条（a|b 被切开）",
+            "ac": "AC-9", "check": "grep -nE \"retry \\d+|follow-up\" src/", "criterion": "exit 0",
+            "columnKeys": ["编号","功能模块","复现步骤","期望行为","实际行为","关联验收项","影响面","检测命令","通过判据","严重级(P0/P1/P2/P3)"]
+          },
+          {
+            "id": "D-2", "severity": "P2", "module": "语言面",
+            "reproduce": "复跑 17 个 en 分支并扫描", "expected": "en 分支无中文字面量", "actual": "prompts/index.ts 4 处中文章节名",
+            "ac": "AC-5", "check": "node tools/cjk.mjs", "criterion": "CJK 命中 0"
+          },
+          {
+            "id": "D-3", "severity": "P3", "module": "文档面",
+            "reproduce": "目视通读 README", "expected": "术语统一", "actual": "3 处混用「流水线/管道」",
+            "ac": "AC-7", "check": "—", "criterion": "—"
+          }
+        ]
+      }
+    },
+    {
+      "id": "tech-blueprint-valid",
+      "file": "tech-blueprint-valid.md",
+      "parser": "extractBlueprint",
+      "note": "**合法**蓝图 JSON（正常路径，一次 JSON.parse 成功，不经过 repairBlueprintJson）：3 模块 / 3 任务，摘要含 sliderMath。与 tech-blueprint-malformed（畸形但可抢救）互补 —— 抢救逻辑被误用到合法 JSON 上、或正常解析路径本身回归，只有本条会红",
+      "expect": {
+        "nonNull": true,
+        "taskCount": 3,
+        "summaryContains": "sliderMath"
+      }
+    },
+    {
+      "id": "tech-blueprint-unrepairable",
+      "file": "tech-blueprint-unrepairable.md",
+      "parser": "extractBlueprint",
+      "note": "蓝图标记齐全但 **JSON 被拦腰截断**（末尾截断，非提前闭合）⇒ repairBlueprintJson 修不了 ⇒ **返回 null**。钉住「null = 本 run 无可用蓝图，dev 按无蓝图继续」；若改成「修不出来就返回部分内容」，本条变红（部分蓝图比没有更危险：dev 照着半个模块清单装配，缺的那半不报错）",
       "expect": null
     }
   ]

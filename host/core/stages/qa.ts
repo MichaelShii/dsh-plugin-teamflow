@@ -9,7 +9,7 @@
 import { advanceTask, storeFor, parseDefectRows, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, hasOpenBlockingBugs } from '../domain/backlog.ts'
 import { withRetry, resolveChildRoute } from '../agent/runner.ts'
 import { qaPrompt, qaFixPrompt } from '../../prompts/index.ts'
-import { snippet, clip, artifactText, qaRoundEntry as buildQaRoundEntry, listDeliverableFiles, assessQaVerificationEvidence, fsRootOf } from '../../util.ts'
+import { snippet, clip, artifactText, qaRoundEntry as buildQaRoundEntry, scanDeliverableFiles, assessQaVerificationEvidence, fsRootOf, DELIVERABLE_FILE_LIMIT } from '../../util.ts'
 import { QA_REWORK_LIMIT, phaseKeyOf, FIX_GATE_PATTERN } from '../../constants.ts'
 import { persistJournal } from '../../../store.ts'
 import { currentModelSupportsVision } from '../agent/context.ts'
@@ -50,8 +50,14 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
     // （agent 在受限令牌下起不了任何 Chromium 系）。本轮只写日志，不参与判定；稳定后再考虑接进 QA。
     // ⚠️ 每种结局都留痕：否则「不适用」「起不来」「跑通了」在 journal 里长得一模一样，
     // 排查时无从下手（这正是本项功能首跑翻车的方式）。
+    // ⚠️ 另加一条（2026-10-02 实锤）：三项检查都可能因「交付枚举被上限截断」而**假跳过** ——
+    // 实锤 tf-mupnk8h0-1otbl2 的 `.pnpm-store` 吃满 400 上限，日志同时写出「源文件 0 个」
+    // 与「no-html」，看着像「交付里什么都没有」，实际交付完好、只是没枚举到。
+    // 故三项任一 truncated 都额外报一条 warn，把「负结论」降级成「本次不可判」。
+    let scanTruncated = false
     try {
       const lc = captureLoadCheck(fsRoot)
+      if (lc.truncated) scanTruncated = true
       if (lc.status !== 'ok') {
         journal.logs.push({
           t: Date.now(), level: 'info',
@@ -71,6 +77,7 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
     // 都来自产物代码，不依赖模型配合。同样每种结局都留痕，杜绝静默空转。
     try {
       const ic = checkDeliverableInterfaces(fsRoot)
+      if (ic.truncated) scanTruncated = true
       if (ic.status === 'mismatch') {
         const first = ic.issues[0]
         journal.logs.push({
@@ -97,6 +104,7 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
     // 且绝不能升成硬失败（否则不会写的模型每个 run 都失败）。机器取证与模型能力无关。
     try {
       const sm = runHostSmoke(fsRoot)
+      if (sm.truncated) scanTruncated = true
       if (sm.status === 'no-motion') {
         journal.logs.push({
           t: Date.now(), level: 'warn',
@@ -105,7 +113,7 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
       } else if (sm.status === 'ok') {
         journal.logs.push({
           t: Date.now(), level: 'info',
-          message: t(locale, 'log.hostSmokeOk', { draw: sm.draw, raf: sm.raf, mut: sm.mutations, ms: sm.ms }),
+          message: t(locale, 'log.hostSmokeOk', { entry: sm.entry || '', draw: sm.draw, raf: sm.raf, mut: sm.mutations, ms: sm.ms }),
         })
       } else {
         journal.logs.push({
@@ -114,6 +122,14 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
         })
       }
     } catch (e) { /* 纯记录，绝不因此影响流水线 */ }
+    // 交付枚举被截断 ⇒ 上面三条「未执行 / 源文件 0 个 / no-html」都不是事实，只是没枚举到。
+    // 必须单独报一条，否则「枚举被砍断」会一直被读成「交付里没有入口」。（纯记录，不阻断）
+    if (scanTruncated) {
+      journal.logs.push({
+        t: Date.now(), level: 'warn',
+        message: t(locale, 'log.hostScanTruncated', { limit: DELIVERABLE_FILE_LIMIT }),
+      })
+    }
     advanceTask(journal, 'testing', null, t(locale, 'event.qaStart'), { by: 'qa' })
     const store = storeFor(scopeKey)
     const qaStageChildren = () => journal.stages.filter((s) => phaseKeyOf(s.phase) === 'qa').map((s) => (s.childId || '').slice(0, 8)).filter(Boolean).join(',') || t(locale, 'role.qaTeam')
@@ -150,7 +166,9 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
       // **观察期只记 warn 不阻断** —— 文本识别的宽松度必须由真实样本校准（B 组那种「9 个脚本全绿 +
       // 逐条 exit 0」要认得出来，A 组两次「全推人工/静态检查」要报出来），校准后再决定是否升级为硬失败。
       try {
-        const dFiles = listDeliverableFiles(fsRoot)
+        const dScan = scanDeliverableFiles(fsRoot)
+        const dFiles = dScan.files
+        // 截断时「没有可执行入口」同样不可信 —— 记下真实原因，别让它冒充「纯文档交付」
         const ev = assessQaVerificationEvidence(qa, dFiles)
         if (ev.verdict === 'missing') {
           journal.logs.push({

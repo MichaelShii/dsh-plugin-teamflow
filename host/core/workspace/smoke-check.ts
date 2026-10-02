@@ -17,6 +17,10 @@
  * ⚠️ 局限（如实说明）：
  * - 只判「有没有产生可观测变化」，**不判玩法正确**（那是 QA 的活）；
  * - 「静默不动」能抓；逻辑算错（如 32°F 算成 33）抓不到；
+ * - **rAF 回调在本机 headless 下不保证执行**（实测：只是被「调度」，回调可能一次都不跑 ——
+ *   同一个机制让贪吃蛇 A 组呈现 raf=2/draw=0）。因此判据以 **draw / DOM 变更**为主，
+ *   不把 raf 计入"有动静"；代价是**纯靠 rAF 动画的画布页可能被误判 no-motion**。
+ *   这也是本检查只记录、不阻断的原因之一。
  * - 依赖本机 Chromium 可启动（探针已实测）；起不来就 skip，绝不因此影响流水线。
  */
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
@@ -25,7 +29,7 @@ import { spawnSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 import { dshHome } from '../../../store.ts'
 import { listDeliverableFiles } from '../../util.ts'
-import { findBrowser, pickHtmlEntry } from './browser-probe.ts'
+import { findBrowser, pickHtmlEntryDetailed } from './browser-probe.ts'
 
 export interface SmokeCheck {
   status: 'ok' | 'no-motion' | 'skip' | 'error'
@@ -37,6 +41,8 @@ export interface SmokeCheck {
   canvas: number
   ms: number
   note?: string
+  /** 交付枚举被上限截断 ⇒ `skip/no-html` 不是「真的没有入口」，调用方须显式上报 */
+  truncated: boolean
 }
 
 const MAX_FILE_BYTES = 512 * 1024
@@ -127,11 +133,13 @@ function copyToTemp(root: string, tag: string): string | null {
  */
 export function runHostSmoke(root: string | null | undefined, timeoutMs = 25000): SmokeCheck {
   const t0 = Date.now()
-  const out: SmokeCheck = { status: 'error', entry: null, draw: 0, raf: 0, mutations: 0, canvas: 0, ms: 0 }
+  const out: SmokeCheck = { status: 'error', entry: null, draw: 0, raf: 0, mutations: 0, canvas: 0, ms: 0, truncated: false }
   let tmp: string | null = null
   try {
     if (!root) { out.status = 'skip'; out.note = 'no-root'; out.ms = Date.now() - t0; return out }
-    const entry = pickHtmlEntry(root)
+    const picked = pickHtmlEntryDetailed(root)
+    out.truncated = picked.truncated
+    const entry = picked.entry
     if (!entry) { out.status = 'skip'; out.note = 'no-html'; out.ms = Date.now() - t0; return out }
     out.entry = entry
     const html = readFileSync(resolve(root, entry), 'utf8')
