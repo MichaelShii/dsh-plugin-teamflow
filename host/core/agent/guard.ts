@@ -451,7 +451,7 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
         if (Date.now() - lastSuccessAt < GUARD_ENV_PROGRESS_GRACE_MS) {
           if (!envProgressWarned) {
             envProgressWarned = true
-            try { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.envProgress', { tool, n, detail }) }) } catch (e2) { /* ignore */ }
+            try { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.envProgress', { label, tool, n, detail }) }) } catch (e2) { /* ignore */ }
           }
           toolFailures.set(sig, GUARD_TOOL_FAIL_ABORT - 1) // 压回阈值下：有进展就不判死，下轮可再判
           continue

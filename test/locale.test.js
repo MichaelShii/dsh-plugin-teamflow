@@ -13,7 +13,7 @@
  * 为什么需要门禁：文案搬迁靠人工评审守不住——半搬的词典很容易漏（同一句话残留两份，
  * 切语言时一半中文一半英文），而「en 词典混入中文」更是只能靠机器查。
  */
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import {
@@ -281,6 +281,57 @@ console.log('── 阶段 prompt 的回复语言（2026-09-15 实锤：产物�
   ok(missingEn.length === 0, `11 个阶段工厂的 en 回复语言=English（缺：${missingEn.length ? missingEn.join(',') : '无'}）`)
   const missingZh = Object.entries(factories).filter(([, f]) => !/Write your \*\*final reply\*\*[\s\S]{0,200}?in 中文/.test(String(f(zh)))).map(([k]) => k)
   ok(missingZh.length === 0, `11 个阶段工厂的 zh 回复语言=中文（缺：${missingZh.length ? missingZh.join(',') : '无'}）`)
+}
+
+// 8) 占位符覆盖门禁：模板里的每个 {name} 都必须在调用方传参里出现
+// 起因（2026-10-02 实锤）：桌面版首次验证 run tf-mur2p4y0-9qkpqh 的日志里出现字面量
+// `host 侧冒烟：{entry} 真浏览器加载后…` —— `log.hostSmokeOk` 模板有 `{entry}`，
+// 而 `qa.ts` 的调用只传了 `{draw, raf, mut, ms}`。同类漏传全仓扫出 2 处（另见 guard.envProgress 的 label）。
+// 危害等级不高（只是日志里出现字面量占位符），但它**对用户可见**，且不会被任何既有门禁抓到。
+// 只查「模板要但没传」（漏传）；「多传」不查 —— 调用点常含嵌套调用，朴素拆参会误报（实测 report.ts 即误报）。
+console.log('\n── 8) 占位符覆盖（漏传即红）──')
+{
+  const LOCALE_SRC = readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')
+  const placeholders = new Map() // key -> Set<name>
+  for (const m of LOCALE_SRC.matchAll(/^\s*'([\w.]+)':\s*'((?:[^'\\]|\\.)*)'/gm)) {
+    const names = [...m[2].matchAll(/\{(\w+)\}/g)].map((x) => x[1])
+    if (names.length) placeholders.set(m[1], new Set(names))
+  }
+  const files = []
+  const walk = (d) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name)
+      if (e.isDirectory()) { if (!/node_modules|\.git/.test(e.name)) walk(p); continue }
+      if (/\.tsx?$/.test(e.name)) files.push(p)
+    }
+  }
+  walk(join(here, '../host'))
+  // 参数表要**括号配平**地取：实调用里常嵌 `t(..., { n })`（如 report.stages 的 cancelled），
+  // 用 `[^}]*` 会在嵌套的 `}` 处截断 → 把「已传」误判成「漏传」（实测踩过）。
+  const argTableAt = (src, open) => {
+    let depth = 0
+    for (let i = open; i < src.length; i++) {
+      if (src[i] === '{') depth++
+      else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(open + 1, i) }
+    }
+    return null
+  }
+  const misses = []
+  let calls = 0
+  for (const f of files) {
+    const src = readFileSync(f, 'utf8')
+    for (const m of src.matchAll(/t\(\s*[A-Za-z_]+(?:\([^)]*\))?\s*,\s*'([\w.]+)'\s*,\s*\{/g)) {
+      const want = placeholders.get(m[1])
+      if (!want) continue
+      const table = argTableAt(src, m.index + m[0].length - 1)
+      if (table === null) continue
+      calls++
+      const got = new Set(table.split(',').map((s) => s.trim().split(':')[0].trim()).filter(Boolean))
+      const miss = [...want].filter((w) => !got.has(w))
+      if (miss.length) misses.push(`${f.replace(here + '/..\\', '').replace(/\\/g, '/')}:${src.slice(0, m.index).split('\n').length} ${m[1]} 缺 ${miss.join(',')}`)
+    }
+  }
+  ok(misses.length === 0, `${calls} 处带参调用：模板占位符全部有对应传参${misses.length ? '（漏：' + misses.join(' / ') + '）' : ''}`)
 }
 
 console.log(failed === 0 ? '\n✅ locale 全部通过' : `\n❌ ${failed} 项失败`)

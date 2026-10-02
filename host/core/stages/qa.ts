@@ -113,7 +113,7 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
       } else if (sm.status === 'ok') {
         journal.logs.push({
           t: Date.now(), level: 'info',
-          message: t(locale, 'log.hostSmokeOk', { draw: sm.draw, raf: sm.raf, mut: sm.mutations, ms: sm.ms }),
+          message: t(locale, 'log.hostSmokeOk', { entry: sm.entry || '', draw: sm.draw, raf: sm.raf, mut: sm.mutations, ms: sm.ms }),
         })
       } else {
         journal.logs.push({
