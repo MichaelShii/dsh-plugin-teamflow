@@ -516,7 +516,10 @@ ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjectio
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
 ok(/"version": "0\.2\.5"/.test(pkgSrc), 'package.json：版本 0.2.5（release-v0.2.5 开发线）')
-ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.1\.7-alpha\.1 <0\.2\.0"/.test(pkgSrc), 'package.json：声明 dsh.manifestVersion 与 engines.dsh 兼容窗口（下限 = v4 宿主 0.1.7-alpha.1）')
+// ⚠ engines.dsh 的上界**不能简单放宽**：semver 的「预发布只匹配同 tuple 区间」规则下，
+// `>=0.1.7-alpha.1 <0.3.0` 对 `0.2.0-rc.2` 判 **fail**（semver 7.7.4 实测）——
+// 必须写成并集才能同时覆盖 0.1.7 系与 0.2.0 系。语义矩阵见 README「版本锚定」小节。
+ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.1\.7-alpha\.1 <0\.3\.0 \|\| >=0\.2\.0-rc\.1 <0\.3\.0"/.test(pkgSrc), 'package.json：声明 dsh.manifestVersion 与 engines.dsh 兼容窗口（下限 = v4 宿主 0.1.7-alpha.1；上界为并集区间，简单放宽会让 0.2.0-rc.x 判 fail）')
 // 手工枚举的清单必须配门禁（同型教训：journal 字段 / execOptions / loadState / triageRecordOf）。
 // deploy.mjs FILES 与上面的 CORE_FILES 都是手写清单，领域化拆分后两者都漂移过——实测 FILES 漏了
 // guard/products/runlogs/state/teams 五个（profile 副本里那份源码因此永久陈旧），CORE_FILES 漏了 sanity。
