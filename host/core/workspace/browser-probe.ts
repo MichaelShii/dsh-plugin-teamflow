@@ -20,7 +20,7 @@ import { mkdirSync, writeFileSync, statSync, existsSync, unlinkSync } from 'node
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { dshHome } from '../../../store.ts'
-import { listDeliverableFiles } from '../../util.ts'
+import { scanDeliverableFiles } from '../../util.ts'
 
 export interface HostBrowserProbe {
   /** ok=host 侧能截图（不受限） blocked=与 agent 同样被令牌拦死 no-browser=找不到可执行文件 error=其它 */
@@ -147,24 +147,37 @@ export interface LoadCheck {
   /** 未捕获错误消息（截断、去重、最多 5 条） */
   errors: string[]
   ms: number
+  /** 交付枚举被上限截断 ⇒ 本结论（尤其 no-html）不可信，调用方须显式上报 */
+  truncated: boolean
 }
 
 const HTML_ENTRY = /\.html?$/i
 
 /** 挑一个入口：优先 index.html，其次任意 html（相对 root）。 */
 export function pickHtmlEntry(root: string): string | null {
-  const files = listDeliverableFiles(root)
-  const htmls = files.filter((f) => HTML_ENTRY.test(f))
-  if (!htmls.length) return null
-  return htmls.find((f) => /(^|\/)index\.html?$/i.test(f)) || htmls[0]
+  return pickHtmlEntryDetailed(root).entry
+}
+
+/**
+ * 同 pickHtmlEntry，但把「交付枚举被截断」一并带出来。
+ * ⚠ 截断时 `entry=null` **不等于**「交付里没有 HTML 入口」——那只是没枚举到（历史实锤
+ * tf-mupnk8h0-1otbl2：.pnpm-store 吃满 400 上限 ⇒ no-html ⇒ 加载检查与冒烟双双静默跳过）。
+ */
+export function pickHtmlEntryDetailed(root: string): { entry: string | null; truncated: boolean } {
+  const scan = scanDeliverableFiles(root)
+  const htmls = scan.files.filter((f) => HTML_ENTRY.test(f))
+  const entry = htmls.length ? (htmls.find((f) => /(^|\/)index\.html?$/i.test(f)) || htmls[0]) : null
+  return { entry, truncated: scan.truncated }
 }
 
 export function captureLoadCheck(root: string | null | undefined, timeoutMs = 20000): LoadCheck {
   const t0 = Date.now()
-  const out: LoadCheck = { status: 'error', entry: null, errors: [], ms: 0 }
+  const out: LoadCheck = { status: 'error', entry: null, errors: [], ms: 0, truncated: false }
   try {
     if (!root) { out.status = 'no-html'; out.ms = Date.now() - t0; return out }
-    const entry = pickHtmlEntry(root)
+    const picked = pickHtmlEntryDetailed(root)
+    out.truncated = picked.truncated
+    const entry = picked.entry
     if (!entry) { out.status = 'no-html'; out.ms = Date.now() - t0; return out }
     out.entry = entry
     const chrome = findBrowser()

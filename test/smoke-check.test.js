@@ -11,7 +11,8 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { injectSmokeProbe, runHostSmoke } from '../host/core/workspace/smoke-check.ts'
-import { findBrowser } from '../host/core/workspace/browser-probe.ts'
+import { findBrowser, pickHtmlEntryDetailed } from '../host/core/workspace/browser-probe.ts'
+import { scanDeliverableFiles } from '../host/util.ts'
 
 let failed = 0
 let skipped = 0
@@ -52,6 +53,45 @@ put(NoScript, 'index.html', '<html><body><p>static</p></body></html>\n')
 const sc = runHostSmoke(NoScript)
 ok(sc.status === 'skip', '入口无 <script> → skip（静态页面不该被判「不动」）')
 ok(sc.entry === 'index.html', `entry 仍记下来了（实测 ${sc.entry}）`)
+
+/* ── ②b 交付枚举：点目录洪水 / 上限截断（2026-10-02 实锤回归） ──
+ * 实锤 run tf-mupnk8h0-1otbl2：工作区里有 pnpm 的 `.pnpm-store/`（几千个**无扩展名** blob），
+ * 而它在 readdir 顺序里排在 `AGENTS.md` 之前 ⇒ 400 上限被吃满 ⇒ 返回的 400 条里
+ * **源文件 0 个、HTML 0 个** ⇒ 加载检查 / 接口核对 / 冒烟 / 验证证据观察**四项同时静默跳过**，
+ * 日志读起来像「交付里什么都没有」，而交付其实完好（28 个文件、13 个源文件、1 个 index.html）。
+ * 用户最终在浏览器里点不动，才把这条链暴露出来。 */
+console.log('\n── scanDeliverableFiles：点目录洪水 / 截断上报 ──')
+const Flood = mktmp('flood')
+put(Flood, 'index.html', '<html><body><script>1</script></body></html>')
+put(Flood, 'src/a.ts', 'export const a = 1\n')
+put(Flood, 'AGENTS.md', '# x\n')
+for (let i = 0; i < 900; i++) {
+  put(Flood, `.pnpm-store/v11/files/${String(i % 50).padStart(2, '0')}/blob${i}`, 'x')
+}
+const flood = scanDeliverableFiles(Flood)
+ok(flood.files.includes('index.html'), '点目录洪水下 index.html **仍被枚举到**（不再产出 no-html 假结论）')
+ok(flood.files.some((f) => f.startsWith('src/')), '源文件仍被枚举到（不再产出「源文件 0 个」）')
+ok(!flood.files.some((f) => f.startsWith('.pnpm-store')), '点目录不进入交付清单')
+ok(flood.truncated === false, '未触上限 ⇒ truncated=false（不许无中生有报截断）')
+
+const Many = mktmp('many')
+for (let i = 0; i < 30; i++) put(Many, `src/f${i}.ts`, 'export const x = 1\n')
+const cut = scanDeliverableFiles(Many, 10)
+ok(cut.files.length === 10, `命中上限即停（实测 ${cut.files.length} 条）`)
+ok(cut.truncated === true, '**命中上限必须显式上报 truncated=true** —— 静默返回「刚好 10 条」会把「枚举不全」读成「没有入口」')
+const noRoot = scanDeliverableFiles(null)
+ok(noRoot.files.length === 0 && noRoot.truncated === false, 'root=null → 空清单且不报截断')
+
+// 枚举被砍断时，pickHtmlEntryDetailed 的「没找到入口」必须伴随 truncated=true，
+// 否则下游会把「没枚举到」当成「真的没有」——正是这次翻车的那一跳。
+const Deep = mktmp('deep')
+for (let i = 0; i < 405; i++) put(Deep, `src/f${i}.ts`, 'export const x = 1\n')
+const deep = pickHtmlEntryDetailed(Deep)
+ok(deep.entry === null, '无 HTML 入口 ⇒ entry=null')
+ok(deep.truncated === true, '枚举被砍断时 entry=null **必须**伴随 truncated=true（下游据此把 no-html 降级为「不可判」）')
+const stillNoHtml = mktmp('still-nohtml')
+put(stillNoHtml, 'src/a.ts', 'export const a = 1\n')
+ok(pickHtmlEntryDetailed(stillNoHtml).truncated === false, '真的没有 HTML 入口（未截断）⇒ truncated=false，与「没枚举到」可区分')
 
 /* ── ③ 真浏览器（有浏览器才断言；否则大声 SKIP） ── */
 console.log('\n── runHostSmoke：真浏览器 ──')
@@ -103,7 +143,7 @@ if (!Chrome) {
   rmSync(Inert, { recursive: true, force: true })
 }
 
-for (const d of [NoHtml, NoScript]) rmSync(d, { recursive: true, force: true })
+for (const d of [NoHtml, NoScript, Flood, Many, Deep, stillNoHtml]) rmSync(d, { recursive: true, force: true })
 
 console.log(failed === 0
   ? `\n✅ smoke-check 全部通过${skipped ? `（${skipped} 项因环境跳过）` : ''}`

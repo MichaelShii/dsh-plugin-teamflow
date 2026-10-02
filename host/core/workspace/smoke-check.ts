@@ -29,7 +29,7 @@ import { spawnSync } from 'node:child_process'
 import { pathToFileURL } from 'node:url'
 import { dshHome } from '../../../store.ts'
 import { listDeliverableFiles } from '../../util.ts'
-import { findBrowser, pickHtmlEntry } from './browser-probe.ts'
+import { findBrowser, pickHtmlEntryDetailed } from './browser-probe.ts'
 
 export interface SmokeCheck {
   status: 'ok' | 'no-motion' | 'skip' | 'error'
@@ -41,6 +41,8 @@ export interface SmokeCheck {
   canvas: number
   ms: number
   note?: string
+  /** 交付枚举被上限截断 ⇒ `skip/no-html` 不是「真的没有入口」，调用方须显式上报 */
+  truncated: boolean
 }
 
 const MAX_FILE_BYTES = 512 * 1024
@@ -131,11 +133,13 @@ function copyToTemp(root: string, tag: string): string | null {
  */
 export function runHostSmoke(root: string | null | undefined, timeoutMs = 25000): SmokeCheck {
   const t0 = Date.now()
-  const out: SmokeCheck = { status: 'error', entry: null, draw: 0, raf: 0, mutations: 0, canvas: 0, ms: 0 }
+  const out: SmokeCheck = { status: 'error', entry: null, draw: 0, raf: 0, mutations: 0, canvas: 0, ms: 0, truncated: false }
   let tmp: string | null = null
   try {
     if (!root) { out.status = 'skip'; out.note = 'no-root'; out.ms = Date.now() - t0; return out }
-    const entry = pickHtmlEntry(root)
+    const picked = pickHtmlEntryDetailed(root)
+    out.truncated = picked.truncated
+    const entry = picked.entry
     if (!entry) { out.status = 'skip'; out.note = 'no-html'; out.ms = Date.now() - t0; return out }
     out.entry = entry
     const html = readFileSync(resolve(root, entry), 'utf8')

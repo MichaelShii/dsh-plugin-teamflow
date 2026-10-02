@@ -279,12 +279,30 @@ export function normalizeTasks(tasks: unknown): Array<{ title: string; spec: str
   }
   return out
 }
+/**
+ * **环境变量布尔开关**（2026-09-30 立）：给**临时实验**用，**不进工具契约**。
+ *
+ * 为什么不用工具参数：工具的 `description` 每次都会进主会话上下文（实测写全劝导语要 492 字符 ≈137 tok），
+ * 而实验开关大概率是**临时物**——结论出来后要么条款保留、开关删除，要么条款本身删除，
+ * 没必要为它长期占额度，更不该给所有用户暴露一个「降级质量」的公开开关。
+ *
+ * 语义：**未设置 / 空串 = 开**（与产品出厂行为一致）；只有 `0` / `false` / `off` / `no` 才关。
+ * ⚠ resume 不走这里：它从 journal 快照读 `options.craft`（见 `sanitizeSnapOptions`），
+ * 所以一次实验期间即使重启宿主，已开跑的 run 也不会半路变卦。
+ */
+export function envFlagOn(name: string): boolean {
+  const raw = process.env[name]
+  if (raw === undefined || String(raw).trim() === '') return true
+  return !/^(0|false|off|no)$/i.test(String(raw).trim())
+}
 export function sanitizeSnapOptions(o) {
   const opts = (o && typeof o === 'object') ? o : {}
   return {
     needDesign: opts.needDesign === true,
     needScaffold: opts.needScaffold === true,
     lite: opts.lite === true,
+    // craft 缺省＝开（产品出厂行为）：只有显式 false 才关闭，老快照缺字段不会被退回旧形态
+    craft: opts.craft !== false,
     mode: (typeof opts.mode === 'string' && opts.mode) ? opts.mode : undefined,
     productRoot: typeof opts.productRoot === 'string' ? opts.productRoot : null,
     maxConcurrency:
@@ -438,32 +456,72 @@ export function artifactText(
   } catch (e) { return null }
 }
 
+/** 交付枚举上限。**命中即截断，且截断必须显式上报**（见 scanDeliverableFiles）。 */
+export const DELIVERABLE_FILE_LIMIT = 400
+
+/** 枚举结果的完整形状：`truncated=true` ⇒ 「没找到入口」这类负结论**不可信**。 */
+export interface DeliverableScan {
+  files: string[]
+  truncated: boolean
+  limit: number
+}
+
 /**
- * 列出交付产物文件（相对 root）—— 只回答「交付里有没有可执行入口」，**不做形态识别**。
- * 排除 run 自己的痕迹（docs/ 任务夹、logs/ 暂存）与依赖/构建目录。
+ * 枚举交付产物文件（相对 root）—— 只回答「交付里有没有可执行入口」，**不做形态识别**。
+ *
+ * ⚠ 两条纪律（2026-10-02 实锤，**别改回去**）：
+ *
+ * ① **点目录一律不遍历**。pnpm 的工作区 store 默认落在 `.pnpm-store/`，里面是几千个
+ *    **无扩展名** blob；而 `readdirSync` 的顺序里它排在 `AGENTS.md` 之前（实测第 3 位）
+ *    ⇒ 400 上限被瞬间吃满，返回的 400 条里**源文件 0 个、HTML 0 个**。后果是下游四项
+ *    host 检查（加载 / 接口 / 冒烟 / 验证证据）**全部静默跳过**，而交付物其实完好。
+ *    实锤 run `tf-mupnk8h0-1otbl2`：日志写「源文件 0 个」「no-html」「扫到 400 个交付文件」，
+ *    而同期该工作区只有 28 个真实交付文件，其中 13 个源文件 + 1 个 index.html。
+ *    机制复现：同样目录形状 + 1000 个 store blob ⇒ 不跳点目录时返回「400 条 / 源文件 0 / HTML 0」，
+ *    跳过点目录后恢复「23 条 / 源文件 11 / HTML 1」。
+ * ② **截断必须显式**。早先直接返回「装满的 400 条」，上层无从区分「目录就这么大」与
+ *    「枚举被砍断」⇒ 把「枚举不全」读成「没有入口」。这与本仓反复栽的「空集通过 / 静默降级」
+ *    是同一型缺陷，故拆出 truncated 标志，调用方在截断时不得把负结论当事实。
+ *
+ * 另外排除 run 自己的痕迹（docs/ 任务夹、logs/ 暂存）与非点目录形式的依赖/构建目录。
  */
-export function listDeliverableFiles(root: string | null | undefined, limit = 400): string[] {
-  if (!root) return []
+export function scanDeliverableFiles(
+  root: string | null | undefined,
+  limit = DELIVERABLE_FILE_LIMIT,
+): DeliverableScan {
+  if (!root) return { files: [], truncated: false, limit }
   const SKIP_DIR = new Set([
-    '.git', 'node_modules', 'logs', 'dist', 'build', 'out', '.next',
-    'coverage', '.cache', 'target', '__pycache__', '.venv', 'venv',
+    'node_modules', 'logs', 'dist', 'build', 'out', 'coverage',
+    'target', '__pycache__', 'venv', 'bower_components',
   ])
   const out: string[] = []
+  let truncated = false
   const walk = (dir: string, depth: number): void => {
-    if (out.length >= limit || depth > 6) return
+    if (out.length >= limit) { truncated = true; return }
+    if (depth > 6) return
     let entries
     try { entries = readdirSync(dir, { withFileTypes: true }) } catch (e) { return }
     for (const e of entries) {
-      if (out.length >= limit) return
+      if (out.length >= limit) { truncated = true; return }
       const p = `${dir}/${e.name}`
-      if (e.isDirectory()) { if (!SKIP_DIR.has(e.name)) walk(p, depth + 1); continue }
+      if (e.isDirectory()) {
+        // 点目录（.git/.next/.pnpm-store/.yarn/.cache/.venv…）一律不遍历：
+        // 既不是交付物，又最可能吃满上限（见上文实锤）。
+        if (!e.name.startsWith('.') && !SKIP_DIR.has(e.name)) walk(p, depth + 1)
+        continue
+      }
       const rel = `${p.slice(root.length + 1)}`
       if (/^(?:docs|logs)\//.test(rel)) continue
       out.push(rel)
     }
   }
   walk(root, 0)
-  return out
+  return { files: out, truncated, limit }
+}
+
+/** 只要文件名列表的调用方用这个（行为同旧版，签名不变）。需要截断标志时改用 scanDeliverableFiles。 */
+export function listDeliverableFiles(root: string | null | undefined, limit = DELIVERABLE_FILE_LIMIT): string[] {
+  return scanDeliverableFiles(root, limit).files
 }
 
 /**
