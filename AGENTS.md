@@ -121,6 +121,7 @@ client/
 | 重试/护栏 | 外部供应商故障 ≠ 交付缺陷（长退避、不计熔断，用尽落 `externalFailure`）；退化/挂死/空转不自动重试；门序 = 不可重试/外部中止/护栏中止 → 熔断预算门 → 自动重试；**环境不可用（`env-unavailable`）是第五个早停信号**（连续 2 次提醒 / 3 次中止、不自动重试、**优先于「完成了」**）。`anchors/retry-guard.md` |
 | prompt 约束分级 | prompt 内禁止自称 hard constraint；只分 `[HOST-ENFORCED]`（host 真强制，须写真实后果）与 `[policy]`（自律 + guard warn/轻提醒）。`anchors/prompt-constraint-levels.md` |
 | 验证证据块 | dev/qaFix 回复末尾强制 `[Verification evidence]`（命令+退出码+断言计数，或显式 N/A）→ host 提取存证；policy 级缺失只 warn；**不制造输出 dump**：三类留存、项目根不得出现 `scripts/`/`probe/`。`anchors/verification-evidence.md` |
+| 交付枚举与截断 | 上限 400、点目录不遍历；命中上限时三条「未执行」**不是事实**，由后一条 `log.hostScanTruncated` 撤回（顺序即契约）。`anchors/log-lifecycle.md` |
 
 ## 6. 变更记录（指针）
 
