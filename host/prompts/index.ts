@@ -457,7 +457,8 @@ ${ARTIFACT_DELIVERY(RUN(state))}
 
 export const designPrompt = (prd, root, runId, state) => `You are a senior UI/UX designer. The current workspace IS the target project.
 ${productCtx(root, LOCALE(state))}${stateSliceFor(state, 'design')}
-${ONCE_DISCIPLINE}[PRD (this change & relevant sections)]
+${ONCE_DISCIPLINE}[PRD (this change & relevant sections — full source lives on disk; read/grep the sections you need, do NOT rely on this truncated head)]
+Path: ${RUN(state)}/PRD.md — the COMPLETE PRD is there (including its 优先级 / 依赖与风险 / 验收总则 tail); this inline clip is only a starting taste, not the whole spec.
 ${clip(prd, 15000)}
 [REQUIREMENTS]
 1. If the project already has frontend code/design system or a ${TF_DOCS}/design/DESIGN.md history, grep the key conventions — do not full-read; the design must fit existing style & component norms (for iterations, keep existing norms; mark added/revised parts explicitly).
@@ -504,7 +505,8 @@ ${MEMORY_TEMPLATE(LOCALE(state))}
 
 export const techPrompt = (prd, design, scaffold, tasks, root, runId, state) => `You are a senior full-stack engineer. The current workspace IS the target project — produce the technical design on top of the existing project.
 ${productCtx(root, LOCALE(state))}${stateSliceFor(state, 'tech')}
-${ONCE_DISCIPLINE}[PRD (this change & relevant sections)]
+${ONCE_DISCIPLINE}[PRD (this change & relevant sections — full source lives on disk; read/grep the sections you need, do NOT rely on this truncated head)]
+Path: ${RUN(state)}/PRD.md — the COMPLETE PRD is there (including its 优先级 / 依赖与风险 / 验收总则 tail); this inline clip is only a starting taste, not the whole spec.
 ${clip(prd, 12000)}
 ${design ? `[DESIGN NOTES (full source lives on disk — read/grep the sections you need; do NOT rely on this truncated head)
 Path: ${RUN(state)}/DESIGN.md — the COMPLETE design is there; this inline clip is only a starting taste, not the whole spec]
@@ -536,7 +538,8 @@ ${ARTIFACT_DELIVERY(RUN(state))}
  * 与原生工作流对应：Phase2 全局 READ → Phase3 Design Decision。
  */
 export const architectPrompt = (prd, root, runId, state) => `You are a senior architect. The current workspace IS the target project. Your mission: **first build global architectural awareness of the codebase, then output a structured ${L(state, 'doc.blueprintQ')} (architecture blueprint)** — so downstream dev tasks build ON the existing architecture instead of reconstructing it from a local viewpoint.
-${productCtx(root, LOCALE(state))}${stateSliceFor(state, 'arch')}[PRD/REQUIREMENT (this change & relevant ACs)]
+${productCtx(root, LOCALE(state))}${stateSliceFor(state, 'arch')}[PRD/REQUIREMENT (this change & relevant ACs — full source lives on disk; read/grep the sections you need, do NOT rely on this truncated head)]
+Path: ${RUN(state)}/PRD.md — the COMPLETE PRD is there (including its 优先级 / 依赖与风险 / 验收总则 tail); this inline clip is only a starting taste, not the whole spec.
 ${clip(prd, 12000)}
 [REQUIREMENTS]
 1. [Do not skip · build global awareness first] For a codebase that may carry off-site changes / multi-author work:
@@ -675,7 +678,8 @@ ${ARTIFACT_DELIVERY(RUN(state))}
 /** QA 打回后的开发修复 prompt：确认缺陷是否属实 → 修复 → 复验交接（QA→dev 打回闭环用）。 */
 export const qaFixPrompt = (defects, qa, tech, prd, root, runId, state) => `You are a senior full-stack engineer. The QA report points out several defects — **confirm each one** and fix them, then hand back for QA re-verification.
 ${productCtx(root, LOCALE(state))}${stateSliceFor(state, 'dev')}${TOKEN_HYGIENE(runId)}
-[QA REPORT (defect table in report §3)]
+[QA REPORT (defect table in report §3 — full source lives on disk; read/grep the sections you need, do NOT rely on this truncated head)]
+Path: ${RUN(state)}/QA-REPORT.md — the COMPLETE report is there (including earlier rework rounds and red-team findings); this inline clip is only a starting taste, not the whole spec.
 ${clip(qa, 12000)}
 [DEFECTS POINTED OUT BY QA]
 ${JSON.stringify(defects, null, 2)}

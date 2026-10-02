@@ -888,6 +888,10 @@ ok(!/clip\(tech,\s*(?!4000\b)\d+/.test(promptsSrc), 'prompts：tech 注入只用
 ok(promptsSrc.split('TECHNICAL.md  — the COMPLETE technical design').length - 1 === 2, 'prompts：TECHNICAL.md 完整文件路径指引覆盖 dev + qaFix 两处（实测两处都在照 spec 改代码）')
 ok(!/clip\(design,\s*(?!4000\b)\d+/.test(promptsSrc), 'prompts：design 注入只用小 teaser（4000），不得裸 clip 大数值（实测 10000 会截 11/31 份真实设计文档）')
 ok(promptsSrc.split('DESIGN.md — the COMPLETE design is there').length - 1 === 3, 'prompts：DESIGN.md 完整文件路径指引覆盖 scaffold + tech + dev 三处')
+// PRD / QA 报告：阈值不动（体量小，PRD 中位 6334、QA 中位 4430），但**三处 PRD 注入原本零路径兜底** ——
+// 尾部装着「优先级 / 依赖与风险 / 验收总则」，截断了永久不可补救 ⇒ 补路径（2026-10-02）。
+ok(promptsSrc.split('PRD.md — the COMPLETE PRD is there').length - 1 === 3, 'prompts：PRD.md 完整文件路径指引覆盖 design + tech + architect 三处（原本只有 dev / qaFix 有）')
+ok(promptsSrc.split('QA-REPORT.md — the COMPLETE report is there').length - 1 === 1, 'prompts：QA 报告完整文件路径指引覆盖 qaFix（修缺陷最需要完整报告与历轮复验结论）')
 
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)
