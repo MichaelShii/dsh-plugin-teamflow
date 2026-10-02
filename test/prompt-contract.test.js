@@ -36,6 +36,19 @@ const ST = {
 const PRD = '# PRD\n基线依赖：无\nAC-1：最高分 localStorage 持久化（reload 后保留）'
 const QA_REPORT = '# QA-REPORT\n## 结论：通过\n| 编号 | 严重级(P0/P1/P2/P3) | 功能模块 | 复现步骤 | 期望行为 | 实际行为 | 关联验收项 |\n| BUG-1 | **P1** | persist.js | reload | 保留 | 丢失 | AC-1 |'
 const DEV_SUMMARY = '实现完成，verify 全绿'
+const DESIGN = '# DESIGN\n风格：霓虹圆角、发光描边、微交互反馈；HUD 常驻分数/生命/关卡'
+/** craft 开关「关」夹具（A/B 对照组）：options.craft=false 经 state.__runCtx.craft 下发。 */
+const ST_CRAFT_OFF = { ...ST, __runCtx: { ...ST.__runCtx, craft: false } }
+/**
+ * 真实体量的 DESIGN.md 夹具：design 阶段在 2b 要求下会写到万字符级（本项目 TECHNICAL.md 实测 48365 字符），
+ * 而 dev 只拿 clip(design, 4000) ⇒ **文档里的章节顺序**决定视觉规格能否到达 dev。
+ * 下面两个夹具只差「规格写在最前还是写在（填充内容之后的）中部」这一个变量。
+ */
+const DESIGN_SPEC = '## Visual quality spec\n- 圆环轨道：宽 14px，圆角端点；进度段渐变 #ff7a59 → #ff3d71，外发光 blur 12px。\n'
+const DESIGN_FILLER = Array.from({ length: 120 }, (_, i) => `- 组件 C${i + 1}：容器宽 ${280 + i * 12}px，间距 ${8 + i * 2}px，说明占位文字说明占位文字说明占位文字。\n`).join('')
+const DESIGN_SPEC_FIRST = DESIGN_SPEC + DESIGN_FILLER
+const DESIGN_SPEC_MIDDLE = DESIGN_FILLER + DESIGN_SPEC
+const DESIGN_TASK = { title: 'T1 实现持久化', files: ['/persist.js'], spec: '实现 storage 封装' }
 const ROOT = 'products/tetris'
 const RUN_ID = 'tf-eval-run'
 
@@ -46,7 +59,15 @@ const out = {
   scaffoldPrompt: scaffoldPrompt('初始化 Tetris 项目', '无', ROOT, RUN_ID, ST),
   techPrompt: techPrompt(PRD, null, null, [], ROOT, RUN_ID, ST),
   architectPrompt: architectPrompt(PRD, ROOT, RUN_ID, ST),
-  devPrompt: devPrompt({ title: 'T1 实现持久化', files: ['/persist.js'], spec: '实现 storage 封装' }, PRD, PRD, ROOT, RUN_ID, ST),
+  devPrompt: devPrompt({ title: 'T1 实现持久化', files: ['/persist.js'], spec: '实现 storage 封装' }, PRD, PRD, null, ROOT, RUN_ID, ST),
+  devPromptDesign: devPrompt({ title: 'T1 实现持久化', files: ['/persist.js'], spec: '实现 storage 封装' }, PRD, PRD, DESIGN, ROOT, RUN_ID, ST),
+  /** 体量不变量夹具：同一份长文档，只差「视觉规格写在最前 vs 写在中部」。 */
+  devDesignSpecFirst: devPrompt(DESIGN_TASK, PRD, PRD, DESIGN_SPEC_FIRST, ROOT, RUN_ID, ST),
+  devDesignSpecMiddle: devPrompt(DESIGN_TASK, PRD, PRD, DESIGN_SPEC_MIDDLE, ROOT, RUN_ID, ST),
+  /** craft 开关「关」组（A/B 对照）。 */
+  designPromptCraftOff: designPrompt(PRD, ROOT, RUN_ID, ST_CRAFT_OFF),
+  devPromptDesignCraftOff: devPrompt(DESIGN_TASK, PRD, PRD, DESIGN, ROOT, RUN_ID, ST_CRAFT_OFF),
+  qaPromptCraftOff: qaPrompt(PRD, DEV_SUMMARY, ROOT, RUN_ID, ST_CRAFT_OFF, true),
   qaPrompt: qaPrompt(PRD, DEV_SUMMARY, ROOT, RUN_ID, ST, true),
   /** 复验轮夹具（C 方案）：pipeline 在 QA 循环里写 state.__runCtx.qaReverify=true（round ≥ 2）。 */
   qaPromptReverify: qaPrompt(PRD, DEV_SUMMARY, ROOT, RUN_ID, { ...ST, __runCtx: { ...ST.__runCtx, qaReverify: true, qaRound: 2 } }, true),
@@ -73,7 +94,8 @@ const outEn = {
   scaffoldPrompt: scaffoldPrompt('scaffold the Tetris project', 'none', ROOT, RUN_ID, ST_EN),
   techPrompt: techPrompt(PRD, null, null, [], ROOT, RUN_ID, ST_EN),
   architectPrompt: architectPrompt(PRD, ROOT, RUN_ID, ST_EN),
-  devPrompt: devPrompt({ title: 'T1 persistence', files: ['/persist.js'], spec: 'implement the storage wrapper' }, PRD, PRD, ROOT, RUN_ID, ST_EN),
+  devPrompt: devPrompt({ title: 'T1 persistence', files: ['/persist.js'], spec: 'implement the storage wrapper' }, PRD, PRD, null, ROOT, RUN_ID, ST_EN),
+  devPromptDesign: devPrompt({ title: 'T1 persistence', files: ['/persist.js'], spec: 'implement the storage wrapper' }, PRD, PRD, DESIGN, ROOT, RUN_ID, ST_EN),
   qaPrompt: qaPrompt(PRD, DEV_SUMMARY, ROOT, RUN_ID, ST_EN, true),
   qaFixPrompt: qaFixPrompt([{ id: 'BUG-1', severity: 'P1', module: 'persist.js' }], QA_REPORT, PRD, PRD, ROOT, RUN_ID, ST_EN),
   acceptancePrompt: acceptancePrompt(PRD, QA_REPORT, DEV_SUMMARY, ROOT, RUN_ID, ST_EN, true),
@@ -462,6 +484,80 @@ assertContract({
   intent: 'dev 必须先读蓝图再实现（既有架构上实现，勿重建）',
   include: [/Architecture blueprint first/, /implement ON the existing architecture/],
 
+})
+assertContract({
+  id: 'DEV-DESIGN-REACHES-DEV', level: 'structural', targets: 'devPrompt',
+  intent: 'dev 必须收到 UI/UX 设计意图（视觉/质感规格），并以分层注入指向完整 DESIGN.md（修复「设计↔dev 结构性断开」根因 C）',
+  fixture: out.devPromptDesign,
+  // ⚠ 锚点必须是 **design 段专属**：`full source lives on disk` 在 TECH DESIGN 段里也有一句，
+  // 那样这条断言会被 tech 段救活（等于没锁住 design 通道，2026-09-30 实测）。
+  include: [/DESIGN NOTES/, /DESIGN\.md/, /written FIRST in DESIGN\.md/],
+})
+assertContract({
+  id: 'DEV-DESIGN-REACHES-DEV-EN', level: 'structural', targets: 'devPrompt', en: true,
+  intent: 'en：dev 同样收到 UI/UX 设计意图分层注入，零回归对照 zh',
+  fixture: outEn.devPromptDesign,
+  include: [/DESIGN NOTES/, /DESIGN\.md/, /written FIRST in DESIGN\.md/],
+})
+// ── 质量/质感（craft）通道：design 出规格 → dev 依它打磨 → QA 观察级评级 ──
+// 三者都是「引导/观察」而非硬门禁（插件跨模型：弱/本地模型产不出 craft，硬门禁会让插件不可用）。
+assertContract({
+  id: 'DESIGN-VISUAL-QUALITY-SPEC', level: 'policy', targets: 'designPrompt',
+  intent: 'design 必须出「视觉/质感规格」节（表面处理/状态反馈/动效/字体角色/反模式），这是 craft 意图唯一的上游来源',
+  include: [/Visual quality spec/, /Surface treatment/, /Anti-patterns/],
+})
+assertContract({
+  id: 'DEV-CRAFT-BAR', level: 'policy', targets: 'devPrompt',
+  intent: 'dev 的 craft bar：AC 是下限不是上限；依 DESIGN.md 打磨、持久信息全状态可见、交互有反馈（引导，非门禁）',
+  include: [/Craft bar/, /the AC is the floor, not the ceiling/, /do not leave it unstyled by default/],
+})
+assertContract({
+  id: 'QA-CRAFT-GRADE', level: 'policy', targets: 'qaPrompt',
+  intent: 'QA 把 craft 单列为 P3 观察行（永不 P0-P2、不阻断）——补上「丑永远不会被判缺陷」的漏洞',
+  include: [/Craft grade/, /P3 observation/, /never a blocking gate/],
+})
+// ── 「视觉规格必须写在 DESIGN.md 最前」：把「dev 看不看得到」从文档长度变成受控不变量 ──
+// 实测（2026-09-30）：dev 只拿 clip(design, 4000)；规格写在文档中部时，design≥9k 字符就整段丢失
+// （本仓 TECHNICAL.md 实测 48365 字符，UI 设计文档达到这个量级很常见）。
+// 不靠放大 clip 解决（那回到 token 通胀），而靠**钉死章节顺序** + dev 指向该节。
+assertContract({
+  id: 'DESIGN-VISUAL-SPEC-FIRST', level: 'policy', targets: 'designPrompt',
+  intent: 'design 必须把视觉规格写在 DESIGN.md 最前（在 IA/线框之前）——dev 只看这个文件的前 4000 字符',
+  include: [/Visual quality spec/, /this section FIRST in DESIGN\.md/],
+})
+assertContract({
+  id: 'DEV-VISUAL-SPEC-SURVIVES-CLIP', level: 'structural', targets: 'devPrompt',
+  intent: '真实体量（>4000 字符的 DESIGN.md）下，写在最前的视觉规格仍到达 dev —— 通道在此体量下成立',
+  fixture: out.devDesignSpecFirst,
+  include: [/Visual quality spec/, /圆环轨道/],
+})
+assertContract({
+  id: 'DEV-VISUAL-SPEC-MIDDLE-IS-LOST', level: 'structural', targets: 'devPrompt',
+  intent: '哨兵：同样的文档体量、规格写在中部时 clip 确实把它剪掉 —— 这是 placement rule 存在的理由；'
+    + '若将来改成全量注入或 head-tail 注入消除了这个缺口，本条应当连同 placement rule 一起评审删除',
+  fixture: out.devDesignSpecMiddle,
+  exclude: [/圆环轨道/],
+})
+// ── craft 开关（±craft 的 A/B 对照）：缺省开；craft:false 三处引导同时退场 ──
+assertContract({
+  id: 'CRAFT-SWITCH-OFF-DESIGN', level: 'structural', targets: 'designPrompt',
+  intent: 'options.craft=false 时 design 的视觉规格条款消失（A/B 的「关」组必须干净）',
+  fixture: out.designPromptCraftOff,
+  exclude: [/Visual quality spec/],
+})
+assertContract({
+  id: 'CRAFT-SWITCH-OFF-DEV', level: 'structural', targets: 'devPrompt',
+  intent: 'options.craft=false 时 dev 的 craft bar 消失，但硬契约（写路径/接口契约/边界）一条不少',
+  fixture: out.devPromptDesignCraftOff,
+  exclude: [/Craft bar/],
+  include: [/Write path · policy/, /Interface contract · mandatory/, /TOKEN HYGIENE/],
+})
+assertContract({
+  id: 'CRAFT-SWITCH-OFF-QA', level: 'structural', targets: 'qaPrompt',
+  intent: 'options.craft=false 时 QA 的 craft 观察评级消失，正确性判据（接口一致性/验证证据）不受影响',
+  fixture: out.qaPromptCraftOff,
+  exclude: [/Craft grade/],
+  include: [/Interface consistency/, /Verification evidence/],
 })
 assertContract({
   id: 'GIT-DISCIPLINE-DEV', level: 'policy', targets: 'devPrompt',

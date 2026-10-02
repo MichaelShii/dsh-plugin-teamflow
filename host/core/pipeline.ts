@@ -307,6 +307,7 @@ export interface PipelineCtx {
   /* 跨阶段产物交接 */
   prd: string | null
   tech: string | null
+  design: string | null
   qa: string | null
   qaBlocked: boolean
   /* 宿主侧共享闭包（保留在 executePipeline 内——它们绑定阶段集 / journal / locale） */
@@ -638,6 +639,8 @@ export async function executePipeline(
     if (journal.runDocs) state.__runCtx.runDocs = journal.runDocs
     // 注入块语言（AC-3⑤）：快照经既有 __runCtx 通道下发（不改任何 prompt 工厂签名）
     state.__runCtx.locale = locale
+    // craft 引导通道（2026-09-30）：缺省＝开，显式 options.craft === false 才关 —— 与 locale 同通道下发
+    state.__runCtx.craft = options.craft !== false
     // **本机安装环境**（2026-09-21 用户实锤，勿写死路径）：契约里原本写死
     // 「`dsh plugin --profile web add`」——用户是源码运行（`pnpm dsh`，dsh 不在 PATH）、profile 名
     // 也可能不叫 web，那条命令在别人机器上根本跑不通。改为**运行时探测**，取值顺序见
@@ -863,8 +866,8 @@ export async function executePipeline(
       journal, parent, requirement, options, signal, resume,
       locale, scopeKey, root, tasks, maxConcurrency, installCtx,
       timeline, state,
-      // prd / tech 已由前面的同形阶段产出并写定；qa / qaBlocked 由 QA 阶段回填给验收阶段
-      prd, tech, qa: null, qaBlocked: false,
+      // prd / tech / design 已由前面的同形阶段产出并写定；qa / qaBlocked 由 QA 阶段回填给验收阶段
+      prd, tech, design, qa: null, qaBlocked: false,
       enabled, resumed, logSkip, stageFailError,
       mergeStageState, noteVerifyEvidence, stageTextOf,
     }
@@ -1073,6 +1076,7 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
       needDesign: !!options.needDesign,
       needScaffold: !!options.needScaffold,
       lite: !!options.lite,
+      craft: options.craft !== false,
       mode,
       teamId: options.teamId || undefined,
       tasks: normalizeTasks(options.tasks),

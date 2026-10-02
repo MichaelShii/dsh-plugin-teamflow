@@ -82,7 +82,7 @@ export function buildDevTaskDefs(journal, tasks, locale: HostLocale = 'zh'): Dev
 export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean }> {
   const {
     journal, parent, signal, resume, locale, scopeKey, root, tasks, maxConcurrency, timeline, state,
-    prd, tech, logSkip, mergeStageState, noteVerifyEvidence, stageTextOf,
+    prd, tech, design, logSkip, mergeStageState, noteVerifyEvidence, stageTextOf,
   } = ctx
   /* ── 开发阶段（并发池；resume 到 QA/验收时复用旧结果） ── */
   /* 并发写的**事后记账**（issue #4 第三道防线）：前两道护栏都可能被绕过——
@@ -169,7 +169,7 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
               ? task.ids.some((id) => s.taskIds.includes(id))
               : ((s.taskKey && task.ids.some((id) => s.taskKey === String(id))) || (!s.taskKey && task.title && (s.label || '').includes(String(task.title))))))
           const t0 = Date.now()
-          const resumePrompt = devPrompt(task, tech, prd, root, journal.id, state) + (prevStage ? buildRetryDiagnostic(2, prevStage) : '')
+          const resumePrompt = devPrompt(task, tech, prd, design, root, journal.id, state) + (prevStage ? buildRetryDiagnostic(2, prevStage) : '')
           const devR = await withRetry(journal, parent, t(locale, 'dev.taskRerun', { title: task.title }), 'dev', resumePrompt, signal, task.title, null, task.ids)
           const rerunText = stageTextOf(devR)
           trackDevTouched(task.title, t0, Date.now(), rerunText)
@@ -245,7 +245,7 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
           if (subLive) { subLive.status = 'running'; subLive.startedAt = Date.now(); store.persist(); persistJournal(journal) }
         }
         const t0 = Date.now()
-        const devR = await withRetry(journal, parent, t(locale, 'dev.task', { title: task.title }), 'dev', devPrompt(task, tech, prd, root, journal.id, state), signal, task.title, null, task.ids)
+        const devR = await withRetry(journal, parent, t(locale, 'dev.task', { title: task.title }), 'dev', devPrompt(task, tech, prd, design, root, journal.id, state), signal, task.title, null, task.ids)
         const devText = stageTextOf(devR)
         trackDevTouched(task.title, t0, Date.now(), devText)
         noteVerifyEvidence(devR.stage, devText)

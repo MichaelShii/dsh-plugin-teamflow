@@ -270,7 +270,7 @@ console.log('── 阶段 prompt 的回复语言（2026-09-15 实锤：产物�
     scaffoldPrompt: (s) => P.scaffoldPrompt('r', 'd', 'p', 'tf', s),
     techPrompt: (s) => P.techPrompt('#p', '', '', [], 'p', 'tf', s),
     architectPrompt: (s) => P.architectPrompt('#p', 'p', 'tf', s),
-    devPrompt: (s) => P.devPrompt(task, '#t', '#p', 'p', 'tf', s),
+    devPrompt: (s) => P.devPrompt(task, '#t', '#p', 'd', 'p', 'tf', s),
     qaPrompt: (s) => P.qaPrompt('#p', 'd', 'p', 'tf', s, false),
     qaFixPrompt: (s) => P.qaFixPrompt([], '#q', '#t', '#p', 'p', 'tf', s),
     acceptancePrompt: (s) => P.acceptancePrompt('#p', '#q', 'd', 'p', 'tf', s, false),

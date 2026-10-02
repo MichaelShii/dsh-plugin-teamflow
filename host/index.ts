@@ -19,7 +19,7 @@ import type { JournalRecord } from '../store.ts'
 import { fileAddressFor } from '@deepseek-ai/dsh-util-workspace-path'
 
 import { phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER } from './constants.ts'
-import { toText, clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions } from './util.ts'
+import { toText, clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, envFlagOn } from './util.ts'
 
 import { runtime, runs, setRuntime, setSessionProjections, setInstallCtx, workspaceScopeOf, getRun } from './core/agent/context.ts'
 import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/domain/backlog.ts'
@@ -307,6 +307,9 @@ function registerTools(ctx) {
           needDesign: !!args.needDesign,
           needScaffold: !!args.needScaffold,
           lite: !!args.lite,
+          // craft 引导通道：环境变量开关（TEAMFLOW_CRAFT=0 关闭），**不做工具参数**
+          // —— 工具 description 每次都进主会话上下文，而这是临时实验开关（详见 util.envFlagOn 注释）
+          craft: envFlagOn('TEAMFLOW_CRAFT'),
           mode: normalizeMode(args.mode) || undefined,
           teamId,
           tasks: normalizeTasks(args.tasks),
