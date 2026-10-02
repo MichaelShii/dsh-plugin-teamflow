@@ -879,11 +879,15 @@ for (const [f, marker, want, cap] of docFiles) {
 }
 
 // ── 大文档注入必须是「小 teaser + 磁盘完整文件路径」，不许退回裸 clip ──
-// 裸 clip(tech, 12000) 会把**修缺陷要照着看的 spec 尾部**截掉（10-02 实测 TECHNICAL.md 14.3k / 15.7k 字符 > 12000）。
-// devPrompt 于 2026-09-30 修成 4000 + 磁盘路径；qaFixPrompt 于 2026-10-02 跟进（信息缺失代价最大的正是修复路径）。
-// 这里锁住「tech 只用小 teaser」+「两处都有完整文件路径指引」，防止任一处悄悄退回。
+// 体量实测（2026-10-02，扫 256 份真实任务夹文档）：TECHNICAL.md 中位 19075 / 最大 35547，
+// DESIGN.md 中位 9338 / 最大 23603 ⇒ 旧的 clip(tech,12000) 会截 47/50、clip(design,10000) 会截 11/31。
+// 裸 clip 只给顶部 N 字符且**无回落通道**，模型无从知道后面还有内容。
+// devPrompt/qaFixPrompt（TECHNICAL，2026-09-30 / 10-02）与 scaffoldPrompt/techPrompt（DESIGN，10-02）已修；
+// 这里锁住两处都不许悄悄退回。
 ok(!/clip\(tech,\s*(?!4000\b)\d+/.test(promptsSrc), 'prompts：tech 注入只用小 teaser（4000），不得裸 clip 大数值（会截断修缺陷要照看的 spec）')
 ok(promptsSrc.split('TECHNICAL.md  — the COMPLETE technical design').length - 1 === 2, 'prompts：TECHNICAL.md 完整文件路径指引覆盖 dev + qaFix 两处（实测两处都在照 spec 改代码）')
+ok(!/clip\(design,\s*(?!4000\b)\d+/.test(promptsSrc), 'prompts：design 注入只用小 teaser（4000），不得裸 clip 大数值（实测 10000 会截 11/31 份真实设计文档）')
+ok(promptsSrc.split('DESIGN.md — the COMPLETE design is there').length - 1 === 3, 'prompts：DESIGN.md 完整文件路径指引覆盖 scaffold + tech + dev 三处')
 
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

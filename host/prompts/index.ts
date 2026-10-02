@@ -479,8 +479,9 @@ export const scaffoldPrompt = (req, design, root, runId, state) => `You are a se
 ${productCtx(root, LOCALE(state))}${stateSliceFor(state, 'arch')}
 ${ONCE_DISCIPLINE}[REQUIREMENT]
 ${clip(req, 10000)}
-${design ? `[DESIGN NOTES]
-${clip(design, 10000)}
+${design ? `[DESIGN NOTES (full source lives on disk — read/grep the sections you need; do NOT rely on this truncated head)
+Path: ${RUN(state)}/DESIGN.md — the COMPLETE design is there; this inline clip is only a starting taste, not the whole spec]
+${clip(design, 4000)}
 ` : ''}[REQUIREMENTS]
 1. Recommend tech stack (prefer an all-round stack the team knows, e.g. TypeScript + React + Node); explain trade-offs.
 2. Output the full scaffold plan: directory tree, core module split, dependency list, build/test/CI config essentials.
@@ -505,8 +506,9 @@ export const techPrompt = (prd, design, scaffold, tasks, root, runId, state) => 
 ${productCtx(root, LOCALE(state))}${stateSliceFor(state, 'tech')}
 ${ONCE_DISCIPLINE}[PRD (this change & relevant sections)]
 ${clip(prd, 12000)}
-${design ? `[DESIGN NOTES]
-${clip(design, 10000)}
+${design ? `[DESIGN NOTES (full source lives on disk — read/grep the sections you need; do NOT rely on this truncated head)
+Path: ${RUN(state)}/DESIGN.md — the COMPLETE design is there; this inline clip is only a starting taste, not the whole spec]
+${clip(design, 4000)}
 ` : ''}${scaffold ? `[SCAFFOLD PLAN]
 ${clip(scaffold, 10000)}
 ` : ''}${tasks && tasks.length > 0 ? `[PIPELINE-DISPATCHED TASKS (must align — do not invent a parallel task set)]
