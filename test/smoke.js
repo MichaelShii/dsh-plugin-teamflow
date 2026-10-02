@@ -515,7 +515,7 @@ ok(/!verdict\.ok && text && stop === 'completed'/.test(runnerSrc), 'runner：**�
 ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
-ok(/"version": "0\.2\.5"/.test(pkgSrc), 'package.json：版本 0.2.5（release-v0.2.5 开发线）')
+ok(/"version": "0\.2\.6"/.test(pkgSrc), 'package.json：版本 0.2.6（release-v0.2.6 开发线）')
 // ⚠ engines.dsh 的上界**不能简单放宽**：semver 的「预发布只匹配同 tuple 区间」规则下，
 // `>=0.1.7-alpha.1 <0.3.0` 对 `0.2.0-rc.2` 判 **fail**（semver 7.7.4 实测）——
 // 必须写成并集才能同时覆盖 0.1.7 系与 0.2.0 系。语义矩阵见 README「版本锚定」小节。

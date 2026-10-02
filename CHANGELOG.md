@@ -2,9 +2,97 @@
 
 > 本插件首次公开发布版本为 **v0.1.0**；发布前的内部迭代（v0.3~v0.13）记录于 `AGENTS.md` §5，对外统一归到 v0.1.0。
 
-## [Unreleased]
+## [0.2.6] - 2026-10-02
+
+> 23 笔新提交 / 47 个文件 / +3450 −139 行（`v0.2.5..HEAD` 全量对比，变更清单由 git 对比生成）。
+> **无破坏性**：宿主窗口从 `>=0.1.7-alpha.1 <0.2.0` 放宽到**并集区间**（含 0.2.0 预览版，见下）；journal / 任务夹 / `teamflow_*` 工具参数全部向后兼容。
+> 三条主线 = ① **交付枚举不再被上限截断**（曾让四项 host 检查同时静默跳过）；② **大文档注入一律「小 teaser + 磁盘完整路径」**；③ **dsh 0.2.0 预览版兼容 + 桌面版独立 profile 支持**。
+> 宿主侧检查仍**纯记录、不阻断**，且与模型能力无关。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **宿主窗口放宽到 dsh 0.2.0-rc.2**（`engines.dsh` 改并集区间；已逐项核对**未发现破坏**）。⚠ 区间**不是**简单放宽上界——预发布只匹配同 tuple 区间，直接把 `<0.2.0` 改成 `<0.3.0` 会让 `0.2.0-rc.x` 判 fail。
+- **桌面版（dsh 0.2.0 起）需要单独安装**：它用独立的 `desktop` profile，与 `web` 各自一份 node_modules；且 CLI **明确拒绝** `--profile desktop`（Electron 独占）⇒ 桌面版走应用内插件管理界面。`deploy.mjs` 新增 `DSH_PROFILE` 支持分别同步。
+- 升完**重启** `dsh --profile web`（桌面版重启桌面应用）生效。
+- ⚠ **prompt 变长**：craft 五条款（design 2b/2c、dev 4b/4c、QA 0d，缺省开）+ 四处磁盘路径指引，`host/prompts/index.ts` 净增 76 行。本仓的 `instruction-budget` 门禁**只管 AGENTS.md、不管 prompt**，故这部分**未量化**（增量以百字符计，单次调用多几十到几百 tok）。
+- 新增日志键：`log.hostScanTruncated`（枚举被上限截断时的撤回提示）。
+
+### 交付枚举不再被上限截断（今天的头条）
+
+实锤：一次真实交付（runId 见 `docs/releases/v0.2.6.md`）——工作区里有 pnpm 的 `.pnpm-store`（几千个**无扩展名** blob），而旧跳过名单**漏了它**，且它在 `readdir` 顺序里排在 `AGENTS.md` 之前 ⇒ 瞬间吃满 400 上限 ⇒ 返回的 400 条里**源文件 0、HTML 0** ⇒ **加载检查 / 接口核对 / 冒烟 / 验证证据观察四项同时静默跳过**，日志读起来像「交付里什么都没有」，而交付完好（28 文件 / 13 源文件 / 1 个 `index.html`）。**用户是在浏览器里点不动才把它暴露出来的。**
+
+- `host/util.ts`：新增 `scanDeliverableFiles(root, limit)` 返回 `{ files, truncated, limit }`；**点目录一律不遍历**；`listDeliverableFiles` 退为薄包装（签名与旧行为不变，调用方零改动）。
+- `stages/qa.ts`：三项检查任一 `truncated` ⇒ 追加一条 `log.hostScanTruncated` **撤回提示**。⚠ 措辞要说准：那三条「未执行 / 源文件 0 个 / no-html」的**原文保留**（它们确实没执行），撤回靠的是**后一条 warn 点名它们不是事实** ⇒ **顺序也是契约**。
+- 门禁两层：`test/smoke-check.test.js` ②b 段（扫描器层：点目录洪水 / 截断必须 `truncated=true` / 与「真的没有」可区分）+ `test/orchestration.test.js` 第 ⑨ 组（**接线层**：430 个无扩展名文件顶满 400，断言撤回提示发出且排在负结论之后）。变异实测：短路 `if (scanTruncated)` ⇒ 4 条立刻红。
+
+### 大文档注入：裸 clip → 「小 teaser + 磁盘完整路径」
+
+按 256 份真实任务夹文档实测：`TECHNICAL.md` 中位 **19075**、最大 35547；`DESIGN.md` 中位 9338；PRD 中位 6334、QA-REPORT 中位 4430。
+
+- **TECHNICAL.md**（`devPrompt` + `qaFixPrompt`）：`clip(tech, 12000)` → `clip(tech, 4000)` + `Path: ${RUN}/TECHNICAL.md` +「只是开头一小段」。旧阈值会截 **47/50** 份真实文档。
+- **DESIGN.md**（`scaffoldPrompt` + `techPrompt`）：`clip(design, 10000)` → 4000 + 路径。旧阈值会截 **11/31** 份。
+- **PRD.md**（design/tech/architect）与 **QA-REPORT.md**（qaFix）：**阈值不动**，只补磁盘路径——它们原本**零路径兜底**，尾部（优先级 / 依赖与风险 / 验收总则）一旦截断**永久不可补救**。
+- ⚠ 一个反直觉结论：TECHNICAL 中位 19075 ⇒ **连 4000 的 teaser 也截 94%** ⇒ **磁盘路径才是修复主体，teaser 价值有限**。
+- 明确**不动**的两处：`clip(scaffold, 10000)` 与 `clip(devSummary, 8000)`——它们**不是磁盘文件**，无路径可指，加提示就是空话。
+- 门禁：clip 纪律的源码锁 6 道（tech/design 各一条「只用 4000」+ 四条「路径指引覆盖 N 处」）。
+
+### craft 引导通道（design → dev 接通）
+
+来源是「流水线 vs 裸跑」对照的机制归因：**`designPrompt` 写出的 DESIGN.md 到不了 dev 手里**（`devPrompt` 签名没有 `design` 参数），所以流水线在「做好看」这件事上结构性输给单 agent。
+
+- `devPrompt(task, tech, prd, design, …)` 新增 design 入参，注入视觉规格 + 磁盘路径，并明写「视觉规格写在 DESIGN.md 开头，先读它再动手做任何可见的东西」。
+- 开关：`TEAMFLOW_CRAFT`（**未设置/空串 = 开**，只有 `0`/`false`/`off`/`no` 才关），经 `util.envFlagOn` → `options.craft` → `state.__runCtx.craft`；**不做工具参数**（工具 description 每次进主会话上下文），**resume 读 journal 快照不读环境变量**。
+- 定位收窄为**交互反馈下限 + 状态可见性**，不做审美裁决；QA 只记 **P3 observation、绝不阻断**（弱/本地模型产不出 craft，硬门禁会让插件对它们不可用）。
+- ⚠ **净收益至今无定论**：三组样本方向互不相同（全被 QA 返工轮 / dev 任务拆分数 / host 检查静默跳过盖住）。详见 `docs/benchmarks/craft-ab-pomodoro.md`。
+
+### 新增脚本
+
+- `scripts/artifact-selfcheck.mjs`：产物自洽探针（静态、零浏览器依赖）——`[geo]` 几何自洽 / `[bind]` 未绑定按钮与歧义选择器 / `[craft]` 反馈态计数 / `[state]` **死快照** / `[persist]` 持久化缺口。`[state]` 来自一次真实误判：某产物「滑块点不动」，而此前所有静态指标（反馈规则数、AC 数、bind/geo）**全绿**。
+- `scripts/hi-report.mjs`：人工介入归因巡检（只读）。动机是本仓曾长期按「35%」排优先级，而那是**早于 09-17** 的样本；分层实测 91 个 run：09-17 前 20.7%（failed 12）、之后 **9.1%（failed 0）**，且剩下 3 次全是 `knownIssuesAcceptance`（QA 超限 → 产品决策**刻意**交人）。
+- `package.json` 两条测试链接入 `craft-link.check.mjs` 与 `hi-report.test.js`——前者此前是**未跟踪文件**却在链里，会让新克隆 `npm test` 必挂、`npm publish` 被 `prepublishOnly` 挡。
+
+### 护栏 / 编排（本轮前段）
+
+- 澄清闸门埋点（ADR-0010 第 1 步）。
+- env-unavailable 不再误杀「文件级可自愈冲突」，并加**进展豁免**（用**成功**调用判定，不用 `lastMutationAt`）。
+- 「工具在这一层不适用」不再判死（子代理无 Agent Team 身份 / 无委派深度时，调用必失败但不代表工作区全废）+ 禁调协作工具 + dev 端到端证据。
+- 可续跑终态**不归档暂存日志**——resume 要靠上一轮的 checker 当回归契约。
+- 消除「验证脚本会随 run 丢弃」的误导定性，禁止拆 checker 重建任务。
+
+### 客户端窄屏 / 移动端
+
+- 流水线画布支持触摸、缩放下限不再写死、窄容器默认列表视图（issue #10）。
+- ⚠ 缩放下限**保留 0.5**：0.12 时卡片只有 37×7px，糊成一团。上一版把「能看全」当成目标是错的，已 revert。
+- 详情浮层修窄容器下左侧溢出、正文被裁（截图实锤）；画布操作提示改为设备中性。
+- 移动端**不在支持范围**（宿主 dsh 自身未做）——记进 `docs/TODO.md` 的 ⛔ 已否决清单，**不写 README**。
+
+### 语料 / 测试
+
+- `corpus/qa-defect-rich-columns.md`：补「富列 + 列序由表头决定（严重级刻意放最后一列）+ 转义 `|` 还原」。此前 5 份缺陷语料全走 `parseDefects` 投影 ⇒ `reproduce/expected/actual/ac/check/criterion` 与整张 `columns` **从未被断言**。变异实测：不认转义时**只有新语料变红**，那份 note 自称「R3-2 转义回归门禁」的旧语料照旧全绿 ⇒ **一条语料断言了什么只能由变异测试回答，不能由它的 note 回答**。
+- `corpus/tech-blueprint-valid.md` / `tech-blueprint-unrepairable.md`：补 `extractBlueprint` 的正常路径与「不可抢救 ⇒ 返回 null」，连同既有那条构成合法 / 可抢救 / 不可抢救三态（conformance 24 → **26**）。
+- `test/locale.test.js` 新增**占位符覆盖门禁**（224 处带参调用）：起因是桌面版首跑 journal 里出现字面量 `host 侧冒烟：{entry} 真浏览器加载后…`——模板有 `{entry}` 而调用只传了 `{draw, raf, mut, ms}`。同型漏传全仓 2 处（另一处 `guard.envProgress` 缺 `label`）。⚠ 参数表必须**括号配平**地取，实调用常嵌 `t(..., { n })`，用 `[^}]*` 会把「已传」误判成「漏传」。
 
 ### 宿主兼容：dsh 0.2.0（预览版）
+
+- `engines.dsh` 改为**并集区间** `">=0.1.7-alpha.1 <0.3.0 || >=0.2.0-rc.1 <0.3.0"`。⚠ 上界**不能简单放宽**：semver 的「预发布只匹配同 tuple 区间」规则下，把 `<0.2.0` 直接改成 `<0.3.0`，`0.2.0-rc.1` / `0.2.0-rc.2` **仍判 fail**（semver 7.7.4 实测）。该字段**宿主不读取/校验**，只表达对正式版的兼容声明；`test/smoke.js` 有门禁钉住。
+- **0.2.0-rc.2 逐项核对：未发现破坏**。证据七条：
+  1. `tsc --noEmit` **直接对着 profile 里已装的 0.2.0-rc.2 编译**（`tsconfig.json` 的 paths 指向 `~/.dsh/profiles/node_modules/@deepseek-ai/*`）且 0 错；host 源码 12036 行里只有 **14 行**用 `: any`（0.1%）、2 行 `as any` ⇒ 「类型过」不是靠 `any` 糊过去的（`strict: false` 不影响属性存在性检查）。
+  2. 实际 import 的 `@deepseek-ai/*` 只有 **4 个包、每包 1 个符号**，逐个比对 0.2.0-rc.2 的运行时导出 ⇒ **0 缺失**。
+  3. `dsh.client.inject` 语义未变（仍是「必须先到达的 factory 依赖边」）。⚠ manifest 类型里那句 `inject` 的注释写着 "Informational … **not** Cordis service injection"，指的是**对 Cordis 而言**（真正的服务边由 patch 行给出），运行时仍用 manifest 的 `inject` 排 factory 到达顺序——**别把它误读成语义变更**。
+  4. manifest schema 兼容：`manifestVersion: 1` 仍有效、`bundle.patch` 仍是 `string | string[]`、`client.platform / inject / immediately` 全在；**新增的 `external` 是可选的**（非 inject 的模块请求），本插件不需要。
+  5. `cordis.patch.yml` 的 `insert:` 行仍被支持（0.2.0 的新能力是**新增**「bundle 自列其 rows」，不替换旧机制）。
+  6. 宿主只校验 **`peerDependencies`** 里的 `@deepseek-ai/dsh*`（本插件全是 `*` ⇒ 放行），**不读 `engines.dsh`**。
+  7. dsh 侧无 `CHANGELOG`；`docs/upgrade-guide/` 只有 v0.1.7-rc.2 一篇，**0.2.0 升级指南尚未撰写**。
+  ⚠ 以上全是**静态**核对：运行时（cordis 服务在 activate 时是否仍在、插件能否在桌面版 profile 正常加载）**需重启宿主实测**。
+- **桌面版用独立的 `desktop` profile**（`~/.dsh/profiles/desktop`），与 `web` 各自一份 node_modules ⇒ 插件须**分别安装**（只装 web 上，桌面版看不到本插件）；且 CLI **明确拒绝** `--profile desktop`（`managed exclusively by the Electron application`）⇒ 桌面版走应用内插件管理界面。该 profile 由 Electron 独占管理，但 `packages/boot/app-boot/src/profile.ts` **只在文件缺失时才写** `package.json`，手工声明不会被启动时冲掉。
+- `deploy.mjs` 新增 `DSH_PROFILE` 环境变量（默认 `web`，保持既有调用不变），使两个 profile 能分别同步——否则桌面版那份副本会**静默陈旧**。
+- 可能受益 / 需复验：0.2.0 有 9 个 `fix(windows)` 与新增 ACL 诊断 skill（值得重测「E: 盘 fresh 目录 grantWrite 必败 Win32 5」）；`user-questions` 支持定时等待与迟到回复（本插件的澄清闸门需复验调用契约）；`schedule` 变为可选 bundle。
+
+### 验证
+
+- 桌面版首次验证 run（runId 见 `docs/releases/v0.2.6.md`）：**completed / humanIntervention=false** / 12m04s / input 1.43M / 49 calls。
+  分诊判成 **lite**（design/scaffold 未经历）；三项 host 检查**全部执行**（接口核对是 `skip；源文件 0 个 —— 不足两个源文件`，属**有明确原因的合理 skip**）；`ACCEPTANCE.md` 末行 `验收结论：✅ 通过`，46 条断言 0 失败。
+- 全量：`npm test` / `tsc --noEmit` / `oxlint --deny-warnings` / conformance **26/26** / instruction-budget（19 条锚点、无孤儿）全绿；已同步 web 与 desktop 两个 profile。
 
 - `engines.dsh` 改为**并集区间** `">=0.1.7-alpha.1 <0.3.0 || >=0.2.0-rc.1 <0.3.0"`。⚠ 上界**不能简单放宽**：semver 的「预发布只匹配同 tuple 区间」规则下，把 `<0.2.0` 直接改成 `<0.3.0`，`0.2.0-rc.1` / `0.2.0-rc.2` **仍判 fail**（semver 7.7.4 实测，四行对照表见 `README.md` 版本锚定小节）。该字段**宿主不读取/校验**，只表达对正式版的兼容声明；`test/smoke.js` 有门禁钉住。
 - **0.2.0-rc.2 逐项核对：未发现破坏**。证据七条：
