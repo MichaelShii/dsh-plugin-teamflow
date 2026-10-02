@@ -516,6 +516,17 @@ ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjectio
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
 ok(/"version": "0\.2\.6"/.test(pkgSrc), 'package.json：版本 0.2.6（release-v0.2.6 开发线）')
+// 安装期钩子白名单：只有 prepare 可以在消费者安装时**不**运行。
+// 实锤（2026-10-03 用户实锤）：v0.2.5 的 `postinstall: lefthook install` 在**消费者从 registry 安装**时也会跑，
+// 而 lefthook 是 devDependency（tarball 里不存在）⇒ `npm error 'lefthook' 不是内部或外部命令` ⇒ **整个安装失败**。
+// `prepare` 只在本地 install / pack / publish 时跑，消费者安装不跑 ⇒ git hook 仍自动装、发布却不再炸。
+{
+  const pkgJson = JSON.parse(pkgSrc)
+  const consumerTime = ['preinstall', 'install', 'postinstall']
+  const bad = consumerTime.filter((k) => typeof pkgJson.scripts?.[k] === 'string')
+  ok(bad.length === 0, `package.json：消费者安装期钩子（${consumerTime.join('/')}）必须为空 —— 它们在 tarball 里跑，而 devDependencies 不在（实得：${bad.join(',') || '无'}）`)
+  ok(pkgJson.scripts?.prepare === 'lefthook install', 'package.json：git hook 走 prepare（本地/pack/publish 才跑）')
+}
 // ⚠ engines.dsh 的上界**不能简单放宽**：semver 的「预发布只匹配同 tuple 区间」规则下，
 // `>=0.1.7-alpha.1 <0.3.0` 对 `0.2.0-rc.2` 判 **fail**（semver 7.7.4 实测）——
 // 必须写成并集才能同时覆盖 0.1.7 系与 0.2.0 系。语义矩阵见 README「版本锚定」小节。

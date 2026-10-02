@@ -11,6 +11,7 @@
 
 ### ⬆️ 升级要点（TL;DR）
 
+- 🐛 **安装阻塞修复（发版前最后一步拦下的）**：`postinstall: lefthook install` → **`prepare`**。`postinstall` 在**消费者从 registry 安装**时也会跑，而 `lefthook` 是 devDependency（不在 tarball 里）⇒ 安装直接失败。实测反证：改前 `npm install <tarball>` 报 `'lefthook' 不是内部或外部命令`（与用户桌面端日志逐字一致），改后 `added 1 package in 9s`。`prepare` 只在本地 install / pack / publish 时跑，**git hook 仍自动装、发布不再炸**。已加门禁：`preinstall/install/postinstall` 必须为空 + `prepare` 必须是 `lefthook install`。
 - **宿主窗口放宽到 dsh 0.2.0-rc.2**（`engines.dsh` 改并集区间；已逐项核对**未发现破坏**）。⚠ 区间**不是**简单放宽上界——预发布只匹配同 tuple 区间，直接把 `<0.2.0` 改成 `<0.3.0` 会让 `0.2.0-rc.x` 判 fail。
 - **桌面版（dsh 0.2.0 起）需要单独安装**：它用独立的 `desktop` profile，与 `web` 各自一份 node_modules；且 CLI **明确拒绝** `--profile desktop`（Electron 独占）⇒ 桌面版走应用内插件管理界面。`deploy.mjs` 新增 `DSH_PROFILE` 支持分别同步。
 - 升完**重启** `dsh --profile web`（桌面版重启桌面应用）生效。

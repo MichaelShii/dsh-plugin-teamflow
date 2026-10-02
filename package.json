@@ -42,7 +42,7 @@
     "bundle:host": "tsdown -c tsdown.host.config.ts",
     "bundle:client": "tsdown",
     "watch": "tsdown --watch",
-    "postinstall": "lefthook install",
+    "prepare": "lefthook install",
     "deploy": "node deploy.mjs",
     "format": "oxlint --fix . || oxlint --fix .",
     "typecheck": "tsc --noEmit",
