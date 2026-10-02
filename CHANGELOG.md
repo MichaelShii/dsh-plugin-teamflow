@@ -2,6 +2,24 @@
 
 > 本插件首次公开发布版本为 **v0.1.0**；发布前的内部迭代（v0.3~v0.13）记录于 `AGENTS.md` §5，对外统一归到 v0.1.0。
 
+## [Unreleased]
+
+### 宿主兼容：dsh 0.2.0（预览版）
+
+- `engines.dsh` 改为**并集区间** `">=0.1.7-alpha.1 <0.3.0 || >=0.2.0-rc.1 <0.3.0"`。⚠ 上界**不能简单放宽**：semver 的「预发布只匹配同 tuple 区间」规则下，把 `<0.2.0` 直接改成 `<0.3.0`，`0.2.0-rc.1` / `0.2.0-rc.2` **仍判 fail**（semver 7.7.4 实测，四行对照表见 `README.md` 版本锚定小节）。该字段**宿主不读取/校验**，只表达对正式版的兼容声明；`test/smoke.js` 有门禁钉住。
+- **0.2.0-rc.2 逐项核对：未发现破坏**。证据七条：
+  1. `tsc --noEmit` **直接对着 profile 里已装的 0.2.0-rc.2 编译**（`tsconfig.json` 的 paths 指向 `~/.dsh/profiles/node_modules/@deepseek-ai/*`）且 0 错；host 源码 12036 行里只有 **14 行**用 `: any`（0.1%）、2 行 `as any` ⇒ 「类型过」不是靠 `any` 糊过去的（`strict: false` 不影响属性存在性检查）。
+  2. 实际 import 的 `@deepseek-ai/*` 只有 **4 个包、每包 1 个符号**，逐个比对 0.2.0-rc.2 的运行时导出 ⇒ **0 缺失**。
+  3. `dsh.client.inject` 语义未变（仍是「必须先到达的 factory 依赖边」）。⚠ manifest 类型里那句 `inject` 的注释写着 "Informational … **not** Cordis service injection"，指的是**对 Cordis 而言**（真正的服务边由 patch 行给出），运行时仍用 manifest 的 `inject` 排 factory 到达顺序——**别把它误读成语义变更**。
+  4. manifest schema 兼容：`manifestVersion: 1` 仍有效、`bundle.patch` 仍是 `string | string[]`、`client.platform / inject / immediately` 全在；**新增的 `external` 是可选的**（非 inject 的模块请求），本插件不需要。
+  5. `cordis.patch.yml` 的 `insert:` 行仍被支持（0.2.0 的新能力是**新增**「bundle 自列其 rows」，不替换旧机制）。
+  6. 宿主只校验 **`peerDependencies`** 里的 `@deepseek-ai/dsh*`（本插件全是 `*` ⇒ 放行），**不读 `engines.dsh`**。
+  7. dsh 侧无 `CHANGELOG`；`docs/upgrade-guide/` 只有 v0.1.7-rc.2 一篇，**0.2.0 升级指南尚未撰写**。
+  ⚠ 以上全是**静态**核对：运行时（cordis 服务在 activate 时是否仍在、插件能否在桌面版 profile 正常加载）**需重启宿主实测**，不能据「tsc 通过」宣称已在 0.2.0 上跑通。
+- **桌面版（dsh 0.2.0 起）用独立的 `desktop` profile**（`~/.dsh/profiles/desktop`），与 `web` 各自一份 node_modules ⇒ 插件须**分别安装**（只装 web 上，桌面版看不到本插件）；且 CLI **明确拒绝** `--profile desktop`（`managed exclusively by the Electron application`）⇒ 桌面版走应用内插件管理界面。该 profile 由 Electron 独占管理，但 `packages/boot/app-boot/src/profile.ts` **只在文件缺失时才写** `package.json`，手工声明不会被启动时冲掉。
+- `deploy.mjs` 新增 `DSH_PROFILE` 环境变量（默认 `web`，保持既有调用不变），使两个 profile 能分别同步——否则桌面版那份副本会**静默陈旧**。
+- 可能受益 / 需复验：0.2.0 有 9 个 `fix(windows)` 与新增 ACL 诊断 skill（值得重测「E: 盘 fresh 目录 grantWrite 必败 Win32 5」）；`user-questions` 支持定时等待与迟到回复（本插件的澄清闸门需复验调用契约）；`schedule` 变为可选 bundle。
+
 ## [0.2.5] - 2026-09-29
 
 > 逐条变更说明与验证数据见 `docs/releases/v0.2.5.md`。**无破坏性**：宿主窗口不变（`>=0.1.7-alpha.1 <0.2.0`），journal / 任务夹 / 工具参数全部向后兼容。三条主线 = ① 编排可测（拆分 + 分目录 + 编排行为测试）；② 交付质量契约（接口契约三层 + 冒烟要求 + 证据探针）；③ host 侧三条客观检查（能否打开 / 接口对不对 / 有没有真动），**与模型能力无关**，全部只记录不阻断。
