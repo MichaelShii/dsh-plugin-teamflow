@@ -14,7 +14,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseAcceptanceVerdict, extractVerificationEvidence, extractBlueprint, judgeDeliverable, extractHostResearchSection } from '../host/util.ts'
-import { parseDefects } from '../host/core/domain/backlog.ts'
+import { parseDefects, parseDefectRows } from '../host/core/domain/backlog.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const corpusDir = join(here, '../docs/benchmarks/corpus')
@@ -33,6 +33,7 @@ const fail = (msg) => { console.error(`    ✗ ${msg}`); failed++ }
 function runParser(parser, text, meta) {
   switch (parser) {
     case 'parseDefects': return parseDefects(text)
+    case 'parseDefectRows': return parseDefectRows(text)
     case 'parseAcceptanceVerdict': return parseAcceptanceVerdict(text)
     case 'extractVerificationEvidence': return extractVerificationEvidence(text)
     case 'extractBlueprint': return extractBlueprint(text)
@@ -48,6 +49,33 @@ function matches(parser, actual, expect, caseId) {
     const same = JSON.stringify(actual) === JSON.stringify(expect)
     if (!same) fail(`${caseId} 期望 ${JSON.stringify(expect)}，实得 ${JSON.stringify(actual)}`)
     return same
+  }
+  // 富行语料（2026-10-02 追加）：断言的是**投影后被丢掉的那些列** ——
+  // 语料走 parseDefects 时只剩 id/severity/module，`reproduce/expected/actual/ac/check/criterion`
+  // 与整张 `columns` 表**根本没有断言**（而 devlog 记着当年正是「只留三要素、四列被整列丢弃」出的事）。
+  // 只比对 expect 里**显式列出的键**，新增可选字段不会误伤本语料。
+  if (parser === 'parseDefectRows') {
+    const problems = []
+    if (typeof expect.count === 'number' && actual.length !== expect.count) {
+      problems.push(`期望 ${expect.count} 行，实得 ${actual.length}`)
+    }
+    for (const [i, want] of (expect.rows || []).entries()) {
+      const got = actual[i]
+      if (!got) { problems.push(`第 ${i + 1} 行缺失（期望 ${want.id}）`); continue }
+      for (const k of Object.keys(want)) {
+        if (k === 'columnKeys') {
+          const gotKeys = Object.keys(got.columns || {})
+          const miss = want.columnKeys.filter((x) => !gotKeys.includes(x))
+          if (miss.length) problems.push(`第 ${i + 1} 行列名未全部带出，缺: ${miss.join(' / ')}`)
+          continue
+        }
+        if (got[k] !== want[k]) {
+          problems.push(`第 ${i + 1} 行 ${k}: 期望 ${JSON.stringify(want[k])}，实得 ${JSON.stringify(got[k])}`)
+        }
+      }
+    }
+    problems.forEach((p) => fail(`${caseId} ${p}`))
+    return problems.length === 0
   }
   if (parser === 'parseAcceptanceVerdict') {
     if (actual !== expect) fail(`${caseId} 期望 verdict=${expect}，实得 ${actual}`)
