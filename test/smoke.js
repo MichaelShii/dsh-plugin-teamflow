@@ -813,6 +813,9 @@ ok(/args\.preAction === 'stash' \|\| args\.preAction === 'commit' \|\| args\.pre
   ok(/TRIAGE_TIMEOUT_MS = 240000/.test(triageSrc), 'triage：分诊超时常量 240s（90s 时代分诊职责已翻倍，深思考模型答不完）')
   ok(/fallbackReason/.test(triageSrc) || /fallbackReason/.test(pipelineSrc), 'triage：fallback 必须带退化原因（fallbackReason → warn 可见化，不再黑盒）')
   ok(/log\.triageFallbackReason/.test(pipelineSrc), 'pipeline：分诊退化原因记 warn（含原因摘要）')
+  // ADR-0010 第 2 步（2026-10-04）：退兜底 ⇒ 闸门静默失效；除「原因」外要点名「后果」，且两条路径都覆盖
+  ok((pipelineSrc.match(/log\.clarifyGateSkipped/g) || []).length >= 2, 'pipeline：澄清闸门失效可见化覆盖两条 fallback 路径（preflight 透传 + pipeline 权威判定）')
+  ok(/report\.clarifySkipped/.test(reportSrc), 'report：分诊退兜底时汇报显式声明「本次未做需求澄清」（ADR-0010 第 2 步）')
 }
 // execOptions 白名单完整性（B1 同型 bug 第三次现身：2026-09-17 probe-clock 实锤——branchPolicy/preAction
 // 不在白名单 → 用户选了"开启存档"但 executePipeline 收到 undefined → git init 静默没执行）。

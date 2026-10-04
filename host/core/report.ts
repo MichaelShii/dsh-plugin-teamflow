@@ -120,6 +120,12 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
     const assumptionsLine = (journal.assumptions && String(journal.assumptions).trim())
       ? t(locale, 'report.assumptions', { list: clip(String(journal.assumptions), 900) })
       : ''
+    // 澄清闸门失效可见化（ADR-0010 第 2 步，2026-10-04）：分诊退兜底（超时/失败）⇒ `fallbackVerdict`
+    // 硬编码「永不拦启动」，闸门**静默失效**（意图未经确认就开工）。实锤 `tf-mu4bve7t-duux2k`
+    // （「我想开发一个 dsh 插件」）退兜底后直接跑完、用户侧完全不可见 ⇒ 汇报显式声明「本次未做澄清」。
+    const clarifySkippedLine = (journal.triage as { source?: string } | null | undefined)?.source === 'fallback'
+      ? t(locale, 'report.clarifySkipped')
+      : ''
     // 外部供应商故障可见化（2026-09-17）：把"限流/无额度/上游故障"与"交付有缺陷"分开讲清楚——
     // dddd 实测那批失败 16 分钟后同请求即成功，属外部窗口问题；旧文案只给「失败 + 需人工」，
     // 会让人误判成交付质量。此处显式说明「非交付缺陷 + 可续跑只补这一段」。
@@ -161,6 +167,7 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
       vcsLine,
       cancelSourceLine,
       assumptionsLine,
+      clarifySkippedLine,
       t(locale, 'report.stagesLine', { stages: stagesLine }),
       t(locale, 'report.agents', { n: journal.agentsStarted || 0 }),
       tokenLine,

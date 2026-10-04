@@ -410,6 +410,10 @@ export async function executePipeline(
     const upFrom = (preTriage as { upgradedFrom?: string | null }).upgradedFrom
     if (upFrom) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.modeUpgraded', { from: upFrom, to: preTriage.mode }) })
     if (preTriage.blockersDropped > 0) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageBlockersDropped', { n: preTriage.blockersDropped }) })
+    // 澄清闸门失效可见化（ADR-0010 第 2 步）：分诊退兜底（超时/解析失败/子代理不可用）时 `fallbackVerdict`
+    // 硬编码「永不拦启动」⇒ 闸门**静默失效**。旧行为只落一条 info「source=fallback」，看不出「本次没做澄清」；
+    // 这里补 warn 点名后果（实锤 tf-mu4bve7t-duux2k「我想开发一个 dsh 插件」退兜底后直接跑完，用户侧不可见）。
+    if (preTriage.source === 'fallback') journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyGateSkipped') })
   } else if (resume) {
     // 断点续跑：档位已定稿（首次启动时定的），**不再跑分诊**；只补一条 shadow 记录保住样本连续性
     // （`journal.triage` 在续跑前若已存在则原样保留——首轮的真实裁决比这里补的更有价值）。
@@ -448,6 +452,8 @@ export async function executePipeline(
       // 原文）记 warn——下次再出现 fallback，一眼可见"是 90s 掐的还是 JSON 坏了"。
       const fbReason = (verdict as { fallbackReason?: string }).fallbackReason
       if (verdict.source === 'fallback' && fbReason) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageFallbackReason', { msg: clip(fbReason, 200) }) })
+      // 同上（pipeline 侧权威判定路径）：退兜底 ⇒ 澄清闸门未生效——除了「原因」还要点名「后果」
+      if (verdict.source === 'fallback') journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyGateSkipped') })
       const upFrom2 = (verdict as { upgradedFrom?: string | null }).upgradedFrom
       if (upFrom2) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.modeUpgraded', { from: upFrom2, to: verdict.mode }) })
       if (verdict.blockersDropped > 0) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageBlockersDropped', { n: verdict.blockersDropped }) })
