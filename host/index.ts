@@ -260,7 +260,8 @@ function registerTools(ctx) {
           return [{ type: 'text', text: t(ambientLocale(), 'tool.start.needsConfirm', { question: value.question, note: value.note || '' }) }]
         }
         if (value && value.status === 'needs-clarification') {
-          // 闸门文本由 host 组好交给主线程：它必须**先问用户**，拿到答复后带 requirementSupplement 重调。
+          // 闸门文本由 host 组好交给主线程：它必须**先问用户**。答完有两条回带通道：带 requirementSupplement
+          // 重调本工具（另起 run），或带 supplement 调 `teamflow_resume` 续跑被中断的那个 run。
           const list = Array.isArray(value.blockers)
             ? value.blockers.map((b, i) => `${i + 1}. ${b.question}\n   · ${t(ambientLocale(), 'tool.start.blockerReadings')}: ${(b.readings || []).join(' / ')}\n   · ${t(ambientLocale(), 'tool.start.blockerChanges')}: ${b.changes}\n   · ${t(ambientLocale(), 'tool.start.blockerRework')}: ${b.rework}`).join('\n')
             : ''
@@ -656,16 +657,18 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_resume',
-    description: 'Resume an interrupted/failed/cancelled pipeline from its checkpoint: skip completed stages (reuse artifacts), rerun from the first incomplete stage. For interrupted runs found after process restart, or stage-failure retries.',
+    description: 'Resume an interrupted/failed/cancelled pipeline from its checkpoint: skip completed stages (reuse artifacts), rerun from the first incomplete stage. For interrupted runs found after process restart, or stage-failure retries. Pass supplement to hand over input the run was waiting on (e.g. the user\'s answers to a clarification round); it is accepted only when the checkpoint is at or before PRD, and rejected otherwise.',
     parameters: {
       runId: { type: 'string', required: true, description: 'Pipeline run id' },
+      supplement: { type: 'string', description: 'Authoritative extra context supplied while the run was interrupted (e.g. the answers to a clarification round). Kept out of the original requirement, which stays a faithful transcription of the user\'s words. Only the PRD stage consumes it, so it is accepted only when the checkpoint is at or before PRD.' },
     },
     output: { schema: { type: 'object', additionalProperties: false, required: ['ok'], properties: { ok: { type: 'boolean' }, runId: { type: 'string' }, resumedFrom: { type: 'string' }, error: { type: 'string' } } }, render: (args, value) => [{ type: 'text', text: value.ok ? t(ambientLocale(), 'tool.resume.ok', { runId: value.runId, phase: value.resumedFrom }) : t(ambientLocale(), 'tool.resume.fail', { error: value.error || t(ambientLocale(), 'err.tool.unknown') }) }] },
     async execute(args, exec) {
       const parent = exec && exec.agent
       if (!parent) throw new Error(t(ambientLocale(), 'err.tool.sessionAgentResume'))
       const id = args && typeof args.runId === 'string' ? args.runId : null
-      return resumeRun(id, parent.session.id)
+      const sup = args && typeof args.supplement === 'string' ? args.supplement : null
+      return resumeRun(id, parent.session.id, sup)
     },
   })
   return registeredCount

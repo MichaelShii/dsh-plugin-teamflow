@@ -734,6 +734,20 @@ ok(/log\.triagePreflightFail/.test(pipelineSrc) && /log\.clarifyAbort/.test(pipe
 ok(/do NOT re-ask/.test(hostSrc) && /do NOT re-ask/.test(pipelineSrc), '分诊输入必须带上 requirementSupplement（[CLARIFIED]），否则已答复的问题会被反复问')
 ok(/const alreadyClarified = !!String\(options\.requirementSupplement \|\| ''\)\.trim\(\)/.test(hostSrc) && /&& !alreadyClarified/.test(hostSrc), '收敛规则：调用方还没给过澄清答复时才拦（给过就不再拦，防不收敛）')
 ok(/log\.clarifyProceedWithAssumptions/.test(pipelineSrc) && /const clarified = !!String\(journal\.requirementSupplement/.test(pipelineSrc), 'pipeline 同收敛规则：已澄清 → 残余 blocker 作假设开工（可见 warn）')
+ok(/const resumed = \(phase\) => !!resume && PHASE_ORDER\.indexOf\(phase\) < PHASE_ORDER\.indexOf\(resume\.phase\)/.test(pipelineSrc), 'pipeline：跳过判定由 resume.phase 驱动（indexOf 比较）')
+// 零阶段断点修正（ADR-0011 ④，2026-10-06）：`interruptedPhaseOf` 只有一个循环出口，于是「什么都没做」与
+// 「什么都做完了」共用 `return 'acceptance'` ⇒ 零阶段 run（澄清闸门兜底 `abortForClarification` 落下的那一种）
+// 续跑时前六个阶段全走「复用存档产物」、而零阶段的 `buildResumeProducts` 返回 `{}` ⇒ 产物全 undefined
+// （PRD 为空）⇒ **跳过整条流水线直接拿空 PRD 跑验收**。实机探针：断点实测 = acceptance。
+// 行为侧断言（含「零阶段续跑后 PRD 真起子代理」）见 test/orchestration.test.js 第 ⑩ 组。
+ok(/if \(\(journal\.stages \|\| \[\]\)\.length === 0\) return 'prd'/.test(pipelineSrc), 'pipeline：零阶段 run 的断点 = prd（不得落进「全都跑完」出口，否则续跑 = 空 PRD 直接验收）')
+// 续跑补录入口：`supplement` 从 teamflow_resume 一路传到 resumeRun；PRD 是唯一消费点
+// ⇒ 断点晚于 prd 必须**显式拒绝**（静默接受 = 静默丢弃，本仓反复踩）
+ok(/supplement\?: string \| null/.test(pipelineSrc) && /resumeRun\(id, parent\.session\.id, sup\)/.test(hostSrc), 'resume：supplement 从 teamflow_resume 一路传到 resumeRun')
+ok(/if \(supp && PHASE_ORDER\.indexOf\(phaseAtEntry\) > PHASE_ORDER\.indexOf\('prd'\)\)/.test(pipelineSrc), 'resume：supplement 只在断点 ≤ prd 时接受（晚于 prd 显式拒绝）')
+ok(/'run\.supplementTooLate'/.test(hostSrc) && /'run\.supplementApplied'/.test(hostSrc), 'resume：补录的拒绝与应用都有可见文案（zh/en 同形由 locale 门禁守）')
+// executePipeline 不得覆盖补录的答复（它收到的是 `journal.options` 白名单字面量，本就不含该键 —— 同型第四次）
+ok(/if \(!resume\) journal\.requirementSupplement = options\.requirementSupplement/.test(pipelineSrc) && /if \(!resume && journal\.requirementSupplement\)/.test(pipelineSrc), 'resume：executePipeline 不覆盖 supplement（否则补录的答复被静默清空）')
 // 验收结论行取值（2026-09-17 实测 bug tf-mu4bve7t-duux2k：`## 1. 验收结论摘要` 蒙住真正的结论行 →
 // 明明「验收结论：✅ 通过」却判 needs-human）。规则：只认**字面量模板行**（冒号连写），且取最后一个。
 ok(/const literal = \/\^\\s\*\(\?:#\{1,6\}\\s\*\|\[-\*\+\]\\s\*\)\?\(\?:验收结论\|整体结论\|Acceptance verdict\|Overall verdict\)\\s\*\[:：]\/i/.test(utilSrc), 'util：结论行按字面量模板行匹配（`验收结论：` 冒号连写，不被章节标题蒙住）')

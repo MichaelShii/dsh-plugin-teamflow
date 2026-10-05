@@ -221,7 +221,10 @@ function notePrdAssumptions(journal: Journal, locale: HostLocale): string | null
 /**
  * 需求澄清闸门 · pipeline 侧兜底（2026-09-16 实测补充）：分诊判「还不是明确需求」或存在合格 must-know
  * 缺口 → **不开工**，把 run 落成**可续跑的中断态**（不建任何阶段），由完成汇报把问题交给主线程去问用户，
- * 用户答完带 `requirementSupplement` 重调（或 `teamflow_resume` 续跑）。
+ * 用户答完有**两条闭环通道**（2026-10-06 补齐第 ② 条）：① 带 `requirementSupplement` 重调 `teamflow_start`
+ * ——另起一个 run，本 run 成为僵尸；② 带 `supplement` 调 `teamflow_resume` **续跑本 run**（推荐：保住 run
+ * 身份与断点，答复直接进 PRD 的 `[CLARIFIED]` 段）。resume 时 `supplement` **只在断点 ≤ prd 时可应用**
+ * （PRD 是唯一消费点），晚于 prd 显式拒绝而不是静默吞掉（ADR-0011 待拍板 ④ / 前置 P3）。
  *
  * 为什么兜底放在 pipeline 而不是只靠 tool 侧预检：预检在**工具调用内**跑，模型分诊可能失败并静默退回
  * 正则兜底（实测 `tf-mu35oza7-wmuckz` 漏传 signal → 0.4s fallback）→ 只靠预检会让闸门在那种情况下静默失效。
@@ -254,6 +257,15 @@ export function interruptedPhaseOf(journal) {
   // 必须在「第一个无 done 阶段」之前判定——否则验收阶段失败过（无 done）时断点又定位到验收，
   // 带缺陷继续验收必再次失败（用户实锤：resume 进验收 2 次失败，再 resume 仍定位验收，缺陷未闭环）。
   if (hasOpenBlockingBugs(journal)) return 'qa'
+  // ⚠️ 零阶段 run 的断点必须是**第一个阶段**，不得落到下面那个「全都跑完」的出口。
+  // 零阶段只有一种来路：**起跑即中断**（澄清闸门兜底 `abortForClarification`，或起跑早期的取消/失败）——
+  // 两种输入的 `stages` 过滤结果都是空 ⇒ 循环里每个阶段都 `continue` ⇒ 走完循环 → `return 'acceptance'`
+  // ⇒ **「什么都没做」与「什么都做完了」共用同一个出口**。
+  // 实测后果（2026-10-05 直调本函数）：零阶段 run 续跑时 `resumed(phase)` 对 prd/design/scaffold/tech/dev/qa
+  // 全为真 ⇒ 全部走「复用存档产物」，而零阶段的 `buildResumeProducts` 返回 `{}` ⇒ 产物全 undefined
+  // （**PRD 为空**）⇒ 只剩没有 `resumed` 门控、也不做 prd 空值保护的验收照常开跑
+  // = 跳过需求澄清/技术方案/开发/QA，直接拿空 PRD 跑产品验收。是「跑错」，不只是「拿不回答复」。
+  if ((journal.stages || []).length === 0) return 'prd'
   for (const phase of PHASE_ORDER) {
     const phaseStages = (journal.stages || []).filter((s) => phaseKeyOf(s.phase) === phase)
     if (phaseStages.length === 0) continue
@@ -347,10 +359,15 @@ export async function executePipeline(
   const root = options.productRoot || null
   journal.product = root
   // 澄清答复随 run 落盘（可审计：这份需求在对齐阶段补过什么）；PRD 阶段会作为权威输入下发。
-  journal.requirementSupplement = options.requirementSupplement ? String(options.requirementSupplement) : null
+  // ⚠️ resume 时**不得覆盖**：`resumeRun` 可能刚把补录的 supplement 写上（`teamflow_resume` 的补录入口），
+  // 而这里收到的是 `journal.options`（白名单字面量，本就不含该键）⇒ 无条件赋值会把答复清成 null
+  // = 静默丢弃（同 1106-1113 那类「白名单吃掉内部字段」的坑，这是第四次同型）。
+  if (!resume) journal.requirementSupplement = options.requirementSupplement ? String(options.requirementSupplement) : null
   // 澄清埋点（ADR-0010 D2）：**答复真的随 run 落盘**才算一次闭环 —— 与「问了但用户没答」区分开。
   // 需求原文用未加 `[CLARIFIED]` 的 `requirement`，与 tool 侧 `asked` 的指纹保持一致。
-  if (journal.requirementSupplement) {
+  // resume 路径的 `answered` 埋点由 `resumeRun` 自己记（只有它知道 supplement 是不是**本次新带入**的）
+  // ⇒ 这里加 `!resume`，否则续跑会把同一份答复重复计一次，`answered` 与 `asked` 的配对比失真。
+  if (!resume && journal.requirementSupplement) {
     noteClarifyAnswered(journal.workspace || root, requirement, {
       runId: String(journal.id), supplement: String(journal.requirementSupplement),
       mode: String((journal.options && journal.options.mode) || '') || undefined,
@@ -1130,6 +1147,9 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
 export function resumeRun(
   runId: string | null | undefined,
   sessionId: string | null | undefined,
+  /** 续跑时**补录的权威输入**（`teamflow_resume` 的 `supplement`；ADR-0011 待拍板 ④）。
+   *  PRD 是唯一消费点（`prdInput` 拼 `[CLARIFIED]` 段）⇒ 只在断点 ≤ prd 时接受。 */
+  supplement?: string | null,
 ): { ok: boolean; runId?: string; resumedFrom?: string; error?: string } {
   const id = typeof runId === 'string' ? runId : null
   if (!id) return { ok: false, error: t(ambientLocale(), 'run.missingId') }
@@ -1155,6 +1175,14 @@ export function resumeRun(
   if ((j.stages || []).length > 0 && (j.stages || []).every((s) => s.status === 'done')) {
     return { ok: false, error: t(locale, 'run.noBreakpoint', { status: j.status }) }
   }
+  // 补录校验放在**取 agent 之前**：纯参数校验不该有副作用，也不该先占用并发锁。
+  // 断点晚于 prd 时本轮不会有任何阶段读 supplement ⇒ 直接拒绝。**不许静默吞掉**——那正是本仓反复踩的
+  // 「静默丢弃」（§7 工具返回体被 schema 吃掉 / §16 白名单吃掉内部字段，同类第四次）。
+  const supp = typeof supplement === 'string' && supplement.trim() ? supplement.trim() : null
+  const phaseAtEntry = interruptedPhaseOf(j)
+  if (supp && PHASE_ORDER.indexOf(phaseAtEntry) > PHASE_ORDER.indexOf('prd')) {
+    return { ok: false, error: t(locale, 'run.supplementTooLate', { phase: phaseLabel(locale, phaseAtEntry) }) }
+  }
   const productKey = j.workspace || j.product || 'default'
   if (activeProducts.has(productKey) && activeProducts.get(productKey) !== id) {
     return { ok: false, error: t(locale, 'run.workspaceBusy', { ws: j.workspacePath || productKey, id: activeProducts.get(productKey) }) }
@@ -1163,7 +1191,7 @@ export function resumeRun(
   const agent = sid && runtime.agents ? runtime.agents.get(sid) : undefined
   if (agent === undefined) return { ok: false, error: t(locale, 'run.agentNotFound', { sid }) }
   try {
-    const resumePhase = interruptedPhaseOf(j)
+    const resumePhase = phaseAtEntry
     const products = buildResumeProducts(j)
     j.status = 'running'
     j.cancelled = false
@@ -1192,6 +1220,15 @@ export function resumeRun(
     j.logs = (j.logs || []).slice(-200)
     j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.resume', { phase: phaseLabel(locale, resumePhase) }) })
     j.stages = (j.stages || []).filter((s) => s.status !== 'running' && s.status !== 'pending') // 清理未完成 stage；保留 done/failed 历史（失败痕迹不消失）
+    // 补录的答复落 journal（PRD 会读它拼 `[CLARIFIED]`）；`answered` 埋点只在这里记一次
+    // —— `executePipeline` 的同一埋点已按 `!resume` 排除续跑路径，否则会重复计一次。
+    if (supp) {
+      j.requirementSupplement = supp
+      j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.supplementApplied', { n: supp.length }) })
+      noteClarifyAnswered(productKey, String(j.requirement || ''), {
+        runId: String(j.id), supplement: supp, mode: String((j.options && j.options.mode) || '') || undefined,
+      })
+    }
     runs.set(id, j) // 内存换用磁盘完整版（含 output 全文）
     persistJournal(j)
     executePipeline(j, agent, j.requirement, j.options, undefined, { phase: resumePhase, products })

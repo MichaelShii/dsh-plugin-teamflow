@@ -36,6 +36,8 @@ process.env.DSH_HOME = `${sandboxRoot}/home`
 
 /* ── 加载编排核心（解析不到 → 明确跳过） ── */
 let executePipeline = null
+let interruptedPhaseOf = null
+let resumeRun = null
 let setRuntime = null
 let runtime = null
 try {
@@ -51,6 +53,8 @@ try {
   const ctxMod = await loadCore('agent/context.ts', 'context.ts')
   const pipeMod = await loadCore('pipeline.ts')
   executePipeline = pipeMod.executePipeline
+  interruptedPhaseOf = pipeMod.interruptedPhaseOf
+  resumeRun = pipeMod.resumeRun
   setRuntime = ctxMod.setRuntime
   runtime = ctxMod
 } catch (e) {
@@ -123,7 +127,7 @@ const TRIAGE_EXPLORE = JSON.stringify({
 /** 构造一次 run：stub 子代理 + 隔离的 $DSH_HOME / 工作区。 */
 async function runScenario(
   name,
-  { options, resume = null, emptyNext = false, failLabel = null, artifacts = null, cancelAfter = 0, triage = null, extraFiles = 0 },
+  { options, resume = null, emptyNext = false, failLabel = null, artifacts = null, cancelAfter = 0, triage = null, extraFiles = 0, presetSupplement = null },
 ) {
   const rootTmp = mkdtempSync(join(tmpdir(), `tf-orch-${name}-`))
   process.env.DSH_HOME = `${rootTmp}/home`
@@ -176,6 +180,8 @@ async function runScenario(
     error: null, cancelled: false, humanIntervention: false, interrupted: false,
     interruptedAt: null, supersededBy: null,
   }
+  // 模拟「journal 里已经存着澄清答复」的续跑（补录入口写入的那一份）：用来验 executePipeline 不把它清成 null
+  if (presetSupplement != null) journal.requirementSupplement = presetSupplement
   /** 落一份任务夹产物（QA-REPORT.md / ACCEPTANCE.md），模拟子代理把交付写进文件。 */
   const putArtifact = (fileName, text) => {
     if (!journal.workspacePath || !journal.runDocs || text == null) return
@@ -200,6 +206,7 @@ async function runScenario(
     warnLogs: logOf('warn'), childLabels: children.map((c) => c.label),
     childCount: children.length, blueprint: journal.blueprint,
     humanIntervention: !!journal.humanIntervention,
+    journalSupplement: journal.requirementSupplement ?? null,
     timelineKeys: Object.keys((journal.result && journal.result.timeline) || {}).sort(),
   }
   rmSync(rootTmp, { recursive: true, force: true })
@@ -459,6 +466,73 @@ console.log('\n[9] 交付枚举被上限截断 ⇒ 负结论被显式撤回')
   ok(negIdx >= 0 && truncAt > negIdx, `撤回提示必须排在负结论**之后**（实测 neg@${negIdx} / warn@${truncAt}）`)
   ok(/不是事实|只是没枚举到|not facts/.test(String(logs[truncAt])),
     `撤回提示要点名那三条「不是事实」（实测 ${String(logs[truncAt]).slice(0, 100)}）`)
+}
+
+/* ── ⑩ 零阶段 run 的断点必须 = PRD（ADR-0011 ④，2026-10-06）──
+ * 为什么单列：`interruptedPhaseOf` 的循环出口只有一个（`return 'acceptance'`），于是
+ * **「什么都没做」与「什么都做完了」共用同一个出口** —— 零阶段 run（澄清闸门兜底 `abortForClarification`
+ * 落下的零阶段 interrupted run）续跑时 `resumed()` 对 prd/design/scaffold/tech/dev/qa 全为真，
+ * 而零阶段的 `buildResumeProducts` 返回 `{}` ⇒ 产物全 undefined（PRD 为空）⇒ 跳过整条流水线
+ * 直接拿空 PRD 跑验收。**是「跑错」，不只是「拿不回答复」**（实机探针：断点实测 = acceptance）。
+ * 变异：删掉 `if ((journal.stages || []).length === 0) return 'prd'` ⇒ 本组第 1 条立刻红。 */
+console.log('\n[18] 零阶段 run 的断点 = PRD（不得跳过整条流水线直接验收）')
+{
+  const zeroStage = {
+    id: 'tf-zero', requirement: 'r', status: 'interrupted', locale: 'zh',
+    workspace: 'ws-zero', stages: [], logs: [], options: { mode: 'full' },
+  }
+  ok(interruptedPhaseOf(zeroStage) === 'prd', `零阶段 → 断点 prd（实测 ${interruptedPhaseOf(zeroStage)}）`)
+  ok(interruptedPhaseOf({ ...zeroStage, stages: [{ phase: 'prd', status: 'done' }] }) === 'acceptance',
+    '对照：全阶段 done → 断点仍是 acceptance（「都做完了」那一路不能被这次修正带偏）')
+
+  // 行为侧：用零阶段算出的断点驱动 executePipeline ⇒ PRD 必须真起子代理
+  const r = await runScenario('zero-stage-resume', {
+    options: QA_OPTS, resume: { phase: interruptedPhaseOf(zeroStage), products: {} },
+  })
+  ok(has(r.childLabels, '梳理 PRD'), `零阶段续跑后 PRD 真跑（实测子代理 ${JSON.stringify(r.childLabels).slice(0, 130)}）`)
+
+  // 对照：断点 = acceptance 时 PRD 被跳过 ⇒ 证明「跳过」确实由 resume.phase 驱动（上面那条有牙）
+  const skipped = await runScenario('late-phase-resume', {
+    options: QA_OPTS, resume: { phase: 'acceptance', products: {} },
+  })
+  ok(!has(skipped.childLabels, '梳理 PRD'), '对照：断点 = acceptance 时 PRD 被跳过（跳过由 resume.phase 驱动，非偶然）')
+}
+
+/* ── ⑪ 续跑补录入口：`supplement` 只在断点 ≤ PRD 时接受，晚于 PRD 显式拒绝 ──
+ * PRD 是 supplement 的**唯一消费点**（`prdInput` 拼 `[CLARIFIED]`）⇒ 断点晚于 PRD 时本轮没有任何阶段会读它。
+ * 拒绝而非接受，是因为「静默丢弃」正是本仓反复踩的坑（§7 工具返回体被 schema 吃掉 / §16 白名单吃掉内部字段）。
+ * 变异：把拒绝分支改成直接 `j.requirementSupplement = supp` ⇒ 本组第 1 条立刻红。 */
+console.log('\n[19] 续跑补录（supplement）：断点晚于 PRD ⇒ 显式拒绝')
+{
+  const home = join(tmpdir(), 'tf-orch-supp')
+  process.env.DSH_HOME = home
+  const mk = (ws, id, stages) => {
+    const dir = join(home, 'teamflow', ws, 'runs')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `${id}.json`), JSON.stringify({
+      id, requirement: '验证续跑补录校验', status: 'interrupted', locale: 'zh',
+      workspace: ws, logs: [], options: { mode: 'full' }, stages,
+    }), 'utf8')
+  }
+  mk('ws-stage-late', 'tf-late-supp', [{ phase: 'prd', status: 'done' }, { phase: 'tech', status: 'failed' }])
+  const bad = resumeRun('tf-late-supp', null, '用户答复：用 A 方案')
+  ok(bad.ok === false && /补录被拒绝/.test(String(bad.error)),
+    `断点晚于 PRD ⇒ 拒绝补录（实测 ${String(bad.error).slice(0, 100)}）`)
+
+  mk('ws-stage-zero', 'tf-zero-supp', [])
+  const zero = resumeRun('tf-zero-supp', null, '用户答复：用 A 方案')
+  ok(zero.ok === false && !/补录被拒绝/.test(String(zero.error)),
+    `零阶段断点 ≤ PRD ⇒ 补录过校验（此处因无 agent 停在 agentNotFound，实测 ${String(zero.error).slice(0, 80)}）`)
+  rmSync(home, { recursive: true, force: true })
+
+  // 行为侧（比源码锁强）：journal 里已存的答复，续跑时**不得被清成 null** ——
+  // `executePipeline` 收到的是 `journal.options`（白名单字面量，不含该键），无条件赋值就会清空。
+  const kept = await runScenario('resume-keeps-supplement', {
+    options: QA_OPTS, artifacts: { qa: [QA_CLEAN], acceptance: ACC.pass },
+    resume: { phase: 'tech', products: {} }, presetSupplement: '用户此前给的澄清答复',
+  })
+  ok(kept.journalSupplement === '用户此前给的澄清答复',
+    `续跑保留 journal 里已有的答复（实测 ${JSON.stringify(kept.journalSupplement)}）`)
 }
 
 if (failed) {
