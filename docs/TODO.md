@@ -10,7 +10,7 @@
 
 - 🔜 **澄清闸门：Phase 2 计划确认单 + 策略档**（ADR-0010 §影响 明写：Phase 2 确认单与其 D3/D4 是同一件事的两个侧面，**须合并为一条、不得各做一套**）：
   - **已落地**（细节见 git log 与 `docs/adr/0010-clarification-observability.md`）：**Phase 1 启动前闸门**（`intent` / `blockers` 合格线 / `needs-clarification` 不建 run / `requirementSupplement` 回带）；**ADR-0010 ① 澄清埋点**（`host/core/clarify-log.ts` → `$DSH_HOME/teamflow/<product>/clarify.jsonl`，四事件 append-only，含 `triage-fallback`）；**ADR-0010 ② 失效可见化**（2026-10-04：分诊退兜底 ⇒ 闸门静默失效——两条 fallback 路径各记 `log.clarifyGateSkipped` warn ＋ 汇报 `report.clarifySkipped` 行）。
-  - **① PRD 确认单（主）**：`prdPrompt` 增**必填**「假设 / 待澄清」段 + 机器可读（state extra 带 `openQuestions:[{q,why,changes,default}]`）→ PRD 完成后 host **暂停**（复用 interrupted/resume 断点基座）→ 把「目标一句话 + AC + 范围/非目标 + 假设清单 + `PRD.md` 路径」**≤40 行**交主线程；**无合格待澄清项 → 直通不打断**。用户要改计划走 `resume(runId, { redoFrom: 'prd', supplement })`（**只重跑 PRD**）；轮次上限 1–2 轮，之后按默认假设继续并把假设写进 journal + 汇报高亮。**需先定「暂停」在状态机里的落点**（复用 interrupted/resume 基座 or 新状态）。
+  - **① PRD 确认单（主）**：`prdPrompt` 增**必填**「假设 / 待澄清」段 + 机器可读（state extra 带 `openQuestions:[{q,why,changes,default}]`）→ PRD 完成后 host **暂停**（复用 interrupted/resume 断点基座）→ 把「目标一句话 + AC + 范围/非目标 + 假设清单 + `PRD.md` 路径」**≤40 行**交主线程；**无合格待澄清项 → 直通不打断**。用户要改计划走 `resume(runId, { redoFrom: 'prd', supplement })`（**只重跑 PRD**；⚠️ 2026-10-06 状态：**`supplement` 回带已落地**（`teamflow_resume(runId, supplement)`，只在断点 ≤ PRD 时接受、晚于 PRD 显式拒绝，并修掉了零阶段 run 断点误落 `acceptance` 的缺陷）；**`redoFrom` 未做**——「断点晚于 PRD 时仍要只重跑 PRD」得靠它）；轮次上限 1–2 轮，之后按默认假设继续并把假设写进 journal + 汇报高亮。**需先定「暂停」在状态机里的落点**（复用 interrupted/resume 基座 or 新状态）。
   - **② 审批面选型**：优先宿主直调 user-questions seam（`intent:{kind:'plan-review'}` + `detail` = 计划 markdown → 原生审阅卡 `Approve`/`Keep planning`/`Chat about it`）——**待验证**：web profile 里插件能否 `inject(['userQuestions'])`、seam 是否接受「插件代 runtime root 提问」；兜底沿用既有的「返回 status → 主线程 `ask_user_question`」通道（已在生产验证）。
   - **③ 策略档 `interview`（与 ① 一体两面，ADR-0010 D3/D4）**：澄清强度进 `MODE_REGISTRY` 作为新维度（`off` ＝ patch 现状 / `once` ＝ 现行默认 / `interview` ＝ 显式开；**`patch` 恒 `off`**）；**必须带硬终止**（D4：轮数上限 ＋ 置信度不再上升即停 ＋ 用户可随时「够了」，三条并存）——同一闸门早期版本因反复追问造成 **6 轮零 run**。
   - **④ 强度按数据定（ADR-0010 待定 #3，已收窄）**：`fallbackVerdict` 仍硬编码「永不拦启动」。三候选：① 保留放行但**可见**（**已做**，见上）；② 降级为**确定性形态判据**兜底拦一次；③ ①+② 叠加。**② 属「加拦截」，按纪律要先定判据 ＋ 量真阳性率 —— 而 `clarify.jsonl` 当前样本 ≈0（1 条产品线 / 2 行）⇒ 这是真正的瓶颈，先攒。**
@@ -18,7 +18,7 @@
   - **已定约束**：合格线由 host 判（每条 blocker 须同时给 ①≥2 个互斥读法 ②改变哪个 AC/范围 ③猜错要重做什么，缺一丢弃并 warn）；模态豁免 `patch` 直通 / `lite` 仅在有项时停 / `medium·full` 默认停 / headless 不停（走「假设 + 汇报高亮」）；闸门语义 ＝ 只负责「唤起第一轮对齐」，不负责「追问到满意」（多轮追问需跨调用状态：`clarify-state.json` + 轮次上限 + TTL）。
   - **设计约束（ADR-0010 D5）**：访谈只能发生在主会话（子代理不能提问）⇒ issue #11 的「新增前置阶段 `discovery`」**不成立**。
   - **纠错背景（勿再犯）**：`journal.triage.blockers` 恒为 0 是**结构性盲区**——澄清命中时 `needs-clarification` **不建 run**，那次裁决不落盘；落盘的只有澄清后建 run 那次（blockers 已被收敛规则放过）。据此统计会得出「闸门从未触发」的**反结论**（实测得 0，真实至少 **4 例**）⇒ **统计前先问「该字段在哪条路径上被写入」**，这正是 ① 埋点存在的理由。
-  - 详见 `docs/adr/0010-clarification-observability.md`（5 项待定：埋点落点/字段、fallback 行为、`interview` 默认矩阵、去交互化机制的取舍）。
+  - 详见 `docs/adr/0010-clarification-observability.md`（埋点落点/字段、fallback 行为、`interview` 默认矩阵、去交互化机制的取舍）与 **`docs/adr/0011-clarification-interview-and-confirm-sheet.md`（草案：借 `interview-me` 精华的逐条适配裁决 · 四处冲突（**④ 已拍板并落地**：补 `teamflow_resume` 的 `supplement` 入口 ＋ 零阶段断点修正 ＋ 文案收口；①②③ 仍待拍板） · D5 结论＝主会话纯对话 · 并推翻「需要 `clarify-state.json`」）**。
 
 - **需求有效性前置拦截**（ADR-0005 触发信号）：在 PRD/确认单阶段判别「需求与现状不符」即停，避免走完开发/验收。
 

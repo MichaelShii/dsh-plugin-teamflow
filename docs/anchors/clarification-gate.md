@@ -28,3 +28,31 @@ Error: human interaction is unavailable while the calling agent is owned by anot
 与 `:59` 的 `DELEGATED_CALLER` 文案**逐字一致**（run exit=0，非崩溃）。
 
 **推论（勿再试）**：`continuable` / 持久谱系 /「跳进子代理会话」**都不能**让阶段子代理取得问用户的权限——这是**宿主权限架构**，不是子代理形态问题。故 issue #11 的「新增前置阶段 `discovery`」（ADR-0010 D5）在宿主层就不成立。探针手法（headless + `--patch` 挂工具 + prompt 走文件）见 `.workbuddy/memory/MEMORY-infra.md` §G。
+
+---
+
+## 补记（2026-10-06）：B 路径的闭环缺口与零阶段断点缺陷（已修）
+
+上文那句「`abortForClarification` → 零阶段 interrupted run → 用户答完走 `teamflow_resume`」的 B 路径，此前有**两处缺陷 ＋ 一处文案不一致**，实测后一并修掉。
+
+**① 断点定位错（核心）**：`interruptedPhaseOf` 只有一个循环出口（`PHASE_ORDER` 全部「有 stage 且都 done」⇒ `continue` 走完循环 → `return 'acceptance'`）⇒ **「什么都没做」与「什么都做完了」共用同一个出口**。零阶段 run 续跑时 `resumed(phase) = indexOf(phase) < indexOf(resume.phase)` 对 prd/design/scaffold/tech/dev/qa **全为真**，而零阶段的 `buildResumeProducts` 返回 `{}` ⇒ 产物全 `undefined`（**PRD 为空**）⇒ 只剩**没有 `resumed` 门控、也不做 `prd` 空值保护**的验收阶段照常开跑 = **跳过需求澄清／技术方案／开发／QA，直接拿空 PRD 跑产品验收**。是「跑错」，不只是「拿不回答复」。
+
+实机探针（先冻 `DSH_HOME` 再按路径 import `host/core/pipeline.ts`，直调导出的 `interruptedPhaseOf`）：
+
+```
+零阶段（澄清闸门中断）      → 断点 = "acceptance"（修前；这是错的）
+零阶段 ＋ 已带 supplement   → 断点 = "acceptance"（断点判定根本不看 supplement）
+仅 prd done                → 断点 = "acceptance"（这一路是对的：「都做完了」）
+```
+
+**修**：`interruptedPhaseOf` 开头加 `if ((journal.stages || []).length === 0) return 'prd'`。
+
+**② 无 supplement 回带通道**：`teamflow_resume` 只收 `runId`（`resumeRun(runId, sessionId)`）⇒ B 拿不回用户答复。更隐蔽的一层：`executePipeline` **无条件**执行 `journal.requirementSupplement = options.requirementSupplement ? … : null`，而 resume 传进去的是 `journal.options`（**白名单字面量，本就不含该键**）⇒ 就算把答复写进 journal 也会被清成 `null`（同型第四次：白名单吃掉内部字段）。
+
+**修**：`resumeRun(runId, sessionId, supplement?)` —— 断点 > PRD 时**显式拒绝**（`run.supplementTooLate`：PRD 是唯一消费点，静默接受＝静默丢弃），否则写回 `journal.requirementSupplement` ＋ 记 `answered` 埋点 ＋ `run.supplementApplied`；`executePipeline` 侧的赋值与 `answered` 埋点各加 `!resume`。
+
+**③ 文案与实现不一致（顺带修）**：`pipeline.ts` 的函数头注释与 `run.needsClarification` 都写「带 `requirementSupplement` **重新启动**」——但这条路径上 **run 已经建了**，重开＝留下一个永不收敛的僵尸 run。文案已改为指向「用 `teamflow_resume` 带 `supplement` 续跑本 run」。
+
+**规模判断依据（`$DSH_HOME/teamflow/**` 全量 95 个 journal 遍历，非抽样）**：B 路径 **0 例**（无「未进入任何阶段」、无 `status=interrupted`、`stages.length` 最小值 1）；`requirementSupplement` 非空 **5 例**（全走 A 路）；断点续跑 **25 例**，**末次断点 = PRD 只占 1/25（4%）**。⇒ 本次修的是**分支覆盖**（零阶段 run 是 `abortForClarification` 自己设计出来的状态），**不是已发生的故障**。
+
+**门禁**：`test/smoke.js` 6 条源码锁 ＋ `test/orchestration.test.js` 第 ⑩ ⑪ 组 8 条**行为**断言（含「零阶段续跑后 PRD 真起子代理」与对照「断点 = `acceptance` ⇒ PRD 被跳过」）。设计裁决与逐项落地表见 `docs/adr/0011-clarification-interview-and-confirm-sheet.md` §落地记录。
