@@ -136,9 +136,40 @@ ADR-0010 / TODO 此前写「多轮追问需要一个跨调用状态（`clarify-s
 
 | # | 事项 | 状态 |
 |---|---|---|
-| P1 | 插件能否 `inject(['userQuestions'])`；web 客户端答案器是否接受**无 agent 作用域**的请求 | 🟡 宿主面**已确认**（`user-questions` 在 web 组合**顶层**，不同于被 `isolate` 在 agent 组内的 `workflowEngine`）；客户端侧**未验** |
+| P1 | 插件能否 `inject(['userQuestions'])`；seam 是否接受「插件代 runtime root 提问」 | ✅ **已验（2026-10-07 实机探针，见 §P1 实机验证）**：① `inject` 成功（`userQuestions`／`agents`／`tools` 全 true）；② 插件能拿到 **live root 实例**（`rootsLen: 1`、`meIsRoot: true`）；③ **`agent: undefined` ⇒ 桥第一出口放弃 ⇒ `NO_PROVIDER`**；④ **传 live root 实例 ⇒ 进入真桥转发（挂到 4013ms 超时）**；⑤ 伪造实例 ⇒ `CALLER_NOT_LIVE` |
 | P2 | 「暂停」在状态机里的落点（复用 `interrupted`/`resume` vs 新状态） | ✅ **复用 `interrupted`/`resume` 基座，不新增状态**（2026-10-06 拍板）。理由：① 该状态已有三处消费——`resumeRun` 的 status 白名单、工作台终态渲染、`resumableTerminal`（据此**不归档**暂存日志，QA 复验要靠上一轮报告当回归契约）；② 「暂停等用户确认计划」与「中断等用户答复」**语义同构**：都是「因人的原因停在断点 ＋ 由同一通道回带补充输入」，而后者的 `supplement` 入口刚落地（§落地记录），正好复用；③ 新增状态要同步改四处（`STATUS` 常量 / 看板渲染 / resume 白名单 / cancel 语义），收益不明确。**具体落点**（暂停点插在 PRD 之后、如何标记「等确认中」）留实现时定 |
 | P3 | ④ 若选①：`supplement` 在「断点 > PRD」时如何处置（静默无效 vs 显式拒绝） | ✅ **已裁决＝显式拒绝**（2026-10-06，已随 §落地记录 落地；静默无效正是 §7/§16 反复踩的「静默丢弃」） |
+
+## P1 实机验证（2026-10-07）：可行，但**必须传 live root 实例**
+
+**手法**：`dsh --profile headless --patch <overlay> "<prompt>"`（不动 web profile，命令形见 `.workbuddy/memory/MEMORY-infra.md` §G）。探针 = 一个临时插件（`inject: ['tools','userQuestions','agents']`，insert 进 headless 顶层），注册 `p1_probe` 工具，工具内跑三组调用并回传。
+
+**探针的一处自我修正**：headless **没有**客户端桥（`api-remotes` 只属于 `dsh-web-app`）⇒ 第一版探针里 A/B **必然同码 `NO_PROVIDER`**，分不开「全局 dispatch」与「scoped dispatch」。改法：**在探针里忠实复刻桥的三条出口并打点**（逐字照抄 `dsh-api-remotes/lib/index.js:147-157`），再**补挂真 `api-remotes`** 复现一次 —— 两次结果一致。
+
+| 形态 | 实测结果 | 桥的出口（观测到的 scope carrier） |
+|---|---|---|
+| `inject(['userQuestions','agents','tools'])` | ✅ 三个服务全部注入成功 | — |
+| 插件取 live root 实例（`agents.roots()`） | ✅ `rootsLen: 1`、`meIsRoot: true` | — |
+| **`ask({ questions, signal })`（无 agent）** | ❌ `NO_PROVIDER`，**0ms** | `carrier = <undefined>`、`reqAgent = <undefined>` ⇒ **`next()`：桥直接放弃** |
+| **`ask({ questions, agent: <live root>, signal })`** | ✅ **`ASK_ABORTED` @4013ms（挂到探针超时）** | `carrier === reqAgent === session-52d4041f…` ⇒ **`FORWARD`：进入转发队列** |
+| `ask({ questions, agent: {同 id 但不同实例}, signal })` | ❌ `CALLER_NOT_LIVE`，**0ms** | listener **未被调用**（校验层就拒了，waterfall 根本没进） |
+
+**结论**：ADR 里「宿主直调 seam 弹原生审阅卡」**可行**，但**不能省 `agent`**：
+
+- **省了**（`agent: undefined`）⇒ `ask()` 走**全局 waterfall**（`ctx.waterfall('user-questions/request', request, noAnswerer)`），dispatch 不带 scope carrier ⇒ 桥的第一条出口 `const carrierAgent = carrierKeyOf(this)` 得 `undefined` ⇒ **`return next()`** ⇒ 落到链尾 `noAnswerer` ⇒ 必然 `NO_PROVIDER`。
+- **传 live root 实例** ⇒ 走 **scoped waterfall**（`scopeTarget(agent, agent)`）⇒ carrier 与 `request.agent` 是**同一个对象** ⇒ 桥通过 `agent !== carrierAgent` 断言 ⇒ **按 `agentId` 路由到该 agent 所属的客户端连接**。
+
+⇒ 这不是**权限**问题（root 实例本来就有权限，`CALLER_NOT_LIVE`/`DELEGATED_CALLER` 都过了），是**路由**问题：**没有 carrier，桥就不知道该把这个问题发给哪个前端连接**。
+
+**实现约束（落地前 checklist）**
+
+1. 必须 `inject: ['userQuestions', 'agents']` 并**取真实例**；**禁止**自造 `{ id, ctx }` —— 实测 `CALLER_NOT_LIVE`（连 waterfall 都进不去）。
+2. **多 root 时选谁**：`roots()` 返回**所有** root（本探针环境只有 1 个，所以没暴露这个面）。teamflow 有唯一答案源 —— `journal.ownerSession`（发起 run 的主会话）⇒ 用 `agents.get(journal.ownerSession)`，取不到再从 `roots()` 里按 `agent.session.id` 过滤。**不要** `roots()[0]`。
+3. 必须带 `signal`（`ask()` 支持 `AbortSignal`）：**无客户端应答时会一直挂住**，不设超时会卡死 host。
+
+**未验（诚实标注）**：**真客户端 UI 端到端**（本探针组合里没有 `ui-user-questions`，它只在 web/desktop）。但 B 组「挂到 4013ms」已证明请求**进入转发队列**；剩下的是「web 前端渲染审阅卡并回传答案」—— 那是**同一个客户端答案器**，且官方 `ask_user_question` 工具在生产走的就是这条链。⇒ 风险低，但**不是零**。
+
+**顺带记录（与本 ADR 无关的既有环境问题）**：headless 下 `typert-loader` 的 `dsh-user-questions` 贡献者加载失败（包导出 `./typert`，但 `lib/typert.host.js` 不存在 —— 本机 harness 源码仓产物缺失）。未影响本次结论（`typertGateway` 正常）。**未动它**，只留痕。
 
 ## 影响
 
@@ -150,5 +181,5 @@ ADR-0010 / TODO 此前写「多轮追问需要一个跨调用状态（`clarify-s
 
 1. 埋点样本攒到足量后，看 blockers 合格率 / 用户答复率 / 答复是否真改了范围；
 2. 出现真实的「多轮仍不收敛」实例 ⇒ 停止判据要收紧；
-3. P1 验伪 ⇒ 确认单退回「状态回传 → 主线程问」；
+3. ~~P1 验伪 ⇒ 确认单退回「状态回传 → 主线程问」~~ —— **P1 已于 2026-10-07 验真**（`inject` 成功 · live root 实例可拿 · 传实例能进桥转发）⇒「原生审阅卡」这条审批面**可行**，唯一被证伪的是「省 `agent`」这一形态。**触发条件改写**：**web 端到端若失败**（真客户端不渲染审阅卡 / 不回传答案）⇒ 退回既有的「返回 status → 主线程 `ask_user_question`」通道；
 4. 出现**第一个真实的 B 路径实例**（日志含「未进入任何阶段」/ `status=interrupted`）⇒ ④ 已按①落地（2026-10-06），届时需**验证补录真被 PRD 消费**（看 journal 里 `requirementSupplement` 与 PRD 的 `[CLARIFIED]` 段），而不是只看到「续跑成功」。

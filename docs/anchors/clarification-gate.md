@@ -55,4 +55,40 @@ Error: human interaction is unavailable while the calling agent is owned by anot
 
 **规模判断依据（`$DSH_HOME/teamflow/**` 全量 95 个 journal 遍历，非抽样）**：B 路径 **0 例**（无「未进入任何阶段」、无 `status=interrupted`、`stages.length` 最小值 1）；`requirementSupplement` 非空 **5 例**（全走 A 路）；断点续跑 **25 例**，**末次断点 = PRD 只占 1/25（4%）**。⇒ 本次修的是**分支覆盖**（零阶段 run 是 `abortForClarification` 自己设计出来的状态），**不是已发生的故障**。
 
-**门禁**：`test/smoke.js` 6 条源码锁 ＋ `test/orchestration.test.js` 第 ⑩ ⑪ 组 8 条**行为**断言（含「零阶段续跑后 PRD 真起子代理」与对照「断点 = `acceptance` ⇒ PRD 被跳过」）。设计裁决与逐项落地表见 `docs/adr/0011-clarification-interview-and-confirm-sheet.md` §落地记录。
+**门禁**：`test/smoke.js` 6 条源码锁 ＋ `test/orchestration.test.js` 第 ⑱⑲ 组 9 条**行为**断言（含「零阶段续跑后 PRD 真起子代理」与对照「断点 = `acceptance` ⇒ PRD 被跳过」）。设计裁决与逐项落地表见 `docs/adr/0011-clarification-interview-and-confirm-sheet.md` §落地记录。
+
+---
+
+## 补记（2026-10-07）：P1 实机验证 —— 原生审阅卡**可行**，但**必须传 live root 实例**
+
+「插件直调 `userQuestions.ask()` 弹原生审阅卡」是 ADR-0011 审批面的首选（兜底＝「返回 status → 主线程 `ask_user_question`」）。P1 原文是「插件能否 `inject(['userQuestions'])`；seam 是否接受『插件代 runtime root 提问』」，**2026-10-07 已实机定案**。
+
+**手法**（仍是 headless 探针，**不动 web profile**）：`dsh --profile headless --patch <overlay> "<prompt>"`，探针＝一个 insert 进顶层的临时插件（`inject: ['tools','userQuestions','agents']`），注册一个工具跑三组调用并把结果回传。
+
+> ⚠️ **探针自身的一处修正值得留痕**：headless 组合里**没有客户端桥**（`dsh-api-remotes` 只属于 `dsh-web-app`）⇒ 第一版探针 A/B **必然同码 `NO_PROVIDER`**，根本分不开「全局 dispatch」与「scoped dispatch」。改法＝在探针里**忠实复刻桥的三条出口并打点**（逐字照抄 `dsh-api-remotes/lib/index.js:147-157`），再**补挂真 `api-remotes`** 复现一次 —— **两次结果一致**。
+> 教训：**对照实验前先确认「两个对照组在这个环境里本来就会给出不同结果」**，否则测的是环境，不是机制。
+
+**结果**
+
+| 形态 | 实测 | 桥出口（观测到的 scope carrier） |
+|---|---|---|
+| `inject(['userQuestions','agents','tools'])` | ✅ 三个服务全注入成功 | — |
+| 插件取 live root 实例 | ✅ `rootsLen: 1`、`meIsRoot: true` | — |
+| `ask({questions, signal})` —— **无 agent** | ❌ `NO_PROVIDER` @**0ms** | `carrier = <undefined>`、`reqAgent = <undefined>` ⇒ **`next()`：桥直接放弃** |
+| `ask({questions, agent: <live root>, signal})` | ✅ **`ASK_ABORTED` @4013ms**（挂到探针超时） | `carrier === reqAgent` ⇒ **`FORWARD`：进入转发队列** |
+| `ask({questions, agent: {同 id 不同实例}, signal})` | ❌ `CALLER_NOT_LIVE` @**0ms** | listener **未被调用**（校验层就拒了） |
+
+**机制**：`ask(request)` 只有两条路 ——
+
+- `request.agent === undefined` ⇒ `ctx.waterfall('user-questions/request', request, noAnswerer)`（**不带 scope carrier**）⇒ 桥里 `carrierKeyOf(this) === undefined` ⇒ `next()` ⇒ 落到链尾 `noAnswerer` ⇒ 必然 `NO_PROVIDER`。
+- 有 agent ⇒ `ctx.waterfall(scopeTarget(agent, agent), 'user-questions/request', {...request, agent}, noAnswerer)` ⇒ carrier 与 `request.agent` 是**同一个对象** ⇒ 桥通过 `agent !== carrierAgent` 断言 ⇒ 按 `agentId` **路由到该 agent 所属的客户端连接**。
+
+⇒ **是路由问题，不是权限问题**：`CALLER_NOT_LIVE` / `DELEGATED_CALLER` 两道权限闸都过了（传的是真 root 实例），死在「没有 carrier，桥不知道该把问题发给哪个前端连接」。
+
+**实现约束（三条，落地前必看）**：① 必须取**真实例**（`agents.get(sessionId)`，或 `roots()` 里按 `session.id` 过滤），**禁止**自造 `{id, ctx}`；② **多 root 时按 `journal.ownerSession` 选，勿 `roots()[0]`**（本探针环境只有 1 个 root，这个面**没被暴露**）；③ 必须带 `signal` —— 无客户端应答会**一直挂住**，不设超时卡死 host。
+
+**未验**：真客户端 UI 端到端（本组合无 `ui-user-questions`，它只在 web/desktop）。B 组「挂到 4013ms」已证明请求**进入转发队列**，剩下的是「web 前端渲染审阅卡并回传答案」—— 同一个客户端答案器，且官方 `ask_user_question` 在生产走的就是这条链。⇒ **风险低，但不是零。**
+
+完整论证、对照表与未验项见 `docs/adr/0011-clarification-interview-and-confirm-sheet.md` §P1 实机验证。
+
+**顺带（与本锚点无关的既有环境问题，只留痕）**：headless 下 `typert-loader` 的 `dsh-user-questions` 贡献者加载失败（包导出 `./typert` 但 `lib/typert.host.js` 不存在 —— 本机 harness 源码仓产物缺失）。未影响本次结论（`typertGateway` 正常），**未动它**。
