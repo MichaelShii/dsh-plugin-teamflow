@@ -33,7 +33,7 @@
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { GUARD_ENV_PROGRESS_GRACE_MS, GUARD_NO_TOOL_MS, GUARD_POLL_MS, GUARD_REPEAT_LIMIT, GUARD_SILENCE_MS, GUARD_TOOL_FAIL_ABORT, GUARD_TOOL_FAIL_WARN, GUARD_WINDOW_SIZE } from '../../constants.ts'
-import { clip, isFsSelfHealFailure, isToolErrorResult, toolFailureAction, toolFailureSignature, toolResultText } from '../../util.ts'
+import { clip, isFsSelfHealFailure, isToolErrorResult, isToolScopeFailure, toolFailureAction, toolFailureSignature, toolResultText } from '../../util.ts'
 import { t, type HostLocale } from '../../locales.ts'
 import { runtime } from './context.ts'
 import { runLocaleOf } from '../locale.ts'
@@ -57,13 +57,8 @@ const PROGRESS_TOOLS = /^(edit|write|create|apply_patch|patch|remove|delete|rm|m
  * （`file has not been read`）—— 原正则漏了它，于是同一个 bug 换个 code 继续发生（实测 10-01
  * scaffold `tf-mupnk8h0-1otbl2` 仍因 `pnpm-workspace.yaml` 未读被判 env-unavailable）。 */
 
-/** 「工具在这一层不适用」类错误（2026-09-30 实锤 obs-r5 QA 复验轮）：**权限/能力边界**，不是环境故障。
- * 流水线子代理是 depth-1、无 Agent Team 成员身份，调用协作工具必然失败；但它**换个工具就能继续**
- * —— 与「工作区全废」（重试/绕道/推理都救不了）不是一回事。
- * 实锤代价：QA 复验子代理连调 send_message / list_agents（同一个 "not a member of an active Agent Team"）
- * 共 3 次 → 被 abort → 整个 run failed，而它连一个 checker 都还没跑（回归契约复跑为零）。
- * 注：进展豁免救不了这种 —— 它从第一次调用就失败，全程没有任何**成功**调用。 */
-const TOOL_SCOPE_LIMIT = /is not a member of an active Agent Team|exceeds maxDepth|subagent depth \d+/i
+/* 「工具在这一层不适用」类判据已上提为 `util.isToolScopeFailure`（2026-10-07：搬家的同时补了
+ * `unknown tool`，并让它与 `isFsSelfHealFailure` 一样可写行为断言）。 */
 
 /** Agent 活动守卫（2026-09-06 实锤 r1）：QA 子代理正常干活却被判「10 分钟无事件」——
  * 事件视图可能失明（session.events 缓存快照不增长）。若 agent 仍非 idle（phase 在跑）
@@ -442,7 +437,7 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
       // 可自愈的防护门禁失败不进环境指纹（见 util.isFsSelfHealFailure 注释）：read 一次即愈，
       // 与「工作区坏了」语义相反。两类各记一次（去重），文件门禁类另附一次补救提醒。
       if (isFsSelfHealFailure(text)) { noteSelfHealSkip('fs', text); continue }
-      if (TOOL_SCOPE_LIMIT.test(String(text))) { noteSelfHealSkip('tool', text); continue }
+      if (isToolScopeFailure(text)) { noteSelfHealSkip('tool', text); continue }
       const callId = (e.data as { message?: { toolCallId?: unknown } } | null)?.message?.toolCallId
       const tool = (typeof callId === 'string' && callNames.get(callId)) || 'command'
       const sig = toolFailureSignature(tool, text)

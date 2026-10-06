@@ -850,6 +850,24 @@ export function isFsSelfHealFailure(text: unknown): boolean {
   return FS_SELF_HEAL_TEXT.test(s) || FS_SELF_HEAL_CODE.test(s)
 }
 
+/* ── 「工具在这一层不适用」类失败（2026-09-30 obs-r5 实锤；2026-10-07 扩项）──────────────
+ * **权限 / 能力边界 / 名字不存在**，都不是「工作区坏了」——共同点是**换个工具就能继续**，
+ * 与「工作区全废」（重试 / 绕道 / 推理都救不了）不是一回事。
+ * 实锤代价（obs-r5 QA 复验轮）：子代理连调 send_message / list_agents（同一个
+ * "not a member of an active Agent Team"）共 3 次 → 被 abort → 整个 run failed，而它连一个
+ * checker 都还没跑（回归契约复跑为零）。注：进展豁免救不了这种 —— 它从第一次调用就失败，
+ * 全程没有任何**成功**调用。
+ * ⚠️ 2026-10-07 扩项（`unknown tool`，同根因第三类）：`ws-tf-ab-a` run `tf-mul7l30d`（09-28）
+ * QA 复验子代理把 git 当**工具名**调（原文 `Error: unknown tool "git "`，带尾空格）→ 连错 3 次
+ * 被判 env-unavailable + 「先修工作区」，而工作区毫发无损（12:17 人工 resume 后正常续跑）。
+ * 它想跑的是 `git` 命令，正解是换回 bash —— 正属此族。 */
+const TOOL_SCOPE_LIMIT = /is not a member of an active Agent Team|exceeds maxDepth|subagent depth \d+|unknown tool/i
+
+/** 是否属于「工具在这一层不适用」（换个工具即可继续）—— 据此**不计入**环境不可用指纹。 */
+export function isToolScopeFailure(text: unknown): boolean {
+  return TOOL_SCOPE_LIMIT.test(String(text || ''))
+}
+
 /** 失败指纹：工具名 + 归一化错误前 160 字符。同一指纹反复出现 = 同一个坏环境（而非模型措辞波动）。 */
 export function toolFailureSignature(tool: unknown, text: unknown): string {
   const name = String(tool || '').trim().toLowerCase() || 'tool'
