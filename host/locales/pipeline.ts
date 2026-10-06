@@ -257,7 +257,12 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'guard.reminderRead': '你已整读 {file} 第 3 次（TOKEN_HYGIENE 上限 1 次）。停止整读：需要确认细节时用 grep 定位行号 + 限量片段读取。',
     'guard.reminderScript': '验证脚本 {file} 已重复执行 3 次。遵守批量修复纪律：一次读完所有失败用例 → 一次全修 → 再跑一次；超出 3 轮请输出诊断摘要并停止。',
     'guard.toolFail': '{label} 命令/工具以同一错误持续失败（{tool}，已 {n} 次）：{detail}',
+    // 保留键（locale 冻结表）：曾同时承载「版本过期」与「工具不适用」两类跳过日志，现按类拆开 ——
+    // 值一字未改，只为历史日志可读性留存；新代码不再引用（见 guard.selfHealFs / guard.selfHealTool）。
     'guard.fsContention': '文件竞争冲突（不计入环境不可用）：{detail}',
+    'guard.selfHealFs': '文件防护门禁失败（未读或版本过期，**可自愈**，不计入环境不可用）：{detail}',
+    'guard.selfHealTool': '工具在这一层不适用（换个工具即可继续，不计入环境不可用）：{detail}',
+    'guard.selfHealHint': '写/改文件被防护门禁拒绝（原文：{detail}）。这是**会话级**读前置要求：在本会话里先对目标文件调用一次 read，再重写即可——不要重复同样的调用、不要换路径绕过（父级或其它会话读过的文件不算数）。',
     'guard.envProgress': '{label} 工具 {tool} 已 {n} 次以同一错误失败，但会话仍在推进（近期有成功调用）→ 不判环境不可用，继续：{detail}',
     'guard.reasonToolFail': '环境不可用（{tool} 连续 {n} 次以同一错误失败：{detail}）',
     'guard.reminderToolFail': '命令工具不可用：{tool} 已连续 {n} 次以同一错误失败（原文：{detail}）。立即停止——不要重试、不要换命令绕过、不要用推理代替执行。请在回复里写明：工具名 + 原文错误 + 已完成/未完成，然后结束。',
@@ -662,7 +667,13 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'guard.reminderRead': 'You have fully read {file} for the 3rd time (TOKEN_HYGIENE allows 1). Stop full reads: to confirm details, locate line numbers with grep and read a limited segment.',
     'guard.reminderScript': 'Verification script {file} has been executed 3 times. Follow the batch-fix discipline: read all failing cases once → fix them all in one pass → run once more; beyond 3 rounds, output a diagnostic summary and stop.',
     'guard.toolFail': '{label} a command/tool keeps failing with the same error ({tool}, {n} times so far): {detail}',
+    // Retained key (locale freeze list): it used to carry both "stale version" and "tool not applicable"
+    // skip logs; those are now split per class. The value is unchanged and kept only so historical logs
+    // stay readable — new code no longer references it (see guard.selfHealFs / guard.selfHealTool).
     'guard.fsContention': 'file contention (not counted as env-unavailable): {detail}',
+    'guard.selfHealFs': 'guarded-mutation gate rejected the write/edit (unread or stale, **self-healing**, not counted as env-unavailable): {detail}',
+    'guard.selfHealTool': 'tool not applicable at this layer (switch tools and continue; not counted as env-unavailable): {detail}',
+    'guard.selfHealHint': 'A write/edit was rejected by the guarded-mutation policy (raw: {detail}). The read-before-write requirement is **per-session**: call `read` on the target file in YOUR OWN session, then rewrite it — do not repeat the same call, do not work around it with another path (files read by the parent or another session do not count).',
     'guard.envProgress': '{label} tool {tool} failed {n} times with the same error, but the session is still making progress (a recent call succeeded) → not judged env-unavailable, continuing: {detail}',
     'guard.reasonToolFail': 'environment unavailable ({tool} failed {n} times with the same error: {detail})',
     'guard.reminderToolFail': 'The command tool is unavailable: {tool} has now failed {n} times with the same error (raw: {detail}). STOP now — do not retry, do not switch commands to work around it, do not replace execution with reasoning. Reply with the tool name, the raw error, what you finished and what is left undone, then end.',

@@ -3,7 +3,7 @@
  * 背景：withRetry 原样重试 = 盲试——子代理不知道上次为什么失败（拒绝词？过短？stopReason？护栏？）。
  * 修复：重试 prompt 附诊断块（失败分类/详情/护栏原因/产出尾部），insubstantial 细分拒绝词命中点。
  */
-import { refusalHit, buildRetryDiagnostic, judgeDeliverable, toolResultText, isToolErrorResult, toolFailureSignature, toolFailureAction } from '../host/util.ts'
+import { refusalHit, buildRetryDiagnostic, judgeDeliverable, toolResultText, isToolErrorResult, isFsSelfHealFailure, toolFailureSignature, toolFailureAction } from '../host/util.ts'
 
 let failed = 0
 const expect = (actual, expected, msg) => {
@@ -152,6 +152,19 @@ expect(toolFailureAction(undefined, 3, 5), 'none', '未计数 → none（不抛�
 expect(toolFailureAction(1, 2, 3), 'none', '生产阈值：1 次 → none')
 expect(toolFailureAction(2, 2, 3), 'warn', '生产阈值：2 次 → warn（提醒要早于模型放弃）')
 expect(toolFailureAction(3, 2, 3), 'abort', '生产阈值：3 次 → abort（赶在它绕道成规模之前）')
+
+// 可自愈的防护门禁失败分类（issue #15）：文本形状取自宿主 dsh-tool-fs/src/error.ts remediateFsError()
+// —— 两条 gate 错误被换成稳定文案。判错一类的代价 = 把「一次 read 就能修好」误报成「工作区坏了」。
+console.log('── 可自愈的防护门禁失败不进环境指纹（issue #15）──')
+const gateNotObserved = 'Error: cannot modify "E:/ws/js/render.js": file has not been read — read the file, then retry'
+const gateStale = 'Error: cannot edit "E:/ws/AGENTS.md": file changed since it was read — re-read the file, then retry'
+const gateGone = 'Error: cannot modify "E:/ws/x.js": file no longer exists — re-read the file, then retry'
+const envAcl = 'Error: SetNamedSecurityInfoW failed (Win32 5): grantWrite(E:/tmp/probe-v4)'
+ok(isFsSelfHealFailure(gateNotObserved), 'FS_NOT_OBSERVED（file has not been read）→ 判可自愈（**issue #15 的漏网项**）')
+ok(isFsSelfHealFailure(gateStale), 'FS_STALE_VERSION（file changed / re-read…）→ 判可自愈（存量行为不回退）')
+ok(isFsSelfHealFailure(gateGone), 'file no longer exists → 判可自愈（存量行为不回退）')
+ok(!isFsSelfHealFailure(envAcl), 'ACL provision 失败**不**判可自愈（护栏本职：工作区坏了仍须早停）')
+ok(!isFsSelfHealFailure('') && !isFsSelfHealFailure(null) && !isFsSelfHealFailure(undefined), '空/缺文本 → 不抛且不判可自愈（宁严勿松）')
 
 console.log(failed === 0 ? '\n✅ diagnostic 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

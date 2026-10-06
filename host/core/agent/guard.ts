@@ -33,7 +33,7 @@
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { GUARD_ENV_PROGRESS_GRACE_MS, GUARD_NO_TOOL_MS, GUARD_POLL_MS, GUARD_REPEAT_LIMIT, GUARD_SILENCE_MS, GUARD_TOOL_FAIL_ABORT, GUARD_TOOL_FAIL_WARN, GUARD_WINDOW_SIZE } from '../../constants.ts'
-import { clip, isToolErrorResult, toolFailureAction, toolFailureSignature, toolResultText } from '../../util.ts'
+import { clip, isFsSelfHealFailure, isToolErrorResult, toolFailureAction, toolFailureSignature, toolResultText } from '../../util.ts'
 import { t, type HostLocale } from '../../locales.ts'
 import { runtime } from './context.ts'
 import { runLocaleOf } from '../locale.ts'
@@ -52,8 +52,10 @@ const PROGRESS_TOOLS = /^(edit|write|create|apply_patch|patch|remove|delete|rm|m
  * 实锤代价：T3 用 `Get-Content -Raw | Set-Content` 把自建检查器损坏成非法 UTF-8 → 删掉 → 之后反复
  * write 同一路径 → 每次报 `file no longer exists — re-read the file, then retry`（该指引对「新建文件」
  * 场景本身是死循环：文件不存在，无从 re-read）→ 累计 3 次被 abort（env-unavailable，不重试）→ 阶段
- * failed + needs-human。**而它随后换个文件名就写成功了、检查器 33/33 全过** —— 活是干完了的。 */
-const FS_CONTENTION = /file no longer exists|file changed|FS_STALE_VERSION|re-read the file, then retry/i
+ * failed + needs-human。**而它随后换个文件名就写成功了、检查器 33/33 全过** —— 活是干完了的。
+ * ⚠️ 2026-10-07（issue #15）：判据已上提为 `util.isFsSelfHealFailure`，并补上同族的 `FS_NOT_OBSERVED`
+ * （`file has not been read`）—— 原正则漏了它，于是同一个 bug 换个 code 继续发生（实测 10-01
+ * scaffold `tf-mupnk8h0-1otbl2` 仍因 `pnpm-workspace.yaml` 未读被判 env-unavailable）。 */
 
 /** 「工具在这一层不适用」类错误（2026-09-30 实锤 obs-r5 QA 复验轮）：**权限/能力边界**，不是环境故障。
  * 流水线子代理是 depth-1、无 Agent Team 成员身份，调用协作工具必然失败；但它**换个工具就能继续**
@@ -199,7 +201,8 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
   // 后者在 tool/call 就更新，而「反复调用 write 且每次都失败」恰是被误判的形态，用它等于让检测永不触发。
   let lastSuccessAt = 0
   let envProgressWarned = false
-  let fsContentionWarned = false
+  // 可自愈失败的已提醒类别（'fs' 文件门禁 / 'tool' 工具不适用）——按类去重，不刷屏
+  const selfHealWarned = new Set<'fs' | 'tool'>()
 
   function warnOnce(key: string, set: Set<string>, message: string, hint?: string) {
     if (set.has(key)) return
@@ -400,6 +403,19 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
     }
   }
 
+  /** 可自愈失败只记一次（按类去重）：**绝不**进环境指纹、不写 `stage.envUnavailable`。
+   *  文件门禁类另附一次针对性补救提醒 —— 该错误的修复动作明确（先 read 再写），模型却常直接重试，
+   *  而通用 ENV GUARD 提醒只叫它停手（issue #15 实测形态：提醒反而把「差一步自愈」变成放弃）。 */
+  function noteSelfHealSkip(kind: 'fs' | 'tool', text: unknown) {
+    if (selfHealWarned.has(kind)) return
+    selfHealWarned.add(kind)
+    const detail = clip(String(text).replace(/\s+/g, ' ').trim(), 160)
+    try {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, kind === 'fs' ? 'guard.selfHealFs' : 'guard.selfHealTool', { detail }) })
+    } catch (e) { /* ignore */ }
+    if (kind === 'fs') injectReminder(run, `[ENV GUARD · reminder] ${t(locale, 'guard.selfHealHint', { detail })}`, locale)
+  }
+
   /**
    * 环境不可用检测（2026-09-23 probe-v4 实锤，增量处理**失败**的 tool/result）。
    *
@@ -423,14 +439,10 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
       // 成功调用 = 会话仍在产出（进展豁免的依据）
       if (!isToolErrorResult(e.data)) { lastSuccessAt = Date.now(); continue }
       const text = toolResultText(e.data)
-      // fs 竞争类错误不进环境指纹（见 FS_CONTENTION 注释）：它是文件级可自愈冲突，不是工作区级故障。
-      if (FS_CONTENTION.test(String(text)) || TOOL_SCOPE_LIMIT.test(String(text))) {
-        if (!fsContentionWarned) {
-          fsContentionWarned = true
-          try { journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.fsContention', { detail: clip(String(text).replace(/\s+/g, ' ').trim(), 160) }) }) } catch (e2) { /* ignore */ }
-        }
-        continue
-      }
+      // 可自愈的防护门禁失败不进环境指纹（见 util.isFsSelfHealFailure 注释）：read 一次即愈，
+      // 与「工作区坏了」语义相反。两类各记一次（去重），文件门禁类另附一次补救提醒。
+      if (isFsSelfHealFailure(text)) { noteSelfHealSkip('fs', text); continue }
+      if (TOOL_SCOPE_LIMIT.test(String(text))) { noteSelfHealSkip('tool', text); continue }
       const callId = (e.data as { message?: { toolCallId?: unknown } } | null)?.message?.toolCallId
       const tool = (typeof callId === 'string' && callNames.get(callId)) || 'command'
       const sig = toolFailureSignature(tool, text)

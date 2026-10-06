@@ -829,6 +829,27 @@ export function isToolErrorResult(data: unknown): boolean {
   return /^\s*(?:error|failed|fatal)\b/i.test(toolResultText(data))
 }
 
+/* ── 会话内可自愈的防护门禁失败（2026-10-07 issue #15 实锤）──────────────────────────
+ * 宿主 `@deepseek-ai/dsh-tool-fs` 的 `remediateFsError()` 把两类**防护门禁**失败换成稳定文案：
+ *   `FS_NOT_OBSERVED`  → `cannot modify "<path>": file has not been read — read the file, then retry`
+ *   `FS_STALE_VERSION` → `<原 message> — re-read the file, then retry`
+ * 它们说的是**会话内的读前置 / 版本前置**，不是工作区状态 —— 一次 read 就能自愈，
+ * 与「环境不可用」的判据（同一错误反复出现 = 工作区坏了、重试无用）**语义相反**。
+ * 若计入环境指纹，模型正常重试 2 次就被判 env-unavailable：实测两例（dev `tf-mumguwdl-dein51`
+ * 09-29 / scaffold `tf-mupnk8h0-1otbl2` 10-01）都是「同一文件 write 没先 read」→ warn 后 7s / 55s
+ * 即被判死、汇报要求「先修工作区再 resume」，而活本来能做完。
+ * 只能用文本判定：工具结果里只有 remediated message，没有 code 字段可读（故两条 code 的文案都列出，
+ * 宿主换文案时这里同步）。 */
+const FS_SELF_HEAL_TEXT = /file has not been read|re-read the file, then retry|file no longer exists|file changed/i
+/** 同族错误的 code 名：remediated message 里通常没有它，但未被 remediate 的路径可能带上（防御性保留）。 */
+const FS_SELF_HEAL_CODE = /FS_STALE_VERSION|FS_NOT_OBSERVED/i
+
+/** 是否属于「会话内可自愈的文件防护门禁」失败 —— 据此**不计入**环境不可用指纹。 */
+export function isFsSelfHealFailure(text: unknown): boolean {
+  const s = String(text || '')
+  return FS_SELF_HEAL_TEXT.test(s) || FS_SELF_HEAL_CODE.test(s)
+}
+
 /** 失败指纹：工具名 + 归一化错误前 160 字符。同一指纹反复出现 = 同一个坏环境（而非模型措辞波动）。 */
 export function toolFailureSignature(tool: unknown, text: unknown): string {
   const name = String(tool || '').trim().toLowerCase() || 'tool'
