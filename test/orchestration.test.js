@@ -206,6 +206,8 @@ async function runScenario(
     warnLogs: logOf('warn'), childLabels: children.map((c) => c.label),
     childCount: children.length, blueprint: journal.blueprint,
     humanIntervention: !!journal.humanIntervention,
+    // PRD 确认单（ADR-0011 ①）：暂停后必须能读到落盘的 sheet（进程重启后主线程还要靠它讲「批准什么」）
+    confirmSheet: journal.confirmSheet ?? null,
     journalSupplement: journal.requirementSupplement ?? null,
     timelineKeys: Object.keys((journal.result && journal.result.timeline) || {}).sort(),
   }
@@ -545,6 +547,50 @@ console.log('\n[19] 续跑补录（supplement）：断点晚于 PRD ⇒ 显式�
   })
   ok(kept.journalSupplement === '用户此前给的澄清答复',
     `续跑保留 journal 里已有的答复（实测 ${JSON.stringify(kept.journalSupplement)}）`)
+}
+
+/* ── ⑳ PRD 确认单（ADR-0011 ①，2026-10-07）：PRD 后暂停，等用户批准 ──
+ * 为什么单列：确认单的落点是 `interrupted`，而「PRD done、其后全空」正是上一批断点第二层修的那一种形态。
+ * 两者是**绑定关系** —— 断点修错，用户批准后 resume 会跳过 design/tech/dev/qa 直接验收。
+ * 变异：① 删掉 PRD 后的 `return abortForConfirmSheet(...)` ⇒ 本组第 1/3 条立刻红；
+ *       ② 把条件写成 `options.needConfirm !== false`（默认开）⇒ 第 5 条（缺省直通）立刻红。 */
+console.log('\n[20] PRD 确认单：needConfirm ⇒ PRD 后暂停；缺省直通')
+{
+  const { buildConfirmSheet, renderConfirmSheet } = await import(pathToFileURL(join(base, 'host/core/confirm.ts')).href)
+
+  // ① 开启 ⇒ PRD 后停下，后续阶段一个都不跑
+  const paused = await runScenario('confirm-on', { options: { ...QA_OPTS, needConfirm: true } })
+  ok(paused.status === 'interrupted', `needConfirm=true ⇒ 停成 interrupted（实测 ${paused.status}）`)
+  ok(paused.humanIntervention === true, '置 humanIntervention（工作台与汇报据此标「需人工」）')
+  ok(paused.confirmSheet && typeof paused.confirmSheet === 'object', `确认单已落盘（实测 ${JSON.stringify(paused.confirmSheet).slice(0, 120)}）`)
+  // 只算**阶段子代理**：分诊子代理（label「需求分诊」）也在 children 里，不能拿来判「跑到哪个阶段」
+  const stageChildren = paused.childLabels.filter((l) => !/需求分诊|triage/i.test(String(l)))
+  ok(stageChildren.length === 1 && /梳理 PRD/.test(String(stageChildren[0])),
+    `只跑了 PRD，其后的 design/tech/dev/qa 一个都没起（实测阶段子代理 ${JSON.stringify(stageChildren)}）`)
+
+  // ② 缺省 ⇒ 直通不打断
+  const straight = await runScenario('confirm-off', { options: QA_OPTS })
+  ok(straight.status !== 'interrupted' && straight.confirmSheet === null,
+    `缺省不打断（实测 status=${straight.status} / confirmSheet=${JSON.stringify(straight.confirmSheet)}）`)
+  ok(straight.childLabels.length > 1, `缺省时后续阶段照常跑（实测 ${straight.childLabels.length} 个子代理）`)
+
+  // ③ patch 档恒不生效（STAGE_POLICY：单 agent 直改，PRD 是机械的单点确认）
+  const patchRun = await runScenario('confirm-patch', { options: { ...PATCH_OPTS, needConfirm: true } })
+  ok(patchRun.status !== 'interrupted', `patch 档 + needConfirm 仍不暂停（实测 ${patchRun.status}）`)
+
+  // ④ 纯函数：结构化数据源 + 截断必须**诚实标注**（不静默截断）
+  const sheet = buildConfirmSheet({
+    summary: '一句话目标',
+    acIndex: Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`AC-${i + 1}`, `第 ${i + 1} 条`])),
+    assumptions: Array.from({ length: 12 }, (_, i) => `假设 ${i + 1}`).join('\n'),
+    runDocs: 'docs/teamflow/20261007-r1',
+  })
+  ok(sheet.ac.length === 12 && sheet.acTotal === 20, `AC 只列前 12 条但 acTotal 记 20（实测 ${sheet.ac.length}/${sheet.acTotal}）`)
+  ok(sheet.assumptions.length === 8 && sheet.assumptionsTotal === 12, `假设同理（实测 ${sheet.assumptions.length}/${sheet.assumptionsTotal}）`)
+  ok(sheet.docPath.endsWith('/PRD.md'), `docPath 指向 PRD 全文（实测 ${sheet.docPath}）`)
+  ok(renderConfirmSheet(sheet, 'zh').split('\n').length <= 40, `渲染 ≤40 行（实测 ${renderConfirmSheet(sheet, 'zh').split('\n').length} 行）`)
+  // 数据全缺 ⇒ 摘要薄但仍要暂停（缺假设恰恰最该让人看一眼）
+  ok(buildConfirmSheet({}).ac.length === 0 && buildConfirmSheet({}).summary === '', '空输入不抛，产出空摘要（暂停与否由调用方判，与本函数无关）')
 }
 
 if (failed) {

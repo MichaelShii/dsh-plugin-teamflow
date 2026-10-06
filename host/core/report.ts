@@ -9,6 +9,7 @@ import { gitCmd } from './workspace/sanity.ts'
 import { loadState } from './domain/state.ts'
 import { modeLabel, t } from '../locales.ts'
 import { phaseKeyOf } from '../constants.ts'
+import { renderConfirmSheet, type ConfirmSheet } from './confirm.ts'
 import { runLocaleOf } from './locale.ts'
 import type { Journal, ParentAgentLike } from '../types.ts'
 
@@ -126,6 +127,14 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
     const clarifySkippedLine = (journal.triage as { source?: string } | null | undefined)?.source === 'fallback'
       ? t(locale, 'report.clarifySkipped')
       : ''
+    // PRD 确认单（ADR-0011 ①，2026-10-07）：确认单暂停时，汇报必须讲清「批准什么 + 怎么批准」——
+    // 否则主线程只看到「已中断 + 需人工」，不知道 PRD 其实已经好了、下一步只是让人批一下。
+    const confirmLine = (journal.confirmSheet && journal.status === 'interrupted')
+      ? t(locale, 'report.confirmSheet', {
+        sheet: renderConfirmSheet(journal.confirmSheet as ConfirmSheet, locale),
+        id: String(journal.id),
+      })
+      : ''
     // 外部供应商故障可见化（2026-09-17）：把"限流/无额度/上游故障"与"交付有缺陷"分开讲清楚——
     // dddd 实测那批失败 16 分钟后同请求即成功，属外部窗口问题；旧文案只给「失败 + 需人工」，
     // 会让人误判成交付质量。此处显式说明「非交付缺陷 + 可续跑只补这一段」。
@@ -168,6 +177,7 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
       cancelSourceLine,
       assumptionsLine,
       clarifySkippedLine,
+      confirmLine,
       t(locale, 'report.stagesLine', { stages: stagesLine }),
       t(locale, 'report.agents', { n: journal.agentsStarted || 0 }),
       tokenLine,

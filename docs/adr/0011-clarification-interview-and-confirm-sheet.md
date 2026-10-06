@@ -171,6 +171,26 @@ ADR-0010 / TODO 此前写「多轮追问需要一个跨调用状态（`clarify-s
 
 **顺带记录（与本 ADR 无关的既有环境问题）**：headless 下 `typert-loader` 的 `dsh-user-questions` 贡献者加载失败（包导出 `./typert`，但 `lib/typert.host.js` 不存在 —— 本机 harness 源码仓产物缺失）。未影响本次结论（`typertGateway` 正常）。**未动它**，只留痕。
 
+## 落地记录（2026-10-07，① PRD 确认单 · 批 1）
+
+| # | 改动 | 位置 |
+|---|---|---|
+| 1 | `needConfirm` 选项（**默认关**；`patch` 恒 off；只在非 resume 时停一轮） | `host/types.ts` · `host/index.ts`（工具参数） |
+| 2 | PRD 之后暂停 `abortForConfirmSheet`（落点与 `abortForClarification` **同构** = `interrupted` + `humanIntervention`） | `host/core/pipeline.ts` |
+| 3 | 确认单组装 + 渲染（≤40 行）：**纯函数 + 结构化数据源** | `host/core/confirm.ts`（新模块） |
+| 4 | 目标一句话的来源补齐：PRD state 块的 `extra.summary` 落 `state.product.summary`（此前**只要求、不落盘**） | `host/core/domain/state.ts` |
+| 5 | 确认单落盘（`JournalRecord.confirmSheet` ＋ `serializeJournal`） | `store.ts` |
+| 6 | 完成汇报带确认单 ＋「调 `teamflow_resume` 即继续」 | `host/core/report.ts` · `host/locales/pipeline.ts` |
+
+**为什么数据一律走结构化来源、不抽 PRD 正文**：PRD 的小节标题是**模型自由写的**，正则去抽「目标」段必然时灵时不灵 —— 本仓已因此失手过一次（`## 9. 假设与待澄清` 让内联正则误报「契约未兑现」，实锤 `tf-mu34afd2-wcjaw1`）。⇒ 目标一句话 = PRD state 块的 `extra.summary`；AC = `state.acIndex`；假设 = `journal.assumptions`（按段解析）。
+
+**为什么默认关**：「该不该自动打断」需要一个判据，而按本仓纪律**新增判据前要先量真阳性率** —— 历史 0 样本。机制先落地，判据后补（再评估信号 1）。
+
+**门禁**：`orchestration` 第 ⑳ 组 12 条行为断言 ＋ `smoke` 5 条源码锁。
+**变异 M5**（拿掉 `return abortForConfirmSheet`）⇒ smoke 恰 1 红 ＋ 编排恰 4 红，症状实测显示「后续阶段照常跑了」，对照断言（缺省直通 / patch 不暂停 / 纯函数）**全绿**。
+
+**未做（明确记）**：① **改计划后重跑 PRD**（`redoFrom`）—— 断点已 > PRD，`supplement` 会被 P3 裁决拒绝 ⇒ 改计划只能起新需求（拒绝文案已写明）；② 轮次上限（归 `interview` 档，见 §裁决 ③）；③ 审批面的原生 seam（批 2，见 §P1 实机验证）。
+
 ## 影响
 
 - `docs/TODO.md` 的「澄清闸门」条按本文收敛（Phase 2 与强度档合并设计）。

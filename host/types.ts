@@ -53,6 +53,11 @@ export type PipelineMode = 'full' | 'medium' | 'lite' | 'tech' | 'patch'
 export interface PipelineOptions {
   needDesign?: boolean
   needScaffold?: boolean
+  /** **PRD 确认单**（ADR-0011 ①，2026-10-07）：PRD 完成后**暂停**，把「目标一句话 + AC + 假设清单」
+   *  交给用户批准，其后的阶段一个都不开始；批准 = `teamflow_resume`。
+   *  **默认 false**（显式才停）：自动判「该不该打断」需要真阳性率数据，本仓纪律不允许先加判据后补数据。
+   *  `patch` 档恒不生效（STAGE_POLICY：单 agent 直改，PRD 是机械的单点确认）。 */
+  needConfirm?: boolean
   tasks?: unknown
   productRoot?: string | null
   maxConcurrency?: number

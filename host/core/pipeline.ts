@@ -43,6 +43,7 @@ import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddPlan,
 import type { GitResult } from './workspace/sanity.ts'
 import { archiveRunLogs, sweepWorkspaceLogs } from './workspace/runlogs.ts'
 import { preflightWorkspaceAcl } from './workspace/acl-preflight.ts'
+import { buildConfirmSheet, renderConfirmSheet, type ConfirmSheet } from './confirm.ts'
 import { parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
 import { ambientLocale, localeForMissingSnapshot, runLocaleOf } from './locale.ts'
 import { noteClarifyAnswered, noteClarifyProceeded } from './clarify-log.ts'
@@ -244,6 +245,28 @@ function abortForClarification(journal: Journal, locale: HostLocale, verdict: Tr
   for (const b of verdict.blockers) {
     journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyBlocker', { q: clip(b.question, 200), changes: clip(b.changes, 160), rework: clip(b.rework, 160) }) })
   }
+}
+
+/**
+ * **PRD 确认单的暂停**（ADR-0011 ①，2026-10-07）：PRD 已完成 ⇒ 把「目标一句话 + AC + 假设清单」交给
+ * 用户批准，**其后的阶段一个都不开始**。
+ *
+ * 与 `abortForClarification` 的区别只是**位置**：那个在起跑前（零阶段），这个在 PRD 之后
+ * （`stages` 只有 prd 一条 done）⇒ 两者的落点**同构**（`interrupted` + `humanIntervention`）：
+ * ADR-0011 P2 已定「复用 interrupted/resume 基座，不新增状态」。
+ *
+ * ⚠️ 落点正确依赖 `interruptedPhaseOf` 的第二层修正（2026-10-07）：PRD done 且其后全空时，
+ * 断点必须落在「启用过但从未尝试」的阶段（design/tech），而不是 `acceptance`。
+ */
+function abortForConfirmSheet(journal: Journal, locale: HostLocale, sheet: ConfirmSheet): void {
+  journal.interrupted = true
+  journal.interruptedAt = Date.now()
+  journal.status = 'interrupted'
+  journal.humanIntervention = true
+  journal.confirmSheet = sheet
+  const rendered = renderConfirmSheet(sheet, locale)
+  journal.error = t(locale, 'run.needsConfirm', { n: rendered.split('\n').length, id: String(journal.id) })
+  journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.confirmAbort', { ac: sheet.acTotal, as: sheet.assumptionsTotal }) })
 }
 
 /**
@@ -834,6 +857,22 @@ export async function executePipeline(
     // 缺失 → 抛阶段失败走重试（附诊断），不放过"连开发对象是什么都没搞清"的 PRD。
     // 注：此处不引 `prdR`——resume 分支没有它（PRD 是复用的产物），重试计数由 stageFailError 自行兜底。
     if (notePrdAssumptions(journal, locale)) throw stageFailError('prd', {})
+
+    /* ── PRD 确认单（ADR-0011 ①）：PRD 后暂停，等用户批准 ── */
+    // 为什么**默认关**（显式 `needConfirm` 才停）：「该不该打断」需要一个自动判据，而按本仓纪律
+    // 新增判据前要先量真阳性率（历史 0 样本 ⇒ 无据可依）。机制先落地，判据后补（ADR-0011 再评估信号 1）。
+    // 为什么 `!resume`：确认单只做**一轮**（轮次上限归 `interview` 档，ADR-0011 ③）。
+    // 为什么排除 `patch`：patch = 单 agent 直改（STAGE_POLICY），它的 PRD 是「单点确认」机械阶段，
+    // 不为它加一道人工闸门（ADR-0011 策略档矩阵：`patch` 恒 off）。
+    if (options.needConfirm === true && options.mode !== 'patch' && !resume) {
+      const sheet = buildConfirmSheet({
+        summary: state.product ? state.product.summary : null,
+        acIndex: state.acIndex,
+        assumptions: journal.assumptions,
+        runDocs: journal.runDocs,
+      })
+      return abortForConfirmSheet(journal, locale, sheet)
+    }
 
     /* ── UI/UX 设计阶段（档位阶段集启用；lite+needDesign 也保留，显式要求的 UI 需求不被吞） ── */
     let design = null

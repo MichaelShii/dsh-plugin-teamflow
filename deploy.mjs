@@ -50,6 +50,7 @@ const FILES = [
   'host/core/stages/qa.ts',
   'host/core/stages/acceptance.ts',
   'host/core/clarify-log.ts',
+  'host/core/confirm.ts', // PRD 确认单（ADR-0011 ①）：纯函数模块，也要同步到 profile 副本
   'host/core/triage.ts',
   'host/core/workspace/sanity.ts',
   'host/core/workspace/runlogs.ts',

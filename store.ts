@@ -128,6 +128,15 @@ export interface JournalRecord {
   /** **本机安装环境**（2026-09-21）：`$DSH_HOME` + 由插件自身路径反推的 profile 名/目录 + `dsh` 是否在 PATH。
    *  路径全为运行时探测（用户环境各异，**不得写死**）；探测失败（`ok=false`）时 PRD 必须改为"问用户"。 */
   installEnv?: { dshHome?: string; profile?: string; profileDir?: string; cliOnPath?: boolean; ok?: boolean } | null
+  /** **PRD 的「假设 / 待澄清」段**（2026-09-16 需求澄清闸门 Phase 1）：agent 替用户做的决定。
+   *  此前**只序列化、未声明** ⇒ 类型面落到 `[key: string]: unknown` 上（各处只能 `String(...)` 包一层）。
+   *  补上声明是为了 `confirmSheet` 那类**新消费点**能拿到真类型，而不是继续退化成 unknown。 */
+  assumptions?: string | null
+  /** **PRD 确认单**（ADR-0011 ①，2026-10-07）：PRD 完成后暂停等用户批准时落盘的那份摘要
+   *  （目标一句话 / AC / 假设清单 / PRD 全文路径）。**必须序列化** —— 确认单暂停后进程可能重启，
+   *  主线程要靠它把「批准什么」讲给用户；丢了就只能让用户去重读 PRD.md。
+   *  形状见 `host/core/confirm.ts` 的 `ConfirmSheet`。 */
+  confirmSheet?: unknown | null
   result?: unknown
   [key: string]: unknown
 }
@@ -274,6 +283,8 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     hostContract: journal.hostContract || null,
     installEnv: journal.installEnv || null,
     requirementSupplement: journal.requirementSupplement || null,
+    // PRD 确认单（ADR-0011 ①）：暂停后重启也要能把「批准什么」讲给用户（见上方 JournalRecord 注释）
+    confirmSheet: journal.confirmSheet || null,
     /** 外部供应商故障标记（限流/无额度/上游故障/超时）：run 落可续跑中断态时置位，汇报据此讲清「非交付缺陷」。 */
     externalFailure: journal.externalFailure === true,
     interrupted: journal.interrupted === true,

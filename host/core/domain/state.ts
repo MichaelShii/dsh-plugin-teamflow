@@ -196,6 +196,9 @@ export function mergeStateBlock(projectKey: string, block: StageStateBlock, phas
         for (const s of block.extra.verifyScripts) if (typeof s === 'string' && s && state.verifyScripts.indexOf(s) === -1) state.verifyScripts.push(s)
       }
       if (block.extra.acIndex && typeof block.extra.acIndex === 'object') state.acIndex = { ...state.acIndex, ...block.extra.acIndex }
+      // 产品一句话（确认单 ADR-0011 ① 的目标来源）：`prdPrompt` 早已要求 extra.summary，
+      // 但此前**从未落盘** ⇒ 确认单只能去抽模型自由写的段落标题（不可靠）。此处补齐落点。
+      if (typeof block.extra.summary === 'string' && block.extra.summary.trim()) state.product.summary = block.extra.summary.trim()
       if (typeof block.extra.techStack === 'string' && block.extra.techStack) state.product.techStack = block.extra.techStack
       if (typeof block.extra.moduleContracts === 'object' && block.extra.moduleContracts) state.modules = { ...state.modules, ...block.extra.moduleContracts }
     }

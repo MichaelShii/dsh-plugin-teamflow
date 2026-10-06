@@ -137,7 +137,7 @@ console.log('── 3) host 模块结构 ──')
 // v0.2.5：core 已按职责分子目录（stages/ agent/ workspace/ domain/，pipeline/triage/locale/report 留根）；
 // 这里写**相对 core 的路径**（含子目录），与 smoke 的「真实文件 ⊆ 清单」门禁同一坐标系。
 const CORE_FILES = [
-  'pipeline', 'triage', 'clarify-log', 'locale', 'report', // core 根：编排门面 + 分诊决策 + 澄清埋点 + 语言/汇报横切
+  'pipeline', 'triage', 'clarify-log', 'confirm', 'locale', 'report', // core 根：编排门面 + 分诊决策 + 澄清埋点 + PRD 确认单 + 语言/汇报横切
   'stages/dev', 'stages/qa', 'stages/acceptance', // stages/：流水线各阶段的实现
   'agent/context', 'agent/runner', 'agent/guard', 'agent/metering', // agent/：子代理生命周期
   'workspace/sanity', 'workspace/runlogs', 'workspace/acl-preflight', 'workspace/products', 'workspace/browser-probe', // workspace/
@@ -754,6 +754,16 @@ ok(/if \(supp && PHASE_ORDER\.indexOf\(phaseAtEntry\) > PHASE_ORDER\.indexOf\('p
 ok(/'run\.supplementTooLate'/.test(hostSrc) && /'run\.supplementApplied'/.test(hostSrc), 'resume：补录的拒绝与应用都有可见文案（zh/en 同形由 locale 门禁守）')
 // executePipeline 不得覆盖补录的答复（它收到的是 `journal.options` 白名单字面量，本就不含该键 —— 同型第四次）
 ok(/if \(!resume\) journal\.requirementSupplement = options\.requirementSupplement/.test(pipelineSrc) && /if \(!resume && journal\.requirementSupplement\)/.test(pipelineSrc), 'resume：executePipeline 不覆盖 supplement（否则补录的答复被静默清空）')
+// PRD 确认单（ADR-0011 ①，2026-10-07）：PRD 完成后暂停，等用户批准
+// ⚠️ 落点与 `abortForClarification` 同构（interrupted + humanIntervention；P2：复用 interrupted/resume，不新增状态），
+// 且**依赖**上面「启用过但从未尝试的阶段 = 断点」那条 —— 断点错了，批准后续跑会跳过 design/tech/dev/qa。
+ok(/function abortForConfirmSheet/.test(pipelineSrc) && /return abortForConfirmSheet\(journal, locale, sheet\)/.test(pipelineSrc), 'pipeline：PRD 确认单的暂停落点（PRD 之后、design 之前）')
+ok(/options\.needConfirm === true && options\.mode !== 'patch' && !resume/.test(pipelineSrc), 'pipeline：确认单**默认关** ＋ patch 恒 off ＋ 只在非 resume 时停一轮（自动判据待真阳性率数据）')
+ok(/needConfirm: \{ type: 'boolean'/.test(hostSrc), 'host：teamflow_start 暴露 needConfirm 参数')
+ok(/confirmSheet: journal\.confirmSheet \|\| null/.test(storeSrc) && /confirmSheet\?: unknown \| null/.test(storeSrc), 'store：确认单必须落盘（不落 ⇒ 重启后讲不出「批准什么」，只能让用户去重读 PRD.md）')
+// 确认单的**目标一句话**来自 PRD state 块的 extra.summary —— 此前该字段被要求却从未落盘，
+// 逼得确认单只能去抽模型自由写的段落标题（不可靠，同 `## 9. 假设与待澄清` 那次失手）。
+ok(/state\.product\.summary = block\.extra\.summary/.test(hostSrc), 'state：PRD 的一句话目标（extra.summary）落盘 = 确认单的目标来源（此前只要求不落盘）')
 // 验收结论行取值（2026-09-17 实测 bug tf-mu4bve7t-duux2k：`## 1. 验收结论摘要` 蒙住真正的结论行 →
 // 明明「验收结论：✅ 通过」却判 needs-human）。规则：只认**字面量模板行**（冒号连写），且取最后一个。
 ok(/const literal = \/\^\\s\*\(\?:#\{1,6\}\\s\*\|\[-\*\+\]\\s\*\)\?\(\?:验收结论\|整体结论\|Acceptance verdict\|Overall verdict\)\\s\*\[:：]\/i/.test(utilSrc), 'util：结论行按字面量模板行匹配（`验收结论：` 冒号连写，不被章节标题蒙住）')

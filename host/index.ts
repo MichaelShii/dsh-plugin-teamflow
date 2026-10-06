@@ -226,6 +226,7 @@ function registerTools(ctx) {
       preAction: { type: 'string', description: 'Pre-start handling of dirty workspace: "stash" (stash changes, restore later via git stash pop), "commit" (commit existing changes, custom commitMessage), omit = leave as-is (changes mix into this run)' },
       commitMessage: { type: 'string', description: 'Custom commit message when preAction=commit' },
       requirementSupplement: { type: 'string', description: 'Extra context the user gave during a clarification round (after a "needs-clarification" return). Kept separate from the original requirement (which stays a faithful transcription of the user\'s words) and handed to the PRD stage as authoritative input.' },
+      needConfirm: { type: 'boolean', description: 'Pause right after PRD for your approval: the run stops before design/tech and returns a confirm sheet (goal, acceptance criteria, assumptions). Approve by calling teamflow_resume with this runId. Default false (no pause); ignored on the patch tier.' },
       tasks: {
         type: 'array',
         description: 'Optional splittable dev task list',
@@ -307,6 +308,9 @@ function registerTools(ctx) {
         const options = {
           needDesign: !!args.needDesign,
           needScaffold: !!args.needScaffold,
+          // PRD 确认单（ADR-0011 ①）：**默认不打断**。开启后 PRD 完成即暂停，把「目标 + AC + 假设」
+          // 交用户批准，批准 = teamflow_resume。patch 档不生效。
+          needConfirm: !!args.needConfirm,
           lite: !!args.lite,
           // craft 引导通道：环境变量开关（TEAMFLOW_CRAFT=0 关闭），**不做工具参数**
           // —— 工具 description 每次都进主会话上下文，而这是临时实验开关（详见 util.envFlagOn 注释）
