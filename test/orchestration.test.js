@@ -482,8 +482,20 @@ console.log('\n[18] 零阶段 run 的断点 = PRD（不得跳过整条流水线�
     workspace: 'ws-zero', stages: [], logs: [], options: { mode: 'full' },
   }
   ok(interruptedPhaseOf(zeroStage) === 'prd', `零阶段 → 断点 prd（实测 ${interruptedPhaseOf(zeroStage)}）`)
-  ok(interruptedPhaseOf({ ...zeroStage, stages: [{ phase: 'prd', status: 'done' }] }) === 'acceptance',
-    '对照：全阶段 done → 断点仍是 acceptance（「都做完了」那一路不能被这次修正带偏）')
+
+  // 确认单形态（2026-10-07 第二层修正）：**PRD done、其后全空**。现实现在这里会一路 continue
+  // 到 `return 'acceptance'` ⇒ 跳过 design/tech/dev/qa 直接验收。改后应落在「启用但从未尝试」的阶段。
+  const afterPrd = interruptedPhaseOf({ ...zeroStage, options: QA_OPTS, stages: [{ phase: 'prd', status: 'done' }] })
+  ok(afterPrd === 'tech', `PRD done 且其后全空（full 档无 design/scaffold）→ 断点 tech（实测 ${afterPrd}）`)
+  const afterPrdFull = interruptedPhaseOf({
+    ...zeroStage, options: { mode: 'full', needDesign: true, needScaffold: true }, stages: [{ phase: 'prd', status: 'done' }],
+  })
+  ok(afterPrdFull === 'design', `同上但 needDesign=true → 断点 design（实测 ${afterPrdFull}）`)
+
+  // 对照：所有阶段都 done ⇒ 断点仍是 acceptance（「都做完了」那一路不能被这两次修正带偏）
+  const allDone = ['prd', 'design', 'scaffold', 'tech', 'dev', 'qa', 'acceptance'].map((p) => ({ phase: p, status: 'done', taskKey: 'T1' }))
+  ok(interruptedPhaseOf({ ...zeroStage, options: { mode: 'full', needDesign: true, needScaffold: true }, stages: allDone }) === 'acceptance',
+    '对照：全部阶段 done → 断点 acceptance（不是被「启用但未尝试」这条抢走）')
 
   // 行为侧：用零阶段算出的断点驱动 executePipeline ⇒ PRD 必须真起子代理
   const r = await runScenario('zero-stage-resume', {

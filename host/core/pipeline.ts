@@ -266,9 +266,25 @@ export function interruptedPhaseOf(journal) {
   // （**PRD 为空**）⇒ 只剩没有 `resumed` 门控、也不做 prd 空值保护的验收照常开跑
   // = 跳过需求澄清/技术方案/开发/QA，直接拿空 PRD 跑产品验收。是「跑错」，不只是「拿不回答复」。
   if ((journal.stages || []).length === 0) return 'prd'
+  // 档位阶段集（ADR-0004 差异执行的单一事实来源）：用来区分**两种「没有 stage 记录」**——
+  //   ① 条件阶段（design/scaffold）在本档位未启用 ⇒ 确实该跳过；
+  //   ② 启用过、但**从未发生过任何尝试** ⇒ **它就是断点**。
+  // ② 若也 `continue`，「PRD done、design 之后全空」这一形态会一路走到 `return 'acceptance'`
+  // = **跳过 design/tech/dev/qa 直接验收**（2026-10-07 历史审计：lite 档 4 条命中，old 全为 acceptance）。
+  // 该形态今天 0 例（PRD 之后还没有暂停点），但**确认单一旦落地就会批量产生** ⇒ 必须先行修掉。
+  // ⚠️ 只用 `resolveStages` 重建，不引团队阶段列表：团队裁剪后的集合无从恢复，而差集只会让
+  // 断点**更靠前**（多跑一个阶段），不会更靠后（漏跑）——方向是安全的。
+  const opts = journal.options || {}
+  const stageSet = resolveStages(normalizeMode(opts.mode) || 'full', {
+    needDesign: opts.needDesign === true,
+    needScaffold: opts.needScaffold === true,
+  })
   for (const phase of PHASE_ORDER) {
     const phaseStages = (journal.stages || []).filter((s) => phaseKeyOf(s.phase) === phase)
-    if (phaseStages.length === 0) continue
+    if (phaseStages.length === 0) {
+      if ((stageSet as string[]).includes(phase)) return phase
+      continue
+    }
     if (phase === 'dev') {
       // 任务级聚合（状态机 2026-09-06）：任务有 done stage = 成功；存在未成功任务 → 阶段未完成。
       // 历史失败尝试不算失败（同名任务已有 done stage）——dev 部分完成时 resume 起点 = 开发（补跑未完成）。

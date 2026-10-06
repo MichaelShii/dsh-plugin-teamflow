@@ -741,6 +741,12 @@ ok(/const resumed = \(phase\) => !!resume && PHASE_ORDER\.indexOf\(phase\) < PHA
 // （PRD 为空）⇒ **跳过整条流水线直接拿空 PRD 跑验收**。实机探针：断点实测 = acceptance。
 // 行为侧断言（含「零阶段续跑后 PRD 真起子代理」）见 test/orchestration.test.js 第 ⑩ 组。
 ok(/if \(\(journal\.stages \|\| \[\]\)\.length === 0\) return 'prd'/.test(pipelineSrc), 'pipeline：零阶段 run 的断点 = prd（不得落进「全都跑完」出口，否则续跑 = 空 PRD 直接验收）')
+// 第二层（2026-10-07）：**启用过但从未尝试**的阶段也必须是断点，不得 continue。
+// 否则「PRD done、其后全空」（确认单暂停落下的形态）会一路走到 `return 'acceptance'` ⇒ 跳过
+// design/tech/dev/qa 直接验收。历史审计：95 个 journal 里 4 条命中（均 lite 档，old 全为 acceptance）。
+// ⚠️ 锁结构不锁排版/类型断言写法：`stageSet` 可能带 `as string[]` 之类的强制转换，
+// 把强制转换写进匹配串会让断言在无害改动下假红（本仓 §17「源码断言锁只锁内容、不锁排版」）。
+ok(/if \(phaseStages\.length === 0\) \{[\s\S]{0,200}\.includes\(phase\)\) return phase/.test(pipelineSrc) && /const stageSet = resolveStages\(/.test(pipelineSrc), 'pipeline：启用过但从未尝试的阶段 = 断点（条件阶段未启用才 skip；区别靠 resolveStages 阶段集）')
 // 续跑补录入口：`supplement` 从 teamflow_resume 一路传到 resumeRun；PRD 是唯一消费点
 // ⇒ 断点晚于 prd 必须**显式拒绝**（静默接受 = 静默丢弃，本仓反复踩）
 ok(/supplement\?: string \| null/.test(pipelineSrc) && /resumeRun\(id, parent\.session\.id, sup\)/.test(hostSrc), 'resume：supplement 从 teamflow_resume 一路传到 resumeRun')
