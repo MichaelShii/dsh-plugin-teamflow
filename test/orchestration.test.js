@@ -605,6 +605,28 @@ console.log('\n[20] PRD 确认单：needConfirm ⇒ PRD 后暂停；缺省直通
   const kids = afterResume.childLabels.filter((l) => !/需求分诊|triage/i.test(String(l)))
   ok(has(kids, '设计说明'), `resume 后 design 真跑（实测 ${JSON.stringify(kids).slice(0, 150)}）`)
   ok(!has(kids, '梳理 PRD'), `PRD 被跳过（复用已完成产物）（实测 ${JSON.stringify(kids).slice(0, 150)}）`)
+
+  // ⑥ AC 的**兜底与来源标注**（ADR-0011 C 方案）：`extra` 兑现率仅 ~20%（7/34 state.json）
+  //    ⇒ 结构化优先、正文兜底、**来源必须自曝**（空壳比空更糟：会让人以为「没什么要注意的」）。
+  const { extractAcIndexFromText } = await import(pathToFileURL(join(base, 'host/util.ts')).href)
+  const acDoc = '| AC | 描述 |\n|---|---|\n| AC-1 | 徽章显示今日番茄数 |\n- **AC-2**：暂停不计\nAC-3 - 跨日归零'
+  ok(extractAcIndexFromText(acDoc)['AC-1'] === '徽章显示今日番茄数', '抽取：表格首列形态')
+  ok(extractAcIndexFromText(acDoc)['AC-2'] === '暂停不计', '抽取：加粗列表形态')
+  ok(extractAcIndexFromText(acDoc)['AC-3'] === '跨日归零', '抽取：裸 `AC-n - 描述` 形态')
+  ok(extractAcIndexFromText('普通段落，没有任何 AC 特征') === null, '抽取：无特征 → null（**不瞎编**）')
+  ok(extractAcIndexFromText('') === null && extractAcIndexFromText(null) === null && extractAcIndexFromText(undefined) === null, '抽取：空/null/undefined → null（不炸）')
+  const manyAc = Array.from({ length: 60 }, (_, i) => `| AC-${i + 1} | 第 ${i + 1} 条 |`).join('\n')
+  ok(Object.keys(extractAcIndexFromText(manyAc)).length === 40, `抽取：上限 40 条（实测 ${Object.keys(extractAcIndexFromText(manyAc)).length}）`)
+
+  const fromState = buildConfirmSheet({ acIndex: { 'AC-1': '结构化' }, prdText: '| AC-9 | 正文里的 |' })
+  ok(fromState.acSource === 'state' && fromState.ac[0].id === 'AC-1', '结构化有值 ⇒ 用它，来源=state（不被正文覆盖）')
+  const fromText = buildConfirmSheet({ acIndex: {}, prdText: acDoc })
+  ok(fromText.acSource === 'extracted' && fromText.ac.length === 3, `结构化空 ⇒ 正文兜底（实测来源=${fromText.acSource} 条数=${fromText.ac.length}）`)
+  ok(renderConfirmSheet(fromText, 'zh').includes('从 PRD 正文抽取'), '**抽取来的必须自曝来源**（否则用户分不清结构化与抽来的）')
+  const noAc = buildConfirmSheet({ acIndex: {}, prdText: '没有任何 AC' })
+  ok(noAc.acSource === 'none' && noAc.ac.length === 0, '两处都无 ⇒ 来源=none')
+  ok(renderConfirmSheet(noAc, 'zh').includes('没抓到验收条件'), '**none 也要显式告警**（不能静默留空段落骗人）')
+  ok(renderConfirmSheet(noAc, 'zh').split('\n').length <= 40, `无 AC 时仍 ≤40 行（实测 ${renderConfirmSheet(noAc, 'zh').split('\n').length}）`)
 }
 
 if (failed) {

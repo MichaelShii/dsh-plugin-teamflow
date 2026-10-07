@@ -315,6 +315,10 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'report.confirmSheet': '📋 **PRD 确认单**（等批准，已停在设计/技术方案之前）：\n{sheet}\n→ 认可：**调 `teamflow_resume`（runId={id}）** —— 它会**立即开始写代码**（设计 → 技术方案 → 开发 → QA → 验收，真实改动落到工作区），**不是继续讨论**；不调就不会自动往下跑。',
     'confirm.head': '[PRD 确认单] 目标：{goal}',
     'confirm.ac': '验收条件（{n}/{total} 条）：\n{list}',
+    // AC 来源标注（ADR-0011 C，2026-10-07）：PRD state 块的 extra.acIndex 实测兑现率仅 ~20%
+    // ⇒ host 从正文兜底抽取，但**必须自曝来源**（空壳比空更糟：会让人以为「没什么要注意的」）。
+    'confirm.acExtracted': '⚠️ 以上 AC 是 host **从 PRD 正文抽取**的（PRD 的 state 块未提供结构化 `acIndex`）——建议扫一眼全文确认没有漏。',
+    'confirm.acMissing': '⚠️ **没抓到验收条件**：PRD 的 state 块没给 `acIndex`，正文里也没抽到可识别的 `AC-n` ⇒ **请打开 PRD 全文核对**（这份摘要的 AC 段不可信）。',
     // 待拍板项（结构化，来自 PRD state 块的 openQuestions）＝「要你决定」；
     // 下面的 assumptions 是「我已经替你定了」—— 语义不同，两段都呈现，不做二选一。
     'confirm.questions': '待你拍板（{n}/{total} 条）：\n{list}',
@@ -739,6 +743,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'report.confirmSheet': '📋 **PRD confirm sheet** (awaiting approval; stopped before design/tech):\n{sheet}\n→ To approve: **call `teamflow_resume` with runId={id}** — that **starts writing code immediately** (design → tech → dev → QA → acceptance; real edits land in the workspace), **not a continuation of the discussion**. Nothing runs until you do.',
     'confirm.head': '[PRD confirm sheet] Goal: {goal}',
     'confirm.ac': 'Acceptance criteria ({n}/{total}):\n{list}',
+    'confirm.acExtracted': '⚠️ The ACs above were **extracted from the PRD body by the host** (the PRD state block carried no structured `acIndex`) — skim the full PRD to confirm nothing is missing.',
+    'confirm.acMissing': '⚠️ **No acceptance criteria found**: the PRD state block carried no `acIndex` and none were extractable from the body ⇒ **open the full PRD and check** (the AC section of this summary is not trustworthy).',
     'confirm.questions': 'Needs your call ({n}/{total}):\n{list}',
     'confirm.defaultAnswer': ' (default: {value})',
     'confirm.whyAsk': ' — why it is asked: {value}',

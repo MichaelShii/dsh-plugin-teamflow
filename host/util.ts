@@ -1612,6 +1612,44 @@ export function dirTooLargeForBaseline(dir: string, maxFiles = 1000, maxBytes = 
 }
 
 /**
+ * **AC 索引的文本兜底抽取**（ADR-0011 C 方案，2026-10-07）。
+ *
+ * **为什么需要兜底**：AC 的权威来源是 PRD state 块的 `extra.acIndex`，但实测兑现率只有 **~20%**
+ * （34 个 state.json 里 `acIndex` 非空仅 7 个）—— `STATE_BLOCK_INSTRUCTION` 原来的模板示例里**没有
+ * `extra`**，而各阶段 rules 只用散文要求它 ⇒ 模型照模板写。契约已按 A 方案补进模板，但按本仓纪律
+ * （§2：**能 host 客观判定的就不依赖模型自律**），**必须有兜底**，否则确认单/索引在多数 run 里是空的。
+ *
+ * ⚠️ **抽段不可靠是本仓的旧伤**（`## 9. 假设与待澄清` 曾让内联正则误报「契约未兑现」）⇒ 本函数：
+ * ① **逐行**解析、不做跨行正则；② 只认「行首出现 `AC-<数字>`」这一种强特征（表格首列 / 列表项 / 加粗）；
+ * ③ 返回为空即 `null`，**由调用方显式标注「来源 = 文本抽取」**，绝不冒充结构化来源（防静默降级）。
+ */
+export function extractAcIndexFromText(doc: string | null | undefined): Record<string, string> | null {
+  const text = String(doc || '')
+  if (!text.trim()) return null
+  const out: Record<string, string> = {}
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line) continue
+    // 表格分隔行 / 纯横线行：跳过
+    if (/^\|?[\s:|-]+\|?$/.test(line)) continue
+    // 行首锚定：可选 `-` / `*` / `|` / 加粗，然后是 AC-<数字>（大小写不敏感，统一成大写）
+    const m = line.match(/^[-*|>\s]*(?:\*\*)?\[?(AC[-\s]?\d+)\]?(?:\*\*)?\s*[：:|)-]?\s*(.+)$/i)
+    if (!m) continue
+    const id = m[1].toUpperCase().replace(/\s+/g, '-').replace(/^AC(\d)/, 'AC-$1')
+    let desc = m[2].trim()
+    // 表格行：描述到下一个 `|` 为止；去掉尾部残留的分隔符
+    const pipe = desc.indexOf('|')
+    if (pipe >= 0) desc = desc.slice(0, pipe).trim()
+    // 去掉 markdown 强调与多余空白
+    desc = desc.replace(/\*\*/g, '').replace(/^\s*[：:]\s*/, '').trim()
+    if (!desc) continue
+    if (!out[id]) out[id] = desc.slice(0, 300)
+    if (Object.keys(out).length >= 40) break
+  }
+  return Object.keys(out).length ? out : null
+}
+
+/**
  * **澄清强度归一**（ADR-0011 ③，2026-10-07）：`off` / `once`（缺省）/ `interview`。
  *
  * 判定顺序是**契约**（`patch` 恒 `off` 优先于显式 `interview`）：

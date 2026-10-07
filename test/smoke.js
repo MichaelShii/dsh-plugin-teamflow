@@ -807,6 +807,18 @@ ok(/if \(Array\.isArray\(block\.extra\.openQuestions\)\) state\.openQuestions = 
 ok(/export function normalizeOpenQuestions/.test(hostSrc), 'state：openQuestions 容错归一是纯函数（模型形状不稳定 ⇒ 不抛、不污染 state）')
 ok(/openQuestions: state\.openQuestions/.test(hostSrc), 'pipeline：确认单接结构化 openQuestions（与 assumptions 语义不同，两段都呈现）')
 ok(/CONFIRM_QUESTIONS_MAX/.test(hostSrc) && /confirm\.questions/.test(hostSrc), 'confirm：待拍板项有独立上限与渲染段（不静默截断）')
+
+// ADR-0011 C 方案（2026-10-07）：AC **结构化优先 / 正文兜底 / 来源自曝**。
+// 依据：`STATE_BLOCK_INSTRUCTION` 原模板**没有 extra**，而各阶段 rules 只用散文要它 ⇒ 模型照模板写，
+// 实测 `extra.acIndex` 兑现率仅 **7/34（20%）** ⇒ 兜底是必要的，不是可选优化。
+ok(/export function extractAcIndexFromText/.test(utilSrc), 'util：AC 文本兜底抽取器是纯函数（逐行解析，不做跨行正则）')
+ok(/prdText: prd/.test(pipelineSrc), 'pipeline：确认单收到 PRD 全文（兜底抽取的输入）')
+// ⚠️ 必须锁到**调用**那一句：只锁「传参」会在「传了但不用」时假绿（M10 实测 —— 行为断言红了、这条全绿）。
+// 同型第五次（M6/M7/M8/M10/本条）：源码锁的匹配串必须覆盖「参数 → 实际使用」整条链，不能停在半路。
+ok(/extractAcIndexFromText\(v\.prdText\)/.test(hostSrc), 'confirm：兜底**真的调用了**抽取器（参数递进去 ≠ 用了）')
+// ★ A 方案的核心：模板**本体**必须带 extra —— 只写散文要求 = 模型照模板忽略它（本日实测的根因）
+ok(/"extra":\{/.test(hostSrc), 'state：STATE_BLOCK_INSTRUCTION 的模板本体含 `extra`（把两份互相不覆盖的契约合并成一份）')
+ok(/'confirm\.acExtracted'/.test(hostSrc) && /'confirm\.acMissing'/.test(hostSrc), 'locales：AC 来源标注两键齐备（抽取 / none 都要自曝，不能静默留空段落）')
 ok(/clarifyStrengthForTeam/.test(hostSrc) && /tool\.ctx\.clarifyInterview/.test(hostSrc) && /tool\.ctx\.clarifyOff/.test(hostSrc), 'host：强度从 run 快照反查（强度是每次 run 的参数，不是会话级设置）＋ 两档 addendum 齐备')
 ok(/'tool\.ctx\.clarifyInterview'/.test(hostSrc), 'locales：interview addendum 文案存在（一次一问 ＋ 每问带猜测 ＋ 硬终止三条件）')
 // 续跑补录入口：`supplement` 从 teamflow_resume 一路传到 resumeRun；PRD 是唯一消费点

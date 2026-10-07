@@ -14,7 +14,7 @@
  * **暂停语义**：确认单 = 「PRD 已完成、其后的阶段一个都没开始」。落点与 `abortForClarification`
  * 同构（`interrupted` + `humanIntervention`，ADR-0011 P2：复用 interrupted/resume 基座，不新增状态）。
  */
-import { clip } from '../util.ts'
+import { clip, extractAcIndexFromText } from '../util.ts'
 import { t, type HostLocale } from '../locales.ts'
 
 /** AC 上限（确认单 ≤40 行的硬预算；超出只列前 N 条并点名还有几条）。 */
@@ -35,8 +35,16 @@ export interface ConfirmQuestion {
 export interface ConfirmSheet {
   /** 目标一句话（PRD state 块的 extra.summary）。 */
   summary: string
-  /** AC 编号 → 一句话（state.acIndex）。 */
+  /** AC 编号 → 一句话（`state.acIndex`，权威来源）。 */
   ac: Array<{ id: string; text: string }>
+  /**
+   * **AC 的来源**（ADR-0011 C 方案，2026-10-07）—— 必须回给用户看。
+   *
+   * `state` = 来自 PRD state 块的 `extra.acIndex`（权威）；`extracted` = host 从 PRD 正文**兜底抽取**
+   * （实测 `extra` 兑现率仅 ~20%，兜底是必要的）；`none` = 两处都没有。
+   * ⚠️ **空壳比空更糟**：不标注来源的话，用户会以为「没什么要注意的」，而实际是「没抓到」。
+   */
+  acSource: 'state' | 'extracted' | 'none'
   /**
    * **待用户拍板**的项（`state.openQuestions`，结构化优先于文本）。
    * 与 `assumptions` **语义不同、同时呈现**：这里是「要你决定」，那里是「我已经替你定了」。
@@ -62,12 +70,23 @@ export interface ConfirmSheet {
 export function buildConfirmSheet(v: {
   summary?: string | null
   acIndex?: Record<string, string> | null
+  /** PRD 全文：`extra.acIndex` 缺失时用它**兜底抽取** AC（ADR-0011 B/C）。 */
+  prdText?: string | null
   /** 结构化待澄清项（`state.openQuestions`）；缺/空 ⇒ 该段不渲染。 */
   openQuestions?: ConfirmQuestion[] | null
   assumptions?: string | null
   runDocs?: string | null
 }): ConfirmSheet {
-  const acEntries = Object.entries(v.acIndex || {}).filter(([, text]) => String(text || '').trim())
+  // AC：**结构化优先、文本兜底**（ADR-0011 C）。兜底必要性的实测依据：`extra` 兑现率 ~20%（7/34）。
+  let acEntries = Object.entries(v.acIndex || {}).filter(([, text]) => String(text || '').trim())
+  let acSource: 'state' | 'extracted' | 'none' = acEntries.length ? 'state' : 'none'
+  if (!acEntries.length) {
+    const extracted = extractAcIndexFromText(v.prdText)
+    if (extracted) {
+      acEntries = Object.entries(extracted)
+      acSource = 'extracted'
+    }
+  }
   const assumpLines = String(v.assumptions || '')
     .split(/\r?\n/)
     .map((l) => l.trim())
@@ -76,6 +95,7 @@ export function buildConfirmSheet(v: {
   return {
     summary: clip(v.summary, 200),
     ac: acEntries.slice(0, CONFIRM_AC_MAX).map(([id, text]) => ({ id, text: clip(text, 160) })),
+    acSource,
     questions: questions.slice(0, CONFIRM_QUESTIONS_MAX).map((q) => ({
       q: clip(q.q, 200),
       why: clip(q.why, 160),
@@ -97,6 +117,10 @@ export function renderConfirmSheet(sheet: ConfirmSheet, locale: HostLocale): str
   if (sheet.ac.length) {
     const list = sheet.ac.map((a) => `${a.id} ${a.text}`).join('\n')
     lines.push(t(locale, 'confirm.ac', { n: sheet.ac.length, total: sheet.acTotal, list }))
+    // 来源可审计：抽取来的必须自曝（否则用户在「结构化」与「抽来的」之间无从分辨）
+    if (sheet.acSource === 'extracted') lines.push(t(locale, 'confirm.acExtracted'))
+  } else {
+    lines.push(t(locale, 'confirm.acMissing'))
   }
   if (sheet.questions.length) {
     const list = sheet.questions

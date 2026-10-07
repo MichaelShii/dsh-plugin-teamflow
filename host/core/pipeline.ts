@@ -868,6 +868,8 @@ export async function executePipeline(
       const sheet = buildConfirmSheet({
         summary: state.product ? state.product.summary : null,
         acIndex: state.acIndex,
+        // PRD 全文：`extra.acIndex` 缺失时由确认单兜底抽取（ADR-0011 B/C；实测 extra 兑现率 ~20%）
+        prdText: prd,
         // 结构化待澄清项优先于文本抽取：PRD state 块的 openQuestions 带「为什么问 / 缺省怎么办」，
         // 用户能直接挑默认值（`journal.assumptions` 只是 PRD 段落里抄下来的行）。
         openQuestions: state.openQuestions,

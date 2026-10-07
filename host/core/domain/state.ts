@@ -335,4 +335,5 @@ export function stateSliceFor(state: TeamflowState, role: RoleKey): string {
 
 /** 让每个阶段产出末尾附带 state 块（将并入 stage output，由 host 提取）。 */
 export const STATE_BLOCK_INSTRUCTION = `\n\n[STATE BLOCK · mandatory at the end] Append one section at the END of your answer (same output as the body; the host indexes it):
-<!-- state -->{"phase":"<stage-key>","summary":"<≤500 chars: this stage's conclusion, useful for the next run>","memory":["<memory points>"]}<!-- /state -->`
+<!-- state -->{"phase":"<stage-key>","summary":"<≤500 chars: this stage's conclusion, useful for the next run>","memory":["<memory points>"],"extra":{<the extra keys YOUR OWN stage rules above name>}}<!-- /state -->
+⚠️ **\`extra\` is required whenever your stage rules above name extra keys** (e.g. prd → \`acIndex\`/\`summary\`/\`techStack\`/\`openQuestions\`; tech → \`verifyScripts\`/\`modules\`; qa → \`verifyScripts\`). The host reads those values from **inside \`extra\`** — writing them flat (or omitting \`extra\`) drops them silently, and no later stage will see them. Omit the \`extra\` key entirely **only** when your rules name no extra fields.`

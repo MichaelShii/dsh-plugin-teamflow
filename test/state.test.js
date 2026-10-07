@@ -142,6 +142,17 @@ ok(qAfter.length === 1 && qAfter[0].q === '新问题', `PRD 是本次 run 的权
 mergeStateBlock(KEY, { phase: 'tech', summary: 's', extra: {} })
 ok(loadState(KEY).openQuestions.length === 1, 'state 块不含该键 → 保持原值（不清空）')
 
+
+/* ── STATE_BLOCK_INSTRUCTION：`extra` 必须在**模板本体**里（ADR-0011 A，2026-10-07）──
+ * 事故：模板原来只给 `{phase, summary, memory}`，而各阶段 rules 用**散文**要求 `extra:{acIndex,…}`
+ * ⇒ 模型照模板写、忽略散文 ⇒ 实测 `extra.acIndex` 兑现率仅 7/34（20%）。
+ * 这三条锁住「契约合并在模板里」这件事本身，而不只是「prompt 里有 openQuestions 这个词」。 */
+console.log('\n── STATE_BLOCK_INSTRUCTION：extra 契约（ADR-0011 A）──')
+const { STATE_BLOCK_INSTRUCTION } = await import('../host/core/domain/state.ts')
+ok(/"extra":\{/.test(STATE_BLOCK_INSTRUCTION), '**模板本体含 `extra` 键**（只在散文里要求 = 模型照模板忽略它 —— 本日实测的根因）')
+ok(/acIndex/.test(STATE_BLOCK_INSTRUCTION), '模板里点名 prd 的 extra 键（否则「required」落不到具体字段上）')
+ok(/STATE BLOCK · mandatory at the end/.test(STATE_BLOCK_INSTRUCTION) && /<!-- state -->/.test(STATE_BLOCK_INSTRUCTION), '契约锚点两句保留（prompt-contract 的 L1 门禁锁的就是它们）')
+
 cleanup()
 console.log(failed ? `\n✗ state：${failed} 条失败\n` : '\n✓ state：全部通过\n')
 process.exit(failed ? 1 : 0)
