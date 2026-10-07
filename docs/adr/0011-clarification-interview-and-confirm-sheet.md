@@ -273,6 +273,67 @@ ADR-0011 TODO ③ 原措辞是「澄清强度进 `MODE_REGISTRY` 作为新维度
 用 `\b${k}\s*:` ⇒ 匹配不到白名单里的**简写属性** `mode,`（误报 `漏了：mode`）。两处都已修
 （重插到顶层 ＋ 正则改 `(^|[^A-Za-z0-9_$])${k}\s*[:,]`）。
 
+## 🔴 真实验证（2026-10-07）：`extra` 契约**兑现率仅 ~20%** ⇒ 依赖它的三条链大面积空转
+
+### 为什么要做这次验证
+
+用户问「下一步是流水线验证吗」。核了一圈发现**本机没有任何 dsh profile 挂着 teamflow**
+（`web`/`desktop`/`headless` 三个 `--dump-config` 全 0 命中；磁盘上也搜不到 `dsh-plugin-teamflow` 安装目录
+⇒ 用户平时是用桌面版跑的，我不持有那个运行环境）⇒ **整条流水线跑不了**。
+
+⇒ 改为跑**能跑的那一段**：用真实的 `prdPrompt`（从 `host/prompts/index.ts` 直接调出，8662 字符）
+喂 headless 主 agent，让它产出 PRD，再解析 state 块。**这一次真调用就查出了大问题。**
+
+### 发现 1：`STATE_BLOCK_INSTRUCTION` 与各阶段 prompt 是**两份冲突契约**
+
+| 位置 | 教的东西 |
+|---|---|
+| `host/core/domain/state.ts:337` `STATE_BLOCK_INSTRUCTION`（**被 11 个阶段 prompt 引用**） | 给了一个**完整 JSON 模板**：`{"phase":"<stage-key>","summary":"<≤500 chars>","memory":["<memory points>"]}` —— **没有 `extra`** |
+| 各阶段 rules（如 `prompts/index.ts:454`） | 用**散文**说 `extra contains { "acIndex": {...}, "summary": ..., "techStack": ..., "openQuestions": [...] }` |
+
+模型的自然选择是**照模板写字面**（模板更具体、且在 prompt 末尾）⇒ 探针产出实测：
+`{"phase":"prd","summary":"...","memory":[...]}` —— **无 `extra`**。
+
+### 发现 2：真实数据证实兑现率低（34 个 state.json 全量）
+
+| 字段 | 非空 |
+|---|---|
+| `acIndex` | **7 / 34（20%）** |
+| `product.summary` | 0 / 34（⚠️ 该落点**今天才加**，历史数据不能证明契约兑现率，见下条更正） |
+| `openQuestions` | 0 / 34（新字段，符合预期） |
+
+**反证（重要）**：抽 `ws-dsh-plugin-teamflow-17e2029c` 的两个 run，其 PRD state 块**确实同时有** `memory` 与
+`extra:{acIndex:{…}}` ⇒ 模型**有能力**写 `extra`，只是**不总写**；且**写了也未必齐全** —— 另一条样本里
+`product.techStack` 有值而 `product.summary` 为 null，说明模型**挑着写**。
+
+⇒ **精确结论**：不是「从不写」，而是「**约 20% 会写，且内容不全**」。
+⇒ 依赖 `extra.*` 的三条消费链（`state.acIndex` 注入给 pm/qa/acceptance/tech ／ `product.summary` ／
+`openQuestions`）**在多数 run 里是空的**。**其中 `state.acIndex` 的注入是既有功能** ⇒ 它长期空转，
+只是没人发现（注入块是条件式的 `if (Object.keys(state.acIndex).length)` —— **空就静默不注入**，无日志）。
+
+### ⚠️ 为什么既有门禁没抓到
+
+`test/prompt-contract.test.js:156-162` 的 L1 门禁断言 `include: [/openQuestions/, /假设与待澄清/]` ——
+它只检查**字符串在不在 prompt 里**，**不检查模型会不会照做**。⇒ 门禁绿灯、契约不兑现。
+（这与本仓 §2 纪律一致：**prompt 契约只能提标准，不能当保障**。但它同时说明 —— 「契约不兑现」这件事
+**必须有 host 侧兜底**，不能只靠 prompt。）
+
+### 推荐修法（**待拍板，未实施**）
+
+| # | 做法 | 性质 | 成本 |
+|---|---|---|---|
+| A | **统一契约**：把 `extra` 写进 `STATE_BLOCK_INSTRUCTION` 的**模板示例**里（并注明「可选、按阶段填」） | 治本：消除两份契约 | 单阶段 prompt ~+40 token；影响全部 11 个阶段的产物形态 |
+| B | **host 兜底**：`extra` 缺失时，从 PRD 正文**抽取** AC（与 `extractAssumptionsSection` 同构的行式抽取） | 治标但**符合「模型无关」纪律**（§2：能 host 客观判定的就不依赖模型自律） | 新增抽取器 + 门禁；⚠️ 抽段不可靠（曾被 `## 9. 假设与待澄清` 坑过），故**必须标注来源** |
+| C | A + B 并存，且确认单**显式标注每段的来源**（结构化 / 文本抽取 / 缺失） | 推荐：契约提兑现率 + 兜底保下限 + 来源可审计（防静默降级） | A + B 之和 |
+
+**推荐 C**。理由：`extra` 是「模型自律」，按 §2 不能当保障；而确认单是给人看的摘要，**空壳比不许存在更糟**
+（用户会以为「没什么要注意的」，而实际是「没抓到」）。
+
+### 未做
+
+本轮**只验证与记录，未改任何 prompt 或 host 逻辑** —— 修 A 要动全部 11 个阶段的产物契约，属实质设计变更，
+且修完**需要再跑一次真实调用**确认模型照做（又一轮 LLM 调用）⇒ 交用户拍板。
+
 ## 影响
 
 - `docs/TODO.md` 的「澄清闸门」条按本文收敛（Phase 2 与强度档合并设计）。
