@@ -312,15 +312,18 @@ export function confirmModeFromEnv(): 'auto' | 'always' | 'never' {
 }
 
 /**
- * **澄清强度**（ADR-0011 ③）的环境变量通道（2026-10-08）：`TEAMFLOW_CLARIFY` = `off`/`once`/`interview`。
- * 与 `confirmModeFromEnv` 同一条理由：公开参数无人会设 = 功能不存在。缺省 `once` = 现行行为逐字不变。
- * ⚠️ 归一仍要走 `normalizeClarifyStrength`（`patch` 恒 off 的判定顺序是契约），本函数只负责读环境。
+ * **澄清策略变体**（ADR-0011 ③）的环境变量通道（2026-10-08 **重构后**）：`TEAMFLOW_CLARIFY`。
+ * 缺省 `interview`（一次一问）—— 它现在是 **ctx 手册的默认行为**，不再是「缺省不追加」的档位。
+ * `once` / `off` 只服务**对照实验**（`interview` 的文案与 `once` 的旧文案逐字并存于词典）。
+ *
+ * ⚠️ **为什么不再有 `patch` 恒 off 的归一**：那条契约约束的是「run 级选项」，而本字段已不是 run 级选项
+ * （ctx 只在选团队时注入，那时还不知道档位）。契约随字段一起作废，见 ADR-0011。
  */
 export function clarifyStrengthFromEnv(): 'off' | 'once' | 'interview' {
   const v = String(process.env.TEAMFLOW_CLARIFY ?? '').trim().toLowerCase()
-  if (v === 'interview') return 'interview'
+  if (v === 'once') return 'once'
   if (v === 'off') return 'off'
-  return 'once'
+  return 'interview'
 }
 export function sanitizeSnapOptions(o) {
   const opts = (o && typeof o === 'object') ? o : {}
@@ -1688,18 +1691,10 @@ export function extractAcIndexFromText(doc: string | null | undefined): Record<s
 }
 
 /**
- * **澄清强度归一**（ADR-0011 ③，2026-10-07）：`off` / `once`（缺省）/ `interview`。
+ * **已删除：`normalizeClarifyStrength`**（2026-10-08）。
  *
- * 判定顺序是**契约**（`patch` 恒 `off` 优先于显式 `interview`）：
- * ADR-0011 策略档矩阵写明「`patch` 恒 off」——patch 是单 agent 直改，它的「PRD」只是机械的单点确认
- * 阶段，给它开多轮访谈纯属反效果。⇒ 显式传 `interview` 也压不住 `patch`。
- *
- * 缺省 `once`＝**现行行为逐字不变**（ADR-0011 §裁决 ③：收敛规则与轮次上限都不改，本字段只影响注入文案）。
+ * 它唯一的职责是「`patch` 恒 `off`，优先于显式 `interview`」——一条约束 **run 级选项**的契约。
+ * 而 `clarifyStrength` 自 2026-10-08 起**不再是 run 级选项**（它只选 ctx 文案，而 ctx 在选团队时注入，
+ * 那一刻还不知道档位，也不知道是不是 patch）⇒ **该契约随字段一起作废**，见 ADR-0011 落地记录。
+ * 需要复现旧档位做对照时用 `TEAMFLOW_CLARIFY`（见 `clarifyStrengthFromEnv`）。
  */
-export function normalizeClarifyStrength(value: unknown, mode?: unknown): 'off' | 'once' | 'interview' {
-  if (mode === 'patch') return 'off'
-  const v = String(value === null || value === undefined ? '' : value).trim()
-  if (v === 'interview') return 'interview'
-  if (v === 'off') return 'off'
-  return 'once'
-}

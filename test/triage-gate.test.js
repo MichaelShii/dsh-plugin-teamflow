@@ -13,8 +13,7 @@
  * 另外锁住意图归一（非法值一律 requirement，绝不因字段缺失拦启动）。
  */
 import { qualifyBlockers, normalizeSettle, TRIAGE_SETTLES, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, LOCAL_PLUGIN_SAMPLES_HINT, triageRecordOf, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, triageCacheIsPending, triageCacheMarkPending, triageCacheSettle, TRIAGE_CACHE_MAX, normalizeHost, forceHost, contractsForDeliverable, ARTIFACT_HOSTS } from '../host/core/triage.ts'
-import { normalizeClarifyStrength } from '../host/util.ts'
-import { extractAssumptionsSection, extractHostResearchSection, detectInstallEnv, profileFromModulePath, profileDirFromBaseUrl, isAbsolutePath, installRecipe } from '../host/util.ts'
+import { clarifyStrengthFromEnv, extractAssumptionsSection, extractHostResearchSection, detectInstallEnv, profileFromModulePath, profileDirFromBaseUrl, isAbsolutePath, installRecipe } from '../host/util.ts'
 import { prdPrompt } from '../host/prompts/index.ts'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -484,18 +483,29 @@ console.log('     `dsh plugin --profile web add` 在他机器上跑不通；故�
 }
 
 
-// ── 澄清强度归一（ADR-0011 ③，2026-10-07）──────────────────────────────
-// 核心契约：**patch 恒off，且优先于显式 interview** —— 策略档矩阵写死了「patch 恒 off」，
-// 给单点直改的机械 PRD 阶段开多轮访谈是反效果。
-ok(normalizeClarifyStrength(undefined) === 'once', '缺省 = once（现行行为，零回归）')
-ok(normalizeClarifyStrength('interview') === 'interview', '显式 interview → interview')
-ok(normalizeClarifyStrength('off') === 'off', '显式 off → off')
-ok(normalizeClarifyStrength('bogus') === 'once', '非法值 → 回落 once（不静默变成 off/interview）')
-ok(normalizeClarifyStrength('interview', 'patch') === 'off', '**patch + 显式 interview → 仍 off**（策略档矩阵优先）')
-ok(normalizeClarifyStrength('once', 'patch') === 'off', 'patch + once → off')
-ok(normalizeClarifyStrength('interview', 'full') === 'interview', '非 patch 档时显式 interview 生效')
-ok(normalizeClarifyStrength('  interview  ') === 'interview', '值带空白 → trim 后生效')
-ok(normalizeClarifyStrength(null) === 'once' && normalizeClarifyStrength(undefined, 'lite') === 'once', 'null/undefined 一律 once')
+// ── 澄清变体（ADR-0011 ③；2026-10-08 **重构**）──────────────────────────────
+// ⚠️ 旧的 `normalizeClarifyStrength` 与其「patch 恒 off，优先于显式 interview」契约**已随字段删除**：
+// 那条契约约束的是 **run 级选项**，而 `clarifyStrength` 不再是 run 级选项（它只选 ctx 文案，
+// 而 ctx 在**选团队时**注入 —— 那一刻既没有档位、也不知道是不是 patch）。见 ADR-0011 落地记录。
+// 现由 `clarifyStrengthFromEnv` 读环境变量，**默认 interview**：一次一问是**产品默认行为**，
+// `once`/`off` 只服务对照实验。⇒ 这里锁「默认值 + 非法值不静默降级」两条。
+const withEnv = (v, fn) => {
+  const prev = process.env.TEAMFLOW_CLARIFY
+  if (v === undefined) delete process.env.TEAMFLOW_CLARIFY
+  else process.env.TEAMFLOW_CLARIFY = v
+  try { return fn() } finally {
+    if (prev === undefined) delete process.env.TEAMFLOW_CLARIFY
+    else process.env.TEAMFLOW_CLARIFY = prev
+  }
+}
+ok(withEnv(undefined, clarifyStrengthFromEnv) === 'interview', '缺省 = interview（一次一问＝产品默认行为，不是可选档）')
+ok(withEnv('', clarifyStrengthFromEnv) === 'interview', '空串 = interview（不静默降级成 off）')
+ok(withEnv('once', clarifyStrengthFromEnv) === 'once', '显式 once → once（A/B 对照组）')
+ok(withEnv('OFF', clarifyStrengthFromEnv) === 'off', '大小写不敏感（模型/人手写环境变量常见变体）')
+ok(withEnv('  off  ', clarifyStrengthFromEnv) === 'off', '值带空白 → trim 后生效')
+ok(withEnv('bogus', clarifyStrengthFromEnv) === 'interview', '非法值 → 回落 interview（**不静默变成 off** —— 那会让默认行为消失）')
+// 旧机制必须真的没了：反查历史 run 是「本 run 传的值当次不生效」的根因（迟一拍 + 重启丢）。
+ok(!/function clarifyStrengthForTeam\(/.test(readFileSync(join(here, '../host/index.ts'), 'utf8')), 'host：反查历史 run 的旧机制已删除（迟一拍 ＋ 重启丢失）')
 
 console.log(failed ? `\n✗ triage-gate：${failed} 条失败\n` : '\n✓ triage-gate：全部通过\n')
 process.exit(failed ? 1 : 0)

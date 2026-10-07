@@ -783,7 +783,11 @@ ok(execBlock.length > 50, '提取到 execOptions 的具名补充段')
 const OPT_EXEMPT = new Set([])
 const optMissing = optKeys.filter((k) => !OPT_EXEMPT.has(k) && !new RegExp(`(^|[^A-Za-z0-9_$])${k}\\s*[:,]`).test(joptBlock) && !new RegExp(`(^|[^A-Za-z0-9_$])${k}\\s*[:,]`).test(execBlock))
 ok(optMissing.length === 0, `PipelineOptions 的每个字段都必须能被 executePipeline 收到${optMissing.length ? ` —— **漏了：${optMissing.join(', ')}**（只加 interface 不加白名单 = 静默失效；行为测试直调 executePipeline，绕过白名单 ⇒ 全绿也发现不了）` : ''}`)
-ok(/confirmMode: options\.confirmMode/.test(joptBlock) && /clarifyStrength: options\.clarifyStrength/.test(joptBlock), '本次实锤漏的两个字段已进白名单（确认单触发档 ＋ 澄清强度）')
+ok(/confirmMode: options\.confirmMode/.test(joptBlock), '本次实锤漏的字段已进白名单（确认单触发档）')
+// ⚠️ `clarifyStrength` 于 2026-10-08 **整体移出 `PipelineOptions`**（它从来不影响流水线，只选 ctx 文案
+// ⇒ 作为 run 参数结构上「迟一拍」）。⇒ 反向锁：字段不得复活。锚「interface 里的声明」而不是裸词
+// —— host 源码注释里就写着这个字段名（本仓第 9 次同型：注释会污染子串匹配）。
+ok(!/^\s*clarifyStrength\?:/m.test(optIface), 'PipelineOptions 不再有 clarifyStrength 字段（它不是 run 级选项 ⇒ 不该占白名单与快照）')
 
 /* 临时/实验开关**不进公开工具 schema**（MEMORY §6；2026-10-08 用户实锤「用户又不知道这参数」）。
  * 为什么是**反向锁**：这两条原先锁的是「host 暴露了参数」，方向正好相反 —— 必须改掉，
@@ -796,16 +800,27 @@ ok(/confirmMode: options\.confirmMode/.test(joptBlock) && /clarifyStrength: opti
 ok(!/needConfirm: \{ type: 'boolean'/.test(hostSrc) && !/args\.needConfirm/.test(hostSrc), 'host：不得再暴露 needConfirm 参数（用户不知道它 ⇒ 公开 = 功能不存在；改由内容判据 + 环境变量）')
 ok(!/clarifyStrength: \{ type: 'string'/.test(hostSrc), 'host：不得再暴露 clarifyStrength 参数（同上，改走 TEAMFLOW_CLARIFY）')
 ok(/export function confirmModeFromEnv/.test(utilSrc) && /export function clarifyStrengthFromEnv/.test(utilSrc), 'util：两个开关的环境变量通道都在（参数摘掉后必须有替代落点）')
-ok(/confirmMode: confirmModeFromEnv\(\)/.test(hostSrc) && /normalizeClarifyStrength\(clarifyStrengthFromEnv\(\)/.test(hostSrc), 'host：环境变量真的被接进 options（摘了参数却不接线 = 功能直接没了）')
+ok(/confirmMode: confirmModeFromEnv\(\)/.test(hostSrc), 'host：confirmMode 环境变量真的被接进 options（摘了参数却不接线 = 功能直接没了）')
 
 // 澄清强度 `clarifyStrength`（ADR-0011 ③，2026-10-07）：**独立字段，不进 MODE_REGISTRY**
 // —— `PipelineMode` 决定阶段集/PRD 形态/护栏，把「追问几次」塞进去会让同一张表承担两件正交的事。
-ok(/export function normalizeClarifyStrength/.test(utilSrc), 'util：澄清强度归一是纯函数（可直接行为级测试）')
-// ⚠️ 顺序锁必须**跨两行**：只匹配「patch 那行存在」会在「调换判定顺序」时假绿
-//（M7 实测：把 patch 检查挪到 interview 之后，行为断言红了、源码锁却全绿 —— 它只看见那行还在）。
-ok(/if \(mode === 'patch'\) return 'off'[\s\S]{0,240}if \(v === 'interview'\) return 'interview'[\s\S]{0,120}if \(v === 'off'\)/.test(utilSrc), 'util：**patch 恒 off 且优先于** interview（判定顺序是策略档矩阵的契约，勿调换）')
-// ★ 零回归锁：`once`（缺省）必须**原样返回 base、一字不追加** —— 现有澄清引导段落逐字保留。
-ok(/if \(strength === 'once'\) return base/.test(hostSrc), 'host：once 档原样返回 base（addendum 只对 off/interview 追加 ⇒ 存量注入零回归）')
+// 澄清策略（ADR-0011 ③；2026-10-08 **重构**）：不再是 base ＋ addendum，而是**中间槽位可换**。
+// 锁「三段拼接」这个形态本身 —— 只锁某个 key 存在会在「退回 base＋追加」时假绿。
+ok(/t\(locale, clarifyKey\)/.test(hostSrc) && /t\(locale, 'tool\.ctx\.teamTail'\)/.test(hostSrc), 'host：ctx 由「前半 ＋ 澄清槽位 ＋ 后半」三段拼成（澄清段可换，不是追加）')
+ok(/const strength = clarifyStrengthFromEnv\(\)/.test(hostSrc), 'host：澄清变体直接读**环境变量**（不再反查历史 run ⇒ 消掉「迟一拍 ＋ 重启丢失」）')
+ok(!/function clarifyStrengthForTeam\(/.test(hostSrc), 'host：反查历史 run 的旧机制已删除（它正是「本 run 传的值当次不生效」的根因）')
+// ★ 默认档锁：**默认必须是 `interview`（一次一问）**，而且它得落在「**默认值**」那一支
+// （`return 'interview'` 是兜底 return），不是某个 `if` 分支 —— 只锁「文案里有 interview」会在
+// 「把默认改回 once」时假绿。
+ok(/if \(v === 'once'\) return 'once'[\s\S]{0,80}if \(v === 'off'\) return 'off'[\s\S]{0,40}return 'interview'/.test(utilSrc), 'util：澄清变体**默认 interview**（一次一问＝产品默认行为，不是可选档；once/off 只服务对照）')
+// ★ 三档文案都要在词典里：`once` 是**逐字保留的旧文案**（A/B 对照组 + 零回归参照）。
+ok(/'tool\.ctx\.clarifyInterview'/.test(hostSrc) && /'tool\.ctx\.clarifyOnce'/.test(hostSrc) && /'tool\.ctx\.clarifyOff'/.test(hostSrc), 'locales：三档澄清文案齐备（默认 interview ／ A/B 对照组 once ／ off）')
+// ★ 产品默认行为必须**写进 ctx 手册本身**（用户 2026-10-08 指的切口）：默认档文案要含「一次只问一个问题」，
+// 否则「把开关摘了但默认没接上」会静默退回旧行为。
+ok(/一次只问一个问题/.test(hostSrc) && /ask \*\*exactly one question at a time\*\*/.test(hostSrc), 'locales：默认澄清档写明「一次一问」（zh/en 都要，缺席则默认行为名存实亡）')
+// 探索态加固：分诊判 exploration ⇒ 在**返回面**同一次调用内送达（ctx 注入喂不回去，见 host 注释）。
+ok(/'tool\.start\.explorationProtocol'/.test(hostSrc) && /value\.intent \|\| ''\) === 'exploration'/.test(hostSrc), 'host：exploration 时在 needs-clarification 返回面追加「一次一问」协议')
+ok(/verdict\.intent === 'exploration'/.test(pipelineSrc), 'pipeline：兜底闸门（abortForClarification）同样追加（两条路径必须同形，否则「谁先命中」决定行为）')
 
 // ① 的**代价条款**（ADR-0011 §裁决 ①，2026-10-07 补）：批准 = 放行一条已启动的流水线 ⇒
 // 文案必须写清「接下来会开始写代码」，否则用户会以为还在讨论（拍板时写下、当时漏实现）。
@@ -834,8 +849,7 @@ ok(/extractAcIndexFromText\(v\.prdText\)/.test(hostSrc), 'confirm：兜底**真�
 // ★ A 方案的核心：模板**本体**必须带 extra —— 只写散文要求 = 模型照模板忽略它（本日实测的根因）
 ok(/"extra":\{/.test(hostSrc), 'state：STATE_BLOCK_INSTRUCTION 的模板本体含 `extra`（把两份互相不覆盖的契约合并成一份）')
 ok(/'confirm\.acExtracted'/.test(hostSrc) && /'confirm\.acMissing'/.test(hostSrc), 'locales：AC 来源标注两键齐备（抽取 / none 都要自曝，不能静默留空段落）')
-ok(/clarifyStrengthForTeam/.test(hostSrc) && /tool\.ctx\.clarifyInterview/.test(hostSrc) && /tool\.ctx\.clarifyOff/.test(hostSrc), 'host：强度从 run 快照反查（强度是每次 run 的参数，不是会话级设置）＋ 两档 addendum 齐备')
-ok(/'tool\.ctx\.clarifyInterview'/.test(hostSrc), 'locales：interview addendum 文案存在（一次一问 ＋ 每问带猜测 ＋ 硬终止三条件）')
+ok(/t\(locale, clarifyKey\)/.test(hostSrc) && !/function clarifyStrengthForTeam\(/.test(hostSrc), 'host：澄清变体按强度**选槽位**（不再反查 run 快照 —— 那是「迟一拍」的根因）')
 // 续跑补录入口：`supplement` 从 teamflow_resume 一路传到 resumeRun；PRD 是唯一消费点
 // ⇒ 断点晚于 prd 必须**显式拒绝**（静默接受 = 静默丢弃，本仓反复踩）
 ok(/supplement\?: string \| null/.test(pipelineSrc) && /resumeRun\(id, parent\.session\.id, sup\)/.test(hostSrc), 'resume：supplement 从 teamflow_resume 一路传到 resumeRun')
@@ -865,7 +879,7 @@ ok(/function abortForConfirmSheet/.test(pipelineSrc) && /return abortForConfirmS
 // ⚠️ 判据 2026-10-08 从「显式开关」改成「**内容驱动**」⇒ 必须锁住 `tasteCount > 0` 这半句：
 // 只锁 `mode !== 'patch' && !resume` 的话，判据被改回开关形态时源码锁会**假绿**（后半句还在）。
 ok(/confirmMode === 'always' \|\| \(confirmMode === 'auto' && tasteCount > 0\)/.test(pipelineSrc), 'pipeline：确认单触发 = **内容驱动**（有 kind=taste 主观项才停）＋ 内部强制位 always/never')
-ok(/options\.mode !== 'patch' && !resume/.test(pipelineSrc), 'pipeline：patch 恒 off ＋ 只在非 resume 时停一轮')
+ok(/options\.mode !== 'patch' && !resume/.test(pipelineSrc), 'pipeline：patch 档不暂停 ＋ 只在非 resume 时停一轮')
 // 「缺 kind 不阻断」**不等于**「静默」：必须发 warn（否则就是又一次功能静默空转，§7③）。
 // ⚠️ 必须从**判定条件**起锚，不能只锁 `log.openQuestionsUntagged` 这个标识符 ——
 // M22 实测：把条件改成 `if (false && …)` 时，只锁标识符的写法**假绿**（标识符原样还在）。

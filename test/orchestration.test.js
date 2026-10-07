@@ -435,6 +435,24 @@ console.log('\n[16] 澄清闸门：分诊 intent 非需求 + must-know 缺口 �
   ok(!has(r.childLabels, '梳理 PRD'), '未进入 PRD 阶段（闸门在任何阶段之前——不得先干再问）')
   ok(/澄清|尚未对齐/.test(String(r.error)), `错误文案要求先向用户澄清（实测 ${String(r.error).slice(0, 40)}）`)
   ok(r.status !== 'running', `澄清中止后 status 不卡 running（实测 ${r.status}）`)
+  // 探索态加固（2026-10-08）：`intent === 'exploration'` ⇒ 中止文案**追加**「一次一问」协议。
+  // 这是**行为断言**（不是源码锁）：工具返回面与 pipeline 兜底闸门两条路径必须同形，
+  // 否则「谁先命中」会决定主 agent 拿到什么行为指令。
+  ok(/一次只问一个问题/.test(String(r.error)), `探索态 ⇒ 中止文案带「一次一问」协议（实测尾部 ${String(r.error).slice(-56)}）`)
+  ok(/停止追问/.test(String(r.error)), '协议同时给**硬终止**条件（只教「一次一问」不教「何时停」＝把用户拖进无限追问）')
+  // 对照：**非探索态**不得加协议 —— 否则等于每次澄清都被强制成访谈模式。
+  // （intent=requirement 但仍有 blocker ⇒ 同样走 needs-clarification，路径相同、只有 intent 不同。）
+  const reqClarify = await runScenario('triage-clarify-req', {
+    options: QA_OPTS,
+    triage: JSON.stringify({
+      mode: 'full', kind: 'feature', complexity: 'medium', confidence: 'high',
+      // ⚠️ blocker 必须**过 host 合格线**（≥2 个互斥读法 ＋ changes ＋ rework，见 `qualifyBlockers`）：
+      // 少了 `readings` 会被丢掉 ⇒ blockers 为空 ⇒ 闸门不触发，这条对照就测了个寂寞（第一版踩过）。
+      intent: 'requirement', blockers: [{ question: '用哪个库？', readings: ['A 库', 'B 库'], changes: '换库', rework: '重写' }], slug: 'clarify-req',
+    }),
+  })
+  ok(/澄清|尚未对齐/.test(String(reqClarify.error)) && !/一次只问一个问题/.test(String(reqClarify.error)),
+    `对照：intent=requirement ⇒ 同一路径**不加**协议（实测尾部 ${String(reqClarify.error).slice(-50)}）`)
 }
 
 console.log('\n[17] host 侧两项检查必须「可观测」—— 不许静默空转')

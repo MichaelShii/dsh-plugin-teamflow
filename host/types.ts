@@ -51,14 +51,17 @@ export interface BacklogItem {
 export type PipelineMode = 'full' | 'medium' | 'lite' | 'tech' | 'patch'
 
 /**
- * **澄清强度**（ADR-0011 ③，2026-10-07）：`off`（开工前不追问）/ `once`（缺省，现行一轮）/
- * `interview`（多轮访谈：一次一问、每问带猜测）。
+ * **澄清策略变体**（ADR-0011 ③；2026-10-08 收窄为**对照实验开关**）。
  *
- * ⚠️ **刻意不做成 `PipelineMode` 的一档**（偏离 ADR-0011 TODO ③ 的原措辞「进 MODE_REGISTRY 作为
- * 新维度」，理由已记进 ADR-0011）：`PipelineMode` 是**流水线档位**，决定阶段集 / PRD 形态 / 架构护栏
- * （`resolveStages` / `MODE_RANK` / `guardrailUpgrade` 三处都按它分派）；把「追问几次」塞进去会让
- * 同一张表承担两件正交的事，并把 `interview` 变成一个「没有对应阶段集」的伪档位。
- * ⇒ 独立字段，且**只影响注入文案**（ADR-0011 §裁决 ③ 已定：收敛规则与轮次上限都不改）。
+ * 历史：它曾是 `PipelineOptions` 的独立字段（`off`/`once`/`interview`），并在 ADR-0011 里
+ * **刻意不做成 `PipelineMode` 的一档**——`PipelineMode` 决定阶段集 / PRD 形态 / 架构护栏
+ * （`resolveStages` / `MODE_RANK` / `guardrailUpgrade` 三处按它分派），把「追问几次」塞进去会让
+ * 同一张表承担两件正交的事，并把 `interview` 变成「没有对应阶段集」的伪档位。**该论证仍成立。**
+ *
+ * ⚠️ **2026-10-08 字段本身被删掉**，理由与论证无关：它**从来没影响过流水线**，只选 `tool.ctx.team`
+ * 中间那段文案；而 ctx 只在**选团队时**注入 ⇒ 作为 run 参数结构上「迟一拍」（反查历史 run 还带来
+ * 「重启丢失」）。用户指出切口应是**手册本身** ⇒ 默认行为写进 ctx（`once` 的文案保留为对照组），
+ * 这个 union 只剩 `TEAMFLOW_CLARIFY` 的取值域，不再是 pipeline 选项。
  */
 export type ClarifyStrength = 'off' | 'once' | 'interview'
 /**
@@ -84,14 +87,6 @@ export interface PipelineOptions {
   /** **PRD 确认单**（ADR-0011 ①）：触发档见 `ConfirmMode`（缺省 `auto` = 有主观品味项才停）。
    *  环境变量通道，不进工具 schema。 */
   confirmMode?: ConfirmMode
-  /**
-   * **澄清强度**（ADR-0011 ③，2026-10-07）：`off` / `once`（缺省）/ `interview`。**只影响注入给主线程的
-   * 文案**（`interview` 追加「一次一问 + 每问带猜测 + 硬终止」段），**不改闸门收敛规则、不加轮次上限**
-   * （§裁决 ③ 已定：轮数在宿主侧不可测，真阳性率不足的判据不得有阻断权）。
-   * `patch` 恒按 `off` 处理（见 `util.normalizeClarifyStrength` 的判定顺序，那是契约）。
-   * ⚠️ **不是工具参数**（2026-10-08 起）：由环境变量 `TEAMFLOW_CLARIFY` 传入——理由同 `confirmMode`。
-   */
-  clarifyStrength?: ClarifyStrength
   tasks?: unknown
   productRoot?: string | null
   maxConcurrency?: number

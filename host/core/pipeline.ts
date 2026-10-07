@@ -240,7 +240,9 @@ function abortForClarification(journal: Journal, locale: HostLocale, verdict: Tr
   // 正是本函数头注释承诺的那个「零阶段 run（status=interrupted + humanIntervention）」。
   journal.status = 'interrupted'
   journal.humanIntervention = true
+  // 探索态加固（2026-10-08）：与 tool 返回面同一协议（两条路径必须同形，否则「谁先命中」决定行为）。
   journal.error = t(locale, 'run.needsClarification', { intent: verdict.intent, n: verdict.blockers.length })
+    + (verdict.intent === 'exploration' ? `\n${t(locale, 'tool.start.explorationProtocol')}` : '')
   journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyAbort', { intent: verdict.intent, n: verdict.blockers.length }) })
   for (const b of verdict.blockers) {
     journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyBlocker', { q: clip(b.question, 200), changes: clip(b.changes, 160), rework: clip(b.rework, 160) }) })
@@ -1221,7 +1223,6 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
       // **门禁**：`test/smoke.js` 解析 `PipelineOptions` 接口键，断言每个键要么在本白名单、要么在
       // `execOptions` 的具名补充里（新增字段漏搬就红）。
       confirmMode: options.confirmMode || undefined,
-      clarifyStrength: options.clarifyStrength || undefined,
       tasks: normalizeTasks(options.tasks),
       productRoot: normalizeRoot(options.productRoot),
       maxConcurrency: normalizeConcurrency(options.maxConcurrency),
