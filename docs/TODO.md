@@ -29,7 +29,14 @@
     工具描述里又没说何时该设的开关 = 功能根本不存在（`craft` / `TEAMFLOW_CRAFT` 是同一模式的先例）。
     **留给实测**：一条「桌宠」需求零参数跑通，看 ① 是否自动停在品味项上、② `kind` 兑现率。
   - **② 审批面选型**：优先宿主直调 user-questions seam（`intent:{kind:'plan-review'}` + `detail` = 计划 markdown → 原生审阅卡 `Approve`/`Keep planning`/`Chat about it`）——**2026-10-07 已实机验证**（详见 `docs/adr/0011-…md` §P1 实机验证）：插件 `inject(['userQuestions','agents'])` 成功、能取到 **live root 实例**、**传实例能进桥转发**（挂到 4013ms 超时）；**但「省 `agent`」形态被证伪**（全局 dispatch 无 scope carrier ⇒ 桥第一出口 `next()` ⇒ `NO_PROVIDER`）⇒ 必须传真实例，且多 root 时按 `journal.ownerSession` 选（勿 `roots()[0]`）、必须带 `signal`。**未验**：真客户端 UI 端到端（本探针组合无 `ui-user-questions`）；兜底沿用既有的「返回 status → 主线程 `ask_user_question`」通道（已在生产验证）。
-  - **③ 策略档 `interview`（与 ① 一体两面，ADR-0010 D3/D4）**：澄清强度进 `MODE_REGISTRY` 作为新维度（`off` ＝ patch 现状 / `once` ＝ 现行默认 / `interview` ＝ 显式开；**`patch` 恒 `off`**）；**必须带硬终止**（D4：轮数上限 ＋ 置信度不再上升即停 ＋ 用户可随时「够了」，三条并存）——同一闸门早期版本因反复追问造成 **6 轮零 run**。
+  - **③ 策略档 `interview`（与 ① 一体两面，ADR-0010 D3/D4）**：澄清强度~~进 `MODE_REGISTRY` 作为新维度~~（`off` ＝ patch 现状 / `once` ＝ 现行默认 / `interview` ＝ **显式开**；**`patch` 恒 `off`**）；**必须带硬终止**（D4：轮数上限 ＋ 置信度不再上升即停 ＋ 用户可随时「够了」，三条并存）——同一闸门早期版本因反复追问造成 **6 轮零 run**。
+    **⚠️ 2026-10-08 重写这一条（原描述已不成立）**：
+    - **不进 `MODE_REGISTRY`**（原措辞作废）：`PipelineMode` 决定阶段集 / PRD 形态 / 架构护栏，把「追问几次」塞进去会让同一张表承担两件正交的事。
+    - **不是「显式开」、也不是 run 级选项**：`clarifyStrength` 已整体移出 `PipelineOptions`（`clarifyStrengthForTeam` 删除）。原因：它**只选 `tool.ctx.team` 中间那段文案**，而 ctx 只在**选团队时**注入 ⇒ 作为 run 参数**结构上「迟一拍」**（本 run 传的值当次不生效），反查历史 run 还带来「重启丢失」。
+    - **一次一问现在是默认行为**，写在 ctx 手册里（**切口 = 告诉主 agent 怎么用这个插件**）：`tool.ctx.team` 拆为「前半 ＋ 澄清槽位 ＋ 后半」，默认档 = `interview` 文案；`once`/`off` 只留作**对照实验**（`TEAMFLOW_CLARIFY`）。
+    - **「`patch` 恒 off」契约作废**：它约束的是 run 级选项，而 ctx 注入时既不知道档位、也不知道是不是 patch。
+    - **硬终止已落地（文案层）**：默认档文案明写三条停止条件（能预测剩下的 / 用户说够了 / 同问题问过两轮）。⚠️ 仍属**模型自律**（§2：prompt 提标准不当保障）⇒ **未做机器侧强制**。
+    - **探索态加固**：`intent === 'exploration'` 时在 `needs-clarification` **返回面**追加同一协议（工具返回面 ＋ pipeline 兜底闸门两处同形）。
   - **④ 强度按数据定（ADR-0010 待定 #3，已收窄）**：`fallbackVerdict` 仍硬编码「永不拦启动」。三候选：① 保留放行但**可见**（**已做**，见上）；② 降级为**确定性形态判据**兜底拦一次；③ ①+② 叠加。**② 属「加拦截」，按纪律要先定判据 ＋ 量真阳性率 —— 而 `clarify.jsonl` 当前样本 ≈0（1 条产品线 / 2 行）⇒ 这是真正的瓶颈，先攒。**
   - **位置论证（勿再争）**：确认单**必须放 PRD 之后、tech 之前**——放启动前只能问抽象问题，放 tech 之后是**事后追认**（驳回要连 PRD+tech 一起重做）。实测调用占比：PRD 后 ≈2–6%、dev+QA ≈89–95%。
   - **已定约束**：合格线由 host 判（每条 blocker 须同时给 ①≥2 个互斥读法 ②改变哪个 AC/范围 ③猜错要重做什么，缺一丢弃并 warn）；模态豁免 `patch` 直通 / `lite` 仅在有项时停 / `medium·full` 默认停 / headless 不停（走「假设 + 汇报高亮」）；闸门语义 ＝ 只负责「唤起第一轮对齐」，不负责「追问到满意」（多轮追问需跨调用状态：`clarify-state.json` + 轮次上限 + TTL）。

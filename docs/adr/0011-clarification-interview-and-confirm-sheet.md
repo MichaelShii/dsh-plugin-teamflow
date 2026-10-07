@@ -423,7 +423,8 @@ C 落地后拿真实语料回量 B，发现命中率远低于预期 ⇒ 逐步�
 ### 未做
 
 - 审批面**原生 seam**（`ctx.userQuestions`）仍未接线 —— 现在走的是「可插拔择路 + 回落到 interrupted」。
-- `clarifyStrength` 未做跨重启持久化（进 `journal.options` 快照，够用）。
+- ~~`clarifyStrength` 未做跨重启持久化（进 `journal.options` 快照，够用）~~ —— **2026-10-08 消解**：
+  该字段整体移出 `PipelineOptions`，变体改为直接读环境变量 ⇒ 既无「迟一拍」也不受重启影响。
 - `redoFrom`（改计划重跑 PRD）未做。
 - 强度按数据定档：`clarify.jsonl` 样本仍 ≈0。
 
@@ -522,6 +523,58 @@ C 落地后拿真实语料回量 B，发现命中率远低于预期 ⇒ 逐步�
 **`kind` 的真实兑现率**。本轮所有断言都跑在人造 PRD 产出上 —— 而本 ADR §发现 2 的教训正是
 「**人造夹具永远暴露不了兑现率**」。⇒ 需要一条真实端到端：「桌宠」需求**零参数**正常跑，看
 ① 是否自动停在品味项上、② `state.json` 里 `kindMissing` 有几条（读 `log.openQuestionsUntagged` 与 `state.openQuestions`）。
+
+### 追加（2026-10-08 晚）：切口修正 —— 澄清协议写进 **ctx 手册**，不是参数、也不是开关
+
+用户直接指出我的切口错了：
+
+> 你的切入点不应该是选择团队的那个上下文告诉主 agent 如何去使用这个插件吗？
+> ……或者放到需求分诊那块，就像档位和 `needDesign` 一样。
+
+查证后确认他对，而且**比他说的更彻底**：
+
+- **`clarifyStrength` 唯一的消费点就是那句 ctx 文案**（`teamflowContextText` 往 `tool.ctx.team`
+  后面追加一段）—— 它**从来没有影响过流水线**，只是在「选手册的变体」。
+- 而 ctx 只在**选团队时**注入（`index.ts` 两处调用），旧的 `clarifyStrengthForTeam()` 却
+  **反查历史 run 快照**来挑变体 ⇒ **本 run 传的值当次注入不进去**，只影响下一次；重启还会丢
+  （`runs` 是内存 Map）。⇒ 这是它「像没生效」的**结构原因**，比「没人设」更根本。
+- `tool.ctx.team` **本来就已经**写着探索态该怎么做（「需求只是探索/笼统时…先跟用户对齐…」），
+  `tool.ctx.clarifyInterview` 也**已经写好了**完整多轮协议 ⇒ 缺的从来不是文案，是**默认值**。
+
+**改动（全部已落地）**
+
+1. `tool.ctx.team` 拆成 **前半 ＋ 澄清槽位 ＋ 后半（`tool.ctx.teamTail`）**；`teamflowContextText`
+   按强度**选中间那段**（不再是「base ＋ 追加」）。
+2. **默认 ＝ `interview`（一次一问）** —— 一次一问是**产品默认行为**，不是可选档。
+   `once` 逐字保留旧文案（A/B 对照组 ＋ 零回归参照）；`off` 同样只服务对照。
+3. **`clarifyStrength` 整体移出 `PipelineOptions`**，`clarifyStrengthForTeam` 删除；变体直接读
+   `TEAMFLOW_CLARIFY`（**无滞后、无重启丢失**）。
+4. **`normalizeClarifyStrength` 及其「`patch` 恒 off」契约作废** —— 那条契约约束的是 **run 级选项**，
+   而 ctx 注入发生在选团队那一刻（既不知道档位，也不知道是不是 patch）。
+5. **探索态加固**：`intent === 'exploration'` 时在 **`needs-clarification` 返回面**追加「一次一问」协议
+   （工具返回面 ＋ pipeline 兜底闸门两处，**必须同形**，否则「谁先命中」决定主 agent 拿到什么指令）。
+   为什么不放 ctx：分诊在 `teamflow_start` 里才跑，**喂回 ctx 结构上不可能**；返回面是**同一次调用内**
+   送达，且随 journal 落盘 ⇒ **可审计**（正好补 ctx 文案不可审计的短板）。
+6. ctx 手册补一句「**PRD 后可能自动停下等拍板**」：确认单现在会**无人要求地**自动停，
+   主 agent 不该到中断那一刻才第一次知道（用户明确要求「补」）。
+
+**门禁与变异（全部实跑，非推断）**
+
+| 门禁 | 变异 | 结果 |
+| --- | --- | --- |
+| `smoke` 默认档锁（必须 `return 'interview'`） | 默认翻回 `once` | smoke 1 红 ＋ triage-gate 3 红，**对照组（大小写/trim/once）全绿** |
+| `smoke` 三段拼接锁 | 槽位写死成 `clarifyOnce` | smoke 2 红 |
+| `orchestration` 探索态协议（**行为断言**） | 去掉 pipeline 侧追加 | **行为 2 红 ＋ 源码锁 1 红**，对照 `intent=requirement` 仍绿 |
+| `smoke` `PipelineOptions` 反向锁 | 字段复活 | 红 |
+
+⚠️ 新增的行为断言第一版**测了个寂寞**：对照组的 blocker 少写 `readings` ⇒ 过不了 `qualifyBlockers`
+⇒ blockers 为空 ⇒ 闸门根本不触发，等于在测「没触发时文案里没有协议」。补上 `readings` 才成立。
+
+**成本**：ctx 注入**每次选团队都进主会话上下文** ⇒ zh `809 → 1197` 字符（+48%）、
+en `2111 → 3269`（+55%）。这是**手册**的代价，与「临时开关别进常驻上下文」不冲突——它不是开关。
+
+⚠️ 本条**又踩到「源码锁被注释污染」两次**（本仓第 9、10 次）：负向锁写 `!/clarifyStrengthForTeam/`
+时，**我自己刚写的解释注释**里就有这个名字 ⇒ 假红。锚到 `function clarifyStrengthForTeam(` 才成立。
 
 ## 影响
 
