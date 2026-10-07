@@ -696,7 +696,9 @@ export async function executePipeline(
     }
 
     // 预编译 state（跨 run 累积索引）：各阶段 prompt 注入 slice；结束后提取/合并 state 块
-    const state = loadState(journal.workspace || 'default')
+    // ⚠️ **必须是 `let`**：`mergeStageState` 合并后要**换掉这个绑定**（见下），否则本次 run 内
+    // 后续阶段（含 PRD 确认单）读到的永远是**起跑快照**。
+    let state = loadState(journal.workspace || 'default')
     state.__runCtx = { ...(state.__runCtx || {}) }
     if (journal.runDocs) state.__runCtx.runDocs = journal.runDocs
     // 注入块语言（AC-3⑤）：快照经既有 __runCtx 通道下发（不改任何 prompt 工厂签名）
@@ -777,7 +779,19 @@ export async function executePipeline(
     }
     const mergeStageState = (phaseKey, output) => {
       const block = extractStateBlock(output)
-      if (block) mergeStateBlock(journal.workspace || 'default', block, phaseKey)
+      if (!block) return
+      // ⚠️ `mergeStateBlock` 是 load → 改 → save → **返回一个新对象**（不是就地改我们手上那份）。
+      // **丢弃返回值 = 内存里的 `state` 永远停在「起跑快照」** ⇒ 本次 run 里 PRD 写下的
+      // `extra.acIndex` / `product.summary` / `openQuestions` / `verifyScripts` / `modules`
+      // **在同一 run 的后续阶段全都看不见**（要等**下一次 run** 从磁盘载入才可见）。
+      // 2026-10-07 实锤 tf-muy63zgy-octoqj（真实桌面版）：磁盘 `state.json` 里 `acIndex` 9 条、
+      // `product.summary` 有值，而同一次 run 的确认单却是 `acSource=extracted`、`summary=''`
+      // —— 因为确认单读的正是这份没刷新的内存 state。
+      const rc = state.__runCtx
+      state = mergeStateBlock(journal.workspace || 'default', block, phaseKey)
+      // `__runCtx` 是**运行期字段、`loadState` 不搬运**（`state.test.js` 有豁免断言）⇒
+      // 不显式带回的话，runDocs / locale / craft / artifactContracts / blueprint 会整片消失。
+      if (rc !== undefined) state.__runCtx = rc
     }
     // 验证证据块存证（dev/qaFix 契约；policy 级——缺失记 warn 不中断）。
     // 按 withRetry 返回的 stage 引用直写——并发 dev 下绝不错位（reverse().find

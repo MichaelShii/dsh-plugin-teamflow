@@ -836,6 +836,12 @@ ok(/if \(!resume\) journal\.requirementSupplement = options\.requirementSuppleme
 // 锁整句「条件 → 影响」：真判据 = 断点落在 acceptance **且该段也已 done**。
 ok(/phaseAtEntry === 'acceptance' && \(j\.stages \|\| \[\]\)\.some\(\(s\) => phaseKeyOf\(s\.phase\) === 'acceptance' && s\.status === 'done'\)/.test(pipelineSrc), 'resume：无断点判据 = 断点落 acceptance **且该段 done**（不得用「已记录阶段全 done」——确认单暂停时恒真）')
 ok(!/\(j\.stages \|\| \[\]\)\.every\(\(s\) => s\.status === 'done'\)/.test(pipelineSrc), 'resume：旧伪代理判据（「已记录阶段全 done」）不得复活')
+// ⚠️ **同一 run 内 state 必须刷新**（实锤 tf-muy63zgy-octoqj）：`mergeStateBlock` 是 load→改→save→
+// **返回新对象**。丢返回值 ⇒ 内存里的 `state` 停在**起跑快照** ⇒ PRD 写下的 `extra.*` 本次 run 的
+// design/tech/qa/acceptance 与确认单**全都看不见**（要等下一次 run 才可见）。三件缺一不可。
+ok(/state = mergeStateBlock\(journal\.workspace \|\| 'default', block, phaseKey\)/.test(pipelineSrc), 'pipeline：mergeStageState **接住** mergeStateBlock 的返回值（丢弃 = 本次 run 后续消费者看不见 PRD 写的 extra.*）')
+ok(/let state = loadState\(journal\.workspace \|\| 'default'\)/.test(pipelineSrc), 'pipeline：state 声明为 `let`（`const` 就换不掉绑定 ⇒ 刷新不了）')
+ok(/if \(rc !== undefined\) state\.__runCtx = rc/.test(pipelineSrc), 'pipeline：合并后**带回 `__runCtx`**（它不落盘，丢了 runDocs/locale/craft/artifactContracts/blueprint 整片消失）')
 // PRD 确认单（ADR-0011 ①，2026-10-07）：PRD 完成后暂停，等用户批准
 // ⚠️ 落点与 `abortForClarification` 同构（interrupted + humanIntervention；P2：复用 interrupted/resume，不新增状态），
 // 且**依赖**上面「启用过但从未尝试的阶段 = 断点」那条 —— 断点错了，批准后续跑会跳过 design/tech/dev/qa。

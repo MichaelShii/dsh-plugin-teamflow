@@ -127,7 +127,7 @@ const TRIAGE_EXPLORE = JSON.stringify({
 /** 构造一次 run：stub 子代理 + 隔离的 $DSH_HOME / 工作区。 */
 async function runScenario(
   name,
-  { options, resume = null, emptyNext = false, failLabel = null, artifacts = null, cancelAfter = 0, triage = null, extraFiles = 0, presetSupplement = null },
+  { options, resume = null, emptyNext = false, failLabel = null, artifacts = null, cancelAfter = 0, triage = null, extraFiles = 0, presetSupplement = null, prdOutput = null },
 ) {
   const rootTmp = mkdtempSync(join(tmpdir(), `tf-orch-${name}-`))
   process.env.DSH_HOME = `${rootTmp}/home`
@@ -146,7 +146,9 @@ async function runScenario(
   let qaRound = 0
   const stubStart = async (_provider, init) => {
     const label = String((init && init.label) || '')
-    children.push({ id: `c-${children.length + 1}`, label })
+    // 捕获阶段 prompt（锁「同一 run 内 state 刷新」用：后续阶段的 state slice 必须带上 PRD 写下的东西）
+    const promptText = String(((init && init.prompt && init.prompt[0] && init.prompt[0].text) || ''))
+    children.push({ id: `c-${children.length + 1}`, label, prompt: promptText })
     // 按 label 判定阶段并落产物文件（QA 每轮一份报告 → 用轮次索引取语料）
     if (artifacts) {
       if (/^QA (测试|复验)/.test(label) && artifacts.qa && artifacts.qa.length) {
@@ -162,6 +164,8 @@ async function runScenario(
     let text = labelHit || doEmpty ? '' : LONG
     // 分诊裁决注入：子代理直接回 JSON（runTriage 期望回复以 JSON 对象开头）
     if (triage && /需求分诊/.test(label)) text = triage
+    // PRD 产出覆盖：用来注入带 `extra.*` 的 state 块 —— 锁「同一 run 内 state 必须刷新」
+    if (prdOutput && !labelHit && !doEmpty && /梳理 PRD/.test(label)) text = prdOutput
     doEmpty = false
     return {
       id: `c-${children.length}`,
@@ -210,6 +214,8 @@ async function runScenario(
     confirmSheet: journal.confirmSheet ?? null,
     journalSupplement: journal.requirementSupplement ?? null,
     timelineKeys: Object.keys((journal.result && journal.result.timeline) || {}).sort(),
+    // 各阶段真实 prompt（按 label；同名取最后一次）—— 供「同一 run 内 state 刷新」这类**注入面**断言
+    promptsByLabel: Object.fromEntries(children.map((c) => [c.label, c.prompt])),
   }
   rmSync(rootTmp, { recursive: true, force: true })
   return out
@@ -667,6 +673,50 @@ console.log('\n[21] 确认单暂停后的续跑：断点可续（不得被「已
   ok(r2.ok === false && /无断点可续/.test(String(r2.error)),
     `对照：全阶段（含 acceptance）done ⇒ 仍拒绝续跑（实测 ${String(r2.error).slice(0, 80)}）`)
   rmSync(home, { recursive: true, force: true })
+}
+
+/* ── [22] 同一 run 内 state 必须刷新：PRD 写下的 `extra.*` 要**当场**被后续消费者看到 ──
+ * 实锤 tf-muy63zgy-octoqj（2026-10-07 真实桌面版）：磁盘 `state.json` 里 `acIndex` 9 条、
+ * `product.summary` 有值，而同一次 run 的确认单却是 `acSource=extracted`、`summary=''`。
+ * 根因：`mergeStateBlock` 是 load→改→save→**返回新对象**，而调用点丢了返回值 ⇒ 内存里的 `state`
+ * 停在**起跑快照** ⇒ 本次 run 里 PRD 写的东西，**同一 run 的 design/tech/qa/acceptance 与确认单全都看不见**
+ * （要等下一次 run 从磁盘载入才可见，即「晚一个 run」）。这是既有缺陷，确认单把它放大成可见故障。
+ * 变异：把调用改回「丢弃返回值」⇒ 本组 3 条立刻全红。 */
+console.log('\n[22] 同一 run 内 state 刷新：PRD 的 extra.* 当场可见（不得等到下一次 run）')
+{
+  const NESTED = {
+    phase: 'prd', summary: 'PRD 阶段摘要', memory: [],
+    extra: {
+      acIndex: { 'AC-1': '结构化 AC 一', 'AC-2': '结构化 AC 二' },
+      summary: '一句话目标',
+      openQuestions: [{ q: '要问吗', why: '因为会影响 AC-1', changes: '改 AC-1' }],
+    },
+  }
+  const r = await runScenario('state-refresh', {
+    options: { ...FULL_OPTS, needConfirm: true },
+    prdOutput: `${LONG}\n<!-- state -->${JSON.stringify(NESTED)}<!-- /state -->`,
+  })
+  const sheet = r.confirmSheet
+  ok(sheet && sheet.acSource === 'state' && sheet.ac.length === 2,
+    `PRD 的 extra.acIndex **当场**进确认单（实测来源=${sheet && sheet.acSource} 条数=${sheet && sheet.ac && sheet.ac.length}）`)
+  ok(sheet && sheet.summary === '一句话目标', `extra.summary 当场可见（实测 ${JSON.stringify(sheet && sheet.summary)}）`)
+  ok(sheet && sheet.questions && sheet.questions.length === 1, `extra.openQuestions 当场可见（实测 ${sheet && sheet.questions && sheet.questions.length}）`)
+
+  // ② 不暂停跑完整条：**后续阶段的 prompt** 里必须带上本 run PRD 写下的 state（两条不同的注入面）
+  const full = await runScenario('state-refresh-full', {
+    options: FULL_OPTS,
+    prdOutput: `${LONG}\n<!-- state -->${JSON.stringify(NESTED)}<!-- /state -->`,
+  })
+  const promptOf = (kw) => {
+    const hit = Object.entries(full.promptsByLabel || {}).find(([l]) => String(l).includes(kw))
+    return hit ? String(hit[1]) : ''
+  }
+  const designPrompt = promptOf('设计说明')
+  const qaPrompt = promptOf('QA 测试')
+  // `__runCtx.runDocs` 是**运行期字段**（loadState 不搬运）⇒ PRD 的 state 合并后若不带回，这里会整条消失
+  ok(/【本次任务产物夹】/.test(designPrompt), 'design 阶段 prompt 仍带「任务产物夹」注入（__runCtx 未被 state 合并冲掉）')
+  // `state.acIndex` 只注入 pm/qa/acceptance/tech 四角色 ⇒ QA 的 prompt 是这条链的证据面
+  ok(/AC 索引/.test(qaPrompt) && /结构化 AC 一/.test(qaPrompt), 'QA 阶段 prompt 带上**本 run PRD** 写的 AC 索引（不是上一次 run 的遗留）')
 }
 
 if (failed) {
