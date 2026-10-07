@@ -783,11 +783,23 @@ ok(execBlock.length > 50, '提取到 execOptions 的具名补充段')
 const OPT_EXEMPT = new Set([])
 const optMissing = optKeys.filter((k) => !OPT_EXEMPT.has(k) && !new RegExp(`(^|[^A-Za-z0-9_$])${k}\\s*[:,]`).test(joptBlock) && !new RegExp(`(^|[^A-Za-z0-9_$])${k}\\s*[:,]`).test(execBlock))
 ok(optMissing.length === 0, `PipelineOptions 的每个字段都必须能被 executePipeline 收到${optMissing.length ? ` —— **漏了：${optMissing.join(', ')}**（只加 interface 不加白名单 = 静默失效；行为测试直调 executePipeline，绕过白名单 ⇒ 全绿也发现不了）` : ''}`)
-ok(/needConfirm: !!options\.needConfirm/.test(joptBlock) && /clarifyStrength: options\.clarifyStrength/.test(joptBlock), '本次实锤漏的两个字段已进白名单（确认单 ＋ 澄清强度）')
+ok(/confirmMode: options\.confirmMode/.test(joptBlock) && /clarifyStrength: options\.clarifyStrength/.test(joptBlock), '本次实锤漏的两个字段已进白名单（确认单触发档 ＋ 澄清强度）')
+
+/* 临时/实验开关**不进公开工具 schema**（MEMORY §6；2026-10-08 用户实锤「用户又不知道这参数」）。
+ * 为什么是**反向锁**：这两条原先锁的是「host 暴露了参数」，方向正好相反 —— 必须改掉，
+ * 否则「把参数摘出 schema」这件事会被旧断言当成回归。真正的落点是环境变量通道：
+ *   · `confirmMode` → `TEAMFLOW_CONFIRM`（产品路径是**内容驱动**：PRD 有没有 kind=taste 项）
+ *   · `clarifyStrength` → `TEAMFLOW_CLARIFY`
+ * ⚠️ 锚定**参数声明/读取的字面形式**，不要写成 `!/needConfirm/.test(hostSrc)` ——
+ * host 源码的注释里就写着「用户否掉了 needConfirm 参数」这句话，子串匹配会被自己的注释污染
+ * （MEMORY §16：源码锁的关键词必须**只可能出现在被断言那一处**）。 */
+ok(!/needConfirm: \{ type: 'boolean'/.test(hostSrc) && !/args\.needConfirm/.test(hostSrc), 'host：不得再暴露 needConfirm 参数（用户不知道它 ⇒ 公开 = 功能不存在；改由内容判据 + 环境变量）')
+ok(!/clarifyStrength: \{ type: 'string'/.test(hostSrc), 'host：不得再暴露 clarifyStrength 参数（同上，改走 TEAMFLOW_CLARIFY）')
+ok(/export function confirmModeFromEnv/.test(utilSrc) && /export function clarifyStrengthFromEnv/.test(utilSrc), 'util：两个开关的环境变量通道都在（参数摘掉后必须有替代落点）')
+ok(/confirmMode: confirmModeFromEnv\(\)/.test(hostSrc) && /normalizeClarifyStrength\(clarifyStrengthFromEnv\(\)/.test(hostSrc), 'host：环境变量真的被接进 options（摘了参数却不接线 = 功能直接没了）')
 
 // 澄清强度 `clarifyStrength`（ADR-0011 ③，2026-10-07）：**独立字段，不进 MODE_REGISTRY**
 // —— `PipelineMode` 决定阶段集/PRD 形态/护栏，把「追问几次」塞进去会让同一张表承担两件正交的事。
-ok(/clarifyStrength: \{ type: 'string'/.test(hostSrc), 'host：teamflow_start 暴露 clarifyStrength 参数')
 ok(/export function normalizeClarifyStrength/.test(utilSrc), 'util：澄清强度归一是纯函数（可直接行为级测试）')
 // ⚠️ 顺序锁必须**跨两行**：只匹配「patch 那行存在」会在「调换判定顺序」时假绿
 //（M7 实测：把 patch 检查挪到 interview 之后，行为断言红了、源码锁却全绿 —— 它只看见那行还在）。
@@ -850,8 +862,20 @@ ok(/failed: failedBefore/.test(hostSrc) && /未完成任务/.test(hostSrc) && !/
 // ⚠️ 落点与 `abortForClarification` 同构（interrupted + humanIntervention；P2：复用 interrupted/resume，不新增状态），
 // 且**依赖**上面「启用过但从未尝试的阶段 = 断点」那条 —— 断点错了，批准后续跑会跳过 design/tech/dev/qa。
 ok(/function abortForConfirmSheet/.test(pipelineSrc) && /return abortForConfirmSheet\(journal, sheet, locale\)/.test(pipelineSrc), 'pipeline：PRD 确认单的暂停落点（PRD 之后、design 之前）')
-ok(/options\.needConfirm === true && options\.mode !== 'patch' && !resume/.test(pipelineSrc), 'pipeline：确认单**默认关** ＋ patch 恒 off ＋ 只在非 resume 时停一轮（自动判据待真阳性率数据）')
-ok(/needConfirm: \{ type: 'boolean'/.test(hostSrc), 'host：teamflow_start 暴露 needConfirm 参数')
+// ⚠️ 判据 2026-10-08 从「显式开关」改成「**内容驱动**」⇒ 必须锁住 `tasteCount > 0` 这半句：
+// 只锁 `mode !== 'patch' && !resume` 的话，判据被改回开关形态时源码锁会**假绿**（后半句还在）。
+ok(/confirmMode === 'always' \|\| \(confirmMode === 'auto' && tasteCount > 0\)/.test(pipelineSrc), 'pipeline：确认单触发 = **内容驱动**（有 kind=taste 主观项才停）＋ 内部强制位 always/never')
+ok(/options\.mode !== 'patch' && !resume/.test(pipelineSrc), 'pipeline：patch 恒 off ＋ 只在非 resume 时停一轮')
+// 「缺 kind 不阻断」**不等于**「静默」：必须发 warn（否则就是又一次功能静默空转，§7③）。
+// ⚠️ 必须从**判定条件**起锚，不能只锁 `log.openQuestionsUntagged` 这个标识符 ——
+// M22 实测：把条件改成 `if (false && …)` 时，只锁标识符的写法**假绿**（标识符原样还在）。
+// 这是本仓第 7 次同型（M6/M7/M8/M10/M12/…），规则：**源码锁要覆盖「条件 → 调用」整条语句**。
+ok(/if \(untagged > 0\) journal\.logs\.push\(\{ t: Date\.now\(\), level: 'warn', message: t\(locale, 'log\.openQuestionsUntagged'/.test(pipelineSrc), 'pipeline：model 没标 kind 时必须发 warn（不阻断 ≠ 静默；条件与调用必须同锁，只锁 key 会假绿）')
+ok(/'log\.openQuestionsUntagged'/.test(hostSrc) && /'confirm\.tasteTag'/.test(hostSrc), 'locales：缺-kind warn 与「主观项」打标文案都齐（zh/en 互补由 locale.test.js 覆盖）')
+ok(/kind === 'taste'/.test(pipelineSrc), 'pipeline：主观项（kind=taste）被认出来 —— 只有它触发暂停')
+// ⚠️ 打标必须锁**条件 → 用法**整句，不能只锁 `tasteTag` 这个词：词典里那条 `'confirm.tasteTag'`
+// 也在 hostSrc 里 ⇒ M26 实测「把渲染改成 `const tag = ''`」时只锁词的写法**假绿**（第 8 次同型）。
+ok(/const tag = q\.kind === 'taste' \? t\(locale, 'confirm\.tasteTag'\) : ''/.test(hostSrc), 'confirm：主观项打标真的接在渲染里（用户要能一眼看出哪几条必须他定）')
 ok(/confirmSheet: journal\.confirmSheet \|\| null/.test(storeSrc) && /confirmSheet\?: unknown \| null/.test(storeSrc), 'store：确认单必须落盘（不落 ⇒ 重启后讲不出「批准什么」，只能让用户去重读 PRD.md）')
 // 确认单的**目标一句话**来自 PRD state 块的 extra.summary —— 此前该字段被要求却从未落盘，
 // 逼得确认单只能去抽模型自由写的段落标题（不可靠，同 `## 9. 假设与待澄清` 那次失手）。

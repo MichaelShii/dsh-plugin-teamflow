@@ -64,9 +64,9 @@ const full = {
   modules: { 'src/a.ts': '模块 A' },
   verifyScripts: ['pnpm test'],
   acIndex: { 'AC-1': '第一条' },
-  // 结构化待澄清项（ADR-0011 ①，2026-10-07）：key 顺序必须与 `normalizeOpenQuestions`
-  // 的产出顺序一致（q→why→changes→default）—— 往返断言用的是 `JSON.stringify` 全等。
-  openQuestions: [{ q: '要装到哪个 profile？', why: '决定形态契约', changes: 'AC 集', default: 'web' }],
+  // 结构化待澄清项（ADR-0011 ①，2026-10-07；`kind` 于 2026-10-08 第 2 步加入）：key 顺序必须与
+  // `normalizeOpenQuestions` 的产出顺序一致（q→why→changes→default→kind）—— 往返断言用 `JSON.stringify` 全等。
+  openQuestions: [{ q: '要装到哪个 profile？', why: '决定形态契约', changes: 'AC 集', default: 'web', kind: 'taste' }],
   stages: { prd: 'PRD 结论' },
   lastRun: { runId: 'tf-x', requirement: '需求', folder: 'docs/teamflow/20260918-r1', verdict: 'accepted', endedAt: 1 },
   gitMode: 'repo',
@@ -123,7 +123,7 @@ ok(!sees('pm') && !sees('design'), 'pm / design 不注入（它们跑在 tech �
 console.log('\n── normalizeOpenQuestions：模型形状容错 ──')
 const { normalizeOpenQuestions } = await import('../host/core/domain/state.ts')
 ok(normalizeOpenQuestions([{ q: 'Q1', why: 'W', changes: 'C', default: 'D' }]).length === 1, '四字段齐全 → 保留')
-ok(JSON.stringify(Object.keys(normalizeOpenQuestions([{ q: 'Q1', why: 'W', changes: 'C', default: 'D' }])[0])) === JSON.stringify(['q', 'why', 'changes', 'default']), '字段顺序稳定（往返断言用 JSON.stringify 全等，顺序是契约）')
+ok(JSON.stringify(Object.keys(normalizeOpenQuestions([{ q: 'Q1', kind: 'fact' }])[0])) === JSON.stringify(['q', 'why', 'changes', 'default', 'kind']), '字段顺序稳定（往返断言用 JSON.stringify 全等，顺序是契约）')
 ok(normalizeOpenQuestions([{ question: '别名', why: 'W' }])[0].q === '别名', '`question` 别名 → 采纳（模型常见变体）')
 ok(normalizeOpenQuestions([{ why: 'W', changes: 'C' }]).length === 0, '缺 q/question → 丢弃（没有问题的条目无意义）')
 ok(normalizeOpenQuestions([{ q: '   ' }]).length === 0, 'q 只有空白 → 丢弃')
@@ -133,6 +133,20 @@ ok(normalizeOpenQuestions(null).length === 0 && normalizeOpenQuestions(undefined
 const many = Array.from({ length: 30 }, (_, i) => ({ q: 'Q' + i }))
 ok(normalizeOpenQuestions(many).length === 12, `上限 12 条（实测 ${normalizeOpenQuestions(many).length}）`)
 ok(normalizeOpenQuestions([{ q: 'x'.repeat(999) }])[0].q.length <= 300, '单字段截断 ≤300')
+
+/* `kind`（2026-10-08，ADR-0011 ① 第 2 步）：确认单的**触发判据**就是它 —— 只有 `taste` 会让 PRD 后暂停。
+ * 两条纪律决定了缺省值：
+ *   ① 「依赖模型自律的判据，在量出真阳性率前**不得有阻断权**」⇒ 缺/非法一律归 `fact`（不暂停），
+ *      **不能**默认成 `taste` —— 那等于把用户否掉的「任何待澄清项都停」偷偷放回来。
+ *   ② 「空值必须可见」⇒ 缺 `kind` 要打 `kindMissing` 留痕（否则又是一次静默空转）。
+ * 三条锁「只认 kind、不给别名」：别名会把契约违反洗成兑现，把要测的兑现率测没。 */
+ok(normalizeOpenQuestions([{ q: 'Q', kind: 'taste' }])[0].kind === 'taste', 'kind=taste → 主观项保留（会触发确认单）')
+ok(normalizeOpenQuestions([{ q: 'Q', kind: 'fact' }])[0].kind === 'fact', 'kind=fact → 信息缺口保留')
+ok(normalizeOpenQuestions([{ q: 'Q', kind: 'TASTE' }])[0].kind === 'taste', 'kind 大小写不敏感（模型常见变体）')
+ok(normalizeOpenQuestions([{ q: 'Q', type: 'taste' }])[0].kind === 'fact', '**不做别名**：`type: taste` 不予采纳（否则测不出契约兑现率）')
+const untagged0 = normalizeOpenQuestions([{ q: 'Q' }])[0]
+ok(untagged0.kind === 'fact' && untagged0.kindMissing === true, '缺 kind → 归 fact（不暂停）＋ kindMissing 留痕')
+ok(normalizeOpenQuestions([{ q: 'Q', kind: 'taste' }])[0].kindMissing === undefined && normalizeOpenQuestions([{ q: 'Q', kind: 'fact' }])[0].kindMissing === undefined, '标了合法 kind 就不留 kindMissing（标记不得常驻）')
 
 console.log('\n── mergeStateBlock：openQuestions 整组替换（不累加）──')
 saveState(KEY, { ...full, openQuestions: [{ q: '旧问题', why: '', changes: '', default: '' }] })

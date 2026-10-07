@@ -33,6 +33,20 @@ export interface StageStateBlock {
   extra?: Record<string, unknown>
 }
 
+/**
+ * 待澄清项的**类别**（2026-10-08，ADR-0011 ① 第 2 步）。
+ *
+ * - `fact` —— **信息缺口**：需求没交代、但模型研究过后有明显默认值。用户不回答也不会「不是我要的」，
+ *   `default` 兜住即可 ⇒ **不打断**。
+ * - `taste` —— **主观品味项**：多种走法**同样成立**，取舍取决于「用户想要什么」（视觉风格 / 形象角色 /
+ *   交互形态 / 信息架构 / 文案语气与命名 / 无约束时的技术选型）。没有客观对错 ⇒ **必须用户自己定**
+ *   ⇒ 若存在 `taste` 项，PRD 后**暂停**等用户拍板。
+ *
+ * 为什么两类要分开（而不是「有任何待澄清项就停」）：纯信息缺口打断用户 = 白白牺牲 §1 的无人值守卖点；
+ * 而品味项不打断 = 成品由模型独裁（用户实锤：「我想实现一个桌宠」被模型定了形象与风格 ⇒ 感官很差）。
+ */
+export type OpenQuestionKind = 'fact' | 'taste'
+
 /** state.json 的顶层形状。 */
 export interface TeamflowState {
   version: number
@@ -62,7 +76,31 @@ export interface TeamflowState {
    * ⚠️ 语义与 `journal.assumptions` **不同、不互斥**：assumptions 是 agent 已替用户定下的假设，
    * openQuestions 是**要用户拍板**的项 —— 所以确认单两者都呈现，不做二选一。
    */
-  openQuestions: Array<{ q: string; why: string; changes: string; default: string }>
+  openQuestions: Array<{
+    q: string
+    why: string
+    changes: string
+    default: string
+    /**
+     * **这一项属于哪一类**（2026-10-08，ADR-0011 ① 第 2 步）：`fact` = 信息缺口（模型研究过、
+     * 有明显默认值，交给 `default` 即可）；`taste` = **主观品味项**（多种走法同样成立、没有客观对错，
+     * 必须由用户自己定）。
+     *
+     * 消费点：**只有 `taste` 会让 PRD 后暂停**（`pipeline.ts`）。为什么不是「任何待澄清项都停」——
+     * 信息缺口的代价可以由 `default` 兜住，而品味项猜错的代价是「成品不是我要的」（表现为流失/差评，
+     * **不表现为 QA 打回**，用返工率量不出来）；同时也保住 §1 的无人值守卖点不被纯信息缺口打断。
+     */
+    kind: OpenQuestionKind
+    /**
+     * **模型没给 `kind` 时的标记**（不落给下游消费，只作**诊断**）。
+     *
+     * 为什么要留痕：`kind` 是「模型自律 + host 条件消费」的链，而本仓纪律要求**空值必须可见**
+     * （否则功能静默空转、长期没人发现——2026-10-07 `extra` 兑现率 ~20% 就是这么埋了很久的）。
+     * 缺 `kind` ⇒ 归一成 `fact`（不暂停，见 `normalizeOpenQuestions`），本标记让「契约没兑现」这件事
+     * 在 `state.json` 里**可数**（`pipeline.ts` 据此发 warn 日志）。
+     */
+    kindMissing?: boolean
+  }>
   /** 各阶段的最新结论（key: phase） */
   stages: Record<string, string>
   /** 最近流水线结论 */
@@ -113,9 +151,20 @@ export interface TeamflowState {
  * `extra.openQuestions` 的容错归一：只保留有 `q` 的条目，四个字段一律转成字符串并截断。
  * 模型可能给 `{question: ...}` / 纯字符串 / 缺字段等变体 ⇒ 一律不抛、不污染 state。
  */
-export function normalizeOpenQuestions(raw: unknown): Array<{ q: string; why: string; changes: string; default: string }> {
+/**
+ * `extra.openQuestions` 的容错归一：只保留有 `q` 的条目，各字段一律转成字符串并截断。
+ * 模型可能给 `{question: ...}` / 纯字符串 / 缺字段等变体 ⇒ 一律不抛、不污染 state。
+ *
+ * ⚠️ **`kind` 缺省归 `fact`（不暂停），并打 `kindMissing` 标记** —— 这是刻意的，不是漏了：
+ * 本仓纪律「依赖模型自律的判据，在量出真阳性率之前**不得有阻断权**」（见 MEMORY §16）。暂停**就是**阻断权，
+ * 而 `kind` 的兑现率到 2026-10-08 仍**未实测** ⇒ 缺 `kind` 时**不能**默认成 `taste` 去暂停，
+ * 否则等于把用户明确否掉的「任何待澄清项都停」偷偷放回来（那种形态会毁掉 §1 的无人值守卖点）。
+ * 同时「不阻断」也不等于「静默」：`kindMissing` 让契约未兑现这件事在 `state.json` 里**可数**，
+ * `pipeline.ts` 据此发 warn（空值必须可见，见 MEMORY §7③）。
+ */
+export function normalizeOpenQuestions(raw: unknown): TeamflowState['openQuestions'] {
   if (!Array.isArray(raw)) return []
-  const out: Array<{ q: string; why: string; changes: string; default: string }> = []
+  const out: TeamflowState['openQuestions'] = []
   for (const item of raw) {
     const o = item && typeof item === 'object' && !Array.isArray(item) ? (item as Record<string, unknown>) : null
     if (!o) continue
@@ -128,7 +177,19 @@ export function normalizeOpenQuestions(raw: unknown): Array<{ q: string; why: st
     }
     const q = pick('q', 'question')
     if (!q) continue
-    out.push({ q, why: pick('why', 'reason'), changes: pick('changes'), default: pick('default', 'defaultAnswer') })
+    // ⚠️ **只认 `kind`，不做别名**（`q` 那种容错这里刻意不给）：我们要**测**的就是「模型按不按契约标
+    // `kind`」这件事（§7：结构性契约必须用一次真实调用实测兑现率）。加别名会把契约违反洗成契约满足，
+    // 把要测的数测没了。方向也是安全的：非法值一律归 `fact`（不暂停），不会误停。
+    const rawKind = String(o.kind ?? '').trim().toLowerCase()
+    const tagged = rawKind === 'taste' || rawKind === 'fact'
+    out.push({
+      q,
+      why: pick('why', 'reason'),
+      changes: pick('changes'),
+      default: pick('default', 'defaultAnswer'),
+      kind: rawKind === 'taste' ? 'taste' : 'fact',
+      ...(tagged ? {} : { kindMissing: true }),
+    })
     if (out.length >= 12) break
   }
   return out

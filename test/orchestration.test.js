@@ -555,34 +555,78 @@ console.log('\n[19] 续跑补录（supplement）：断点晚于 PRD ⇒ 显式�
     `续跑保留 journal 里已有的答复（实测 ${JSON.stringify(kept.journalSupplement)}）`)
 }
 
-/* ── ⑳ PRD 确认单（ADR-0011 ①，2026-10-07）：PRD 后暂停，等用户批准 ──
+/* ── ⑳ PRD 确认单（ADR-0011 ①，2026-10-08 第 2 步）：触发判据是**内容**，不是一个用户要敲的开关 ──
+ * 触发 = PRD 的 `openQuestions` 里存在 `kind: "taste"`（**主观品味项**）⇒ PRD 后暂停等用户拍板。
  * 为什么单列：确认单的落点是 `interrupted`，而「PRD done、其后全空」正是上一批断点第二层修的那一种形态。
  * 两者是**绑定关系** —— 断点修错，用户批准后 resume 会跳过 design/tech/dev/qa 直接验收。
- * 变异：① 删掉 PRD 后的 `return abortForConfirmSheet(...)` ⇒ 本组第 1/3 条立刻红；
- *       ② 把条件写成 `options.needConfirm !== false`（默认开）⇒ 第 5 条（缺省直通）立刻红。 */
-console.log('\n[20] PRD 确认单：needConfirm ⇒ PRD 后暂停；缺省直通')
+ * 为什么不是「任何待澄清项都停」：信息缺口有 `default` 兜底，而品味项猜错的代价是「成品不是我要的」
+ *   （表现为流失/差评，**不表现为 QA 打回**）⇒ 分开判据才既保住 §1 的无人值守卖点、又不让品味项溜过去。
+ * 变异：① 删掉 PRD 后的 `return abortForConfirmSheet(...)` ⇒ 暂停三条立刻红；
+ *       ② 判据退化成 `openQuestions.length > 0`（任何项都停）⇒ 「只有 fact 不停」立刻红；
+ *       ③ 判据里的 `'taste'` 写成 `'fact'` ⇒ 暂停条红、fact 条绿（单维度可分辨）。 */
+console.log('\n[20] PRD 确认单：有主观项（kind=taste）⇒ 暂停；只有信息缺口 ⇒ 直通')
 {
   const { buildConfirmSheet, renderConfirmSheet } = await import(pathToFileURL(join(base, 'host/core/confirm.ts')).href)
 
-  // ① 开启 ⇒ PRD 后停下，后续阶段一个都不跑
-  const paused = await runScenario('confirm-on', { options: { ...QA_OPTS, needConfirm: true } })
-  ok(paused.status === 'interrupted', `needConfirm=true ⇒ 停成 interrupted（实测 ${paused.status}）`)
+  // 造一份带 `extra.openQuestions` 的 PRD 产出 —— 判据读的就是它（`mergeStageState` 落进 `state.openQuestions`）。
+  // 正文要够长：产出 <400 字符会被实质校验判「未交付」，那样就测不到确认单了。
+  const prdWith = (questions) => '## 目标\n做一个小工具。\n\n## 验收标准\n- AC-1 能跑\n\n' +
+    '本 PRD 按契约逐条对应验收条件并给出可测判据，范围与非目标均已写明。'.repeat(12) +
+    `\n\n<!-- state -->${JSON.stringify({
+      phase: 'prd', summary: '一句话目标', memory: [],
+      extra: { acIndex: { 'AC-1': '能跑' }, summary: '一句话目标', openQuestions: questions },
+    })}<!-- /state -->`
+  const TASTE = { q: '桌宠长什么样？', why: '形象定了就不好改', changes: '换形象', default: '圆润小动物', kind: 'taste' }
+  const FACT = { q: '要不要支持导出？', why: '需求没说', changes: '加导出入口', default: '不支持', kind: 'fact' }
+
+  // ① 有主观项 ⇒ PRD 后停下，后续阶段一个都不跑
+  const paused = await runScenario('confirm-taste', { options: QA_OPTS, prdOutput: prdWith([TASTE]) })
+  ok(paused.status === 'interrupted', `有 kind=taste ⇒ 停成 interrupted（实测 ${paused.status}）`)
   ok(paused.humanIntervention === true, '置 humanIntervention（工作台与汇报据此标「需人工」）')
   ok(paused.confirmSheet && typeof paused.confirmSheet === 'object', `确认单已落盘（实测 ${JSON.stringify(paused.confirmSheet).slice(0, 120)}）`)
+  ok((paused.confirmSheet.questions || []).some((q) => q.kind === 'taste'), '确认单带上了 kind=taste（用户能看出「哪几条必须我定」）')
+  ok(renderConfirmSheet(paused.confirmSheet, 'zh').includes('［主观项］'), '**主观项要打标**（否则用户分不清「要你定」与「我已替你定」）')
   // 只算**阶段子代理**：分诊子代理（label「需求分诊」）也在 children 里，不能拿来判「跑到哪个阶段」
   const stageChildren = paused.childLabels.filter((l) => !/需求分诊|triage/i.test(String(l)))
   ok(stageChildren.length === 1 && /梳理 PRD/.test(String(stageChildren[0])),
     `只跑了 PRD，其后的 design/tech/dev/qa 一个都没起（实测阶段子代理 ${JSON.stringify(stageChildren)}）`)
 
-  // ② 缺省 ⇒ 直通不打断
-  const straight = await runScenario('confirm-off', { options: QA_OPTS })
-  ok(straight.status !== 'interrupted' && straight.confirmSheet === null,
-    `缺省不打断（实测 status=${straight.status} / confirmSheet=${JSON.stringify(straight.confirmSheet)}）`)
-  ok(straight.childLabels.length > 1, `缺省时后续阶段照常跑（实测 ${straight.childLabels.length} 个子代理）`)
+  // ② **只有信息缺口 ⇒ 不打断**（「不是任何待澄清项都停」的核心断言）。
+  //    断言必须证明「真的越过了 PRD 那道闸」——只写 `!== 'interrupted'` 的话，
+  //    「PRD 后崩了」也会读成绿（本组正是靠这条把「停」与「没停」分开的）。
+  const factOnly = await runScenario('confirm-fact-only', { options: QA_OPTS, prdOutput: prdWith([FACT]) })
+  ok(factOnly.status !== 'interrupted' && factOnly.confirmSheet === null,
+    `只有 kind=fact ⇒ 直通不打断（实测 status=${factOnly.status} / confirmSheet=${JSON.stringify(factOnly.confirmSheet)}）`)
+  ok(has(factOnly.childLabels, '技术方案') && has(factOnly.childLabels, '功能测试'),
+    `信息缺口不打断 ⇒ 后续阶段真的都跑了（实测 ${JSON.stringify(factOnly.childLabels)}）`)
 
-  // ③ patch 档恒不生效（STAGE_POLICY：单 agent 直改，PRD 是机械的单点确认）
-  const patchRun = await runScenario('confirm-patch', { options: { ...PATCH_OPTS, needConfirm: true } })
-  ok(patchRun.status !== 'interrupted', `patch 档 + needConfirm 仍不暂停（实测 ${patchRun.status}）`)
+  // ③ 纯缺省（PRD 没给 openQuestions）⇒ 同样直通
+  const straight = await runScenario('confirm-none', { options: QA_OPTS })
+  ok(straight.status !== 'interrupted' && straight.confirmSheet === null,
+    `无待澄清项 ⇒ 直通（实测 status=${straight.status} / confirmSheet=${JSON.stringify(straight.confirmSheet)}）`)
+  ok(has(straight.childLabels, '技术方案'), `无待澄清项 ⇒ 后续阶段真的都跑了（实测 ${JSON.stringify(straight.childLabels)}）`)
+
+  // ④ **契约未兑现必须可见**（§7③）：模型没给 kind ⇒ 按 fact 处理（不暂停，依赖模型自律的判据在量出
+  //    真阳性率前不得有阻断权），但**必须发 warn** —— 否则又是一次「静默空转、长期没人发现」。
+  const untaggedRun = await runScenario('confirm-untagged', {
+    options: QA_OPTS,
+    prdOutput: prdWith([{ q: '没标 kind 的项', why: '?', changes: '?', default: '?' }]),
+  })
+  ok(untaggedRun.status !== 'interrupted', `没标 kind ⇒ 不暂停（实测 ${untaggedRun.status}）`)
+  ok(untaggedRun.warnLogs.some((m) => /没标 kind/.test(String(m))),
+    `没标 kind **必须发 warn**（实测 warn: ${JSON.stringify(untaggedRun.warnLogs).slice(0, 160)}）`)
+
+  // ⑤ patch 档恒不生效（STAGE_POLICY：单 agent 直改，PRD 是机械的单点确认）
+  const patchRun = await runScenario('confirm-patch', { options: PATCH_OPTS, prdOutput: prdWith([TASTE]) })
+  ok(patchRun.status !== 'interrupted', `patch 档 + 有主观项 仍不暂停（实测 ${patchRun.status}）`)
+
+  // ⑥ **内部强制位**（A/B 对照与端到端验证需要能强制开关）；它**不是工具参数**，
+  //    由环境变量 TEAMFLOW_CONFIRM 注入 —— 产品路径永远是内容驱动。
+  const forced = await runScenario('confirm-forced', { options: { ...QA_OPTS, confirmMode: 'always' }, prdOutput: prdWith([FACT]) })
+  ok(forced.status === 'interrupted', `confirmMode=always ⇒ 只有信息缺口也停（实测 ${forced.status}）`)
+  const never = await runScenario('confirm-never', { options: { ...QA_OPTS, confirmMode: 'never' }, prdOutput: prdWith([TASTE]) })
+  ok(never.status !== 'interrupted' && has(never.childLabels, '技术方案'),
+    `confirmMode=never ⇒ 有主观项也不停、照常往下跑（实测 ${never.status} / ${JSON.stringify(never.childLabels)}）`)
 
   // ④ 纯函数：结构化数据源 + 截断必须**诚实标注**（不静默截断）
   const sheet = buildConfirmSheet({
@@ -598,9 +642,9 @@ console.log('\n[20] PRD 确认单：needConfirm ⇒ PRD 后暂停；缺省直通
   // 数据全缺 ⇒ 摘要薄但仍要暂停（缺假设恰恰最该让人看一眼）
   ok(buildConfirmSheet({}).ac.length === 0 && buildConfirmSheet({}).summary === '', '空输入不抛，产出空摘要（暂停与否由调用方判，与本函数无关）')
 
-  // ⑤ **闭环**：确认单暂停 ⇒ `interruptedPhaseOf` 落在 design ⇒ 用该断点续跑，design 真跑且 PRD 被跳过
-  const pausedFull = await runScenario('confirm-paused-full', { options: { ...FULL_OPTS, needConfirm: true } })
-  ok(pausedFull.status === 'interrupted', `needConfirm + full ⇒ 停在 interrupted（实测 ${pausedFull.status}）`)
+  // ⑦ **闭环**：确认单暂停 ⇒ `interruptedPhaseOf` 落在 design ⇒ 用该断点续跑，design 真跑且 PRD 被跳过
+  const pausedFull = await runScenario('confirm-paused-full', { options: FULL_OPTS, prdOutput: prdWith([TASTE]) })
+  ok(pausedFull.status === 'interrupted', `有主观项 + full ⇒ 停在 interrupted（实测 ${pausedFull.status}）`)
   ok(pausedFull.confirmSheet && typeof pausedFull.confirmSheet === 'object', '暂停时确认单落盘')
   const resumeAt = interruptedPhaseOf(pausedFull.journal)
   ok(resumeAt === 'design', `确认单暂停 ⇒ 断点 design（实测 ${resumeAt}）`)
@@ -612,7 +656,7 @@ console.log('\n[20] PRD 确认单：needConfirm ⇒ PRD 后暂停；缺省直通
   ok(has(kids, '设计说明'), `resume 后 design 真跑（实测 ${JSON.stringify(kids).slice(0, 150)}）`)
   ok(!has(kids, '梳理 PRD'), `PRD 被跳过（复用已完成产物）（实测 ${JSON.stringify(kids).slice(0, 150)}）`)
 
-  // ⑥ AC 的**兜底与来源标注**（ADR-0011 C 方案）：`extra` 兑现率仅 ~20%（7/34 state.json）
+  // ⑧ AC 的**兜底与来源标注**（ADR-0011 C 方案）：`extra` 兑现率仅 ~20%（7/34 state.json）
   //    ⇒ 结构化优先、正文兜底、**来源必须自曝**（空壳比空更糟：会让人以为「没什么要注意的」）。
   const { extractAcIndexFromText } = await import(pathToFileURL(join(base, 'host/util.ts')).href)
   const acDoc = '| AC | 描述 |\n|---|---|\n| AC-1 | 徽章显示今日番茄数 |\n- **AC-2**：暂停不计\nAC-3 - 跨日归零'
@@ -623,7 +667,7 @@ console.log('\n[20] PRD 确认单：needConfirm ⇒ PRD 后暂停；缺省直通
   ok(extractAcIndexFromText('') === null && extractAcIndexFromText(null) === null && extractAcIndexFromText(undefined) === null, '抽取：空/null/undefined → null（不炸）')
   const manyAc = Array.from({ length: 60 }, (_, i) => `| AC-${i + 1} | 第 ${i + 1} 条 |`).join('\n')
   ok(Object.keys(extractAcIndexFromText(manyAc)).length === 40, `抽取：上限 40 条（实测 ${Object.keys(extractAcIndexFromText(manyAc)).length}）`)
-  // ⑦ **真实语料逼出来的两条规则**（2026-10-07，拿 21 份真实 PRD.md 量出来的）：
+  // ⑨ **真实语料逼出来的两条规则**（2026-10-07，拿 21 份真实 PRD.md 量出来的）：
   //    · 最常见的故事表是 `| 用户故事 | AC-1: … |`（AC 在**第二列**）—— 只锚行首会漏（实测 tf-obs-r3 漏 4/4）；
   //    · `| Accept | AC-1…AC-8 | export …` 是**区间引用行**，不是 AC 正文 ⇒ 不得造出 `AC-1 = "…AC-8"` 的垃圾条目。
   const storyTable = '| 故事 | 验收标准 |\n|------|----------|\n| 用户可添加任务 | AC-1: 输入后立即出现 |\n| 用户可勾选任务 | AC-2: 点击后标记完成 |'
@@ -693,7 +737,9 @@ console.log('\n[22] 同一 run 内 state 刷新：PRD 的 extra.* 当场可见�
     },
   }
   const r = await runScenario('state-refresh', {
-    options: { ...FULL_OPTS, needConfirm: true },
+    // 本组考的是**同一 run 内 state 刷新**，与确认单的触发判据无关 ⇒ 用 `always` 强制暂停，
+    // 免得 NESTED 的 kind 一改就把这条断言连带弄红（判据由 [20] 单独钉）。
+    options: { ...FULL_OPTS, confirmMode: 'always' },
     prdOutput: `${LONG}\n<!-- state -->${JSON.stringify(NESTED)}<!-- /state -->`,
   })
   const sheet = r.confirmSheet
@@ -702,9 +748,11 @@ console.log('\n[22] 同一 run 内 state 刷新：PRD 的 extra.* 当场可见�
   ok(sheet && sheet.summary === '一句话目标', `extra.summary 当场可见（实测 ${JSON.stringify(sheet && sheet.summary)}）`)
   ok(sheet && sheet.questions && sheet.questions.length === 1, `extra.openQuestions 当场可见（实测 ${sheet && sheet.questions && sheet.questions.length}）`)
 
-  // ② 不暂停跑完整条：**后续阶段的 prompt** 里必须带上本 run PRD 写下的 state（两条不同的注入面）
+  // ② 不暂停跑完整条：**后续阶段的 prompt** 里必须带上本 run PRD 写下的 state（两条不同的注入面）。
+  // `confirmMode: 'never'` 是**刻意**的：本组考的是 state 注入面，不该与确认单的内容判据耦合 ——
+  // 否则判据一改，这两条对照断言会跟着变红（变异实测过），control 就不再是 control。
   const full = await runScenario('state-refresh-full', {
-    options: FULL_OPTS,
+    options: { ...FULL_OPTS, confirmMode: 'never' },
     prdOutput: `${LONG}\n<!-- state -->${JSON.stringify(NESTED)}<!-- /state -->`,
   })
   const promptOf = (kw) => {

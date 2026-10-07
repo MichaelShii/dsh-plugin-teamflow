@@ -167,7 +167,7 @@ assertContract({
  * （信息足够、模型能自查、猜错也不返工）⇒ 风格/形象/架构选型**全由模型独裁** ⇒
  * 专业用户感官很差（「这插件也就给小白用用」）。⚠️ 这个损失**用返工率量不出来**（表现为流失/差评），
  * 所以**不能**拿历史数据当判据 —— 判据是**产品意图**。
- * ⚠️ 只在 prompt 层要求（§2：prompt 提标准不当保障）；本轮**不动**确认单的触发条件。
+ * ⚠️ 只在 prompt 层要求（§2：prompt 提标准不当保障）。
  * 变异：删掉 (b) 段或那句「NOT a reason to omit」⇒ 本契约立刻红。
  */
 assertContract({
@@ -175,6 +175,29 @@ assertContract({
   intent: 'PRD 必须把「主观决策项」（多种同样成立、取决于用户品味）也列进假设段/openQuestions，且不得以「我能自己定」为由省略',
   include: [/User-taste decisions/, /is NOT a reason to omit/, /feel "not mine"/],
   exclude: [/If ANY part of the requirement is under-specified/],
+})
+/**
+ * **`kind` 判别位**（2026-10-08 第 2 步）：确认单的触发判据从「显式开关」改成**内容驱动** ——
+ * 只有 `kind: "taste"`（主观品味项）会暂停。没有这个判别位，host 就分不清「信息缺口」与「品味项」，
+ * 判据只能退化成「有任何待澄清项都停」，而那会毁掉 §1 的无人值守卖点。
+ *
+ * 为什么同一件事**两处都要写死**（state 块示例 ＋ (a)/(b) 两行各带一次）：MEMORY §7 的实锤——
+ * `extra` 契约当年就是「模板示例」与「散文 rules」**两份互相不覆盖的契约**，模型照模板写 ⇒
+ * 兑现率只有 ~20%。所以 `kind` 必须同时出现在**模板本体**里。
+ * 第三句锁的是**判别定义**（靠问题性质、不靠难度）：没有它，模型会把「难答的事实」误判成 taste ⇒ 乱停。
+ * 变异：把示例里的 `"kind"` 删掉 / 把 (b) 行的 `"kind": "taste"` 删掉 ⇒ 本契约立刻红。
+ */
+assertContract({
+  id: 'PRD-OPENQUESTION-KIND', level: 'policy', targets: 'prdPrompt',
+  intent: 'PRD 的 openQuestions 必须带 kind 判别位（fact=信息缺口 / taste=主观品味项），且模板示例与 (a)(b) 两行都要写死',
+  include: [/"kind": "fact\|taste"/, /"kind": "fact"/, /"kind": "taste"/, /by the NATURE of the question, not by how hard it is to answer/],
+})
+/** 第 7 条（state 块示例）必须与第 8 条（散文 rules）**互相指向**：模型写 `openQuestions` 时要按第 8 条
+ *  给的 `kind` 来标；两份契约不互相引用 = 又一次「两份冲突契约」（§7 的根因）。 */
+assertContract({
+  id: 'PRD-KIND-CROSSREF', level: 'policy', targets: 'prdPrompt',
+  intent: 'state 块示例要显式回指第 8 条的 kind 判定（两份契约必须互相指向，不能各说一套）',
+  include: [/the same `kind` rule 8 assigns it/, /every bullet ALSO goes into `openQuestions` with the matching `kind`/],
 })
 assertContract({
   id: 'TECH-PATCH-ASSUMPTIONS', level: 'policy', targets: ['techChangePrompt', 'patchConfirmPrompt'],

@@ -61,20 +61,35 @@ export type PipelineMode = 'full' | 'medium' | 'lite' | 'tech' | 'patch'
  * ⇒ 独立字段，且**只影响注入文案**（ADR-0011 §裁决 ③ 已定：收敛规则与轮次上限都不改）。
  */
 export type ClarifyStrength = 'off' | 'once' | 'interview'
+/**
+ * **PRD 确认单的触发档**（ADR-0011 ①；2026-10-08 由显式 `needConfirm` 开关改为内容驱动）。
+ *
+ * - `auto`（缺省）—— **判据是内容**：PRD 的 `openQuestions` 里存在 `kind: "taste"`（主观品味项）
+ *   ⇒ 暂停等用户拍板；只有信息缺口（`fact`）或没有待澄清项 ⇒ 直通不打断。
+ *   为什么两类要分开：信息缺口的代价由 `default` 兜住，品味项猜错的代价是「成品不是我要的」
+ *   ——后者表现为流失/差评、**不表现为 QA 打回**（用户 2026-10-08 定调）；而纯信息缺口也打断用户
+ *   会白毁 §1 的无人值守卖点。
+ * - `always` / `never` —— **只是 A/B 对照与端到端验证的内部强制位**。
+ *
+ * ⚠️ **不是工具参数**：由环境变量 `TEAMFLOW_CONFIRM` 传入（`always` / `never`，其余/未设 = `auto`）。
+ * 2026-10-08 之前它是公开参数 `needConfirm`，被用户当场否掉：「用户又不知道这参数」——
+ * 而工具描述里也没有任何「何时该设它」的触发条件 ⇒ 实践中没人设 ⇒ 功能是死的。
+ * `patch` 档恒不生效（STAGE_POLICY：单 agent 直改，PRD 是机械的单点确认）。
+ */
+export type ConfirmMode = 'auto' | 'always' | 'never'
 /** 流水线启动选项。 */
 export interface PipelineOptions {
   needDesign?: boolean
   needScaffold?: boolean
-  /** **PRD 确认单**（ADR-0011 ①，2026-10-07）：PRD 完成后**暂停**，把「目标一句话 + AC + 假设清单」
-   *  交给用户批准，其后的阶段一个都不开始；批准 = `teamflow_resume`。
-   *  **默认 false**（显式才停）：自动判「该不该打断」需要真阳性率数据，本仓纪律不允许先加判据后补数据。
-   *  `patch` 档恒不生效（STAGE_POLICY：单 agent 直改，PRD 是机械的单点确认）。 */
-  needConfirm?: boolean
+  /** **PRD 确认单**（ADR-0011 ①）：触发档见 `ConfirmMode`（缺省 `auto` = 有主观品味项才停）。
+   *  环境变量通道，不进工具 schema。 */
+  confirmMode?: ConfirmMode
   /**
    * **澄清强度**（ADR-0011 ③，2026-10-07）：`off` / `once`（缺省）/ `interview`。**只影响注入给主线程的
    * 文案**（`interview` 追加「一次一问 + 每问带猜测 + 硬终止」段），**不改闸门收敛规则、不加轮次上限**
    * （§裁决 ③ 已定：轮数在宿主侧不可测，真阳性率不足的判据不得有阻断权）。
    * `patch` 恒按 `off` 处理（见 `util.normalizeClarifyStrength` 的判定顺序，那是契约）。
+   * ⚠️ **不是工具参数**（2026-10-08 起）：由环境变量 `TEAMFLOW_CLARIFY` 传入——理由同 `confirmMode`。
    */
   clarifyStrength?: ClarifyStrength
   tasks?: unknown

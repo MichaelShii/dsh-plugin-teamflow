@@ -305,6 +305,9 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.triageBlockersDropped': '分诊提了 {n} 条不合格「待澄清项」（缺互斥读法/影响面/返工面）→ 已丢弃（合格线见 host）',
     'log.prdAssumptions': 'PRD 的「假设 / 待澄清」段已记录（{n} 行）——随完成汇报显式回给用户',
     'log.prdAssumptionsMissing': 'PRD 未给出「假设 / 待澄清」段（契约未兑现：无从判断这份 PRD 是否是用户想要的；已记录不中断）',
+    // 「kind 未标注」必须可见（2026-10-08，§7③ 空值必须可见）：未标注 ⇒ 一律按 info 缺口处理、
+    // **不触发确认单**（依赖模型自律的判据在量出真阳性率前不得有阻断权）⇒ 若不发声就是一次静默空转。
+    'log.openQuestionsUntagged': 'PRD 的待澄清项里有 {n} 条**没标 kind**（契约未兑现：分不清「信息缺口」与「主观品味项」⇒ 一律按信息缺口处理、不触发确认单；已记录不中断）',
     'log.modeUpgraded': '架构护栏：调用方自选档位「{from}」，但分诊判定为「{to}」→ 已升档（ADR-0006：架构型需求不得走轻档位）',
     'log.triagePreflightFail': '预检分诊失败（{msg}）→ 已交给 pipeline 内部再判（不静默降级）',
     'log.clarifyAbort': '需求澄清闸门（pipeline 兜底）：意图「{intent}」/ must-know 缺口 {n} 条 → **未进入任何阶段**，等用户答复',
@@ -324,6 +327,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'confirm.questions': '待你拍板（{n}/{total} 条）：\n{list}',
     'confirm.defaultAnswer': '（缺省：{value}）',
     'confirm.whyAsk': ' — 为什么问：{value}',
+    // 主观项打标（2026-10-08）：只有 kind="taste" 会触发暂停，标出来让用户一眼看到「哪几条必须我定」。
+    'confirm.tasteTag': '［主观项］',
     'confirm.assumptions': '假设与待澄清（{n}/{total} 行）：\n{list}',
     'confirm.footer': 'PRD 全文：{doc}（上面只是摘要）',
     'confirm.noSummary': '（PRD 未提供一句话目标 —— 这本身就是该看一眼的信号）',
@@ -733,6 +738,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.triageBlockersDropped': 'Triage proposed {n} unqualified "open question(s)" (missing competing readings / impact / rework) — dropped (the qualifying bar lives in the host)',
     'log.prdAssumptions': 'PRD assumptions/open-questions section recorded ({n} line(s)) — surfaced to the user in the completion report',
     'log.prdAssumptionsMissing': 'PRD did not provide an assumptions/open-questions section (contract not honored: nobody can tell whether this PRD is what the user wanted; logged, not blocking)',
+    'log.openQuestionsUntagged': '{n} open question(s) from the PRD carried no `kind` (contract not honored: cannot tell an "unsettled fact" from a "user-taste decision" ⇒ all treated as facts, confirm sheet not triggered; logged, not blocking)',
     'log.modeUpgraded': 'Architecture guardrail: the caller picked tier "{from}" but triage judged "{to}" → upgraded (ADR-0006: architectural requirements must not run on a lightweight tier)',
     'log.triagePreflightFail': 'Pre-flight triage failed ({msg}) → handed to the pipeline to decide again (not silently degraded)',
     'log.clarifyAbort': 'Clarification gate (pipeline fallback): intent "{intent}" / {n} must-know gap(s) → **no stage was started**, waiting for the user',
@@ -748,6 +754,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'confirm.questions': 'Needs your call ({n}/{total}):\n{list}',
     'confirm.defaultAnswer': ' (default: {value})',
     'confirm.whyAsk': ' — why it is asked: {value}',
+    'confirm.tasteTag': '[taste] ',
     'confirm.assumptions': 'Assumptions & open questions ({n}/{total}):\n{list}',
     'confirm.footer': 'Full PRD: {doc} (the above is only a summary)',
     'confirm.noSummary': '(the PRD gave no one-line goal — that itself is worth a look)',

@@ -873,12 +873,32 @@ export async function executePipeline(
     if (notePrdAssumptions(journal, locale)) throw stageFailError('prd', {})
 
     /* ── PRD 确认单（ADR-0011 ①）：PRD 后暂停，等用户批准 ── */
-    // 为什么**默认关**（显式 `needConfirm` 才停）：「该不该打断」需要一个自动判据，而按本仓纪律
-    // 新增判据前要先量真阳性率（历史 0 样本 ⇒ 无据可依）。机制先落地，判据后补（ADR-0011 再评估信号 1）。
+    // **触发判据 = 内容**（2026-10-08 第 2 步，取代原来的 `needConfirm` 显式开关）：
+    // PRD 的 `openQuestions` 里存在 `kind: "taste"`（**主观品味项**：多种走法同样成立、没有客观对错，
+    // 取舍取决于「用户想要什么」）⇒ 暂停，让用户拍板后再往下建。
+    //
+    // 为什么不是「任何待澄清项都停」：**信息缺口**的代价由 `default` 兜住（模型研究过、有明显默认值），
+    // 而品味项猜错的代价是「成品不是我要的」—— 它表现为**流失/差评、不表现为 QA 打回**，用返工率量不出来
+    // （用户 2026-10-08 定调）；反过来，纯信息缺口也打断用户会白毁 §1「批量可靠交付」的无人值守卖点。
+    //
+    // 为什么旧的显式开关**必须消失**：`needConfirm` 是公开工具参数，而「用户不该感知这个变量」——
+    // 真实用户不知道它、工具描述里也没有任何「何时该设它」的触发条件 ⇒ 实践中没人设它 ⇒
+    // 就算白名单 bug 修好了，功能依然是死的（2026-10-08 用户实锤）。
+    const openQuestions = state.openQuestions || []
+    const tasteCount = openQuestions.filter((q) => q && q.kind === 'taste').length
+    // **契约未兑现必须可见**（§7③）：模型没给 `kind` ⇒ 归一成 `fact`（不暂停，见 `normalizeOpenQuestions`
+    // 的「不得有阻断权」论证），但这件事要留痕 + 发 warn，否则又是一次「静默空转、长期没人发现」。
+    const untagged = openQuestions.filter((q) => q && q.kindMissing).length
+    if (untagged > 0) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.openQuestionsUntagged', { n: untagged }) })
+    // 为什么还留一个内部位：自动判据是**内容驱动**的，但 A/B 对照与端到端验证需要能**强制**开关
+    // （`always` / `never`）。它是环境变量 `TEAMFLOW_CONFIRM`，**不进工具 schema**
+    // （MEMORY §6：临时/实验开关不进公共工具契约——description 每次进主会话上下文 ≈137 tok/会话）。
+    const confirmMode = options.confirmMode || 'auto'
+    const shouldConfirm = confirmMode === 'always' || (confirmMode === 'auto' && tasteCount > 0)
     // 为什么 `!resume`：确认单只做**一轮**（轮次上限归 `interview` 档，ADR-0011 ③）。
     // 为什么排除 `patch`：patch = 单 agent 直改（STAGE_POLICY），它的 PRD 是「单点确认」机械阶段，
     // 不为它加一道人工闸门（ADR-0011 策略档矩阵：`patch` 恒 off）。
-    if (options.needConfirm === true && options.mode !== 'patch' && !resume) {
+    if (shouldConfirm && options.mode !== 'patch' && !resume) {
       const sheet = buildConfirmSheet({
         summary: state.product ? state.product.summary : null,
         acIndex: state.acIndex,
@@ -1200,7 +1220,7 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
       // 都漏在这里，确认单与澄清强度**在真实 `teamflow_start` 路径下根本不生效**）。
       // **门禁**：`test/smoke.js` 解析 `PipelineOptions` 接口键，断言每个键要么在本白名单、要么在
       // `execOptions` 的具名补充里（新增字段漏搬就红）。
-      needConfirm: !!options.needConfirm,
+      confirmMode: options.confirmMode || undefined,
       clarifyStrength: options.clarifyStrength || undefined,
       tasks: normalizeTasks(options.tasks),
       productRoot: normalizeRoot(options.productRoot),

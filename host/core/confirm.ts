@@ -30,6 +30,13 @@ export interface ConfirmQuestion {
   why: string
   changes: string
   default: string
+  /**
+   * **这一项属于哪一类**（2026-10-08）：`fact` = 信息缺口（`default` 兜住即可）；
+   * `taste` = **主观品味项** —— 只有它会触发暂停，所以要标出来让用户一眼看到「这几条是要你定」。
+   * 这里用内联联合而不 `import type` 自 `domain/state.ts`：本模块刻意不链宿主私有 peer
+   * （见文件头注释），多一条类型依赖就多一份运行时耦合风险。
+   */
+  kind?: 'fact' | 'taste'
 }
 
 export interface ConfirmSheet {
@@ -101,6 +108,7 @@ export function buildConfirmSheet(v: {
       why: clip(q.why, 160),
       changes: clip(q.changes, 160),
       default: clip(q.default, 160),
+      ...(q.kind === 'taste' ? { kind: 'taste' as const } : q.kind === 'fact' ? { kind: 'fact' as const } : {}),
     })),
     assumptions: assumpLines.slice(0, CONFIRM_ASSUMPTIONS_MAX).map((l) => clip(l, 160)),
     docPath: v.runDocs ? `${String(v.runDocs).replace(/\/$/, '')}/PRD.md` : 'PRD.md',
@@ -127,7 +135,9 @@ export function renderConfirmSheet(sheet: ConfirmSheet, locale: HostLocale): str
       .map((q) => {
         const def = q.default ? t(locale, 'confirm.defaultAnswer', { value: q.default }) : ''
         const why = q.why ? t(locale, 'confirm.whyAsk', { value: q.why }) : ''
-        return `- ${q.q}${def}${why}`
+        // 主观项打标（2026-10-08）：它会触发暂停，用户要能一眼看出「哪几条是我必须定的」。
+        const tag = q.kind === 'taste' ? t(locale, 'confirm.tasteTag') : ''
+        return `- ${tag}${q.q}${def}${why}`
       })
       .join('\n')
     lines.push(t(locale, 'confirm.questions', { n: sheet.questions.length, total: sheet.questionsTotal, list }))

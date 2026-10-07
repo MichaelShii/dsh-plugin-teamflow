@@ -19,7 +19,7 @@ import type { JournalRecord } from '../store.ts'
 import { fileAddressFor } from '@deepseek-ai/dsh-util-workspace-path'
 
 import { phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER } from './constants.ts'
-import { toText, clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, envFlagOn, normalizeClarifyStrength } from './util.ts'
+import { toText, clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, envFlagOn, normalizeClarifyStrength, confirmModeFromEnv, clarifyStrengthFromEnv } from './util.ts'
 
 import { runtime, runs, setRuntime, setSessionProjections, setInstallCtx, workspaceScopeOf, getRun } from './core/agent/context.ts'
 import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/domain/backlog.ts'
@@ -226,8 +226,6 @@ function registerTools(ctx) {
       preAction: { type: 'string', description: 'Pre-start handling of dirty workspace: "stash" (stash changes, restore later via git stash pop), "commit" (commit existing changes, custom commitMessage), omit = leave as-is (changes mix into this run)' },
       commitMessage: { type: 'string', description: 'Custom commit message when preAction=commit' },
       requirementSupplement: { type: 'string', description: 'Extra context the user gave during a clarification round (after a "needs-clarification" return). Kept separate from the original requirement (which stays a faithful transcription of the user\'s words) and handed to the PRD stage as authoritative input.' },
-      needConfirm: { type: 'boolean', description: 'Pause right after PRD for your approval: the run stops before design/tech and returns a confirm sheet (goal, acceptance criteria, assumptions). Approve by calling teamflow_resume with this runId. Default false (no pause); ignored on the patch tier.' },
-      clarifyStrength: { type: 'string', description: 'How hard to clarify BEFORE starting: "once" (default — ask the must-know gaps in one round), "interview" (ask **one question at a time**, each with its leaning, and stop as soon as you can predict the rest or the user says enough), "off" (never ask; put the assumptions in the PRD). This only changes what you are told to do; the pipeline gate is unchanged. Always treated as "off" on the patch tier.' },
       tasks: {
         type: 'array',
         description: 'Optional splittable dev task list',
@@ -309,12 +307,14 @@ function registerTools(ctx) {
         const options = {
           needDesign: !!args.needDesign,
           needScaffold: !!args.needScaffold,
-          // PRD 确认单（ADR-0011 ①）：**默认不打断**。开启后 PRD 完成即暂停，把「目标 + AC + 假设」
-          // 交用户批准，批准 = teamflow_resume。patch 档不生效。
-          needConfirm: !!args.needConfirm,
+          // PRD 确认单（ADR-0011 ①）：**触发判据是内容**（PRD 的 openQuestions 里有 kind="taste"
+          // ⇒ 暂停），**不是**一个用户要自己敲的开关 —— 2026-10-08 用户否掉了 `needConfirm` 参数：
+          // 「用户又不知道这参数」⇒ 公开一个用户不会用、工具描述里又没说何时该设的开关 = 功能是死的。
+          // 环境变量只在 A/B 对照与端到端验证时用来强制（`always`/`never`）。
+          confirmMode: confirmModeFromEnv(),
           // 澄清强度（ADR-0011 ③）：**只影响注入文案**（收敛规则与轮次上限按 §裁决 ③ 不改）；
-          // patch 恒按 off 归一（util.normalizeClarifyStrength 的判定顺序是契约）。
-          clarifyStrength: normalizeClarifyStrength(args.clarifyStrength, normalizeMode(args.mode) || undefined),
+          // patch 恒按 off 归一（util.normalizeClarifyStrength 的判定顺序是契约）。同样走环境变量。
+          clarifyStrength: normalizeClarifyStrength(clarifyStrengthFromEnv(), normalizeMode(args.mode) || undefined),
           lite: !!args.lite,
           // craft 引导通道：环境变量开关（TEAMFLOW_CRAFT=0 关闭），**不做工具参数**
           // —— 工具 description 每次都进主会话上下文，而这是临时实验开关（详见 util.envFlagOn 注释）

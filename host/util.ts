@@ -295,6 +295,33 @@ export function envFlagOn(name: string): boolean {
   if (raw === undefined || String(raw).trim() === '') return true
   return !/^(0|false|off|no)$/i.test(String(raw).trim())
 }
+
+/**
+ * **PRD 确认单的触发档**（2026-10-08）：`TEAMFLOW_CONFIRM` = `always` / `never`，其余/未设 = `auto`。
+ *
+ * 为什么要环境变量而不是工具参数（用户 2026-10-08 当场否掉公开参数 `needConfirm`）：
+ * 「用户又不知道这个参数」—— 公开一个用户不会用、且工具描述里**没有任何「何时该设它」的触发条件**
+ * 的开关，等于这个功能在实践中从来不会被触发（它当时也确实从未生效过）。产品路径必须是**内容驱动**
+ * （PRD 有没有主观品味项），这个环境变量只服务于 A/B 对照与端到端验证的**强制**需要。
+ */
+export function confirmModeFromEnv(): 'auto' | 'always' | 'never' {
+  const v = String(process.env.TEAMFLOW_CONFIRM ?? '').trim().toLowerCase()
+  if (v === 'always' || v === 'on' || v === '1' || v === 'true') return 'always'
+  if (v === 'never' || v === 'off' || v === '0' || v === 'false') return 'never'
+  return 'auto'
+}
+
+/**
+ * **澄清强度**（ADR-0011 ③）的环境变量通道（2026-10-08）：`TEAMFLOW_CLARIFY` = `off`/`once`/`interview`。
+ * 与 `confirmModeFromEnv` 同一条理由：公开参数无人会设 = 功能不存在。缺省 `once` = 现行行为逐字不变。
+ * ⚠️ 归一仍要走 `normalizeClarifyStrength`（`patch` 恒 off 的判定顺序是契约），本函数只负责读环境。
+ */
+export function clarifyStrengthFromEnv(): 'off' | 'once' | 'interview' {
+  const v = String(process.env.TEAMFLOW_CLARIFY ?? '').trim().toLowerCase()
+  if (v === 'interview') return 'interview'
+  if (v === 'off') return 'off'
+  return 'once'
+}
 export function sanitizeSnapOptions(o) {
   const opts = (o && typeof o === 'object') ? o : {}
   return {
