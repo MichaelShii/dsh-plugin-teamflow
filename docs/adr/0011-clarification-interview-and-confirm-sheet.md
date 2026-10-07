@@ -189,6 +189,13 @@ ADR-0010 / TODO 此前写「多轮追问需要一个跨调用状态（`clarify-s
 **门禁**：`orchestration` 第 ⑳ 组 12 条行为断言 ＋ `smoke` 5 条源码锁。
 **变异 M5**（拿掉 `return abortForConfirmSheet`）⇒ smoke 恰 1 红 ＋ 编排恰 4 红，症状实测显示「后续阶段照常跑了」，对照断言（缺省直通 / patch 不暂停 / 纯函数）**全绿**。
 
+
+**批 1.5（2026-10-07 后续）：审批面做成「可插拔的择路骨架」，默认不接原生 seam。**
+- `confirm.ts` 增 `confirmHook` / `setConfirmHook`（回调单例，仿 `installCtx` 搬运手法 —— pipeline 是模块级纯编排、拿不到 ctx）；`liveRootFor(agents, ownerSession)` 负责挑 live root（**多 root 且 ownerSession 匹配不上 ⇒ 返回 null 回落，不猜**）。
+- 调用点：PRD 后先试已登记的批准能力；**未登记 / 返回空 / 抛错 ⇒ 一律回落**到「停在 interrupted + 汇报交主线程」。
+- **为什么默认不登记原生 seam**（关键取舍）：① ① 的裁决＝「保留自动 resume」⇒ **批准 = `resume`** ⇒ 原生审批卡**不是功能必需**，只是「体验更顺」；② **P1 未验到客户端 UI**（只验到「请求进入转发队列」）；③ **`ask()` 带 carrier 且无客户端应答时会一直挂住**（实测 4013ms 超时）⇒ 放进生产路径＝常态化「流水线卡死」风险。**端到端验证前不接。**
+- 已知客户端行为（源码核实，`dsh-client-ui-user-questions/lib/client.js:877`）：`pending.kind === "plan-review"` 有**独立优先级分支** ⇒ 真接上后原生审阅卡确实会优先呈现。
+
 **未做（明确记）**：① **改计划后重跑 PRD**（`redoFrom`）—— 断点已 > PRD，`supplement` 会被 P3 裁决拒绝 ⇒ 改计划只能起新需求（拒绝文案已写明）；② 轮次上限（归 `interview` 档，见 §裁决 ③）；③ 审批面的原生 seam（批 2，见 §P1 实机验证）。
 
 ## 影响

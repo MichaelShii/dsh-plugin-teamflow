@@ -591,6 +591,20 @@ console.log('\n[20] PRD 确认单：needConfirm ⇒ PRD 后暂停；缺省直通
   ok(renderConfirmSheet(sheet, 'zh').split('\n').length <= 40, `渲染 ≤40 行（实测 ${renderConfirmSheet(sheet, 'zh').split('\n').length} 行）`)
   // 数据全缺 ⇒ 摘要薄但仍要暂停（缺假设恰恰最该让人看一眼）
   ok(buildConfirmSheet({}).ac.length === 0 && buildConfirmSheet({}).summary === '', '空输入不抛，产出空摘要（暂停与否由调用方判，与本函数无关）')
+
+  // ⑤ **闭环**：确认单暂停 ⇒ `interruptedPhaseOf` 落在 design ⇒ 用该断点续跑，design 真跑且 PRD 被跳过
+  const pausedFull = await runScenario('confirm-paused-full', { options: { ...FULL_OPTS, needConfirm: true } })
+  ok(pausedFull.status === 'interrupted', `needConfirm + full ⇒ 停在 interrupted（实测 ${pausedFull.status}）`)
+  ok(pausedFull.confirmSheet && typeof pausedFull.confirmSheet === 'object', '暂停时确认单落盘')
+  const resumeAt = interruptedPhaseOf(pausedFull.journal)
+  ok(resumeAt === 'design', `确认单暂停 ⇒ 断点 design（实测 ${resumeAt}）`)
+  const afterResume = await runScenario('confirm-resumed', {
+    options: { ...FULL_OPTS },
+    resume: { phase: resumeAt, products: {} },
+  })
+  const kids = afterResume.childLabels.filter((l) => !/需求分诊|triage/i.test(String(l)))
+  ok(has(kids, '设计说明'), `resume 后 design 真跑（实测 ${JSON.stringify(kids).slice(0, 150)}）`)
+  ok(!has(kids, '梳理 PRD'), `PRD 被跳过（复用已完成产物）（实测 ${JSON.stringify(kids).slice(0, 150)}）`)
 }
 
 if (failed) {

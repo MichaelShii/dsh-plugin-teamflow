@@ -43,7 +43,7 @@ import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddPlan,
 import type { GitResult } from './workspace/sanity.ts'
 import { archiveRunLogs, sweepWorkspaceLogs } from './workspace/runlogs.ts'
 import { preflightWorkspaceAcl } from './workspace/acl-preflight.ts'
-import { buildConfirmSheet, renderConfirmSheet, type ConfirmSheet } from './confirm.ts'
+import { buildConfirmSheet, renderConfirmSheet, confirmHook, type ConfirmSheet } from './confirm.ts'
 import { parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
 import { ambientLocale, localeForMissingSnapshot, runLocaleOf } from './locale.ts'
 import { noteClarifyAnswered, noteClarifyProceeded } from './clarify-log.ts'
@@ -258,7 +258,7 @@ function abortForClarification(journal: Journal, locale: HostLocale, verdict: Tr
  * ⚠️ 落点正确依赖 `interruptedPhaseOf` 的第二层修正（2026-10-07）：PRD done 且其后全空时，
  * 断点必须落在「启用过但从未尝试」的阶段（design/tech），而不是 `acceptance`。
  */
-function abortForConfirmSheet(journal: Journal, locale: HostLocale, sheet: ConfirmSheet): void {
+function abortForConfirmSheet(journal: Journal, sheet: ConfirmSheet, locale: HostLocale): void {
   journal.interrupted = true
   journal.interruptedAt = Date.now()
   journal.status = 'interrupted'
@@ -871,7 +871,20 @@ export async function executePipeline(
         assumptions: journal.assumptions,
         runDocs: journal.runDocs,
       })
-      return abortForConfirmSheet(journal, locale, sheet)
+      // 审批面择路：**有登记的批准能力 ⇒ 试；否则（含抛错 / 返回空）⇒ 回落**停在 interrupted
+      // 交主线程兜底（用 `ask_user_question`，已在生产验证）。
+      // ⚠️ 为什么当前不登记批准能力：① ① 的裁决＝「保留自动 resume」⇒ 批准＝`resume`，
+      // 原生审批卡不是功能必需，只是「体验更顺」；② **P1 未验到客户端 UI**
+      // （只验到「请求进入转发队列」）；③ **`ask()` 带 carrier 且无客户端应答时会一直挂住**
+      // ⇒ 放进生产路径＝常态化「流水线卡死」风险。端到端验成前不接。
+      const approved = typeof confirmHook.ask === 'function'
+        ? await confirmHook.ask(journal, sheet).then((a) => (a == null ? null : String(a))).catch(() => null)
+        : null
+      if (approved === null) {
+        return abortForConfirmSheet(journal, sheet, locale)
+      }
+      journal.confirmAnswer = approved
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.confirmed') })
     }
 
     /* ── UI/UX 设计阶段（档位阶段集启用；lite+needDesign 也保留，显式要求的 UI 需求不被吞） ── */

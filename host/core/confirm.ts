@@ -78,3 +78,60 @@ export function renderConfirmSheet(sheet: ConfirmSheet, locale: HostLocale): str
   lines.push(t(locale, 'confirm.footer', { doc: sheet.docPath }))
   return lines.join('\n')
 }
+
+/* ────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * **审批面：可选、可插拔的批准能力**（ADR-0011 ②，2026-10-07）。
+ *
+ * **为什么是「回调单例」而不是直接 `ctx.get('userQuestions')`**：
+ * pipeline 是**模块级纯编排**函数，拿不到插件 ctx（且它链到宿主私有 peer
+ * `@deepseek-ai/dsh-llm`，Behavior 测试取不到）⇒ 沿用 `runtime` / `installCtx` 的
+ * 单例搬运手法，由 service 装配时把「带着 ctx 的提问能力」登记进来。
+ *
+ * **契约**：`ask(journal, sheet)` 返回用户的选择；返回 `null`/`undefined` 或**抛错**
+ * ＝ 本轮审批面不可用 ⇒ 调用方一律**回落**到「停在 interrupted + 汇报交主线程兜底」。
+ *
+ * **为什么当前默认不登记**（关键取舍）：
+ * - **① 已裁决「保留自动 resume」** ⇒ 批准动作 = `resume` ⇒ 原生审批卡**不是功能必需的**，
+ *   它是「体验更顺」的可选通道。
+ * - **P1 只验到「请求进入转发队列」**，客户端 UI 是否真的弹卡并回传答案**未验**
+ *   （实测见 `docs/adr/0011-…md` §P1 实机验证）。
+ * - ⚠️ **`ask()` 带 carrier 时会一直等**：若客户端没接该请求，它会**挂住不返回**。
+ *   把它放进生产路径＝把「流水线卡死」的风险常态化 ⇒ **端到端验证前不接**。
+ */
+export type ConfirmAsker = (journal: unknown, sheet: unknown) => Promise<string | null>
+
+/** 审批面回调（未登记 = 一律回落）。 */
+export const confirmHook: { ask?: ConfirmAsker } = {}
+
+/** 登记／撤销审批面（可选能力；缺服务或类型不符都不抛）。 */
+export function setConfirmHook(fn: unknown): void {
+  confirmHook.ask = typeof fn === 'function' ? (fn as ConfirmAsker) : undefined
+}
+
+/**
+ * 从 agents 服务里选出「发起该 run 的那个 live root」。
+ *
+ * 依据：`userQuestions.ask(request)` 只在 `request.agent` **是 registry 里的 live root** 时才会进入
+ * scoped waterfall（带 scope carrier），客户端桥才会按 agentId 把问题路由到对应连接
+ * （`dsh-user-questions/lib/index.js:52-60`、`dsh-api-remotes/lib/index.js:147-157`）。
+ *
+ * ⚠️ **多 root 且 ownerSession 匹配不上 ⇒ 返回 `null`、由调用方回落**，不猜第一个 root：
+ * 问错会话比不弹卡更糟（用户在当前会话看不到卡，流水线却停在「等批准」）。
+ */
+export function liveRootFor(agents: unknown, ownerSession: unknown): unknown {
+  try {
+    const a = agents as { get?: (id: unknown) => unknown; roots?: () => unknown } | null | undefined
+    if (!a || typeof a.roots !== 'function') return null
+    const roots = a.roots()
+    if (!Array.isArray(roots) || roots.length === 0) return null
+    if (ownerSession && typeof a.get === 'function') {
+      const one = a.get(ownerSession)
+      if (one && roots.includes(one)) return one
+    }
+    return roots.length === 1 ? roots[0] : null
+  } catch (e) {
+    return null
+  }
+}
