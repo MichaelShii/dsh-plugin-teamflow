@@ -856,9 +856,14 @@ export async function executePipeline(
         : { label: t(locale, 'dev.prdFull'), fn: prdPrompt }
     // 澄清答复（2026-09-16 需求澄清闸门）：用户在澄清轮补充的说明是**权威输入**——拼在需求之后并显式声明
     // 「不得再自行假设」，否则 PM 会把自己的旧猜测再填一遍。原始 requirement 保持逐字不变（可审计）。
+    // 2026-10-08 分叉：**确认单上「要改」**（`resume.redo`）是另一种语义 —— 用户不是答我问的问题，而是
+    // 对上一版 PRD 提了修改要求。共用「权威输入」的效力，但**不能用「你问的问题的答案」这个说法**：
+    // 那时 PRD 的待澄清清单还没生成，模型会照字面去找一份不存在的清单。
     const supplement = journal.requirementSupplement
     const prdInput = supplement
-      ? `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-assume]\n${supplement}`
+      ? resume && resume.redo
+        ? `${requirement}\n\n[REVISED — the user reviewed the previous PRD and asked for these changes; treat them as authoritative and do NOT re-ask]\n${supplement}`
+        : `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-assume]\n${supplement}`
       : requirement
     // patch 档的「单点确认」是机械阶段（核对现状 + 给直改指令，不做架构判断）→ 降档省 token
     const prdStage = await runSimpleStage('prd', pForm.fn(prdInput, root, journal.id, state), pForm.label, {
@@ -1306,8 +1311,20 @@ export function resumeRun(
   // 补录校验放在**取 agent 之前**：纯参数校验不该有副作用，也不该先占用并发锁。
   // 断点晚于 prd 时本轮不会有任何阶段读 supplement ⇒ 直接拒绝。**不许静默吞掉**——那正是本仓反复踩的
   // 「静默丢弃」（§7 工具返回体被 schema 吃掉 / §16 白名单吃掉内部字段，同类第四次）。
+  //
+  // ⚠️ **2026-10-08 加一个例外：回退重跑 PRD**。PRD 确认单暂停时 `stages` **只有 `[prd done]`**
+  // ⇒ 「带上补充说明重跑 PRD」的**作废面为零**（下游一个阶段都没跑过）。
+  // 为什么必须有这个例外：确认单的「我要调整几项」分支原本**无处可答** —— 断点是 `design`（晚于 PRD）
+  // ⇒ `supplement` 在这里被拒 ⇒ 用户选完只能起新 run、刚跑完的 PRD 作废。用户 2026-10-08 实锤：
+  // 那条 AUQ 选项的文案许诺「我再更新确认单后开工」，而**没有任何机制能兑现它** —— 假承诺比「不能改」更糟。
+  //
+  // 判据刻意落在**内容**上（PRD 之后是否真跑过阶段），不是「是不是确认单暂停」：
+  // 这样任何未来出现的「恰好停在 PRD 之后」形态都自动获得同一条能力，而安全理由（作废面为零）恒成立。
   const supp = typeof supplement === 'string' && supplement.trim() ? supplement.trim() : null
-  if (supp && PHASE_ORDER.indexOf(phaseAtEntry) > PHASE_ORDER.indexOf('prd')) {
+  const afterPrd = PHASE_ORDER.indexOf(phaseAtEntry) > PHASE_ORDER.indexOf('prd')
+  const prdOnly = !(j.stages || []).some((s) => phaseKeyOf(s.phase) !== 'prd')
+  const redoPrd = !!supp && afterPrd && prdOnly
+  if (supp && afterPrd && !redoPrd) {
     return { ok: false, error: t(locale, 'run.supplementTooLate', { phase: phaseLabel(locale, phaseAtEntry) }) }
   }
   const productKey = j.workspace || j.product || 'default'
@@ -1318,7 +1335,7 @@ export function resumeRun(
   const agent = sid && runtime.agents ? runtime.agents.get(sid) : undefined
   if (agent === undefined) return { ok: false, error: t(locale, 'run.agentNotFound', { sid }) }
   try {
-    const resumePhase = phaseAtEntry
+    const resumePhase = redoPrd ? 'prd' : phaseAtEntry
     const products = buildResumeProducts(j)
     j.status = 'running'
     j.cancelled = false
@@ -1346,7 +1363,24 @@ export function resumeRun(
     j.endedAt = null
     j.logs = (j.logs || []).slice(-200)
     j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.resume', { phase: phaseLabel(locale, resumePhase) }) })
-    j.stages = (j.stages || []).filter((s) => s.status !== 'running' && s.status !== 'pending') // 清理未完成 stage；保留 done/failed 历史（失败痕迹不消失）
+    j.stages = (j.stages || [])
+      .filter((s) => s.status !== 'running' && s.status !== 'pending') // 清理未完成 stage；保留 done/failed 历史（失败痕迹不消失）
+      // 回退重跑 PRD：把旧的 prd 记录**摘掉**，否则 `enterStage` 会再推一条 ⇒ 同一阶段两条记录
+      // （报告与断点定位都按「每阶段一条」读）。安全前提正是 `prdOnly`：PRD 之后确实没跑过任何阶段。
+      .filter((s) => !(redoPrd && phaseKeyOf(s.phase) === 'prd'))
+    if (redoPrd) {
+      // 旧确认单描述的是**即将被替换**的那份 PRD ⇒ 必须清掉，否则在新 PRD 出结论前主线程会看到过期内容。
+      j.confirmSheet = null
+      // 文本兜底（`journal.assumptions`）同理清空。
+      j.assumptions = null
+      // ⚠️ 结构化 `state.openQuestions` 也要清：新 PRD 若没给 `openQuestions`（`extra` 契约实测 ~20% 不达），
+      // `mergeStateBlock` 是**条件式替换** ⇒ 旧主观项会残留 ⇒ 按**过期项**再次暂停，用户看到同一份旧确认单。
+      try {
+        const st = loadState(productKey)
+        if ((st.openQuestions || []).length) { st.openQuestions = []; saveState(productKey, st) }
+      } catch (e) { /* 清不掉也不影响重跑（新 PRD 会覆盖） */ }
+      j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.redoPrd', { n: String(supp || '').length }) })
+    }
     // 补录的答复落 journal（PRD 会读它拼 `[CLARIFIED]`）；`answered` 埋点只在这里记一次
     // —— `executePipeline` 的同一埋点已按 `!resume` 排除续跑路径，否则会重复计一次。
     if (supp) {
@@ -1358,7 +1392,7 @@ export function resumeRun(
     }
     runs.set(id, j) // 内存换用磁盘完整版（含 output 全文）
     persistJournal(j)
-    executePipeline(j, agent, j.requirement, j.options, undefined, { phase: resumePhase, products })
+    executePipeline(j, agent, j.requirement, j.options, undefined, { phase: resumePhase, products, redo: redoPrd })
     return { ok: true, runId: id, resumedFrom: resumePhase }
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) }

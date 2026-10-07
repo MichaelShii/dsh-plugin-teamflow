@@ -690,6 +690,9 @@ ok(/log\.prdAssumptionsMissing/.test(pipelineSrc), 'pipeline：PRD 未给假设�
 ok(/triage: journal\.triage \|\| null/.test(storeSrc) && /assumptions: journal\.assumptions \|\| null/.test(storeSrc) && /requirementSupplement: journal\.requirementSupplement \|\| null/.test(storeSrc), 'store：serializeJournal 序列化 triage/assumptions/requirementSupplement')
 ok(/report\.assumptions/.test(reportSrc) && /const assumptionsLine/.test(reportSrc), 'report：完成汇报显式回带「本次基于以下假设启动」')
 ok(/\[CLARIFIED — the user answered the open questions below/.test(pipelineSrc), 'pipeline：澄清答复作为权威输入进 PRD（[CLARIFIED] 块，声明不得再自行假设）')
+// 确认单「要改」走的是另一段语义（2026-10-08）：用户不是答我问的问题，是对上一版 PRD 提修改要求
+// ⇒ 必须有**自己的补录块**。共用 [CLARIFIED] 会让模型去找一份那时还不存在的「待澄清清单」。
+ok(/\[REVISED — the user reviewed the previous PRD and asked for these changes/.test(pipelineSrc) && /resume && resume\.redo/.test(pipelineSrc), 'pipeline：回退重跑 PRD 时用 [REVISED] 块（与澄清轮的 [CLARIFIED] 分叉，不共用措辞）')
 // B1 回归锁（2026-09-16 实测 tf-mu34afd2-wcjaw1）：`journal.options` 是白名单字面量，直接传给 executePipeline
 // 会把 requirementSupplement / __triage 静默丢掉（澄清结论进不了 PRD、journal.triage 永远为空、shadow 埋点空转）。
 ok(/const execOptions = Object\.assign\(\{\}, journal\.options, \{[\s\S]{0,220}requirementSupplement: options\.requirementSupplement \|\| null,[\s\S]{0,140}__triage:/.test(pipelineSrc), 'pipeline：executePipeline 收到「白名单 + 内部字段」（澄清答复/分诊裁决不得再被丢）')
@@ -853,7 +856,13 @@ ok(/t\(locale, clarifyKey\)/.test(hostSrc) && !/function clarifyStrengthForTeam\
 // 续跑补录入口：`supplement` 从 teamflow_resume 一路传到 resumeRun；PRD 是唯一消费点
 // ⇒ 断点晚于 prd 必须**显式拒绝**（静默接受 = 静默丢弃，本仓反复踩）
 ok(/supplement\?: string \| null/.test(pipelineSrc) && /resumeRun\(id, parent\.session\.id, sup\)/.test(hostSrc), 'resume：supplement 从 teamflow_resume 一路传到 resumeRun')
-ok(/if \(supp && PHASE_ORDER\.indexOf\(phaseAtEntry\) > PHASE_ORDER\.indexOf\('prd'\)\)/.test(pipelineSrc), 'resume：supplement 只在断点 ≤ prd 时接受（晚于 prd 显式拒绝）')
+// ⚠️ 2026-10-08：判据从「断点晚于 prd 一律拒绝」改成「**除 PRD 之后未跑过任何阶段外**一律拒绝」。
+// 锁必须覆盖**两边**：只要拒绝条件（`afterPrd && !redoPrd`）或「作废面为零」的前置（`prdOnly`）
+// 任一半被改掉，就有一种形态会静默走错（要么假承诺、要么白作废下游产物）。
+ok(/const redoPrd = !!supp && afterPrd && prdOnly/.test(pipelineSrc) && /if \(supp && afterPrd && !redoPrd\)/.test(pipelineSrc), 'resume：supplement 在断点晚于 prd 时**显式拒绝**，唯一例外是「PRD 之后没跑过任何阶段」（回退重跑 PRD）')
+ok(/const prdOnly = !\(j\.stages \|\| \[\]\)\.some\(\(s\) => phaseKeyOf\(s\.phase\) !== 'prd'\)/.test(pipelineSrc), 'resume：例外的前置判据是**内容**（PRD 之后是否真跑过阶段），不是「是不是确认单暂停」')
+ok(/const resumePhase = redoPrd \? 'prd' : phaseAtEntry/.test(pipelineSrc), 'resume：回退就是把检查点设回 prd（`resumed()` 是严格小于 ⇒ prd 会真的重跑）')
+ok(/\.filter\(\(s\) => !\(redoPrd && phaseKeyOf\(s\.phase\) === 'prd'\)\)/.test(pipelineSrc), 'resume：回退时**摘掉旧 prd 记录**（否则 enterStage 再推一条 ⇒ 同阶段两条记录，报告与断点定位都按「每阶段一条」读）')
 ok(/'run\.supplementTooLate'/.test(hostSrc) && /'run\.supplementApplied'/.test(hostSrc), 'resume：补录的拒绝与应用都有可见文案（zh/en 同形由 locale 门禁守）')
 // executePipeline 不得覆盖补录的答复（它收到的是 `journal.options` 白名单字面量，本就不含该键 —— 同型第四次）
 ok(/if \(!resume\) journal\.requirementSupplement = options\.requirementSupplement/.test(pipelineSrc) && /if \(!resume && journal\.requirementSupplement\)/.test(pipelineSrc), 'resume：executePipeline 不覆盖 supplement（否则补录的答复被静默清空）')

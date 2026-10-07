@@ -22,7 +22,7 @@
  *   TF_ORCH_BASE=<能解析 peer 的源码副本> node test/orchestration.test.js
  * 等价的 A/B 对照脚本见 `.workbuddy/verify-2026-09-26/h5-stage-convergence.mjs`。
  */
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -783,6 +783,81 @@ console.log('\n[22] 同一 run 内 state 刷新：PRD 的 extra.* 当场可见�
   ok(/【本次任务产物夹】/.test(designPrompt), 'design 阶段 prompt 仍带「任务产物夹」注入（__runCtx 未被 state 合并冲掉）')
   // `state.acIndex` 只注入 pm/qa/acceptance/tech 四角色 ⇒ QA 的 prompt 是这条链的证据面
   ok(/AC 索引/.test(qaPrompt) && /结构化 AC 一/.test(qaPrompt), 'QA 阶段 prompt 带上**本 run PRD** 写的 AC 索引（不是上一次 run 的遗留）')
+}
+
+/* ── [23] 确认单断点上的「改」：带 supplement 续跑 ⇒ **回退重跑 PRD**（作废面为零）──
+ * 2026-10-08 用户实锤：确认单那条 AUQ 选项写着「我再更新确认单后开工」，而 `supplement` 在断点晚于 PRD 时
+ * 被**明确拒绝** ⇒ 承诺无法兑现（**假承诺比「不能改」更糟**：用户以为能改，点完才发现要么重开、要么白跑）。
+ * 唯一安全的例外：**PRD 之后一个阶段都没跑过**（`stages` 只有 prd）⇒ 回退重跑 PRD 不浪费任何已产出物。
+ * 本组锁两个方向：① 该形态**必须接受**且检查点真的回到 prd（PRD 真跑、补录以 [REVISED] 进 prompt、
+ * 旧确认单作废）；② 对照组（PRD 之后已有阶段跑过）**仍必须拒绝**（防改过头，白作废下游产物）。 */
+console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD 之后有阶段跑过 ⇒ 仍拒绝')
+{
+  const home = join(tmpdir(), 'tf-orch-redo-prd')
+  process.env.DSH_HOME = home
+  const work = join(home, 'work')
+  mkdirSync(work, { recursive: true })
+  const seen = []
+  // `resumeRun` 要能从 runtime.agents 取到 agent（测试 [21] 那里取不到 ⇒ 只能观测到「被拒/放行」，
+  // 观测不到回退是否真的发生）。这里给它一个假 agent，才能把「PRD 真的重跑了」断言出来。
+  const fakeParent = {
+    session: { id: 'sid-redo', header: { cwd: work }, append() {} },
+    status: 'idle', followup() {}, inject() {}, options: {},
+  }
+  setRuntime({ get: (sid) => (sid === 'sid-redo' ? fakeParent : undefined) }, {
+    start: async (_p, init) => {
+      const label = String((init && init.label) || '')
+      seen.push({ label, prompt: String((init && init.prompt && init.prompt[0] && init.prompt[0].text) || '') })
+      return {
+        id: `c-${seen.length}`, localAgent: { session: null },
+        result: (async () => ({ stopReason: 'completed', output: [{ type: 'text', text: '' }] }))(),
+        dispose: async () => {},
+      }
+    },
+  })
+  const mk = (ws, id, stages) => {
+    const dir = join(home, 'teamflow', ws, 'runs')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `${id}.json`), JSON.stringify({
+      id, requirement: '桌宠', status: 'interrupted', locale: 'zh',
+      workspace: ws, workspacePath: work, logs: [],
+      options: { mode: 'medium', needDesign: false, needScaffold: false },
+      stages, humanIntervention: true, interrupted: true, interruptedAt: Date.now(),
+      confirmSheet: { summary: '旧确认单', ac: [], questions: [], assumptions: [], at: 1 },
+    }), 'utf8')
+  }
+
+  // ① 确认单形态（只有 prd done）＋ supplement ⇒ 接受，检查点回退到 prd
+  mk('ws-redo', 'tf-redo', [{ phase: 'prd', status: 'done', output: '旧 PRD' }])
+  const r1 = resumeRun('tf-redo', 'sid-redo', '形象改成手绘 SVG，不要 emoji')
+  ok(r1.ok === true && r1.resumedFrom === 'prd',
+    `确认单断点 + supplement ⇒ **接受**并回退到 prd（实测 ok=${r1.ok} from=${r1.resumedFrom} err=${String(r1.error || '').slice(0, 60)}）`)
+  // ⚠️ `resumeRun` 里的 executePipeline 是**不 await** 的（fire-and-forget）⇒ 同步断言跑在流水线
+  // 到达 PRD 之前。这里给一个有界等待（最多 ~1.2s；拿到 PRD 子代理就立刻继续，不固定睡满）。
+  for (let i = 0; i < 60 && !seen.some((c) => /梳理 PRD/.test(String(c.label))); i++) {
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  ok(seen.some((c) => /梳理 PRD/.test(String(c.label))),
+    `PRD **真的重跑了**（不是复用旧产物）（实测子代理 ${JSON.stringify(seen.map((c) => c.label)).slice(0, 120)}）`)
+  ok(seen.some((c) => /\[REVISED —/.test(String(c.prompt))),
+    '补录以 **[REVISED]** 块进了 PRD prompt（与澄清轮 [CLARIFIED] 分叉；不是静默丢弃）')
+  ok(!seen.some((c) => /\[CLARIFIED —/.test(String(c.prompt))),
+    '对照：回退路径**不得**误用 [CLARIFIED]（那会让模型去找当时还不存在的「待澄清清单」）')
+  // 文件读放在等待之后：此时新 PRD 已至少尝试过一次 ⇒ 记录已重建。
+  const after = JSON.parse(readFileSync(join(home, 'teamflow', 'ws-redo', 'runs', 'tf-redo.json'), 'utf8'))
+  ok(after.confirmSheet === null || after.confirmSheet === undefined,
+    `旧确认单已作废（它描述的是被替换掉的那份 PRD）（实测 ${JSON.stringify(after.confirmSheet)}）`)
+  // 行为断言「旧 prd 记录真的被摘掉了」：源码锁只能锁住那行 `.filter(...)` 存在，
+  // 锁不住它**生效**。判据用**旧产物原文**（`output: '旧 PRD'`）：留着就说明记录没摘。
+  ok(!(after.stages || []).some((s) => String(s.output || '') === '旧 PRD'),
+    `回退时旧 prd 记录已摘掉（否则同阶段两条记录，报告与断点定位都按「每阶段一条」读）（实测 ${JSON.stringify((after.stages || []).map((s) => s.status))}）`)
+
+  // ② 对照：PRD 之后**已经有阶段跑过** ⇒ 仍必须拒绝（回退会白作废它们的产物）
+  mk('ws-late', 'tf-late', [{ phase: 'prd', status: 'done', output: 'x' }, { phase: 'design', status: 'done', output: 'y' }])
+  const r2 = resumeRun('tf-late', 'sid-redo', '改一下')
+  ok(r2.ok === false && /补录被拒绝/.test(String(r2.error)),
+    `对照：PRD 之后已有阶段跑过 ⇒ 仍**拒绝**补录（实测 ${String(r2.error).slice(0, 70)}）`)
+  rmSync(home, { recursive: true, force: true })
 }
 
 if (failed) {

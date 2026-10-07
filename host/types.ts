@@ -129,6 +129,10 @@ export interface PipelineOptions {
 export interface ResumeContext {
   phase: string
   products: Record<string, unknown>
+  /** **回退重跑 PRD**（2026-10-08）：检查点被主动拨回 `prd`（`resumeRun` 在「PRD 之后没跑过任何阶段」
+   *  且带 supplement 时这么做，见 `resume.phase==='prd'`）。用来给 PRD 换一段**语义不同**的补录块：
+   *  澄清轮是「用户答了我问的问题」，而这次是「用户要求改这些地方」（见 `pipeline.ts` 的 prdInput 拼装）。 */
+  redo?: boolean
 }
 /** 子代理运行句柄的鸭子类型（避免强依赖内部类型）。 */
 export interface SubagentRunLike {
