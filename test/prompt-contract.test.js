@@ -161,10 +161,32 @@ assertContract({
   intent: 'en run 的 PRD 同样要求假设段（语言跟随 run 快照，不写死中文标题）',
   include: [/\[Assumptions · mandatory\]/, /openQuestions/, /Assumptions & open questions/],
 })
+/**
+ * **主观决策项**（2026-10-08，用户实锤需求）。加这条的目的不是「防返工」，是**让用户确认自己要实现的东西**：
+ * 原判据只有 `under-specified`（信息不足）⇒ 「我想实现一个桌宠」这类需求**必然不列**
+ * （信息足够、模型能自查、猜错也不返工）⇒ 风格/形象/架构选型**全由模型独裁** ⇒
+ * 专业用户感官很差（「这插件也就给小白用用」）。⚠️ 这个损失**用返工率量不出来**（表现为流失/差评），
+ * 所以**不能**拿历史数据当判据 —— 判据是**产品意图**。
+ * ⚠️ 只在 prompt 层要求（§2：prompt 提标准不当保障）；本轮**不动**确认单的触发条件。
+ * 变异：删掉 (b) 段或那句「NOT a reason to omit」⇒ 本契约立刻红。
+ */
+assertContract({
+  id: 'PRD-TASTE-DECISIONS', level: 'policy', targets: 'prdPrompt',
+  intent: 'PRD 必须把「主观决策项」（多种同样成立、取决于用户品味）也列进假设段/openQuestions，且不得以「我能自己定」为由省略',
+  include: [/User-taste decisions/, /is NOT a reason to omit/, /feel "not mine"/],
+  exclude: [/If ANY part of the requirement is under-specified/],
+})
 assertContract({
   id: 'TECH-PATCH-ASSUMPTIONS', level: 'policy', targets: ['techChangePrompt', 'patchConfirmPrompt'],
   intent: '非 PRD 档位（tech 变更单 / patch 确认单）也要一句话假设，避免覆盖缺口',
   include: [/假设与待澄清/],
+})
+/** `tech` 档（重构/优化/架构）的**同类扩维**：架构选型同样不该由模型独裁
+ *  （用户实锤例子里明确点了「架构选项」）。`patch` 档不改 —— 它 `needConfirm` 恒关，没人消费。 */
+assertContract({
+  id: 'TECH-TASTE-DECISIONS', level: 'policy', targets: 'techChangePrompt',
+  intent: 'tech 档的假设段要含「多种同样成立的**技术**选型（模块边界/命名/加依赖/算法或架构）」',
+  include: [/several technical options were equally defensible/, /module boundaries, naming conventions, adding a dependency/],
 })
 
 // 交付形态契约（2026-09-17 实测：dddd 的插件"看着完整"却装不进 profile——"能被宿主加载"从未进过 AC）
