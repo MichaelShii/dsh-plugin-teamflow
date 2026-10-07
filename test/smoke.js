@@ -758,6 +758,32 @@ ok(/const guess = String\(\(o && o\.guess\)/.test(triageSrc), 'triage：guess �
 // 只有行为断言（triage-gate）红 ⇒ 源码锁漏了「判定条件恰好是四段」这件事本身。补上。
 ok(/if \(question && readings\.length >= 2 && changes && rework\) \{/.test(triageSrc), 'triage：合格判定**恰好**四段（question/readings/changes/rework），不含 guess —— 锁住「软字段不得升格为必填」')
 ok(/blockerGuessNone/.test(hostSrc), 'host：渲染层显式区分「有倾向 / 未给倾向」（不静默省略那一条）')
+/* ── `PipelineOptions` 可达性（2026-10-07 实锤新增）──
+ * **被修的 bug**：`startPipeline` 的 `options: {…}` 是**白名单字面量**，而 `execOptions` 是
+ * `Object.assign({}, journal.options, {…具名内部字段…})` ⇒ **白名单漏一个字段，executePipeline 就永远收不到它**。
+ * 2026-10-07 实锤：`needConfirm`（确认单）与 `clarifyStrength`（澄清强度）两个新字段都漏在这里，
+ * 两个功能**在真实 `teamflow_start` 路径下完全不生效**；而行为测试直调 `executePipeline`、绕过本白名单
+ * ⇒ **测试全绿也发现不了**（这正是 §14「单测注入内存 backend ⇒ 全绿而功能坏着」的又一实例）。
+ * 既有那条 execOptions 门禁只检查**硬编码的内部字段清单**，覆盖不到「interface 新增了什么」⇒ 补这条结构性的。 */
+const typesSrc = readFileSync(join(here, '../host/types.ts'), 'utf8')
+const optIface = (typesSrc.match(/export interface PipelineOptions \{[\s\S]*?\n\}/) || [''])[0]
+const optKeys = []
+for (const line of optIface.split('\n')) {
+  const m = line.match(/^  ([A-Za-z_$][\w$]*)\??\s*:/)
+  if (m) optKeys.push(m[1])
+}
+ok(optKeys.length >= 12, `解析到 PipelineOptions 字段 ${optKeys.length} 个（${optKeys.join(', ')}）`)
+// journal.options 白名单（startPipeline 里 `options: { … }` 那一段）
+const joptBlock = (pipelineSrc.match(/options: \{[\s\S]*?\n    \},/) || [''])[0]
+ok(joptBlock.length > 100, '提取到 startPipeline 的 journal.options 白名单')
+// execOptions 的具名内部字段补充
+const execBlock = (pipelineSrc.match(/const execOptions = Object\.assign\(\{\}, journal\.options, \{[\s\S]*?\n  \}\)/) || [''])[0]
+ok(execBlock.length > 50, '提取到 execOptions 的具名补充段')
+// 不走 options 通道的（在这些地方单独传递）：显式例外，禁止默默扩大
+const OPT_EXEMPT = new Set([])
+const optMissing = optKeys.filter((k) => !OPT_EXEMPT.has(k) && !new RegExp(`(^|[^A-Za-z0-9_$])${k}\\s*[:,]`).test(joptBlock) && !new RegExp(`(^|[^A-Za-z0-9_$])${k}\\s*[:,]`).test(execBlock))
+ok(optMissing.length === 0, `PipelineOptions 的每个字段都必须能被 executePipeline 收到${optMissing.length ? ` —— **漏了：${optMissing.join(', ')}**（只加 interface 不加白名单 = 静默失效；行为测试直调 executePipeline，绕过白名单 ⇒ 全绿也发现不了）` : ''}`)
+ok(/needConfirm: !!options\.needConfirm/.test(joptBlock) && /clarifyStrength: options\.clarifyStrength/.test(joptBlock), '本次实锤漏的两个字段已进白名单（确认单 ＋ 澄清强度）')
 
 // 澄清强度 `clarifyStrength`（ADR-0011 ③，2026-10-07）：**独立字段，不进 MODE_REGISTRY**
 // —— `PipelineMode` 决定阶段集/PRD 形态/护栏，把「追问几次」塞进去会让同一张表承担两件正交的事。
@@ -892,6 +918,7 @@ ok(/args\.preAction === 'stash' \|\| args\.preAction === 'commit' \|\| args\.pre
   const body = start >= 0 ? lines.slice(start, start + 10).join('\n') : ''
   for (const f of ['requirementSupplement', '__triage', 'branchPolicy', 'branchName', 'preAction', 'commitMessage']) {
     ok(body.includes(f + ':'), `pipeline：execOptions 显式携带内部字段 ${f}（journal.options 白名单不承载内部字段——B1 同型防回退）`)
+
   }
 }
 // 输出 schema 严格性（2026-09-17 实锤 probe-clock：git-init 决策返回带 kind 未声明 → additionalProperties:false

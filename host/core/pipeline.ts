@@ -1173,6 +1173,15 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
       craft: options.craft !== false,
       mode,
       teamId: options.teamId || undefined,
+      // ⚠️ **这个白名单是 `PipelineOptions` 的「可达性关口」**：`execOptions = Object.assign({},
+      // journal.options, {…具名内部字段…})` ⇒ 白名单漏掉一个字段，executePipeline 就**永远收不到它**。
+      // 而行为测试（`test/orchestration.test.js`）是**直调 executePipeline**、绕过本白名单 ⇒
+      // 功能静默失效时测试照样全绿（2026-10-07 实锤：`needConfirm` 与 `clarifyStrength` 两个新字段
+      // 都漏在这里，确认单与澄清强度**在真实 `teamflow_start` 路径下根本不生效**）。
+      // **门禁**：`test/smoke.js` 解析 `PipelineOptions` 接口键，断言每个键要么在本白名单、要么在
+      // `execOptions` 的具名补充里（新增字段漏搬就红）。
+      needConfirm: !!options.needConfirm,
+      clarifyStrength: options.clarifyStrength || undefined,
       tasks: normalizeTasks(options.tasks),
       productRoot: normalizeRoot(options.productRoot),
       maxConcurrency: normalizeConcurrency(options.maxConcurrency),

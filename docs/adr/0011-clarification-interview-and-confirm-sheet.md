@@ -247,6 +247,32 @@ ADR-0011 TODO ③ 原措辞是「澄清强度进 `MODE_REGISTRY` 作为新维度
 **门禁**：`state` 的动态往返夹具自动覆盖了新字段（我加字段没同步夹具时它立刻红，是它该做的）＋ `state` **+14 条容错/替换行为断言** ＋ `smoke` **+7 条源码锁**。
 **变异 M8**（给 `openQuestions` 的消费加 `false &&` 前缀）⇒ `state` 恰 1 条红；**但源码锁全绿** ⇒ **源码锁假绿（本日第三次，同根因）**：只锁赋值语句时，条件被否掉仍能匹配。已改成从**判定条件起锚**的整句匹配，改后复跑变异 ⇒ 同红。
 
+### ⚠️ 批 1.6（2026-10-07 傍晚）：**确认单与澄清强度在真实路径下根本不生效**（P0）
+
+用户问「下一步是流水线验证还是还有要修的」时去核，发现两个新功能**都是死的**：
+
+**根因**：`startPipeline` 里 `journal.options` 是**白名单字面量**，而
+`execOptions = Object.assign({}, journal.options, {…具名内部字段…})` ⇒ **白名单漏一个字段，`executePipeline` 就永远收不到它**。
+`needConfirm` 与 `clarifyStrength` 都漏在这里 ⇒
+- `options.needConfirm === true` **永远不成立** ⇒ 确认单**从不暂停**；
+- `clarifyStrengthForTeam` 读 `journal.options.clarifyStrength` 也读不到 ⇒ **永远回落 `once`**。
+
+**为什么全套测试没抓到**：`test/orchestration.test.js` 的 `runScenario` 是**直调 `executePipeline`**、
+把 options 原样传进去 ⇒ **绕过 `startPipeline` 的白名单**。既有那条 execOptions 门禁只检查**硬编码的
+内部字段清单**，覆盖不到「`PipelineOptions` 接口新增了什么」。⇒ 又一个 §14「全绿而功能坏着」实例。
+
+**修**：两个字段进 `journal.options` 白名单（白名单带上后 `execOptions` 自动继承；`clarifyStrengthForTeam`
+的反查也同时通）。
+
+**门禁（结构性，防复发）**：`smoke` 新增 —— 解析 `host/types.ts` 的 **`PipelineOptions` 接口键**，
+断言每个键**要么在 `journal.options` 白名单、要么在 `execOptions` 的具名补充段**（同 `state.test.js`
+对 `TeamflowState` 的做法）。**变异 M9**（摘掉 `clarifyStrength`）⇒ 该条 + 「两个实锤字段已进白名单」
+共 2 条红，并**点名** `漏了：clarifyStrength`。
+
+**踩坑留痕**：门禁第一版被**插进了一个 `for` 循环体**里 ⇒ 同一断言跑 6 次、报 6 条重复；且第一版正则
+用 `\b${k}\s*:` ⇒ 匹配不到白名单里的**简写属性** `mode,`（误报 `漏了：mode`）。两处都已修
+（重插到顶层 ＋ 正则改 `(^|[^A-Za-z0-9_$])${k}\s*[:,]`）。
+
 ## 影响
 
 - `docs/TODO.md` 的「澄清闸门」条按本文收敛（Phase 2 与强度档合并设计）。
