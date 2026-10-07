@@ -11,16 +11,23 @@
 - 🔜 **澄清闸门：Phase 2 计划确认单 + 策略档**（ADR-0010 §影响 明写：Phase 2 确认单与其 D3/D4 是同一件事的两个侧面，**须合并为一条、不得各做一套**）：
   - **已落地**（细节见 git log 与 `docs/adr/0010-clarification-observability.md`）：**Phase 1 启动前闸门**（`intent` / `blockers` 合格线 / `needs-clarification` 不建 run / `requirementSupplement` 回带）；**ADR-0010 ① 澄清埋点**（`host/core/clarify-log.ts` → `$DSH_HOME/teamflow/<product>/clarify.jsonl`，四事件 append-only，含 `triage-fallback`）；**ADR-0010 ② 失效可见化**（2026-10-04：分诊退兜底 ⇒ 闸门静默失效——两条 fallback 路径各记 `log.clarifyGateSkipped` warn ＋ 汇报 `report.clarifySkipped` 行）。
   - **① PRD 确认单（主；2026-10-07 批 1 已落地）**：`prdPrompt` 增**必填**「假设 / 待澄清」段 + 机器可读（state extra 带 `openQuestions:[{q,why,changes,default}]`）→ PRD 完成后 host **暂停**（复用 interrupted/resume 断点基座）→ 把「目标一句话 + AC + 范围/非目标 + 假设清单 + `PRD.md` 路径」**≤40 行**交主线程；**无合格待澄清项 → 直通不打断**。**2026-10-07 补齐**：`openQuestions` 已从「只要求不落盘」补成落地（`mergeStateBlock` 消费 ＋ 确认单接结构化，见 ADR §落地记录 ① 批 1.5）；批准文案已按要求明示「立即开始写代码」。批 1 落地范围＝`needConfirm` 选项（**默认关** / `patch` 恒 off / 只停一轮）+ PRD 后暂停 `abortForConfirmSheet` + `host/core/confirm.ts`（纯函数、结构化数据源、≤40 行）+ `extra.summary` 落盘 + 确认单落盘 + 汇报带确认单。**2026-10-07 C 方案落地**（`791a610` ＋ `c641ce0`，细节见 ADR §C 落地记录）：AC 的 `extra.acIndex` 契约**真实兑现率仅 ~20%**（34 份 state.json 中 7 份）⇒ 三层补偿 —— **A** `STATE_BLOCK_INSTRUCTION` 模板**本体**补 `extra`（真调用 A/B：改前 1/3、改后 4/4 含 extra，n 小不显著但机制可复现）＋ **B** `extractAcIndexFromText` host 兜底（⚠️ **源必须是 `PRD.md` 文件、不是 `stage.output`** —— 同一实现两源命中率 **95%（20/21）vs 25%（22/87）**）＋ **C** `acSource` 来源自曝（`state`/`extracted`/`none` 三态，zh/en 齐备）。**未做**：`redoFrom`（改计划重跑 PRD）、审批面**原生 seam** 接线（现为可插拔择路 + 回落 interrupted）。
-  - 🔜 **「主观决策项」扩维（2026-10-08，第 1 步已落地 `7e2cf0a`；第 2 步待验后做）**：原判据只有
+  - ✅ **「主观决策项」扩维（2026-10-08，第 1＋2 步均已落地）**：原判据只有
     `under-specified`（信息不足）⇒ 「我想实现一个桌宠」这类需求**必然不列**（信息足够/模型能自查/猜错不返工）
     ⇒ 风格·形象·架构选型**全由模型独裁**，用户看不到也没机会确认（用户实锤：专业用户感官差，「这插件也就给小白用用」）。
     ⚠️ **这是产品意图，不是返工数据问题** —— 那种损失表现为**流失/差评**，**用返工率量不出来**。
-    **已做**：`prdPrompt` 假设段/`openQuestions` 明写两类都要列（(a) 信息缺口 ＋ **(b) 主观决策项**，
-    含「I can decide this myself **不是**省略理由」＋ 合格线防仪式化）；`techChangePrompt` 同类扩维
-    （技术选型：模块边界/命名/加依赖/算法或架构）；两条 L1 契约（含「旧一维措辞不得复活」的 exclude）。
-    **待做（第 2 步）**：**确认单按「有无主观项」自动停**（`openQuestions.length > 0` ⇒ 停）——
-    **不是**按数据阈值；且**不改成默认全开**（那会毁掉 §1「批量可靠交付」的无人值守卖点）。
-    前置：先跑一条「桌宠」式需求，肉眼确认第 1 步列出来的**确实是你要的那种**决策项。
+    **第 1 步（`7e2cf0a`）**：`prdPrompt` 假设段/`openQuestions` 明写两类都要列（(a) 信息缺口 ＋
+    **(b) 主观决策项**，含「I can decide this myself **不是**省略理由」＋ 合格线防仪式化）；
+    `techChangePrompt` 同类扩维（技术选型：模块边界/命名/加依赖/算法或架构）；两条 L1 契约
+    （含「旧一维措辞不得复活」的 exclude）。
+    **第 2 步（本次）**：`openQuestions` 每条加 `kind: 'fact' | 'taste'` ⇒ 确认单**按内容自动停**：
+    **有 `taste`（主观项）才停**，纯 `fact`（信息缺口，`default` 能兜住）或没有待澄清项 ⇒ 直通。
+    **不是**按数据阈值、**不是**「任何待澄清项都停」（后者会毁掉 §1「批量可靠交付」的无人值守卖点）。
+    ⚠️ **缺 `kind` 一律归 `fact`（不阻断）＋ 发 warn 留痕**：依赖模型自律的判据在量出真阳性率前
+    **不得有阻断权**；而「不阻断 ≠ 静默」——`kindMissing` 让契约兑现率**可数**（首次实测见 ADR §落地记录）。
+    **同批顺带**：`needConfirm` / `clarifyStrength` **从公开工具 schema 摘到环境变量**
+    （`TEAMFLOW_CONFIRM` / `TEAMFLOW_CLARIFY`）——用户实锤「用户又不知道这参数」，公开一个用户不会用、
+    工具描述里又没说何时该设的开关 = 功能根本不存在（`craft` / `TEAMFLOW_CRAFT` 是同一模式的先例）。
+    **留给实测**：一条「桌宠」需求零参数跑通，看 ① 是否自动停在品味项上、② `kind` 兑现率。
   - **② 审批面选型**：优先宿主直调 user-questions seam（`intent:{kind:'plan-review'}` + `detail` = 计划 markdown → 原生审阅卡 `Approve`/`Keep planning`/`Chat about it`）——**2026-10-07 已实机验证**（详见 `docs/adr/0011-…md` §P1 实机验证）：插件 `inject(['userQuestions','agents'])` 成功、能取到 **live root 实例**、**传实例能进桥转发**（挂到 4013ms 超时）；**但「省 `agent`」形态被证伪**（全局 dispatch 无 scope carrier ⇒ 桥第一出口 `next()` ⇒ `NO_PROVIDER`）⇒ 必须传真实例，且多 root 时按 `journal.ownerSession` 选（勿 `roots()[0]`）、必须带 `signal`。**未验**：真客户端 UI 端到端（本探针组合无 `ui-user-questions`）；兜底沿用既有的「返回 status → 主线程 `ask_user_question`」通道（已在生产验证）。
   - **③ 策略档 `interview`（与 ① 一体两面，ADR-0010 D3/D4）**：澄清强度进 `MODE_REGISTRY` 作为新维度（`off` ＝ patch 现状 / `once` ＝ 现行默认 / `interview` ＝ 显式开；**`patch` 恒 `off`**）；**必须带硬终止**（D4：轮数上限 ＋ 置信度不再上升即停 ＋ 用户可随时「够了」，三条并存）——同一闸门早期版本因反复追问造成 **6 轮零 run**。
   - **④ 强度按数据定（ADR-0010 待定 #3，已收窄）**：`fallbackVerdict` 仍硬编码「永不拦启动」。三候选：① 保留放行但**可见**（**已做**，见上）；② 降级为**确定性形态判据**兜底拦一次；③ ①+② 叠加。**② 属「加拦截」，按纪律要先定判据 ＋ 量真阳性率 —— 而 `clarify.jsonl` 当前样本 ≈0（1 条产品线 / 2 行）⇒ 这是真正的瓶颈，先攒。**

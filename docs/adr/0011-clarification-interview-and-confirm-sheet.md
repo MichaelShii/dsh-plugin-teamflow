@@ -427,11 +427,112 @@ C 落地后拿真实语料回量 B，发现命中率远低于预期 ⇒ 逐步�
 - `redoFrom`（改计划重跑 PRD）未做。
 - 强度按数据定档：`clarify.jsonl` 样本仍 ≈0。
 
+## 落地记录（2026-10-08：确认单改为**内容驱动** ＋ 判据扩维 ＋ 摘掉两个公开开关）
+
+### 背景：用户否掉了「用开关/用数据决定」
+
+批 1 的确认单触发条件是一个**公开工具参数 `needConfirm`**（默认关，「显式才停」），
+理由是「该不该打断需要真阳性率数据，而历史 0 样本」。用户 2026-10-08 直接推翻这个框架：
+
+> 加这个的目的**不是防返工**，是**让用户确认自己要实现的东西**；需求本身明确、**不需要历史数据支持**
+> （历史流水线版本差异大，有时效性）。而且这类损失（用户觉得「不是我要的」→ 感官差 → 流失/差评）
+> **不表现为 QA 打回** —— 用返工率量不出来。插件应起**引导**作用。
+
+⇒ **「拿返工率论证闸门该不该更激进」这条论证路径整条作废**（本 ADR 上一版 §真实验证 的量法只适用于
+`extra` 兑现率这类**机器可测**的契约，不适用于「用户要什么」）。用户的判据是**产品意图**。
+
+用户同时否掉了参数的形态：**「用户又不知道这参数」** —— 一个用户不会主动敲、工具描述里又**没有任何
+「何时该设它」的触发条件**的开关，实践中永远不会被设 ⇒ 功能等于不存在（与 `clarifyStrength` 同病）。
+
+### 第 1 步：判据扩维（`7e2cf0a`）
+
+原 `prdPrompt` 只有一维 `under-specified`（信息不足）⇒ 「我想实现一个桌宠」**必然不列**
+（信息足够、模型能自查、猜错也不返工）⇒ 风格/形象/架构选型**全由模型独裁**。改为**两类并列**：
+
+- **(a) Unsettled facts** —— 需求没交代、模型也无法从仓库/state 自行定。
+- **(b) User-taste decisions** —— 多种走法**同样成立**，取舍取决于「用户想要什么」而非「哪个正确」。
+  明写 **`"I can decide this myself" is NOT a reason to omit a (b) item`**（直接打掉旧判据的根因）；
+  合格线防仪式化（只在「合理用户会有偏好」且「猜错会让成品『不像我的』」时列，不许堆 CSS 类名之类琐事）；
+  每条必须带推荐值（成为 `default`）。
+
+`techChangePrompt` 同类扩维（模块边界/命名/加依赖/算法或架构）。两条 L1 契约，
+其中 `PRD-TASTE-DECISIONS` **带 exclude**：`/If ANY part of the requirement is under-specified/`
+—— 锁住「旧一维措辞不得复活」。zh prompt `9210 → 10011` 字符。
+
+### 第 2 步：确认单按内容自动停（判据 = 有没有**主观项**）
+
+`openQuestions` 每条加判别位 **`kind: 'fact' | 'taste'`**：
+
+- **`taste`（主观项）⇒ 暂停**（让用户拍板后再往下建）；
+- **`fact`（信息缺口）或没有待澄清项 ⇒ 直通**（`default` 兜得住，打断纯属浪费，
+  会白毁 §1「批量可靠交付」的无人值守卖点）；
+- `prdPrompt` 的**模板示例**与 (a)/(b) 散文**两处都写死** `kind`，并互相指向（第 7 条回指第 8 条）
+  —— 理由是 §「发现 1」那次实锤：`extra` 当年就是「模板」与「散文」两份不互相覆盖的契约，模型照模板写。
+
+**⚠️ 缺 `kind` 的处置（关键取舍，两条纪律共同决定）**：一律归 **`fact`（不阻断）＋ 打 `kindMissing` 留痕 ＋ 发 warn**。
+
+- **不能默认成 `taste`**：暂停**就是**阻断权，而本仓纪律「依赖模型自律的判据，在量出真阳性率之前
+  不得有阻断权」。缺省成 `taste` 等于把用户明确否掉的「任何待澄清项都停」偷偷放回来。
+- **不能静默**：`kindMissing` 让契约兑现率**可数**（`state.json` 里即可统计），`pipeline` 据此发
+  `log.openQuestionsUntagged` warn —— 否则又是一次「静默空转、长期没人发现」（`extra` 的教训）。
+- **刻意不给别名**（不认 `type` / `category`）：要测的就是「模型按不按契约标 `kind`」，
+  别名会把契约违反洗成契约满足，把要测的数测没了。
+
+### 同批：`needConfirm` / `clarifyStrength` 摘出公开 schema
+
+两者移入环境变量通道（`TEAMFLOW_CONFIRM` = `always`/`never`，缺省 `auto` 走内容判据；
+`TEAMFLOW_CLARIFY` = `off`/`once`/`interview`），与既有的 `craft` / `TEAMFLOW_CRAFT` 同一模式。
+`PipelineOptions` 字段从 `needConfirm?: boolean` 换成 **`confirmMode?: 'auto' | 'always' | 'never'`**
+（`always`/`never` 只剩「A/B 对照与端到端验证的强制位」这一层意义）。
+确认单渲染给主观项打标（`confirm.tasteTag`），用户能一眼看出「哪几条必须我定」。
+
+### 门禁与变异（全部实跑，非推断）
+
+| 门禁 | 变异 | 结果 |
+| --- | --- | --- |
+| `orchestration` [20] ⑪ 有 taste ⇒ 停 | 删 `abortForConfirmSheet` | 3 条红 |
+| `orchestration` [20] ② 只有 fact ⇒ 不停 | 判据退化成 `openQuestions.length > 0` | 恰 3 红（含 `[22]` 对照仍绿） |
+| `orchestration` [20] ④ 缺 kind 必须发 warn | `if (false && untagged > 0)` | 1 红 |
+| `prompt-contract` `PRD-OPENQUESTION-KIND` | 删 (b) 行的 `"kind": "taste"` | 1 红（`KIND-CROSSREF` 对照仍绿） |
+| `smoke` 反向锁「不得再暴露 `needConfirm`」 | 把参数加回去 | 恰 1 红 |
+| `smoke` 结构性门禁（`PipelineOptions` 键 ↔ 白名单） | 白名单删 `confirmMode` | smoke 2 红，**orchestration 全绿**（正是该门禁存在的理由：行为测试直调 `executePipeline`、绕过白名单） |
+| `smoke` 主观项打标锁 | 渲染改成 `const tag = ''` | 1 红 |
+| `state.test` `kind` 语义 | 缺省翻成 `taste` | state 2 红 ＋ orchestration 1 红 |
+
+### ⚠️ 变异当场暴露的两处**源码锁假绿**（本仓第 7、8 次同型）
+
+两处都是「只锁标识符、没锁条件」，**变异后行为断言红了、源码锁仍全绿**：
+
+1. `log.openQuestionsUntagged` —— 把条件改成 `if (false && untagged > 0)`，标识符原样还在 ⇒ 锁假绿。
+   改成从**判定条件**起锚（`if \(untagged > 0\) journal\.logs\.push\(…`）后变异立刻变红。
+2. `confirm.tasteTag` —— 打标渲染被改成 `const tag = ''`，但**词典里那条 `'confirm.tasteTag'` 也在
+   `hostSrc` 里** ⇒ 只锁这个词的写法被词典自己喂绿。改成锁**条件 → 用法整句**
+   （`const tag = q.kind === 'taste' ? t(locale, 'confirm.tasteTag') : ''`）后变异变红。
+
+⇒ 与 §「源码锁必须覆盖「条件 → 赋值」整条语句」同一结论，本次再 +2 例。
+
+### 另修一处**测试耦合**（变异才看得出来）
+
+`orchestration` [22] 的「跑完整条看 state 注入面」原本用缺省档 ⇒ 与确认单判据**隐式耦合**：
+变异 M20（判据退化）会让它的两条**对照断言**跟着变红，control 不再是 control。
+⇒ 该场景显式传 `confirmMode: 'never'`，把「state 注入面」与「确认单触发」解耦。
+
+### 留给实测（本轮唯一未验项）
+
+**`kind` 的真实兑现率**。本轮所有断言都跑在人造 PRD 产出上 —— 而本 ADR §发现 2 的教训正是
+「**人造夹具永远暴露不了兑现率**」。⇒ 需要一条真实端到端：「桌宠」需求**零参数**正常跑，看
+① 是否自动停在品味项上、② `state.json` 里 `kindMissing` 有几条（读 `log.openQuestionsUntagged` 与 `state.openQuestions`）。
+
 ## 影响
 
 - `docs/TODO.md` 的「澄清闸门」条按本文收敛（Phase 2 与强度档合并设计）。
 - 触及交付面：`host/index.ts`（`clarificationPreflight`、`teamflow_resume` 参数与 schema）、`host/core/triage.ts`（`qualifyBlockers` / verdict 字段）、`host/prompts/index.ts`（`TRIAGE_PROMPT` ＋ 注入块）、`host/core/clarify-log.ts`（记录 `guess` / `confidence`）、`host/core/pipeline.ts`（确认单暂停；④ 则另加 `interruptedPhaseOf` 零阶段断点 ＋ `resumeRun` 签名）、`host/locales/pipeline.ts`（`run.needsClarification` 收口措辞）。
 - 判据层**只增不改**；动手时 `prompt-contract` ＋ `conformance` ＋ `locale` 三套门禁都要过；改 `pipeline.ts` 另跑 `test/orchestration.test.js`。
+- **2026-10-08 追加触及面**：`host/core/domain/state.ts`（`OpenQuestionKind` ＋ `kindMissing`）、
+  `host/core/confirm.ts`（`ConfirmQuestion.kind` ＋ 打标渲染）、`host/util.ts`（`confirmModeFromEnv` /
+  `clarifyStrengthFromEnv`）、`host/types.ts`（`ConfirmMode` 取代 `needConfirm`）、
+  `host/index.ts`（摘掉两个公开参数）。⚠️ `AGENTS.md` §5 **本次刻意未加锚点**（实测余量仅 370B，
+  按 TODO 纪律「下一条不变量锚点加入前必须先压缩」）。
 
 ## 再评估的触发信号
 
