@@ -172,7 +172,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     /* ── 断点续跑 ─────────────────────────────────────────── */
     'run.resumeBacklog': '断点续跑：复用 backlog（req={reqId}），从「{phase}」继续',
     'run.resume': '断点续跑：从「{phase}」继续（已完成阶段复用产物）',
-    'run.resumeDev': '断点续跑开发：复用 {reused} 个已完成任务，补跑 {todo} 个失败任务',
+    'run.resumeDev': '断点续跑开发：复用 {reused} 个已完成任务，补跑 {todo} 个未完成任务（其中 {failed} 个此前失败过）',
     'run.notCommitted': '终态非验收通过：工作区改动与任务夹产物 {docs}/ 保留未提交，供人工处理（resume 修复通过后自动收口提交）',
     'run.missingId': '缺少 runId',
     'run.notFound': '未找到运行：{id}',
@@ -604,7 +604,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     /* ── 断点续跑 ─────────────────────────────────────────── */
     'run.resumeBacklog': 'Resuming: reusing backlog (req={reqId}), continuing from "{phase}"',
     'run.resume': 'Resuming: continuing from "{phase}" (completed stages reuse their artifacts)',
-    'run.resumeDev': 'Resuming development: reusing {reused} completed task(s), rerunning {todo} failed task(s)',
+    'run.resumeDev': 'Resuming development: reusing {reused} completed task(s), rerunning {todo} unfinished task(s) ({failed} of them failed before)',
     'run.notCommitted': 'Terminal state is not acceptance-passed: workspace changes and task-folder artifacts {docs}/ remain uncommitted for manual handling (a passing resume commits them automatically)',
     'run.missingId': 'Missing runId',
     'run.notFound': 'Run not found: {id}',

@@ -842,6 +842,10 @@ ok(!/\(j\.stages \|\| \[\]\)\.every\(\(s\) => s\.status === 'done'\)/.test(pipel
 ok(/state = mergeStateBlock\(journal\.workspace \|\| 'default', block, phaseKey\)/.test(pipelineSrc), 'pipeline：mergeStageState **接住** mergeStateBlock 的返回值（丢弃 = 本次 run 后续消费者看不见 PRD 写的 extra.*）')
 ok(/let state = loadState\(journal\.workspace \|\| 'default'\)/.test(pipelineSrc), 'pipeline：state 声明为 `let`（`const` 就换不掉绑定 ⇒ 刷新不了）')
 ok(/if \(rc !== undefined\) state\.__runCtx = rc/.test(pipelineSrc), 'pipeline：合并后**带回 `__runCtx`**（它不落盘，丢了 runDocs/locale/craft/artifactContracts/blueprint 整片消失）')
+// ⚠️ resume 文案不得把「**从未尝试**」说成「**失败**」（实测 tf-muy7kgbk-wpidsi：确认单暂停后 resume，
+// dev 一次都没跑过，原文案却报「补跑 5 个**失败**任务」）。`todoDefs` 的判据 `!st || !st.done` 同时含两态
+// ⇒ 必须把「此前失败」单独数出来分报，任何形态下才都成立。
+ok(/failed: failedBefore/.test(hostSrc) && /未完成任务/.test(hostSrc) && !/补跑 \{todo\} 个失败任务/.test(hostSrc), 'dev：resume 文案区分「未完成」与「此前失败」（断点在 dev 之前时不得称「失败任务」）')
 // PRD 确认单（ADR-0011 ①，2026-10-07）：PRD 完成后暂停，等用户批准
 // ⚠️ 落点与 `abortForClarification` 同构（interrupted + humanIntervention；P2：复用 interrupted/resume，不新增状态），
 // 且**依赖**上面「启用过但从未尝试的阶段 = 断点」那条 —— 断点错了，批准后续跑会跳过 design/tech/dev/qa。

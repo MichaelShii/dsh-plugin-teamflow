@@ -149,7 +149,15 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
       logSkip('dev')
     } else {
       const reused = devResults.filter((r) => r && !todoDefs.some((d) => d.title === r.title))
-      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.resumeDev', { reused: reused.length, todo: todoDefs.length }) })
+      // ⚠️ `todoDefs` 的判据是 `!st || !st.done` ⇒ 它同时包含「**此前失败**」与「**从未尝试**」两种。
+      // 「从未尝试」是**断点落在 dev 之前**的正常形态（澄清暂停 / PRD 确认单暂停 / 早期取消）——
+      // 实测 tf-muy7kgbk-wpidsi（确认单暂停后 resume，dev 一次都没跑过）原文案却说
+      // 「补跑 5 个**失败**任务」，**不实**。故两个数分开报，任何形态下都成立。
+      const failedBefore = todoDefs.filter((d) => {
+        const st = taskStatuses.get(d.id)
+        return !!st && st.lastStatus === 'failed'
+      }).length
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.resumeDev', { reused: reused.length, todo: todoDefs.length, failed: failedBefore }) })
       // **补跑同样要过冲突护栏**（2026-09-24 issue #4 实锤修复）：补跑任务是从
       // `devDefs` 过滤出来的**原始**任务（未合并），直接喂 runPool 会让共享文件的任务并发执行——
       // 首次开发有护栏、补跑反而没有，是最容易被忽略的一半。复用结果仍按原始 title 判定，
