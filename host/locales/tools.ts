@@ -25,6 +25,10 @@ export const TOOLS_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'tool.start.needsConfirm': '【需求确认】{question}\n{note}——**建议用 ask_user_question 呈现**（点选项 + "其他"兜底），请按此询问用户后再决定。',
     'tool.start.needsClarification': '【需求澄清】这条消息还不足以开工（意图：{intent}）——**没有启动流水线**，也没有创建任何 run。请把每个 blocker 作为**一题 ask_user_question** 问用户（题干=question，选项=readings 里的互斥读法 + "其他"兜底），拿到全部答复后**保留原始 requirement 不变**、把答复放进 requirementSupplement 重新调用 teamflow_start。不要自行替用户假设后直接重调（这正是要拦的行为）。',
     'tool.start.blockerReadings': '两种读法',
+    // 澄清强度 addendum（ADR-0011 ③，2026-10-07）：**追加**在 `tool.ctx.team` 之后，
+    // `once`（缺省）不追加 ⇒ 现有注入逐字不变（零回归）。`patch` 恒按 off 处理。
+    'tool.ctx.clarifyOff': '【本 run 不做开工前澄清】收到开发需求**直接调用 teamflow_start 开工**，不要先问用户任何问题。确有无法自查的缺口时，把你的假设写进 PRD 的「假设与待澄清」段——不要在开工前打断用户。（强度 = off）',
+    'tool.ctx.clarifyInterview': '【多轮澄清 · 强度 interview】对齐需求时**一次只问一个问题**，每个问题都带上你的倾向和一句理由（形如「我倾向 A，因为 X；你选 A 还是 B？」），让用户一眼能答。**必须带硬终止**，满足任一条就停下来开工：① 你已经能预测剩下的全部问题；② 用户说「够了 / 就这样 / 开始吧」；③ 同一问题已经问过两轮。绝对不要一次抛出问题清单，也不要为了显得周全而编问题——猜错代价为零的不要问。绝不自行替用户假设后直接开工。（强度 = interview）',
     // guess = agent 自己给的倾向（ADR-0011 批 3a 的软字段）：**没有倾向也要照问** ⇒ 显式区分「无倾向」
     'tool.start.blockerGuess': '我的倾向',
     'tool.start.blockerGuessNone': '未给倾向（由你定）',
@@ -136,6 +140,8 @@ export const TOOLS_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'tool.start.needsConfirm': '[Requirement confirmation] {question}\n{note} — **present via ask_user_question** (clickable choices + "Other" fallback), then decide accordingly.',
     'tool.start.needsClarification': '[Requirement clarification] This message is not settled enough to start (intent: {intent}) — **no pipeline was started and no run was created**. Ask each blocker as **one ask_user_question** (stem = question, choices = the competing readings + an "Other" fallback); once all answers are in, RE-CALL teamflow_start keeping the original requirement unchanged and putting the user\'s answers into requirementSupplement. Do not just assume on the user\'s behalf and re-call — that is exactly what this gate blocks.',
     'tool.start.blockerReadings': 'Competing readings',
+    'tool.ctx.clarifyOff': '[NO pre-start clarification this run] On a development request, call teamflow_start **immediately — do not ask the user anything first**. Where a gap is genuinely unselfcheckable, write your assumption into the PRD "Assumptions & open questions" section instead of interrupting before work starts. (strength = off)',
+    'tool.ctx.clarifyInterview': '[Multi-round clarification · strength interview] When aligning on the requirement, ask **exactly one question at a time**, each carrying your leaning plus a one-line reason ("I lean A because X — A or B?"), so the user can answer at a glance. A **hard stop is mandatory**: stop and start building as soon as any of these holds: (1) you can already predict every remaining question; (2) the user says "enough / just build it / go"; (3) the same question has gone two rounds. Never dump a list of questions at once, and never invent questions to look thorough — anything whose wrong guess costs nothing is not worth asking. Never silently assume and start on your own instead. (strength = interview)',
     'tool.start.blockerGuess': 'My leaning',
     'tool.start.blockerGuessNone': 'no leaning given (your call)',
     'tool.start.blockerChanges': 'What it changes',

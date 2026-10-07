@@ -13,6 +13,7 @@
  * 另外锁住意图归一（非法值一律 requirement，绝不因字段缺失拦启动）。
  */
 import { qualifyBlockers, normalizeSettle, TRIAGE_SETTLES, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, LOCAL_PLUGIN_SAMPLES_HINT, triageRecordOf, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, triageCacheIsPending, triageCacheMarkPending, triageCacheSettle, TRIAGE_CACHE_MAX, normalizeHost, forceHost, contractsForDeliverable, ARTIFACT_HOSTS } from '../host/core/triage.ts'
+import { normalizeClarifyStrength } from '../host/util.ts'
 import { extractAssumptionsSection, extractHostResearchSection, detectInstallEnv, profileFromModulePath, profileDirFromBaseUrl, isAbsolutePath, installRecipe } from '../host/util.ts'
 import { prdPrompt } from '../host/prompts/index.ts'
 import { readFileSync } from 'node:fs'
@@ -481,6 +482,20 @@ console.log('     `dsh plugin --profile web add` 在他机器上跑不通；故�
   ok(/function installBlock\(/.test(prdSrc) && /installBlock\(en, rc\)/.test(prdSrc), 'prdPrompt：注入「本机环境」块（含谁执行安装）')
   ok(/主 agent 执行|for the main agent/.test(prdSrc), '注入块点明**安装由主 agent 执行**（子代理权限固定）')
 }
+
+
+// ── 澄清强度归一（ADR-0011 ③，2026-10-07）──────────────────────────────
+// 核心契约：**patch 恒off，且优先于显式 interview** —— 策略档矩阵写死了「patch 恒 off」，
+// 给单点直改的机械 PRD 阶段开多轮访谈是反效果。
+ok(normalizeClarifyStrength(undefined) === 'once', '缺省 = once（现行行为，零回归）')
+ok(normalizeClarifyStrength('interview') === 'interview', '显式 interview → interview')
+ok(normalizeClarifyStrength('off') === 'off', '显式 off → off')
+ok(normalizeClarifyStrength('bogus') === 'once', '非法值 → 回落 once（不静默变成 off/interview）')
+ok(normalizeClarifyStrength('interview', 'patch') === 'off', '**patch + 显式 interview → 仍 off**（策略档矩阵优先）')
+ok(normalizeClarifyStrength('once', 'patch') === 'off', 'patch + once → off')
+ok(normalizeClarifyStrength('interview', 'full') === 'interview', '非 patch 档时显式 interview 生效')
+ok(normalizeClarifyStrength('  interview  ') === 'interview', '值带空白 → trim 后生效')
+ok(normalizeClarifyStrength(null) === 'once' && normalizeClarifyStrength(undefined, 'lite') === 'once', 'null/undefined 一律 once')
 
 console.log(failed ? `\n✗ triage-gate：${failed} 条失败\n` : '\n✓ triage-gate：全部通过\n')
 process.exit(failed ? 1 : 0)

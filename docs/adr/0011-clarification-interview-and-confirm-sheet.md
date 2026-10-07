@@ -198,6 +198,42 @@ ADR-0010 / TODO 此前写「多轮追问需要一个跨调用状态（`clarify-s
 
 **未做（明确记）**：① **改计划后重跑 PRD**（`redoFrom`）—— 断点已 > PRD，`supplement` 会被 P3 裁决拒绝 ⇒ 改计划只能起新需求（拒绝文案已写明）；② 轮次上限（归 `interview` 档，见 §裁决 ③）；③ 审批面的原生 seam（批 2，见 §P1 实机验证）。
 
+## 落地记录（2026-10-07，③ 澄清强度 · 批 3b）
+
+| # | 改动 | 位置 |
+|---|---|---|
+| 1 | `ClarifyStrength` 类型（`off`/`once`/`interview`）＋ `util.normalizeClarifyStrength` 纯函数 | `host/types.ts` · `host/util.ts` |
+| 2 | `clarifyStrength` 进 `PipelineOptions` ＋ `teamflow_start` 参数 ＋ 落 `journal.options` | `host/types.ts` · `host/index.ts` |
+| 3 | 注入接线：`teamflowContextText` 按强度**追加** addendum（`once` 原样返回 base）；强度由 `clarifyStrengthForTeam` 从 run 快照反查 | `host/index.ts` |
+| 4 | 两档 addendum 文案（zh/en）：`off`＝直接开工不追问；`interview`＝一次一问 ＋ 每问带倾向 ＋ **硬终止三条件** | `host/locales/tools.ts` |
+
+### 一条**设计偏离**（已在 `types.ts` 注释与本节留痕）
+
+ADR-0011 TODO ③ 原措辞是「澄清强度进 `MODE_REGISTRY` 作为新维度」。**实现改为独立字段 `clarifyStrength`，不进 MODE_REGISTRY**：
+`PipelineMode`（`full`/`medium`/`lite`/`tech`/`patch`）是**流水线档位**，决定阶段集 / PRD 形态 / 架构护栏，
+`resolveStages` / `MODE_RANK` / `guardrailUpgrade` 三处都按它分派；把「追问几次」塞进去会让同一张表
+承担两件正交的事，并让 `interview` 变成一个**没有对应阶段集**的伪档位。
+
+### 零回归保证（构造性的，不是靠测试兜）
+
+`tool.ctx.team`（现行澄清引导段落）**逐字未改**；`once`（缺省）时 `teamflowContextText` **原样返回 base、一字不追加**，
+只有 `off` / `interview` 才在其后**追加**一段（不重排、不删改）⇒ 存量注入按构造零回归，
+并由 smoke 源码锁钉住（断言 once 分支存在）。
+
+### 门禁与变异
+
+- `triage-gate` **+9 条行为断言**（缺省 once / 显式 off·interview / 非法值回落 once / trim / null·undefined），
+  其中 **`patch` 恒off 且优先于显式 `interview`** 是契约（策略档矩阵）。
+- `smoke` **+6 条源码锁**（参数暴露 / 纯函数存在 / **判定顺序** / once 零回归 / 反查接线 / addendum 文案）。
+- **变异 M7**（把 `patch` 检查挪到 `interview` 之后）⇒ `triage-gate` 恰 1 条红；**但 smoke 那条锁全绿**
+  ⇒ 又一次**源码锁假绿**：它只匹配「patch 那行存在」，没锁**顺序**。已改成跨三行的顺序锁
+  （`patch → interview → off` 三段必须按序出现），改后复跑变异 ⇒ 恰好那条红、还原后全绿。
+
+### 已知缺口（明确记下）
+
+`clarifyStrengthForTeam` 从**内存** `runs` 反查 ⇒ **重启后回落 `once`**。消除它应把强度落进 `teams.json`
+或 `state.json`（跨重启），而不是给内存缓存打补丁。**未做**。
+
 ## 影响
 
 - `docs/TODO.md` 的「澄清闸门」条按本文收敛（Phase 2 与强度档合并设计）。

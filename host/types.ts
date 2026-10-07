@@ -49,6 +49,18 @@ export interface BacklogItem {
 }
 /** 需求分诊路由模式（ADR-0004：full/medium/lite/tech/patch）。 */
 export type PipelineMode = 'full' | 'medium' | 'lite' | 'tech' | 'patch'
+
+/**
+ * **澄清强度**（ADR-0011 ③，2026-10-07）：`off`（开工前不追问）/ `once`（缺省，现行一轮）/
+ * `interview`（多轮访谈：一次一问、每问带猜测）。
+ *
+ * ⚠️ **刻意不做成 `PipelineMode` 的一档**（偏离 ADR-0011 TODO ③ 的原措辞「进 MODE_REGISTRY 作为
+ * 新维度」，理由已记进 ADR-0011）：`PipelineMode` 是**流水线档位**，决定阶段集 / PRD 形态 / 架构护栏
+ * （`resolveStages` / `MODE_RANK` / `guardrailUpgrade` 三处都按它分派）；把「追问几次」塞进去会让
+ * 同一张表承担两件正交的事，并把 `interview` 变成一个「没有对应阶段集」的伪档位。
+ * ⇒ 独立字段，且**只影响注入文案**（ADR-0011 §裁决 ③ 已定：收敛规则与轮次上限都不改）。
+ */
+export type ClarifyStrength = 'off' | 'once' | 'interview'
 /** 流水线启动选项。 */
 export interface PipelineOptions {
   needDesign?: boolean
@@ -58,6 +70,13 @@ export interface PipelineOptions {
    *  **默认 false**（显式才停）：自动判「该不该打断」需要真阳性率数据，本仓纪律不允许先加判据后补数据。
    *  `patch` 档恒不生效（STAGE_POLICY：单 agent 直改，PRD 是机械的单点确认）。 */
   needConfirm?: boolean
+  /**
+   * **澄清强度**（ADR-0011 ③，2026-10-07）：`off` / `once`（缺省）/ `interview`。**只影响注入给主线程的
+   * 文案**（`interview` 追加「一次一问 + 每问带猜测 + 硬终止」段），**不改闸门收敛规则、不加轮次上限**
+   * （§裁决 ③ 已定：轮数在宿主侧不可测，真阳性率不足的判据不得有阻断权）。
+   * `patch` 恒按 `off` 处理（见 `util.normalizeClarifyStrength` 的判定顺序，那是契约）。
+   */
+  clarifyStrength?: ClarifyStrength
   tasks?: unknown
   productRoot?: string | null
   maxConcurrency?: number

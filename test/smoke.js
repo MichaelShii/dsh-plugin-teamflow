@@ -758,6 +758,18 @@ ok(/const guess = String\(\(o && o\.guess\)/.test(triageSrc), 'triage：guess �
 // 只有行为断言（triage-gate）红 ⇒ 源码锁漏了「判定条件恰好是四段」这件事本身。补上。
 ok(/if \(question && readings\.length >= 2 && changes && rework\) \{/.test(triageSrc), 'triage：合格判定**恰好**四段（question/readings/changes/rework），不含 guess —— 锁住「软字段不得升格为必填」')
 ok(/blockerGuessNone/.test(hostSrc), 'host：渲染层显式区分「有倾向 / 未给倾向」（不静默省略那一条）')
+
+// 澄清强度 `clarifyStrength`（ADR-0011 ③，2026-10-07）：**独立字段，不进 MODE_REGISTRY**
+// —— `PipelineMode` 决定阶段集/PRD 形态/护栏，把「追问几次」塞进去会让同一张表承担两件正交的事。
+ok(/clarifyStrength: \{ type: 'string'/.test(hostSrc), 'host：teamflow_start 暴露 clarifyStrength 参数')
+ok(/export function normalizeClarifyStrength/.test(utilSrc), 'util：澄清强度归一是纯函数（可直接行为级测试）')
+// ⚠️ 顺序锁必须**跨两行**：只匹配「patch 那行存在」会在「调换判定顺序」时假绿
+//（M7 实测：把 patch 检查挪到 interview 之后，行为断言红了、源码锁却全绿 —— 它只看见那行还在）。
+ok(/if \(mode === 'patch'\) return 'off'[\s\S]{0,240}if \(v === 'interview'\) return 'interview'[\s\S]{0,120}if \(v === 'off'\)/.test(utilSrc), 'util：**patch 恒 off 且优先于** interview（判定顺序是策略档矩阵的契约，勿调换）')
+// ★ 零回归锁：`once`（缺省）必须**原样返回 base、一字不追加** —— 现有澄清引导段落逐字保留。
+ok(/if \(strength === 'once'\) return base/.test(hostSrc), 'host：once 档原样返回 base（addendum 只对 off/interview 追加 ⇒ 存量注入零回归）')
+ok(/clarifyStrengthForTeam/.test(hostSrc) && /tool\.ctx\.clarifyInterview/.test(hostSrc) && /tool\.ctx\.clarifyOff/.test(hostSrc), 'host：强度从 run 快照反查（强度是每次 run 的参数，不是会话级设置）＋ 两档 addendum 齐备')
+ok(/'tool\.ctx\.clarifyInterview'/.test(hostSrc), 'locales：interview addendum 文案存在（一次一问 ＋ 每问带猜测 ＋ 硬终止三条件）')
 // 续跑补录入口：`supplement` 从 teamflow_resume 一路传到 resumeRun；PRD 是唯一消费点
 // ⇒ 断点晚于 prd 必须**显式拒绝**（静默接受 = 静默丢弃，本仓反复踩）
 ok(/supplement\?: string \| null/.test(pipelineSrc) && /resumeRun\(id, parent\.session\.id, sup\)/.test(hostSrc), 'resume：supplement 从 teamflow_resume 一路传到 resumeRun')

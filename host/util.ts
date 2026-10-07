@@ -1610,3 +1610,20 @@ export function dirTooLargeForBaseline(dir: string, maxFiles = 1000, maxBytes = 
     return walk(dir, 0)
   } catch (e) { return true } // 采样失败（权限等）→ 按过大处理（宁严勿松）
 }
+
+/**
+ * **澄清强度归一**（ADR-0011 ③，2026-10-07）：`off` / `once`（缺省）/ `interview`。
+ *
+ * 判定顺序是**契约**（`patch` 恒 `off` 优先于显式 `interview`）：
+ * ADR-0011 策略档矩阵写明「`patch` 恒 off」——patch 是单 agent 直改，它的「PRD」只是机械的单点确认
+ * 阶段，给它开多轮访谈纯属反效果。⇒ 显式传 `interview` 也压不住 `patch`。
+ *
+ * 缺省 `once`＝**现行行为逐字不变**（ADR-0011 §裁决 ③：收敛规则与轮次上限都不改，本字段只影响注入文案）。
+ */
+export function normalizeClarifyStrength(value: unknown, mode?: unknown): 'off' | 'once' | 'interview' {
+  if (mode === 'patch') return 'off'
+  const v = String(value === null || value === undefined ? '' : value).trim()
+  if (v === 'interview') return 'interview'
+  if (v === 'off') return 'off'
+  return 'once'
+}

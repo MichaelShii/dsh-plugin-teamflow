@@ -19,7 +19,7 @@ import type { JournalRecord } from '../store.ts'
 import { fileAddressFor } from '@deepseek-ai/dsh-util-workspace-path'
 
 import { phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER } from './constants.ts'
-import { toText, clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, envFlagOn } from './util.ts'
+import { toText, clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, envFlagOn, normalizeClarifyStrength } from './util.ts'
 
 import { runtime, runs, setRuntime, setSessionProjections, setInstallCtx, workspaceScopeOf, getRun } from './core/agent/context.ts'
 import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/domain/backlog.ts'
@@ -227,6 +227,7 @@ function registerTools(ctx) {
       commitMessage: { type: 'string', description: 'Custom commit message when preAction=commit' },
       requirementSupplement: { type: 'string', description: 'Extra context the user gave during a clarification round (after a "needs-clarification" return). Kept separate from the original requirement (which stays a faithful transcription of the user\'s words) and handed to the PRD stage as authoritative input.' },
       needConfirm: { type: 'boolean', description: 'Pause right after PRD for your approval: the run stops before design/tech and returns a confirm sheet (goal, acceptance criteria, assumptions). Approve by calling teamflow_resume with this runId. Default false (no pause); ignored on the patch tier.' },
+      clarifyStrength: { type: 'string', description: 'How hard to clarify BEFORE starting: "once" (default — ask the must-know gaps in one round), "interview" (ask **one question at a time**, each with its leaning, and stop as soon as you can predict the rest or the user says enough), "off" (never ask; put the assumptions in the PRD). This only changes what you are told to do; the pipeline gate is unchanged. Always treated as "off" on the patch tier.' },
       tasks: {
         type: 'array',
         description: 'Optional splittable dev task list',
@@ -311,6 +312,9 @@ function registerTools(ctx) {
           // PRD 确认单（ADR-0011 ①）：**默认不打断**。开启后 PRD 完成即暂停，把「目标 + AC + 假设」
           // 交用户批准，批准 = teamflow_resume。patch 档不生效。
           needConfirm: !!args.needConfirm,
+          // 澄清强度（ADR-0011 ③）：**只影响注入文案**（收敛规则与轮次上限按 §裁决 ③ 不改）；
+          // patch 恒按 off 归一（util.normalizeClarifyStrength 的判定顺序是契约）。
+          clarifyStrength: normalizeClarifyStrength(args.clarifyStrength, normalizeMode(args.mode) || undefined),
           lite: !!args.lite,
           // craft 引导通道：环境变量开关（TEAMFLOW_CRAFT=0 关闭），**不做工具参数**
           // —— 工具 description 每次都进主会话上下文，而这是临时实验开关（详见 util.envFlagOn 注释）
@@ -706,7 +710,44 @@ const pendingInjections = new Map<string, { teamName: string; teamIcon: string; 
 /** 尝试补发延迟注入：agent 可用时注入上下文并清除 pending。 */
 /** 会话注入的 TeamFlow 契约文案（单一事实来源）：何时走流水线 + 启动后主线程必须停手等汇报。 */
 function teamflowContextText(teamIcon: string, teamName: string, teamId: string): string {
-  return t(ambientLocale(), 'tool.ctx.team', { icon: teamIcon, name: teamName, teamId })
+  const locale = ambientLocale()
+  const base = t(locale, 'tool.ctx.team', { icon: teamIcon, name: teamName, teamId })
+  const strength = clarifyStrengthForTeam(teamId)
+  // ⚠️ `once`（缺省）**原样返回 base，一字不追加** —— 这是 ADR-0011 批 3b 的零回归保证：
+  // 现行的澄清引导段落逐字保留，`interview` / `off` 只在其后**追加**一段（不重排、不删改）。
+  if (strength === 'once') return base
+  return `${base}\n${t(locale, strength === 'off' ? 'tool.ctx.clarifyOff' : 'tool.ctx.clarifyInterview')}`
+}
+
+/**
+ * 这个团队当前的澄清强度（ADR-0011 ③）。
+ *
+ * **为什么从 run 快照反查、而不是记在 `active-teams.json`**：强度是**每次 run 的参数**
+ * （`teamflow_start` 的调用参数），不是会话级设置 —— 同一个团队在不同 run 里可以用不同强度，
+ * 记进「会话选中哪个团队」那份文件会把两个正交的概念混在一起。
+ *
+ * 查法：`activeTeams` 的键是 **sessionId**、值是 teamId ⇒ 先按 teamId 找到 session，
+ * 再在该 session 的 run 里读 `options.clarifyStrength`；**同会话的 run 优先**，否则取任一。
+ *
+ * ⚠️ 已知可改进点（未做）：`runs` 是内存 Map，重启后为空 ⇒ 注入会回落 `once`。
+ * 要消除这个缺口，应把强度落进 `teams.json` 或 `state.json`（跨重启），而不是加内存缓存。
+ */
+function clarifyStrengthForTeam(teamId: string): 'off' | 'once' | 'interview' {
+  try {
+    for (const [sid, tid] of activeTeams) {
+      if (tid !== teamId) continue
+      let fallback: 'off' | 'once' | 'interview' | null = null
+      for (const j of runs.values()) {
+        const o = (j && (j as { options?: Record<string, unknown> }).options) || {}
+        if (o.teamId !== teamId) continue
+        const st = normalizeClarifyStrength(o.clarifyStrength, o.mode)
+        if (j.ownerSession === sid) return st
+        if (!fallback) fallback = st
+      }
+      if (fallback) return fallback
+    }
+  } catch (e) { /* 读不到 ⇒ 回落 once */ }
+  return 'once'
 }
 
 /**
