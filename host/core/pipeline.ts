@@ -1257,15 +1257,21 @@ export function resumeRun(
     return { ok: false, error: t(locale, 'run.badStatus', { status: j.status }) }
   }
   // 全阶段已 done 的 failed/cancelled：没有断点可续（阶段全绿≠run 成功，如「需求与现状不符」拦截单），
-  // 续跑只会兜底重跑验收、循环失败——硬拒绝，引导起新流水线（实锤 tf-mt8kxyef-29ruxt）
-  if ((j.stages || []).length > 0 && (j.stages || []).every((s) => s.status === 'done')) {
+  // 续跑只会兜底重跑验收、循环失败——硬拒绝，引导起新流水线（实锤 tf-mt8kxyef-29ruxt）。
+  // ⚠️ 判据**不得**用「所有**已记录**的阶段都 done」——那是「全流程跑完」的**伪代理**，只在「跑满全程」
+  // 时与真判据重合。**中途暂停**（PRD 确认单，ADR-0011 ①）会让它失效：那时 `stages` 只有 `[prd done]`，
+  // `.every(done)` 恒真 ⇒ 断点被误判成「无」、续跑当场拒绝，而 `interruptedPhaseOf` 明明返回 `design`。
+  // 2026-10-07 实测 tf-muy63zgy-octoqj：确认单如期暂停（P0 修复生效），却因这条守卫**完全无法续跑**。
+  // 真判据 = **断点落在最后一段（acceptance）且该段也已 done** ⇒ 那才是「确实没活可干」。
+  // （acceptance 只是断点、自身未 done 时不得拒绝——那是合法续跑。）
+  const phaseAtEntry = interruptedPhaseOf(j)
+  if (phaseAtEntry === 'acceptance' && (j.stages || []).some((s) => phaseKeyOf(s.phase) === 'acceptance' && s.status === 'done')) {
     return { ok: false, error: t(locale, 'run.noBreakpoint', { status: j.status }) }
   }
   // 补录校验放在**取 agent 之前**：纯参数校验不该有副作用，也不该先占用并发锁。
   // 断点晚于 prd 时本轮不会有任何阶段读 supplement ⇒ 直接拒绝。**不许静默吞掉**——那正是本仓反复踩的
   // 「静默丢弃」（§7 工具返回体被 schema 吃掉 / §16 白名单吃掉内部字段，同类第四次）。
   const supp = typeof supplement === 'string' && supplement.trim() ? supplement.trim() : null
-  const phaseAtEntry = interruptedPhaseOf(j)
   if (supp && PHASE_ORDER.indexOf(phaseAtEntry) > PHASE_ORDER.indexOf('prd')) {
     return { ok: false, error: t(locale, 'run.supplementTooLate', { phase: phaseLabel(locale, phaseAtEntry) }) }
   }

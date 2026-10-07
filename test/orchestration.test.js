@@ -636,6 +636,39 @@ console.log('\n[20] PRD 确认单：needConfirm ⇒ PRD 后暂停；缺省直通
   ok(renderConfirmSheet(noAc, 'zh').split('\n').length <= 40, `无 AC 时仍 ≤40 行（实测 ${renderConfirmSheet(noAc, 'zh').split('\n').length}）`)
 }
 
+/* ── [21] 确认单暂停后的**续跑**：断点必须可续 —— 不得被「已记录阶段全 done」这条伪代理误判 ──
+ * 实锤 tf-muy63zgy-octoqj（2026-10-07，真实桌面版）：确认单**如期暂停**（`stages` 只有 `[prd done]`，
+ * P0 修复生效），但 `resumeRun` 里一条更早的守卫用「所有**已记录**的阶段都 done」当「全流程跑完」的
+ * 代理判据 ⇒ 该形态下**恒真** ⇒ 断点被误判成「无」，用户续跑被当场拒绝
+ * （而 `interruptedPhaseOf` 明明返回 `design`）。同一个「中途暂停」形态在 `interruptedPhaseOf` 里
+ * 已于今天修过（第二层），**这处漏了** —— 同型「只修一处、漏另一处」。
+ * 本组锁两个方向：① 该形态**必须可续**；② 真·全部完成（含 acceptance done）**仍必须拒绝**（防改过头）。 */
+console.log('\n[21] 确认单暂停后的续跑：断点可续（不得被「已记录阶段全 done」误判）')
+{
+  const home = join(tmpdir(), 'tf-orch-confirm-resume')
+  process.env.DSH_HOME = home
+  const mk = (ws, id, stages, options) => {
+    const dir = join(home, 'teamflow', ws, 'runs')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `${id}.json`), JSON.stringify({
+      id, requirement: '验证确认单后的续跑', status: 'interrupted', locale: 'zh',
+      workspace: ws, logs: [], options, stages,
+    }), 'utf8')
+  }
+  // ① 确认单形态：PRD done、其后一个都没跑（medium + needDesign ⇒ design/tech/dev/qa/acceptance 均启用）
+  mk('ws-confirm-pause', 'tf-confirm-pause', [{ phase: 'prd', status: 'done' }], { mode: 'medium', needDesign: true, needScaffold: false })
+  const r1 = resumeRun('tf-confirm-pause', null)
+  ok(r1.ok === false && !/无断点可续/.test(String(r1.error)),
+    `确认单暂停（stages=[prd done]）⇒ **不得**判「无断点」（此处因无 agent 停在 agentNotFound，实测 ${String(r1.error).slice(0, 80)}）`)
+  // ② 对照：真·全部完成（acceptance 也 done）⇒ 仍必须硬拒绝（tf-mt8kxyef 那条保护不能被改没）
+  const allDoneStages = ['prd', 'design', 'tech', 'dev', 'qa', 'acceptance'].map((p) => ({ phase: p, status: 'done', taskKey: 'T1' }))
+  mk('ws-confirm-all', 'tf-confirm-all', allDoneStages, { mode: 'medium', needDesign: true })
+  const r2 = resumeRun('tf-confirm-all', null)
+  ok(r2.ok === false && /无断点可续/.test(String(r2.error)),
+    `对照：全阶段（含 acceptance）done ⇒ 仍拒绝续跑（实测 ${String(r2.error).slice(0, 80)}）`)
+  rmSync(home, { recursive: true, force: true })
+}
+
 if (failed) {
   console.error(`\n❌ ${failed} 项断言失败`)
   process.exit(1)

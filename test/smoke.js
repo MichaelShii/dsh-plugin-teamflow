@@ -831,6 +831,11 @@ ok(/if \(supp && PHASE_ORDER\.indexOf\(phaseAtEntry\) > PHASE_ORDER\.indexOf\('p
 ok(/'run\.supplementTooLate'/.test(hostSrc) && /'run\.supplementApplied'/.test(hostSrc), 'resume：补录的拒绝与应用都有可见文案（zh/en 同形由 locale 门禁守）')
 // executePipeline 不得覆盖补录的答复（它收到的是 `journal.options` 白名单字面量，本就不含该键 —— 同型第四次）
 ok(/if \(!resume\) journal\.requirementSupplement = options\.requirementSupplement/.test(pipelineSrc) && /if \(!resume && journal\.requirementSupplement\)/.test(pipelineSrc), 'resume：executePipeline 不覆盖 supplement（否则补录的答复被静默清空）')
+// ⚠️ 「无断点」判据不得用「所有**已记录**的阶段都 done」——确认单暂停时 `stages` 只有 `[prd done]`，
+// `.every(done)` **恒真** ⇒ 该形态（正是本插件的主线功能）永远续不了（实锤 tf-muy63zgy-octoqj）。
+// 锁整句「条件 → 影响」：真判据 = 断点落在 acceptance **且该段也已 done**。
+ok(/phaseAtEntry === 'acceptance' && \(j\.stages \|\| \[\]\)\.some\(\(s\) => phaseKeyOf\(s\.phase\) === 'acceptance' && s\.status === 'done'\)/.test(pipelineSrc), 'resume：无断点判据 = 断点落 acceptance **且该段 done**（不得用「已记录阶段全 done」——确认单暂停时恒真）')
+ok(!/\(j\.stages \|\| \[\]\)\.every\(\(s\) => s\.status === 'done'\)/.test(pipelineSrc), 'resume：旧伪代理判据（「已记录阶段全 done」）不得复活')
 // PRD 确认单（ADR-0011 ①，2026-10-07）：PRD 完成后暂停，等用户批准
 // ⚠️ 落点与 `abortForClarification` 同构（interrupted + humanIntervention；P2：复用 interrupted/resume，不新增状态），
 // 且**依赖**上面「启用过但从未尝试的阶段 = 断点」那条 —— 断点错了，批准后续跑会跳过 design/tech/dev/qa。
