@@ -10,7 +10,15 @@
 
 - 🔜 **澄清闸门：Phase 2 计划确认单 + 策略档**（ADR-0010 §影响 明写：Phase 2 确认单与其 D3/D4 是同一件事的两个侧面，**须合并为一条、不得各做一套**）：
   - **已落地**（细节见 git log 与 `docs/adr/0010-clarification-observability.md`）：**Phase 1 启动前闸门**（`intent` / `blockers` 合格线 / `needs-clarification` 不建 run / `requirementSupplement` 回带）；**ADR-0010 ① 澄清埋点**（`host/core/clarify-log.ts` → `$DSH_HOME/teamflow/<product>/clarify.jsonl`，四事件 append-only，含 `triage-fallback`）；**ADR-0010 ② 失效可见化**（2026-10-04：分诊退兜底 ⇒ 闸门静默失效——两条 fallback 路径各记 `log.clarifyGateSkipped` warn ＋ 汇报 `report.clarifySkipped` 行）。
-  - **① PRD 确认单（主；2026-10-07 批 1 已落地）**：`prdPrompt` 增**必填**「假设 / 待澄清」段 + 机器可读（state extra 带 `openQuestions:[{q,why,changes,default}]`）→ PRD 完成后 host **暂停**（复用 interrupted/resume 断点基座）→ 把「目标一句话 + AC + 范围/非目标 + 假设清单 + `PRD.md` 路径」**≤40 行**交主线程；**无合格待澄清项 → 直通不打断**。**2026-10-07 补齐**：`openQuestions` 已从「只要求不落盘」补成落地（`mergeStateBlock` 消费 ＋ 确认单接结构化，见 ADR §落地记录 ① 批 1.5）；批准文案已按要求明示「立即开始写代码」。批 1 落地范围＝`needConfirm` 选项（**默认关** / `patch` 恒 off / 只停一轮）+ PRD 后暂停 `abortForConfirmSheet` + `host/core/confirm.ts`（纯函数、结构化数据源、≤40 行）+ `extra.summary` 落盘 + 确认单落盘 + 汇报带确认单。**2026-10-07 C 方案落地**（`791a610` ＋ `c641ce0`，细节见 ADR §C 落地记录）：AC 的 `extra.acIndex` 契约**真实兑现率仅 ~20%**（34 份 state.json 中 7 份）⇒ 三层补偿 —— **A** `STATE_BLOCK_INSTRUCTION` 模板**本体**补 `extra`（真调用 A/B：改前 1/3、改后 4/4 含 extra，n 小不显著但机制可复现）＋ **B** `extractAcIndexFromText` host 兜底（⚠️ **源必须是 `PRD.md` 文件、不是 `stage.output`** —— 同一实现两源命中率 **95%（20/21）vs 25%（22/87）**）＋ **C** `acSource` 来源自曝（`state`/`extracted`/`none` 三态，zh/en 齐备）。**未做**：`redoFrom`（改计划重跑 PRD）、审批面**原生 seam** 接线（现为可插拔择路 + 回落 interrupted）。
+  - **① PRD 确认单（主；2026-10-07 批 1 已落地）**：`prdPrompt` 增**必填**「假设 / 待澄清」段 + 机器可读（state extra 带 `openQuestions:[{q,why,changes,default}]`）→ PRD 完成后 host **暂停**（复用 interrupted/resume 断点基座）→ 把「目标一句话 + AC + 范围/非目标 + 假设清单 + `PRD.md` 路径」**≤40 行**交主线程；**无合格待澄清项 → 直通不打断**。**2026-10-07 补齐**：`openQuestions` 已从「只要求不落盘」补成落地（`mergeStateBlock` 消费 ＋ 确认单接结构化，见 ADR §落地记录 ① 批 1.5）；批准文案已按要求明示「立即开始写代码」。批 1 落地范围＝`needConfirm` 选项（**默认关** / `patch` 恒 off / 只停一轮）+ PRD 后暂停 `abortForConfirmSheet` + `host/core/confirm.ts`（纯函数、结构化数据源、≤40 行）+ `extra.summary` 落盘 + 确认单落盘 + 汇报带确认单。**2026-10-07 C 方案落地**（`791a610` ＋ `c641ce0`，细节见 ADR §C 落地记录）：AC 的 `extra.acIndex` 契约**真实兑现率仅 ~20%**（34 份 state.json 中 7 份）⇒ 三层补偿 —— **A** `STATE_BLOCK_INSTRUCTION` 模板**本体**补 `extra`（真调用 A/B：改前 1/3、改后 4/4 含 extra，n 小不显著但机制可复现）＋ **B** `extractAcIndexFromText` host 兜底（⚠️ **源必须是 `PRD.md` 文件、不是 `stage.output`** —— 同一实现两源命中率 **95%（20/21）vs 25%（22/87）**）＋ **C** `acSource` 来源自曝（`state`/`extracted`/`none` 三态，zh/en 齐备）。**未做**：审批面**原生 seam** 接线（现为可插拔择路 + 回落 interrupted）。
+    **2026-10-08 深夜补**：`redoFrom`（改计划重跑 PRD）**已部分落地** —— 判据落在**内容**上
+    （`phaseAtEntry > prd` 且 `stages` 除 prd 外无记录 ＝ 作废面为零）⇒ 开放 supplement 回退重跑 PRD
+    （检查点拨回 `prd`、摘旧 prd 记录、清 `confirmSheet`/`assumptions`/`state.openQuestions`，
+    PRD 用 `[REVISED]` 块与澄清轮的 `[CLARIFIED]` **分叉**）。⚠️ 仅限**确认单断点**这个形态；
+    其它「PRD 之后已有阶段跑过」的断点**仍拒绝**（回退会白作废 design/tech/dev）。
+    **呈现**：「怎么把确认单交给用户」写进 **ctx 手册**（每个`［主观项］`一道单选 AUQ、首选项=推荐默认、
+    一次 ≤4 题、AC/假设不做题、另给「全部按默认」），**刻意不进汇报**（汇报用户也看得到，会漏 meta 话）。
+    **仍未做**：把判定做成可配置的「改哪几个阶段」（`redoFrom` 的完整形态）。
   - ✅ **「主观决策项」扩维（2026-10-08，第 1＋2 步均已落地）**：原判据只有
     `under-specified`（信息不足）⇒ 「我想实现一个桌宠」这类需求**必然不列**（信息足够/模型能自查/猜错不返工）
     ⇒ 风格·形象·架构选型**全由模型独裁**，用户看不到也没机会确认（用户实锤：专业用户感官差，「这插件也就给小白用用」）。
