@@ -264,7 +264,7 @@ function registerTools(ctx) {
           // 闸门文本由 host 组好交给主线程：它必须**先问用户**。答完有两条回带通道：带 requirementSupplement
           // 重调本工具（另起 run），或带 supplement 调 `teamflow_resume` 续跑被中断的那个 run。
           const list = Array.isArray(value.blockers)
-            ? value.blockers.map((b, i) => `${i + 1}. ${b.question}\n   · ${t(ambientLocale(), 'tool.start.blockerReadings')}: ${(b.readings || []).join(' / ')}\n   · ${t(ambientLocale(), 'tool.start.blockerChanges')}: ${b.changes}\n   · ${t(ambientLocale(), 'tool.start.blockerRework')}: ${b.rework}`).join('\n')
+            ? value.blockers.map((b, i) => `${i + 1}. ${b.question}\n   · ${t(ambientLocale(), 'tool.start.blockerGuess')}: ${b.guess || t(ambientLocale(), 'tool.start.blockerGuessNone')}\n   · ${t(ambientLocale(), 'tool.start.blockerReadings')}: ${(b.readings || []).join(' / ')}\n   · ${t(ambientLocale(), 'tool.start.blockerChanges')}: ${b.changes}\n   · ${t(ambientLocale(), 'tool.start.blockerRework')}: ${b.rework}`).join('\n')
             : ''
           return [{ type: 'text', text: t(ambientLocale(), 'tool.start.needsClarification', { intent: String(value.intent || 'requirement'), blockers: list }) }]
         }

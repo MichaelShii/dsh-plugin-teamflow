@@ -25,6 +25,9 @@ export const TOOLS_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'tool.start.needsConfirm': '【需求确认】{question}\n{note}——**建议用 ask_user_question 呈现**（点选项 + "其他"兜底），请按此询问用户后再决定。',
     'tool.start.needsClarification': '【需求澄清】这条消息还不足以开工（意图：{intent}）——**没有启动流水线**，也没有创建任何 run。请把每个 blocker 作为**一题 ask_user_question** 问用户（题干=question，选项=readings 里的互斥读法 + "其他"兜底），拿到全部答复后**保留原始 requirement 不变**、把答复放进 requirementSupplement 重新调用 teamflow_start。不要自行替用户假设后直接重调（这正是要拦的行为）。',
     'tool.start.blockerReadings': '两种读法',
+    // guess = agent 自己给的倾向（ADR-0011 批 3a 的软字段）：**没有倾向也要照问** ⇒ 显式区分「无倾向」
+    'tool.start.blockerGuess': '我的倾向',
+    'tool.start.blockerGuessNone': '未给倾向（由你定）',
     'tool.start.blockerChanges': '影响面',
     'tool.start.blockerRework': '猜错的代价',
     'tool.start.started': '团队研发流水线已启动（runId={runId}，{status}），正在后台执行。【重要】你现在停手：不要自行读取/修改代码实现该需求，不要重复跑测试验证——实现、QA、汇报由流水线各阶段完成。你只需告知用户流水线已启动，等待流水线完成后的官方完成汇报，再向用户转述结果。可用 teamflow_status 查询进度/阶段 token；backlog 已持久化到 $DSH_HOME/teamflow。\n【回复语言】用中文回复用户。',
@@ -133,6 +136,8 @@ export const TOOLS_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'tool.start.needsConfirm': '[Requirement confirmation] {question}\n{note} — **present via ask_user_question** (clickable choices + "Other" fallback), then decide accordingly.',
     'tool.start.needsClarification': '[Requirement clarification] This message is not settled enough to start (intent: {intent}) — **no pipeline was started and no run was created**. Ask each blocker as **one ask_user_question** (stem = question, choices = the competing readings + an "Other" fallback); once all answers are in, RE-CALL teamflow_start keeping the original requirement unchanged and putting the user\'s answers into requirementSupplement. Do not just assume on the user\'s behalf and re-call — that is exactly what this gate blocks.',
     'tool.start.blockerReadings': 'Competing readings',
+    'tool.start.blockerGuess': 'My leaning',
+    'tool.start.blockerGuessNone': 'no leaning given (your call)',
     'tool.start.blockerChanges': 'What it changes',
     'tool.start.blockerRework': 'Cost if guessed wrong',
     'tool.start.started': 'The team R&D pipeline has started (runId={runId}, {status}) and runs in the background. [IMPORTANT] Stop now: do not read or modify code to implement this requirement yourself, and do not rerun tests for verification — implementation, QA and reporting are handled by the pipeline stages. Just tell the user the pipeline has started, wait for the official completion report, and relay its result. Use teamflow_status to check progress/stage tokens; the backlog is persisted under $DSH_HOME/teamflow.\n[Reply language] Reply to the user in English.',

@@ -747,6 +747,17 @@ ok(/if \(\(journal\.stages \|\| \[\]\)\.length === 0\) return 'prd'/.test(pipeli
 // ⚠️ 锁结构不锁排版/类型断言写法：`stageSet` 可能带 `as string[]` 之类的强制转换，
 // 把强制转换写进匹配串会让断言在无害改动下假红（本仓 §17「源码断言锁只锁内容、不锁排版」）。
 ok(/if \(phaseStages\.length === 0\) \{[\s\S]{0,200}\.includes\(phase\)\) return phase/.test(pipelineSrc) && /const stageSet = resolveStages\(/.test(pipelineSrc), 'pipeline：启用过但从未尝试的阶段 = 断点（条件阶段未启用才 skip；区别靠 resolveStages 阶段集）')
+
+// `guess` = blocker 的**软字段**（ADR-0011 批 3a，2026-10-07）：模型自己给的倾向，供用户快速作答。
+// ⚠️ 三条纪律各有门禁：① prompt 里必须标 OPTIONAL（不得升格必填）；② qualifyBlockers 不进合格线
+//   （缺它不该让这条问题被丢弃 —— 否则等于按「模型是否听话」筛需求）；③ 渲染层显式区分有无。
+ok(/OPTIONAL/.test(promptsSrc) && /"guess"/.test(promptsSrc), 'prompts：guess 在输出契约里标为 OPTIONAL（升格必填 = 与「模型无关」纪律冲突）')
+ok(/guess\?: string/.test(triageSrc) && /软字段/.test(triageSrc), 'triage：guess 是可选软字段（注释写明为什么不进合格线）')
+ok(/const guess = String\(\(o && o\.guess\)/.test(triageSrc), 'triage：guess 在合格判定之外单独采集（结构上无法混进判定条件）')
+// ⚠️ 这条是 M6 变异实测补上的（2026-10-07）：把 guess 升格进合格线时，上面三条锁**全绿**，
+// 只有行为断言（triage-gate）红 ⇒ 源码锁漏了「判定条件恰好是四段」这件事本身。补上。
+ok(/if \(question && readings\.length >= 2 && changes && rework\) \{/.test(triageSrc), 'triage：合格判定**恰好**四段（question/readings/changes/rework），不含 guess —— 锁住「软字段不得升格为必填」')
+ok(/blockerGuessNone/.test(hostSrc), 'host：渲染层显式区分「有倾向 / 未给倾向」（不静默省略那一条）')
 // 续跑补录入口：`supplement` 从 teamflow_resume 一路传到 resumeRun；PRD 是唯一消费点
 // ⇒ 断点晚于 prd 必须**显式拒绝**（静默接受 = 静默丢弃，本仓反复踩）
 ok(/supplement\?: string \| null/.test(pipelineSrc) && /resumeRun\(id, parent\.session\.id, sup\)/.test(hostSrc), 'resume：supplement 从 teamflow_resume 一路传到 resumeRun')

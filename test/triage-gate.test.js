@@ -61,6 +61,18 @@ ok(qualifyBlockers([{ ...full, question: 'q'.repeat(999) }]).blockers[0].questio
 const longReadings = qualifyBlockers([{ ...full, readings: ['r'.repeat(999), 'r2'] }]).blockers[0].readings
 ok(longReadings.length === 2 && longReadings[0].length <= 200, '读法截断 ≤200 字符、条数 ≤4')
 
+// guess = **软字段**（ADR-0011 批 3a，2026-10-07）：模型给了就带、没给**不影响合格判定**。
+// ⚠️ 反向断言才是重点：若哪天把 guess 写进合格线，弱模型的 blocker 会被成批丢弃 ——
+// 那等于按「模型是否听话」筛需求，与本仓「模型无关」纪律（§2）直接冲突。
+ok(qualifyBlockers([full]).blockers[0].guess === undefined, '无 guess ⇒ 不写该 key（不留 guess:"" 噪声）')
+const withGuess = qualifyBlockers([{ ...full, guess: '倾向 A，因为仓库里已有 X' }])
+ok(withGuess.blockers.length === 1 && withGuess.blockers[0].guess === '倾向 A，因为仓库里已有 X', '给了 guess ⇒ 保留并透传')
+ok(qualifyBlockers([{ ...full, guess: '   ' }]).blockers.length === 1, 'guess 为空白 ⇒ 仍保留该 blocker（软字段不进合格线）')
+ok(qualifyBlockers([{ ...full, guess: 'x'.repeat(999) }]).blockers[0].guess.length <= 200, 'guess 截断 ≤200 字符')
+const noG = qualifyBlockers([full]).blockers[0]
+ok(Object.keys(noG).length === Object.keys(withGuess.blockers[0]).length - 1,
+  '有/无 guess 只差 guess 这一个 key（其余判据完全不受影响）')
+
 console.log('\n[2b] 自洽门禁：已判定的字段不得再被当成未知来问（2026-09-18 probe-v2 实锤）')
 console.log('     实测：需求结尾写着「装进我的 dsh web profile 里真实可用」、分诊自己已输出 installable=true，')
 console.log('     却仍抛出「要不要真能装」的 blocker（prompt 里"Do not ask it…"就在同一份 prompt 里）→')
