@@ -812,7 +812,10 @@ ok(/CONFIRM_QUESTIONS_MAX/.test(hostSrc) && /confirm\.questions/.test(hostSrc), 
 // 依据：`STATE_BLOCK_INSTRUCTION` 原模板**没有 extra**，而各阶段 rules 只用散文要它 ⇒ 模型照模板写，
 // 实测 `extra.acIndex` 兑现率仅 **7/34（20%）** ⇒ 兜底是必要的，不是可选优化。
 ok(/export function extractAcIndexFromText/.test(utilSrc), 'util：AC 文本兜底抽取器是纯函数（逐行解析，不做跨行正则）')
-ok(/prdText: prd/.test(pipelineSrc), 'pipeline：确认单收到 PRD 全文（兜底抽取的输入）')
+// ⚠️ **源必须是 PRD 文件、不是 stage.output**（2026-10-07 真实语料实测）：stage.output 是交接摘要
+// （中位 2.5k 字符，AC 常被压成 `（AC-1）、…` / `| Accept | AC-1…AC-8 |`）——
+// 同一抽取器两源命中率 **PRD.md 20/21（95%）vs stage.output 22/87（25%）**。锁整条回落链，不只锁尾参。
+ok(/prdText: artifactText\(journal, 'PRD\.md'\) \|\| artifactText\(journal, 'TECH-CHANGE\.md'\) \|\| prd/.test(pipelineSrc), 'pipeline：兜底**读 PRD 文件**（PRD.md → TECH-CHANGE.md → stage.output 逐级回落，不是拿交接摘要当正文）')
 // ⚠️ 必须锁到**调用**那一句：只锁「传参」会在「传了但不用」时假绿（M10 实测 —— 行为断言红了、这条全绿）。
 // 同型第五次（M6/M7/M8/M10/本条）：源码锁的匹配串必须覆盖「参数 → 实际使用」整条链，不能停在半路。
 ok(/extractAcIndexFromText\(v\.prdText\)/.test(hostSrc), 'confirm：兜底**真的调用了**抽取器（参数递进去 ≠ 用了）')

@@ -617,6 +617,13 @@ console.log('\n[20] PRD 确认单：needConfirm ⇒ PRD 后暂停；缺省直通
   ok(extractAcIndexFromText('') === null && extractAcIndexFromText(null) === null && extractAcIndexFromText(undefined) === null, '抽取：空/null/undefined → null（不炸）')
   const manyAc = Array.from({ length: 60 }, (_, i) => `| AC-${i + 1} | 第 ${i + 1} 条 |`).join('\n')
   ok(Object.keys(extractAcIndexFromText(manyAc)).length === 40, `抽取：上限 40 条（实测 ${Object.keys(extractAcIndexFromText(manyAc)).length}）`)
+  // ⑦ **真实语料逼出来的两条规则**（2026-10-07，拿 21 份真实 PRD.md 量出来的）：
+  //    · 最常见的故事表是 `| 用户故事 | AC-1: … |`（AC 在**第二列**）—— 只锚行首会漏（实测 tf-obs-r3 漏 4/4）；
+  //    · `| Accept | AC-1…AC-8 | export …` 是**区间引用行**，不是 AC 正文 ⇒ 不得造出 `AC-1 = "…AC-8"` 的垃圾条目。
+  const storyTable = '| 故事 | 验收标准 |\n|------|----------|\n| 用户可添加任务 | AC-1: 输入后立即出现 |\n| 用户可勾选任务 | AC-2: 点击后标记完成 |'
+  const stGot = extractAcIndexFromText(storyTable)
+  ok(stGot && stGot['AC-1'] === '输入后立即出现' && stGot['AC-2'] === '点击后标记完成', `抽取：**表格第二列** \`| 故事 | AC-1: … |\`（真实产物最常见形态，实测 ${JSON.stringify(stGot)}）`)
+  ok(extractAcIndexFromText('| Accept | AC-1…AC-8 | export + unit table |') === null, '抽取：区间引用行 → null（AC 后不是冒号 ⇒ 不命中，不造垃圾条目）')
 
   const fromState = buildConfirmSheet({ acIndex: { 'AC-1': '结构化' }, prdText: '| AC-9 | 正文里的 |' })
   ok(fromState.acSource === 'state' && fromState.ac[0].id === 'AC-1', '结构化有值 ⇒ 用它，来源=state（不被正文覆盖）')
