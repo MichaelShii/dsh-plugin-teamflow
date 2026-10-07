@@ -21,18 +21,35 @@ import { t, type HostLocale } from '../locales.ts'
 export const CONFIRM_AC_MAX = 12
 /** 假设清单上限（同上）。 */
 export const CONFIRM_ASSUMPTIONS_MAX = 8
+/** 结构化待澄清项上限（同上）。 */
+export const CONFIRM_QUESTIONS_MAX = 8
+
+/** 一条**待用户拍板**的澄清项（来自 PRD state 块的 `extra.openQuestions`，结构化）。 */
+export interface ConfirmQuestion {
+  q: string
+  why: string
+  changes: string
+  default: string
+}
 
 export interface ConfirmSheet {
   /** 目标一句话（PRD state 块的 extra.summary）。 */
   summary: string
   /** AC 编号 → 一句话（state.acIndex）。 */
   ac: Array<{ id: string; text: string }>
-  /** PRD「假设 / 待澄清」段逐行。 */
+  /**
+   * **待用户拍板**的项（`state.openQuestions`，结构化优先于文本）。
+   * 与 `assumptions` **语义不同、同时呈现**：这里是「要你决定」，那里是「我已经替你定了」。
+   */
+  questions: ConfirmQuestion[]
+  /** PRD「假设 / 待澄清」段逐行（`journal.assumptions`，文本抽取的兜底形态）。 */
   assumptions: string[]
   /** PRD 全文路径（确认单只是摘要，全文让用户/主线程自己读）。 */
   docPath: string
   /** AC 总条数（用于「已列 N / 共 M 条」的诚实标注，不静默截断）。 */
   acTotal: number
+  /** 待澄清项总条数（同上）。 */
+  questionsTotal: number
   /** 假设总行数（同上）。 */
   assumptionsTotal: number
   at: number
@@ -45,6 +62,8 @@ export interface ConfirmSheet {
 export function buildConfirmSheet(v: {
   summary?: string | null
   acIndex?: Record<string, string> | null
+  /** 结构化待澄清项（`state.openQuestions`）；缺/空 ⇒ 该段不渲染。 */
+  openQuestions?: ConfirmQuestion[] | null
   assumptions?: string | null
   runDocs?: string | null
 }): ConfirmSheet {
@@ -53,12 +72,20 @@ export function buildConfirmSheet(v: {
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter((l) => l && !/^[-*#|]+\s*$/.test(l))
+  const questions = (v.openQuestions || []).filter((q) => q && String(q.q || '').trim())
   return {
     summary: clip(v.summary, 200),
     ac: acEntries.slice(0, CONFIRM_AC_MAX).map(([id, text]) => ({ id, text: clip(text, 160) })),
+    questions: questions.slice(0, CONFIRM_QUESTIONS_MAX).map((q) => ({
+      q: clip(q.q, 200),
+      why: clip(q.why, 160),
+      changes: clip(q.changes, 160),
+      default: clip(q.default, 160),
+    })),
     assumptions: assumpLines.slice(0, CONFIRM_ASSUMPTIONS_MAX).map((l) => clip(l, 160)),
     docPath: v.runDocs ? `${String(v.runDocs).replace(/\/$/, '')}/PRD.md` : 'PRD.md',
     acTotal: acEntries.length,
+    questionsTotal: questions.length,
     assumptionsTotal: assumpLines.length,
     at: Date.now(),
   }
@@ -70,6 +97,16 @@ export function renderConfirmSheet(sheet: ConfirmSheet, locale: HostLocale): str
   if (sheet.ac.length) {
     const list = sheet.ac.map((a) => `${a.id} ${a.text}`).join('\n')
     lines.push(t(locale, 'confirm.ac', { n: sheet.ac.length, total: sheet.acTotal, list }))
+  }
+  if (sheet.questions.length) {
+    const list = sheet.questions
+      .map((q) => {
+        const def = q.default ? t(locale, 'confirm.defaultAnswer', { value: q.default }) : ''
+        const why = q.why ? t(locale, 'confirm.whyAsk', { value: q.why }) : ''
+        return `- ${q.q}${def}${why}`
+      })
+      .join('\n')
+    lines.push(t(locale, 'confirm.questions', { n: sheet.questions.length, total: sheet.questionsTotal, list }))
   }
   if (sheet.assumptions.length) {
     const list = sheet.assumptions.map((a) => `- ${a}`).join('\n')

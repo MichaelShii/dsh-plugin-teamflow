@@ -52,6 +52,17 @@ export interface TeamflowState {
   verifyScripts: string[]
   /** AC 索引：AC 编号 → 一句话（prd 阶段沉淀） */
   acIndex: Record<string, string>
+  /**
+   * **结构化待澄清项**（ADR-0011 ①，2026-10-07）：PRD state 块的 `extra.openQuestions`。
+   *
+   * `prdPrompt` 一直要求它（`prompts/index.ts:454`，且有 `prompt-contract.test.js` 的 L1 门禁），
+   * 但 `mergeStateBlock` **从未消费** ⇒ 确认单只能退回**文本抽取**（`journal.assumptions` 的行）。
+   * 结构化版本每条带「为什么问 / 影响什么 / 缺省怎么办」，确认单据此能让用户**直接挑默认值**。
+   *
+   * ⚠️ 语义与 `journal.assumptions` **不同、不互斥**：assumptions 是 agent 已替用户定下的假设，
+   * openQuestions 是**要用户拍板**的项 —— 所以确认单两者都呈现，不做二选一。
+   */
+  openQuestions: Array<{ q: string; why: string; changes: string; default: string }>
   /** 各阶段的最新结论（key: phase） */
   stages: Record<string, string>
   /** 最近流水线结论 */
@@ -98,6 +109,31 @@ export interface TeamflowState {
   gitMode?: 'repo' | 'none'
 }
 
+/**
+ * `extra.openQuestions` 的容错归一：只保留有 `q` 的条目，四个字段一律转成字符串并截断。
+ * 模型可能给 `{question: ...}` / 纯字符串 / 缺字段等变体 ⇒ 一律不抛、不污染 state。
+ */
+export function normalizeOpenQuestions(raw: unknown): Array<{ q: string; why: string; changes: string; default: string }> {
+  if (!Array.isArray(raw)) return []
+  const out: Array<{ q: string; why: string; changes: string; default: string }> = []
+  for (const item of raw) {
+    const o = item && typeof item === 'object' && !Array.isArray(item) ? (item as Record<string, unknown>) : null
+    if (!o) continue
+    const pick = (...keys: string[]): string => {
+      for (const k of keys) {
+        const v = o[k]
+        if (typeof v === 'string' && v.trim()) return v.trim().slice(0, 300)
+      }
+      return ''
+    }
+    const q = pick('q', 'question')
+    if (!q) continue
+    out.push({ q, why: pick('why', 'reason'), changes: pick('changes'), default: pick('default', 'defaultAnswer') })
+    if (out.length >= 12) break
+  }
+  return out
+}
+
 /** 空态 state。 */
 function emptyState(): TeamflowState {
   return {
@@ -109,6 +145,7 @@ function emptyState(): TeamflowState {
     modules: {},
     verifyScripts: [],
     acIndex: {},
+    openQuestions: [],
     stages: {},
     lastRun: null,
   }
@@ -134,6 +171,7 @@ export function loadState(projectKey: string): TeamflowState {
         base.modules = raw.modules || {}
         base.verifyScripts = Array.isArray(raw.verifyScripts) ? raw.verifyScripts : []
         base.acIndex = raw.acIndex || {}
+        base.openQuestions = normalizeOpenQuestions(raw.openQuestions)
         base.stages = raw.stages || {}
         base.lastRun = raw.lastRun ?? null
         // **gitMode 必须显式搬运**（2026-09-18 实锤修复）：本函数是**逐字段白名单重建**（不是整体读取），
@@ -199,6 +237,9 @@ export function mergeStateBlock(projectKey: string, block: StageStateBlock, phas
       // 产品一句话（确认单 ADR-0011 ① 的目标来源）：`prdPrompt` 早已要求 extra.summary，
       // 但此前**从未落盘** ⇒ 确认单只能去抽模型自由写的段落标题（不可靠）。此处补齐落点。
       if (typeof block.extra.summary === 'string' && block.extra.summary.trim()) state.product.summary = block.extra.summary.trim()
+      // 结构化待澄清项（ADR-0011 ①）：PRD 是本次 run 的权威 ⇒ **整组替换**（不累加，
+      // 否则上一轮的遗留问题会一直挂在确认单上）。缺该键则保持原值。
+      if (Array.isArray(block.extra.openQuestions)) state.openQuestions = normalizeOpenQuestions(block.extra.openQuestions)
       if (typeof block.extra.techStack === 'string' && block.extra.techStack) state.product.techStack = block.extra.techStack
       if (typeof block.extra.moduleContracts === 'object' && block.extra.moduleContracts) state.modules = { ...state.modules, ...block.extra.moduleContracts }
     }

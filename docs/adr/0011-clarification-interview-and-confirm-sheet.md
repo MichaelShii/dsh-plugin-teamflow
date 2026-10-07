@@ -234,6 +234,19 @@ ADR-0011 TODO ③ 原措辞是「澄清强度进 `MODE_REGISTRY` 作为新维度
 `clarifyStrengthForTeam` 从**内存** `runs` 反查 ⇒ **重启后回落 `once`**。消除它应把强度落进 `teams.json`
 或 `state.json`（跨重启），而不是给内存缓存打补丁。**未做**。
 
+
+### 批 1.5 补齐（2026-10-07 傍晚，用户问「还有剩余项不」时查出）
+
+两处**我自己拍板/陈述却漏实现**的东西：
+
+1. **① 的代价条款漏了**——§裁决 ① 明写「批准文案要写清『接下来会开始写代码』」，但 `run.needsConfirm` / `report.confirmSheet` 都没有这句 ⇒ 已补（zh/en 两份，且 `report.confirmSheet` 是主线程真正看到的那条）。
+2. **`openQuestions` 是「只要求、不落盘」**——`prdPrompt` 早已要求 PRD state 块的 `extra.openQuestions`（`prompts/index.ts:454`，且有 `prompt-contract.test.js` 的 L1 门禁锁住），但 `mergeStateBlock` **从未消费**它、`TeamflowState` 里也没这个字段 ⇒ 确认单只能退回**文本抽取**（`journal.assumptions` 的行）。已补：`TeamflowState.openQuestions` ＋ `normalizeOpenQuestions` 容错归一（模型形状不稳定：别名 `question` / 缺字段 / 非对象 / 超长，一律不抛）＋ `mergeStateBlock` 消费（**整组替换**——PRD 是本次 run 的权威，累加会让上一轮的遗留问题一直挂在确认单上）＋ 确认单接结构化（与 `assumptions` **语义不同、同时呈现**：那是「要你决定」，这是「我已经替你定了」）。
+
+**⚠️ 记一条认知错误**：我先前两次把 `openQuestions` / 「非目标段」说成「未做」，是**把自己的工作范围当成了全仓现状** —— `openQuestions` 在 8 个文件里早有命中（含 L1 门禁）。**报「未做」前必须 grep 全仓关键词。**
+
+**门禁**：`state` 的动态往返夹具自动覆盖了新字段（我加字段没同步夹具时它立刻红，是它该做的）＋ `state` **+14 条容错/替换行为断言** ＋ `smoke` **+7 条源码锁**。
+**变异 M8**（给 `openQuestions` 的消费加 `false &&` 前缀）⇒ `state` 恰 1 条红；**但源码锁全绿** ⇒ **源码锁假绿（本日第三次，同根因）**：只锁赋值语句时，条件被否掉仍能匹配。已改成从**判定条件起锚**的整句匹配，改后复跑变异 ⇒ 同红。
+
 ## 影响
 
 - `docs/TODO.md` 的「澄清闸门」条按本文收敛（Phase 2 与强度档合并设计）。

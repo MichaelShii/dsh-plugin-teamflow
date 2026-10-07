@@ -768,6 +768,19 @@ ok(/export function normalizeClarifyStrength/.test(utilSrc), 'util：澄清强�
 ok(/if \(mode === 'patch'\) return 'off'[\s\S]{0,240}if \(v === 'interview'\) return 'interview'[\s\S]{0,120}if \(v === 'off'\)/.test(utilSrc), 'util：**patch 恒 off 且优先于** interview（判定顺序是策略档矩阵的契约，勿调换）')
 // ★ 零回归锁：`once`（缺省）必须**原样返回 base、一字不追加** —— 现有澄清引导段落逐字保留。
 ok(/if \(strength === 'once'\) return base/.test(hostSrc), 'host：once 档原样返回 base（addendum 只对 off/interview 追加 ⇒ 存量注入零回归）')
+
+// ① 的**代价条款**（ADR-0011 §裁决 ①，2026-10-07 补）：批准 = 放行一条已启动的流水线 ⇒
+// 文案必须写清「接下来会开始写代码」，否则用户会以为还在讨论（拍板时写下、当时漏实现）。
+ok(/'run\.needsConfirm': '[^']*立即开始写代码/.test(hostSrc), 'locales：run.needsConfirm 明示「批准 = 立即开始写代码」（不是继续讨论）')
+ok(/'report\.confirmSheet': '[^']*立即开始写代码/.test(hostSrc), 'locales：report.confirmSheet 同样明示（主线程看到的正是这条）')
+// 结构化优先（ADR-0011 ①，2026-10-07 补）：`prdPrompt` 一直要求 state 块带 extra.openQuestions，
+// 但 mergeStateBlock **从未消费** ⇒ 确认单只能退回文本抽取（journal.assumptions 的行）。
+// ⚠️ 从**判定条件**起锚，不能只锁赋值语句：M8 实测把前缀改成 `if (false && …)`，赋值那半句原样还在
+// ⇒ 只锁赋值的写法**假绿**。这是本日第三次同型（M6/M7/M8）—— 源码锁必须覆盖「条件 → 赋值」整条语句。
+ok(/if \(Array\.isArray\(block\.extra\.openQuestions\)\) state\.openQuestions = normalizeOpenQuestions\(block\.extra\.openQuestions\)/.test(hostSrc), 'state：mergeStateBlock 消费 extra.openQuestions（此前只要求、不落盘；条件与赋值必须同锁）')
+ok(/export function normalizeOpenQuestions/.test(hostSrc), 'state：openQuestions 容错归一是纯函数（模型形状不稳定 ⇒ 不抛、不污染 state）')
+ok(/openQuestions: state\.openQuestions/.test(hostSrc), 'pipeline：确认单接结构化 openQuestions（与 assumptions 语义不同，两段都呈现）')
+ok(/CONFIRM_QUESTIONS_MAX/.test(hostSrc) && /confirm\.questions/.test(hostSrc), 'confirm：待拍板项有独立上限与渲染段（不静默截断）')
 ok(/clarifyStrengthForTeam/.test(hostSrc) && /tool\.ctx\.clarifyInterview/.test(hostSrc) && /tool\.ctx\.clarifyOff/.test(hostSrc), 'host：强度从 run 快照反查（强度是每次 run 的参数，不是会话级设置）＋ 两档 addendum 齐备')
 ok(/'tool\.ctx\.clarifyInterview'/.test(hostSrc), 'locales：interview addendum 文案存在（一次一问 ＋ 每问带猜测 ＋ 硬终止三条件）')
 // 续跑补录入口：`supplement` 从 teamflow_resume 一路传到 resumeRun；PRD 是唯一消费点

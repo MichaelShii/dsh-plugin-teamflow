@@ -64,6 +64,9 @@ const full = {
   modules: { 'src/a.ts': '模块 A' },
   verifyScripts: ['pnpm test'],
   acIndex: { 'AC-1': '第一条' },
+  // 结构化待澄清项（ADR-0011 ①，2026-10-07）：key 顺序必须与 `normalizeOpenQuestions`
+  // 的产出顺序一致（q→why→changes→default）—— 往返断言用的是 `JSON.stringify` 全等。
+  openQuestions: [{ q: '要装到哪个 profile？', why: '决定形态契约', changes: 'AC 集', default: 'web' }],
   stages: { prd: 'PRD 结论' },
   lastRun: { runId: 'tf-x', requirement: '需求', folder: 'docs/teamflow/20260918-r1', verdict: 'accepted', endedAt: 1 },
   gitMode: 'repo',
@@ -111,6 +114,33 @@ ok(sees('acceptance'), '**acceptance 必须能看到蓝图** —— 模块抽取
 ok(sees('arch') && sees('tech'), 'arch / tech 仍能看到（原有行为不回退）')
 ok(!stateSliceFor(bpState(''), 'qa').includes('blueprint'), '无蓝图时不得凭空注入（条件式契约的「条件」仍要真判）')
 ok(!sees('pm') && !sees('design'), 'pm / design 不注入（它们跑在 tech 之前，此时蓝图尚不存在）')
+
+
+/* ── 结构化待澄清项（ADR-0011 ①，2026-10-07）──
+ * `prdPrompt` 一直要求 state 块带 `extra.openQuestions`（且有 prompts 侧 L1 门禁），
+ * 但 `mergeStateBlock` 从未消费 ⇒ 确认单只能退回**文本抽取**。这里锁住「结构化优先」这条链。
+ * 重点在**容错**：模型给的形状不稳定（别名 question / 缺字段 / 纯字符串 / 超长），一律不抛、不污染 state。 */
+console.log('\n── normalizeOpenQuestions：模型形状容错 ──')
+const { normalizeOpenQuestions } = await import('../host/core/domain/state.ts')
+ok(normalizeOpenQuestions([{ q: 'Q1', why: 'W', changes: 'C', default: 'D' }]).length === 1, '四字段齐全 → 保留')
+ok(JSON.stringify(Object.keys(normalizeOpenQuestions([{ q: 'Q1', why: 'W', changes: 'C', default: 'D' }])[0])) === JSON.stringify(['q', 'why', 'changes', 'default']), '字段顺序稳定（往返断言用 JSON.stringify 全等，顺序是契约）')
+ok(normalizeOpenQuestions([{ question: '别名', why: 'W' }])[0].q === '别名', '`question` 别名 → 采纳（模型常见变体）')
+ok(normalizeOpenQuestions([{ why: 'W', changes: 'C' }]).length === 0, '缺 q/question → 丢弃（没有问题的条目无意义）')
+ok(normalizeOpenQuestions([{ q: '   ' }]).length === 0, 'q 只有空白 → 丢弃')
+ok(normalizeOpenQuestions([{ q: 'Q1' }])[0].why === '' && normalizeOpenQuestions([{ q: 'Q1' }])[0].default === '', '缺可选字段 → 补空串（不是 undefined，避免 JSON 里丢键）')
+ok(normalizeOpenQuestions(['纯字符串', 3, null, {}]).length === 0, '非对象条目全部丢弃（不炸）')
+ok(normalizeOpenQuestions(null).length === 0 && normalizeOpenQuestions(undefined).length === 0 && normalizeOpenQuestions('x').length === 0, '非数组输入 → 空数组（不炸）')
+const many = Array.from({ length: 30 }, (_, i) => ({ q: 'Q' + i }))
+ok(normalizeOpenQuestions(many).length === 12, `上限 12 条（实测 ${normalizeOpenQuestions(many).length}）`)
+ok(normalizeOpenQuestions([{ q: 'x'.repeat(999) }])[0].q.length <= 300, '单字段截断 ≤300')
+
+console.log('\n── mergeStateBlock：openQuestions 整组替换（不累加）──')
+saveState(KEY, { ...full, openQuestions: [{ q: '旧问题', why: '', changes: '', default: '' }] })
+mergeStateBlock(KEY, { phase: 'prd', summary: 's', extra: { openQuestions: [{ q: '新问题', why: '', changes: '', default: '' }] } })
+const qAfter = loadState(KEY).openQuestions
+ok(qAfter.length === 1 && qAfter[0].q === '新问题', `PRD 是本次 run 的权威 ⇒ 整组替换（实测 ${JSON.stringify(qAfter)}）`)
+mergeStateBlock(KEY, { phase: 'tech', summary: 's', extra: {} })
+ok(loadState(KEY).openQuestions.length === 1, 'state 块不含该键 → 保持原值（不清空）')
 
 cleanup()
 console.log(failed ? `\n✗ state：${failed} 条失败\n` : '\n✓ state：全部通过\n')
