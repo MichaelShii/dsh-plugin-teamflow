@@ -792,8 +792,34 @@ ok(/confirmMode: options\.confirmMode/.test(joptBlock), '本次实锤漏的字�
 // 机器面（`extractStateBlock`）读的是**未剥**的原始文本 ⇒ 剥展示副本不丢信息。
 // 四个落点都要锁：漏一个就有一条路径把 JSON 摊给用户（每个都是 `snippet`/`clip` 前的那一步）。
 ok(/export function stripStateBlock/.test(hostSrc), 'state：stripStateBlock 存在（展示面剥机器块）')
+// state 块的**文件通道接线**：哪个 prompt 用哪个**阶段键**当文件名，必须与合并侧一致
+// （合并侧只知道阶段键：`mergeStageState('<阶段键>', …, stateBlockRelPath(id, '<阶段键>'[, 任务 id]))`）。
+// ⚠️ 两个反直觉映射：`techChangePrompt`/`patchConfirmPrompt` 块里写 `phase="tech"`/`"patch"`，
+// 但它们**都是 prd 阶段的表单** ⇒ 文件名用 `prd`；`architectPrompt` 与 `techPrompt` 是**同一个 tech 阶段**
+// 的两个分支 ⇒ 都用 `tech`。名字错了不会静默：那条阶段永远走**回落**（有 warn 计数），但会污染兑现率。
+if (true) {
+  const promptsSrc = readFileSync(join(here, '../host/prompts/index.ts'), 'utf8')
+  const bodyOf = (name) => {
+    const i = promptsSrc.indexOf(`export const ${name} =`)
+    if (i < 0) return null
+    const j = promptsSrc.indexOf('\nexport const ', i + 1)
+    return promptsSrc.slice(i, j < 0 ? i + 4000 : j)
+  }
+  const PATH_MAP = {
+    prdPrompt: 'prd', techChangePrompt: 'prd', patchConfirmPrompt: 'prd',
+    designPrompt: 'design', scaffoldPrompt: 'scaffold',
+    techPrompt: 'tech', architectPrompt: 'tech',
+    devPrompt: 'dev', qaFixPrompt: 'dev',
+    qaPrompt: 'qa', acceptancePrompt: 'acceptance',
+  }
+  const bad = Object.entries(PATH_MAP).filter(([name, phase]) => {
+    const b = bodyOf(name)
+    return !b || !b.includes(`stateBlockRelPath(runId, '${phase}'`)
+  }).map(([n]) => n)
+  ok(bad.length === 0, `state 块文件路径逐个对上阶段键（错：${bad.length ? bad.join(', ') : '无'}）`)
+}
 ok(/snippet\(stripStateBlock\(summary\), 2000\)/.test(hostSrc) && /snippet\(stripStateBlock\(summary\), 1000\)/.test(hostSrc), 'backlog：任务卡 / 子任务卡 summary 先剥再截断（**用户看到的就是这两个**）')
-ok(/const shown = stripStateBlock\(r\.text\)[\s\S]{0,120}timeline\[phase\] = shown[\s\S]{0,140}mergeStageState\(phase, r\.text\)/.test(pipelineSrc), 'pipeline：runSimpleStage 在 mergeStageState **之后**用剥离版喂 timeline 与下游（顺序反了就取不到块）')
+ok(/const shown = stripStateBlock\(r\.text\)[\s\S]{0,120}timeline\[phase\] = shown[\s\S]{0,160}mergeStageState\(phase, r\.text, stateBlockRelPath\(journal\.id, phase\)\)/.test(pipelineSrc), 'pipeline：runSimpleStage 在 mergeStageState **之后**用剥离版喂 timeline 与下游（顺序反了就取不到块）')
 ok(/clip\(stripStateBlock\(x\.output \|\| ''\), 2000\)/.test(pipelineSrc), 'pipeline：summarizeTimeline 也剥（dev 的 timeline 是数组，走另一条分支）')
 ok(/stage\.output = clip\(stripStateBlock\(text\), 50000\)/.test(hostSrc) && /stage\.output = clip\(stripStateBlock\(text\), 4000\)/.test(hostSrc), 'runner：stage.output（详情浮层 + 断点续跑重建上下文）也要剥')
 // ⚠️ `clarifyStrength` 于 2026-10-08 **整体移出 `PipelineOptions`**（它从来不影响流水线，只选 ctx 文案

@@ -15,7 +15,7 @@ import {
 } from '../../util.ts'
 import { phaseKeyOf } from '../../constants.ts'
 import { persistJournal } from '../../../store.ts'
-import { extractStateBlock } from '../domain/state.ts'
+import { extractStateBlock, stateBlockRelPath, readStateBlockFile } from '../domain/state.ts'
 import { phaseLabel, t, type HostLocale } from '../../locales.ts'
 import type { PipelineCtx } from '../pipeline.ts'
 
@@ -91,8 +91,11 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
        唯一绕不过去的事实是「这一舞台最终动了哪些文件」（state block 的 touched），
        所以各 dev 舞台结束时连同真实执行窗口记一笔，收尾统一求并发窗口内的文件交集。 */
   const devTouchEntries: Array<{ key: string; startedAt: number; endedAt: number; files: string[] }> = []
-  const trackDevTouched = (key: string, startedAt: number, endedAt: number, text: unknown) => {
-    const block = extractStateBlock(text)
+  const trackDevTouched = (key: string, startedAt: number, endedAt: number, text: unknown, relPath: string | null = null) => {
+    // 通道与 `mergeStageState` 同源：**文件优先、回复回落**（见 state.ts 的 readStateBlockFile 注释）。
+    // ⚠️ 基准用 `journal.workspacePath` 而不是 `root`（后者=productRoot，生产里常为 null ⇒ 会永远回落）。
+    const base = journal.workspacePath || root
+    const block = (relPath && base ? readStateBlockFile(`${base}/${relPath}`) : null) || extractStateBlock(text)
     const files = Array.isArray(block && block.touched)
       ? (block!.touched || []).map((f) => String(f || '').trim()).filter(Boolean)
       : []
@@ -255,7 +258,7 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
         const t0 = Date.now()
         const devR = await withRetry(journal, parent, t(locale, 'dev.task', { title: task.title }), 'dev', devPrompt(task, tech, prd, design, root, journal.id, state), signal, task.title, null, task.ids)
         const devText = stageTextOf(devR)
-        trackDevTouched(task.title, t0, Date.now(), devText)
+        trackDevTouched(task.title, t0, Date.now(), devText, stateBlockRelPath(journal.id, 'dev', (task.ids && task.ids[0]) || null))
         noteVerifyEvidence(devR.stage, devText)
         const ok = !!devR.text
         // 完成子卡：记录状态 + childId + 摘要
@@ -265,7 +268,7 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
           // filter().pop() 会取错 stage：后完成的任务吸收先创建任务的 usage，且被多次累计超计）
           if (devR.stage) noteSubtaskUsage(journal, sub.id, devR.stage)
         }
-        return { title: task.title, failed: !ok, output: devText || t(locale, 'dev.failedPlaceholder') }
+        return { title: task.title, dtId: (task.ids && task.ids[0]) || null, failed: !ok, output: devText || t(locale, 'dev.failedPlaceholder') }
       }, () => journal.cancelled)
       devResults.push(...waveRes)
       // 失败传播（AC3）：本波有失败 ⇒ 后续波的组是在拿半成品往下做，直接记账跳过（提测门禁会拦住；
@@ -277,7 +280,7 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
           const g = devPlan.groups[gi]
           const sub = subCards[gi]
           if (sub) completeSubtask(journal, sub.id, true, snippet(t(locale, 'dev.depBlocked'), 1000), null)
-          devResults.push({ title: g.title, failed: true, output: t(locale, 'dev.depBlocked') })
+          devResults.push({ title: g.title, dtId: (g.ids && g.ids[0]) || null, failed: true, output: t(locale, 'dev.depBlocked') })
         }
         break
       }
@@ -286,7 +289,9 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
     timeline.dev = devResults
     // dev 阶段 state 沉淀：汇总各 dev 产出中提取的 state 块
     for (const r of devResults) {
-      if (r && r.output) mergeStageState('dev', r.output)
+      // ⚠️ 只给**本次真跑过**的任务传路径（`dtId` 只挂在新跑/补跑的条目上）：resume **复用**的旧条目
+      // 在上一轮才写过 state 文件（本轮没有），传了会白白触发一次「回落」warn ⇒ 把兑现率计数污染成假警报。
+      if (r && r.output) mergeStageState('dev', r.output, r.dtId ? stateBlockRelPath(journal.id, 'dev', r.dtId) : null)
     }
     // 累计全部 dev stage usage 到主卡（汇总）
     noteTaskStageUsage(journal)

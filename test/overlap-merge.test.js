@@ -166,7 +166,9 @@ ok(/READ-ONLY CONTEXT/.test(devSection), 'devPrompt：下发只读上下文段�
 const pipe2 = pipeSrc // 同一份流水线家族视图（见上方 pipeSrc 的聚合说明）
 ok(/reportDevWriteConflicts\(\)/.test(pipe2), 'pipeline：两条 dev 路径都会在收尾调用 reportDevWriteConflicts')
 ok((pipe2.match(/reportDevWriteConflicts\(\)/g) || []).length === 2, '收尾调用恰好 2 处 = 正常路径 + resume 路径（少一处即漏一条执行路径）')
-ok(/trackDevTouched\(task\.title, t0, Date\.now\(\), devText\)/.test(pipe2), '正常路径：子代理返回后用真实执行窗口记账 touched')
+// 2026-10-08：state 块改**文件通道**后这行多了第 5 参（该任务的 state 文件路径）——
+// 记账的 `touched` 必须与合并**读同一个通道**（文件优先、回复回落），否则并发冲突记账会少算。
+ok(/trackDevTouched\(task\.title, t0, Date\.now\(\), devText, stateBlockRelPath\(journal\.id, 'dev'/.test(pipe2), '正常路径：子代理返回后用真实执行窗口记账 touched（含该任务的 state 文件路径）')
 ok(/trackDevTouched\(task\.title, t0, Date\.now\(\), rerunText\)/.test(pipe2), 'resume 路径：补跑的子代理同样记账（否则整条补跑完全没监控）')
 ok(/log\.devWriteConflict/.test(pipe2), '命中冲突 → 落 warn 日志（可观测，不是静默）')
 // 2026-09-24 r1b 实锤：resume 分支当时只用了 overlap 文案，三个**无 files** 的任务被合并后却记成"共享文件"

@@ -15,6 +15,7 @@ import { persistJournal } from '../../../store.ts'
 import { currentModelSupportsVision } from '../agent/context.ts'
 import { phaseLabel, t } from '../../locales.ts'
 import type { PipelineCtx } from '../pipeline.ts'
+import { stateBlockRelPath } from '../domain/state.ts'
 /**
  * 产品验收阶段（交付判定 + 统一收口提交；QA 打回未超限才执行）。
  */
@@ -57,7 +58,7 @@ export async function runAcceptancePhase(ctx: PipelineCtx): Promise<void> {
     }
     if (accR && accR.text) {
       try {
-        mergeStageState('acceptance', accR.text)
+        mergeStageState('acceptance', accR.text, stateBlockRelPath(journal.id, 'acceptance'))
         const acceptance = artifactText(journal, 'ACCEPTANCE.md')
         if (acceptance) {
           timeline.acceptance = acceptance
@@ -88,7 +89,7 @@ export async function runAcceptancePhase(ctx: PipelineCtx): Promise<void> {
     const accR = await withRetry(journal, parent, t(locale, 'dev.acceptance'), 'acceptance', acceptancePrompt(prd, qa, JSON.stringify(timeline.dev), root, journal.id, state, await currentModelSupportsVision(resolveChildRoute(parent).provider, resolveChildRoute(parent).model)), signal)
     if (!accR.text) { advanceTask(journal, 'needs-human', null, t(locale, 'event.acceptFail'), { by: 'pm' }); throw stageFailError('acceptance', accR) }
     // 单轨契约：文件即产物——ACCEPTANCE.md 是结论行/核对表唯一事实来源；state 块仍在回复尾部
-    mergeStageState('acceptance', accR.text)
+    mergeStageState('acceptance', accR.text, stateBlockRelPath(journal.id, 'acceptance'))
     const acceptance = artifactText(journal, 'ACCEPTANCE.md')
     if (!acceptance) {
       // 硬失败而非回退解析回复：回复仅摘要无结论行，回退=保守 accepted 误放行（无结论行默认过）

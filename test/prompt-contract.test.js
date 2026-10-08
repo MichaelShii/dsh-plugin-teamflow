@@ -505,9 +505,15 @@ assertContract({
 // ── structural：state 块 / 产物路径 / 蓝图 JSON / git 纪律 ──
 assertContract({
   id: 'STATE-BLOCK-EVERY-STAGE', level: 'structural', targets: 'ALL',
-  intent: '每个阶段产出末尾必须指示附 state 块（host 提取合并 state.json 的前提）',
-  include: [/STATE BLOCK · mandatory at the end/, /<!-- state -->/],
+  // 2026-10-08 改通道：锚点句从「Append one section at the END of your answer」换成
+  // `STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply` —— 旧措辞**就是**块泄漏到
+  // 用户 UI 的唯一原因（宿主渲染子代理回复，插件管不到）。每条还要**点名该阶段的文件路径**。
+  intent: '每个阶段必须指示把 state 块**写进文件**（且不许写进回复正文）——host 从磁盘读它，回复正文里不再出现机器契约',
+  include: [/STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply/, /<!-- state -->/, /logs\/teamflow\/[^\s`]+\/state\/[^\s`]+\.json/],
 })
+// ⚠️ 「哪个工厂对应哪个阶段键」在**渲染后文本里看不出来**（路径那时已解析成字面量）⇒ 那条映射放在
+// `smoke.js` 的**源码锁**里（`STATE-BLOCK-PATH-PER-STAGE`）。写错的表现＝该阶段永远走**回落**，
+// 不是静默错（有 warn 计数），但会污染兑现率 ⇒ 必须在源码侧钉死。
 assertContract({
   id: 'DOC-BOUNDARY-POLICY', level: 'policy', targets: 'ALL',
   intent: '所有阶段共用 productCtx：文档只写 docs/teamflow/，日志只写 logs/teamflow/，禁宿主 docs/ 散落',

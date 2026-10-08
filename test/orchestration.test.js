@@ -127,7 +127,7 @@ const TRIAGE_EXPLORE = JSON.stringify({
 /** 构造一次 run：stub 子代理 + 隔离的 $DSH_HOME / 工作区。 */
 async function runScenario(
   name,
-  { options, resume = null, emptyNext = false, failLabel = null, artifacts = null, cancelAfter = 0, triage = null, extraFiles = 0, presetSupplement = null, prdOutput = null },
+  { options, resume = null, emptyNext = false, failLabel = null, artifacts = null, cancelAfter = 0, triage = null, extraFiles = 0, presetSupplement = null, prdOutput = null, stateViaFile = false },
 ) {
   const rootTmp = mkdtempSync(join(tmpdir(), `tf-orch-${name}-`))
   process.env.DSH_HOME = `${rootTmp}/home`
@@ -144,6 +144,7 @@ async function runScenario(
   const children = []
   let doEmpty = emptyNext
   let qaRound = 0
+  let stateFileErr = '' // `stateViaFile` 的桩自检（块/路径没取到 ⇒ 断言会点名，而不是静默退化成回落）
   const stubStart = async (_provider, init) => {
     const label = String((init && init.label) || '')
     // 捕获阶段 prompt（锁「同一 run 内 state 刷新」用：后续阶段的 state slice 必须带上 PRD 写下的东西）
@@ -165,7 +166,24 @@ async function runScenario(
     // 分诊裁决注入：子代理直接回 JSON（runTriage 期望回复以 JSON 对象开头）
     if (triage && /需求分诊/.test(label)) text = triage
     // PRD 产出覆盖：用来注入带 `extra.*` 的 state 块 —— 锁「同一 run 内 state 必须刷新」
-    if (prdOutput && !labelHit && !doEmpty && /梳理 PRD/.test(label)) text = prdOutput
+    if (prdOutput && !labelHit && !doEmpty && /梳理 PRD/.test(label)) {
+      if (stateViaFile) {
+        // **新契约**的模拟（2026-10-08 文件通道）：块写进文件，**回复里不留块**。
+        // 路径**从 prompt 里取** —— 顺带证明「指令里真的点了路径」（写死会掩盖路径没注入的 bug）。
+        try {
+          const blk = prdOutput.match(/<!--\s*state\s*-->[\s\S]*?<!--\s*\/state\s*-->/)
+          const p = promptText.match(/logs\/teamflow\/[^\s`]+\/state\/[^\s`]+\.json/)
+          if (!blk) throw new Error('prdOutput 里没有 state 块')
+          if (!p) throw new Error('PRD prompt 里没有 state 文件路径')
+          const abs = join(work, p[0])
+          mkdirSync(dirname(abs), { recursive: true })
+          writeFileSync(abs, blk[0], 'utf8')
+          text = prdOutput.replace(blk[0], '')
+        } catch (e) { stateFileErr = String((e && e.message) || e) }
+      } else {
+        text = prdOutput
+      }
+    }
     doEmpty = false
     return {
       id: `c-${children.length}`,
@@ -210,6 +228,7 @@ async function runScenario(
     warnLogs: logOf('warn'), childLabels: children.map((c) => c.label),
     childCount: children.length, blueprint: journal.blueprint,
     humanIntervention: !!journal.humanIntervention,
+    stateFileErr,
     // PRD 确认单（ADR-0011 ①）：暂停后必须能读到落盘的 sheet（进程重启后主线程还要靠它讲「批准什么」）
     confirmSheet: journal.confirmSheet ?? null,
     journalSupplement: journal.requirementSupplement ?? null,
@@ -791,6 +810,33 @@ console.log('\n[22] 同一 run 内 state 刷新：PRD 的 extra.* 当场可见�
   const injectedBlock = `<!-- state -->${JSON.stringify(NESTED)}`
   ok(!designPrompt.includes(injectedBlock) && !qaPrompt.includes(injectedBlock),
     'PRD 的 state 块不进下游阶段的 prompt（块已消费；机器面读的是未剥的原始文本）')
+}
+
+console.log('\n[24] state 块走**文件通道**：回复里不留块 ⇒ 宿主「执行记录」卡也不会显示机器契约')
+{
+  // 桩把块写进 `logs/teamflow/<runId>/state/prd.json`（路径从 prompt 里取），**回复正文里不留块**。
+  // 断言三件：① 桩真的取到了路径（否则等价于悄悄退化成回落）；② **没有回落 warn**（＝文件通道真被用上）；
+  // ③ 状态**确实来自文件**（下游 prompt 里出现只有文件里有的那句 —— 回复里根本没有块）。
+  const FILE_NESTED = {
+    phase: 'prd', summary: '文件通道 PRD 摘要',
+    extra: {
+      acIndex: { 'AC-1': '文件通道 AC 一' },
+      summary: '文件通道产品一句话',
+      openQuestions: [{ q: '风格？', why: '选型', changes: '视觉', default: 'A', kind: 'taste' }],
+    },
+  }
+  const r = await runScenario('state-file', {
+    options: { ...QA_OPTS, confirmMode: 'never' },
+    prdOutput: `${LONG}\n<!-- state -->${JSON.stringify(FILE_NESTED)}<!-- /state -->`,
+    stateViaFile: true,
+  })
+  ok(!r.stateFileErr, `桩把块写进了文件且路径取自 prompt（自检：${r.stateFileErr || '通过'}）`)
+  ok(!r.warnLogs.some((m) => /阶段「PRD 产品需求」/.test(String(m))), `PRD 走的是**文件通道**（既没回落也没缺失）（实测 warn：${JSON.stringify(r.warnLogs.filter((m) => /state 块/.test(String(m))))}）`)
+  // ⚠️ `QA_OPTS` 下**设计阶段被跳过**（needDesign:false）⇒ 断言目标必须是真跑过的阶段里**会读 state 切片**的那个。
+  // 用 QA（与 [22] 同一处证据面）：`state.acIndex` 注入 qa/acceptance/tech/pm，`productSummary` 全角色都有。
+  const qaP = String(Object.entries(r.promptsByLabel).find(([k]) => k.includes('QA 测试'))?.[1] || '')
+  ok(/文件通道产品一句话|文件通道 AC 一/.test(qaP), '状态**确实来自文件**（下游 prompt 里出现只写在文件里的内容 —— 回复里根本没有块）')
+  ok(!/<!--\s*state\s*-->/.test(qaP.replace(/STATE BLOCK[\s\S]{0,600}/, '')), '下游 prompt 里没有任何实际 state 块（只允许契约模板里的示例标记）')
 }
 
 /* ── [23] 确认单断点上的「改」：带 supplement 续跑 ⇒ **回退重跑 PRD**（作废面为零）──

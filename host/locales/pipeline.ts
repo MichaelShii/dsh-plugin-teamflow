@@ -304,6 +304,9 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'report.clarifySkipped': '⚠️ **本次未做需求澄清**：自动分诊退兜底（分诊子代理失败或超时），需求意图**未经确认** —— 已按默认档位与假设开工。若结论不符预期，请补充澄清后重跑。',
     'log.triageBlockersDropped': '分诊提了 {n} 条不合格「待澄清项」（缺互斥读法/影响面/返工面）→ 已丢弃（合格线见 host）',
     'log.prdAssumptions': 'PRD 的「假设 / 待澄清」段已记录（{n} 行）——随完成汇报显式回给用户',
+    // state 块的文件通道（2026-10-08）：回落与彻底缺失**都要可见** —— 「回落」这个数就是文件通道的真实兑现率。
+    'log.stateBlockFallback': '阶段「{phase}」没写 state 文件，已**回落**从回复文本里抽块（机器契约仍写在回复里 = 会泄漏到子智能体记录卡）——这是文件通道兑现率的计数点',
+    'log.stateBlockMissing': '阶段「{phase}」两条通道都没拿到 state 块（文件 {path} 不存在/不可解析，回复正文里也没有）——该阶段的状态没落进 state.json',
     'log.prdAssumptionsMissing': 'PRD 未给出「假设 / 待澄清」段（契约未兑现：无从判断这份 PRD 是否是用户想要的；已记录不中断）',
     // 「kind 未标注」必须可见（2026-10-08，§7③ 空值必须可见）：未标注 ⇒ 一律按 info 缺口处理、
     // **不触发确认单**（依赖模型自律的判据在量出真阳性率前不得有阻断权）⇒ 若不发声就是一次静默空转。
@@ -739,6 +742,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'report.clarifySkipped': '⚠️ **No requirement clarification on this run**: auto triage fell back (the triage subagent failed or timed out), so the requirement intent was never verified — the pipeline proceeded on the default tier and assumptions. If the result misses the mark, clarify and re-run.',
     'log.triageBlockersDropped': 'Triage proposed {n} unqualified "open question(s)" (missing competing readings / impact / rework) — dropped (the qualifying bar lives in the host)',
     'log.prdAssumptions': 'PRD assumptions/open-questions section recorded ({n} line(s)) — surfaced to the user in the completion report',
+    'log.stateBlockFallback': 'Stage "{phase}" wrote no state file — **fell back** to extracting the block from the reply text (a machine contract in the reply = it leaks into the subagent record card). Each occurrence counts against the file channel\'s fidelity',
+    'log.stateBlockMissing': 'Stage "{phase}" yielded no state block on either channel (file {path} missing/unparseable, and none in the reply text) — that stage\'s state never reached state.json',
     'log.prdAssumptionsMissing': 'PRD did not provide an assumptions/open-questions section (contract not honored: nobody can tell whether this PRD is what the user wanted; logged, not blocking)',
     'log.openQuestionsUntagged': '{n} open question(s) from the PRD carried no `kind` (contract not honored: cannot tell an "unsettled fact" from a "user-taste decision" ⇒ all treated as facts, confirm sheet not triggered; logged, not blocking)',
     'log.modeUpgraded': 'Architecture guardrail: the caller picked tier "{from}" but triage judged "{to}" → upgraded (ADR-0006: architectural requirements must not run on a lightweight tier)',

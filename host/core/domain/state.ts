@@ -414,7 +414,50 @@ export function stateSliceFor(state: TeamflowState, role: RoleKey): string {
   return lines.join('\n')
 }
 
-/** 让每个阶段产出末尾附带 state 块（将并入 stage output，由 host 提取）。 */
-export const STATE_BLOCK_INSTRUCTION = `\n\n[STATE BLOCK · mandatory at the end] Append one section at the END of your answer (same output as the body; the host indexes it):
+/**
+ * state 块的**文件通道路径**（工作区相对路径；写进 prompt 用相对、读取时拼 workspace root）。
+ *
+ * **为什么要有文件通道**（2026-10-08 用户两次实锤）：块原本按契约写在**子代理的最终回复**里
+ * ⇒ 它一路进用户可见面 —— 任务卡、时间线、详情浮层（这些我们已在展示侧剥掉），
+ * 但还有**宿主自己的「子智能体执行记录」卡**，它直接渲染子代理回复原文，**插件改不了**。
+ * ⇒ 唯一根治办法：**让机器契约根本不走人类可读的通道**。
+ * 顺带解决一个更根本的问题：`extractStateBlock` 原先要在自然语言里**猜**一段 JSON
+ * （markdown 转义 / 代码围栏 / 中途截断都会翻车）⇒ 换成读文件后，这条链从「猜」变成「读」。
+ *
+ * `suffix` 用于**并发同阶段**（dev 多任务同时跑）区分文件 —— 必须是 ASCII 安全串（如子任务 id `dev-1`）。
+ */
+export function stateBlockRelPath(runId: string, phase: string, suffix?: string | null): string {
+  const s = String(suffix || '').trim()
+  return `logs/teamflow/${runId}/state/${phase}${s ? '-' + s : ''}.json`
+}
+
+/**
+ * 读**文件通道**的 state 块。文件不存在 / 读不出 / JSON 坏 ⇒ `null`（调用方**回落**抽回复文本）。
+ * ⚠️ 回落不是可选项：`写在回复里` 是实测 100% 兑现的旧契约（`kind` 6/6），
+ * 一次切成文件通道若模型忘写，`openQuestions`/`acIndex`/`touched` 会**整片消失**
+ * ⇒ 最坏情况必须只能是「退化成今天的行为 + 一条可数的 warn」，绝不能是静默丢状态。
+ */
+export function readStateBlockFile(absPath: string): StageStateBlock | null {
+  try {
+    const txt = readFileSync(absPath, 'utf8')
+    return extractStateBlock(txt)
+  } catch (e) {
+    return null // 文件缺失/权限/坏编码一律回落，不抛
+  }
+}
+
+/**
+ * 让每个阶段把 state 块**写进文件**（不再写进回复正文）。
+ *
+ * ⚠️ 2026-10-08 改通道：旧文案是「Append one section at the END of your answer」，
+ * 那正是块泄漏到用户 UI 的**唯一原因** —— 宿主渲染子代理回复，插件管不到。
+ * 现在明确要求：**用文件工具写**，且**回复正文里不许出现这个块**。
+ */
+export function stateBlockInstruction(relPath: string): string {
+  return `\n\n[STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply] Write the state JSON to \`${relPath}\` with a file-write tool call (create the directory if needed). The host reads it **from disk**; it is not part of your answer.
+- The file's entire content is exactly this one-line block (the markers included):
 <!-- state -->{"phase":"<stage-key>","summary":"<≤500 chars: this stage's conclusion, useful for the next run>","memory":["<memory points>"],"extra":{<the extra keys YOUR OWN stage rules above name>}}<!-- /state -->
+- **Never** echo this block in your reply text, and **never** wrap it in Markdown fences in the file.
+- Write the file **before** you finish; if your write fails, say so in your reply (a missing state block is a hard contract violation the host will report).
 ⚠️ **\`extra\` is required whenever your stage rules above name extra keys** (e.g. prd → \`acIndex\`/\`summary\`/\`techStack\`/\`openQuestions\`; tech → \`verifyScripts\`/\`modules\`; qa → \`verifyScripts\`). The host reads those values from **inside \`extra\`** — writing them flat (or omitting \`extra\`) drops them silently, and no later stage will see them. Omit the \`extra\` key entirely **only** when your rules name no extra fields.`
+}

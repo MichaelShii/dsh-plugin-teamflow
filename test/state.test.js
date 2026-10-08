@@ -177,11 +177,17 @@ console.log('\n── stripStateBlock：机器契约块不得进展示面（2026
   ok(extractStateBlock(body + '\n\n' + blk) !== null, '机器面仍能从**原始**文本取到块（剥的只是展示副本）')
 }
 
-console.log('\n── STATE_BLOCK_INSTRUCTION：extra 契约（ADR-0011 A）──')
-const { STATE_BLOCK_INSTRUCTION } = await import('../host/core/domain/state.ts')
-ok(/"extra":\{/.test(STATE_BLOCK_INSTRUCTION), '**模板本体含 `extra` 键**（只在散文里要求 = 模型照模板忽略它 —— 本日实测的根因）')
-ok(/acIndex/.test(STATE_BLOCK_INSTRUCTION), '模板里点名 prd 的 extra 键（否则「required」落不到具体字段上）')
-ok(/STATE BLOCK · mandatory at the end/.test(STATE_BLOCK_INSTRUCTION) && /<!-- state -->/.test(STATE_BLOCK_INSTRUCTION), '契约锚点两句保留（prompt-contract 的 L1 门禁锁的就是它们）')
+console.log('\n── STATE BLOCK 契约：extra 在**模板本体**里 ＋ 走**文件通道**（ADR-0011 A ＋ 2026-10-08）──')
+const { stateBlockInstruction, stateBlockRelPath } = await import('../host/core/domain/state.ts')
+const SBI = stateBlockInstruction(stateBlockRelPath('tf-x', 'prd'))
+ok(/"extra":\{/.test(SBI), '**模板本体含 `extra` 键**（只在散文里要求 = 模型照模板忽略它 —— 本日实测的根因）')
+ok(/acIndex/.test(SBI), '模板里点名 prd 的 extra 键（否则「required」落不到具体字段上）')
+// ⚠️ 锚点句从「Append one section at the END of your answer」换成 `STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply`
+// —— 旧措辞**就是**块泄漏到用户 UI 的唯一原因（宿主渲染子代理回复，插件管不到）。见 state.ts 注释。
+ok(/STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply/.test(SBI) && /<!-- state -->/.test(SBI), '契约锚点两句保留（prompt-contract 的 L1 门禁锁的就是它们）')
+ok(/do NOT put it in your reply/.test(SBI) && /Never\*\* echo this block in your reply/.test(SBI), '明确要求：**不许把块写进回复正文**（这是机器通道分离的核心条款）')
+ok(SBI.includes(stateBlockRelPath('tf-x', 'prd')), '指令里**点出该阶段的文件路径**（否则模型无从写起）')
+ok(stateBlockRelPath('tf-x', 'dev', 'dev-2').endsWith('/state/dev-dev-2.json') && stateBlockRelPath('tf-x', 'prd').endsWith('/state/prd.json'), '路径：阶段键 ＋ 可选并发后缀（dev 多任务必须各写各的）')
 
 cleanup()
 console.log(failed ? `\n✗ state：${failed} 条失败\n` : '\n✓ state：全部通过\n')

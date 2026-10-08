@@ -1,6 +1,6 @@
 /**
  * dsh-plugin-teamflow — Prompt 模板（阶段提示词 + 团队模板）。
- * 依赖：util.ts（clip）、core/domain/state.ts（stateSliceFor / STATE_BLOCK_INSTRUCTION）。
+ * 依赖：util.ts（clip）、core/domain/state.ts（stateSliceFor / stateBlockInstruction / stateBlockRelPath）。
  *
  * 【产物收口约定】（v0.13，ADR-0008 任务夹制）
  * - 每个需求一个自包含任务夹：docs/teamflow/<yyyyMMdd>-r<N>[-<slug>]/，收口本需求的
@@ -31,7 +31,7 @@
  * 列表分隔符随内容语言（文件路径等 ASCII 内容用英文逗号），不混用中文标点。
  */
 import { clip } from '../util.ts'
-import { stateSliceFor, STATE_BLOCK_INSTRUCTION } from '../core/domain/state.ts'
+import { stateSliceFor, stateBlockInstruction, stateBlockRelPath } from '../core/domain/state.ts'
 // 形态契约的**参考样本**表（纯数据；core/triage.ts 不 import prompts → 无循环依赖）。
 // 只取样本路径给 PM 去读，**不引入任何判定逻辑**：字段名随宿主版本演进，必须读样本核实。
 import { ARTIFACT_REFERENCE_SAMPLES, LOCAL_PLUGIN_SAMPLES_HINT } from '../core/triage.ts'
@@ -451,7 +451,7 @@ ${requirement}
 6. [Engineering actions carried verbatim] Engineering instructions in the raw requirement (create/switch branch, commit, tag...) MUST be preserved verbatim into the "${L(state, 'doc.engConstraints')}" section of the PRD: specify the action, timing, and baseline (e.g. "branch from latest main, then implement"). If the workspace already has uncommitted changes, note how to handle them. Never silently drop or reword engineering instructions.
 6b. [Version-control hygiene · mandatory when the workspace is versioned] If the workspace has (or will get, per the host log "改动存档/git init") version control: audit the existing/potential \`.gitignore\` **for THIS project's stack** — build outputs, dependency/tool caches, IDE files, local env secrets — and put "complete/extend .gitignore" into the engineering-constraints section as a dev-stage action (file names must match this project's real tooling: a Python project needs __pycache__/.venv, a Rust one target/, a pnpm monorepo .pnpm-store — read the project, don't guess from a generic list). Rationale: the closing commit stages the whole tree; noise that slips into it becomes permanent history.
 ${ARTIFACT_DELIVERY(RUN(state))}
-7. [State] End with a state block (phase="prd"): summary covers the AC highlights + one-sentence product semantics; extra contains { "acIndex": {...}, "summary": "<product one-liner>", "techStack": "...", "openQuestions": [{ "q": "...", "why": "...", "changes": "...", "default": "...", "kind": "fact|taste" }] — every decision that is the USER'S to make (rule 8), each carrying the option you recommend as its "default" and the same \`kind\` rule 8 assigns it }.${STATE_BLOCK_INSTRUCTION}
+7. [State] End with a state block (phase="prd"): summary covers the AC highlights + one-sentence product semantics; extra contains { "acIndex": {...}, "summary": "<product one-liner>", "techStack": "...", "openQuestions": [{ "q": "...", "why": "...", "changes": "...", "default": "...", "kind": "fact|taste" }] — every decision that is the USER'S to make (rule 8), each carrying the option you recommend as its "default" and the same \`kind\` rule 8 assigns it }.${stateBlockInstruction(stateBlockRelPath(runId, 'prd'))}
 8. [Assumptions · mandatory] Do NOT silently decide on the user's behalf. Write a dedicated section titled exactly "${L(state, 'doc.assumptionsQ')}" listing every item as one bullet — what you assumed / left open, why, and what changes if the user decides otherwise. TWO kinds belong here, BOTH mandatory, and every bullet ALSO goes into \`openQuestions\` with the matching \`kind\`:
    (a) **Unsettled facts** (\`"kind": "fact"\`) — the requirement does not settle it and you cannot settle it yourself from the repo/state.
    (b) **User-taste decisions** (\`"kind": "taste"\`) — several options are equally defensible, and the choice is about what the user WANTS, not about what is correct. Typical: visual style/palette, character or avatar design, interaction form, information architecture, copy tone & naming, and (when nothing else constrains it) stack/architecture choice.
@@ -479,7 +479,7 @@ ${CRAFT(state) ? `2b. [Visual quality spec · mandatory when the deliverable has
    - This section is the **floor for interaction feedback and state visibility** (hover / focus / pressed / disabled / persistent info visible in every state), not an aesthetic verdict: judge against the AC and the numbers above, never by taste.` : ''}
 3. ${langDirective(LOCALE(state))}, concrete enough to directly guide frontend implementation; brevity first.
 4. Write to ${RUN(state)}/DESIGN.md (write once). [Boundary] only under ${TF_DOCS}/.
-5. [State] End with a state block (phase="design"), summary = key design decisions.${STATE_BLOCK_INSTRUCTION}`
+5. [State] End with a state block (phase="design"), summary = key design decisions.${stateBlockInstruction(stateBlockRelPath(runId, 'design'))}`
 
 export const scaffoldPrompt = (req, design, root, runId, state) => `You are a senior architect. The workspace is empty or has no project skeleton — plan AND **actually scaffold** the new project.
 ${productCtx(root, LOCALE(state))}${stateSliceFor(state, 'arch')}
@@ -506,7 +506,7 @@ ${AGENTS_TEMPLATE(LOCALE(state))}
 
 [MEMORY.md SKELETON]
 ${MEMORY_TEMPLATE(LOCALE(state))}
-[State] End with a state block (phase="scaffold"), extra = { "techStack": "...", "modules": {"/file": "contract"} }.${STATE_BLOCK_INSTRUCTION}`
+[State] End with a state block (phase="scaffold"), extra = { "techStack": "...", "modules": {"/file": "contract"} }.${stateBlockInstruction(stateBlockRelPath(runId, 'scaffold'))}`
 
 export const techPrompt = (prd, design, scaffold, tasks, root, runId, state) => `You are a senior full-stack engineer. The current workspace IS the target project — produce the technical design on top of the existing project.
 ${productCtx(root, LOCALE(state))}${stateSliceFor(state, 'tech')}
@@ -535,7 +535,7 @@ ${JSON.stringify(tasks)}
    - **files = files the task will MODIFY (ownership)**; add **reads** for files it only needs to READ (types, existing module interfaces, shared constants). Two tasks may run in parallel when their files sets are disjoint — reads never blocks parallelism. Omit reads when unsure: anything unmarked is treated as owned (safe default).
    - If you find duplication or a module that should be extracted (e.g. unified storage wrapper), add it to modules with the why.
 ${ARTIFACT_DELIVERY(RUN(state))}
-6. [State] End with a state block (phase="tech"), extra = { "verifyScripts": [...], "modules": {"/file": "contract or one-liner"} }, summary = key architecture/contract decisions.${STATE_BLOCK_INSTRUCTION}`
+6. [State] End with a state block (phase="tech"), extra = { "verifyScripts": [...], "modules": {"/file": "contract or one-liner"} }, summary = key architecture/contract decisions.${stateBlockInstruction(stateBlockRelPath(runId, 'tech'))}`
 
 /**
  * 架构师 prompt（M1「认知前置 + 架构落地」）：全模式启用，轻量版（lite/tech/patch）只产架构蓝图 JSON，
@@ -562,7 +562,7 @@ ${clip(prd, 12000)}
    - **[No checker-rebuild tasks]** logs/teamflow/<runId>/scripts/ is ONE shared area for the whole run (archived and KEPT at run end, not discarded) — never split a task to "rebuild"/"re-create" a checker that already exists there; when coverage is missing the task EXTENDS the existing file in place. A real run burned 33 model calls / 5 min re-creating three checkers that already existed and passed.
    - **files = files the task will MODIFY (ownership)**; add **reads** for files it only reads (types, existing module interfaces, shared constants). Only files blocks parallelism; reads does not. Omit reads when unsure — unmarked files are treated as owned (safe default).
    - If duplication / extract-the-module is found, add the new module to modules with why.
-4. Read-only: do not modify code; write NO document files.${LOCALE(state) === 'en' ? ` ${langDirective('en')} (including every JSON string value).` : ''}${STATE_BLOCK_INSTRUCTION}`
+4. Read-only: do not modify code; write NO document files.${LOCALE(state) === 'en' ? ` ${langDirective('en')} (including every JSON string value).` : ''}${stateBlockInstruction(stateBlockRelPath(runId, 'tech'))}`
 
 export const devPrompt = (task, tech, prd, design, root, runId, state) => `You are a senior full-stack engineer (implementation executor). The current workspace IS the target project — actually implement the following task.
 ${productCtx(root, LOCALE(state))}${stateSliceFor(state, 'dev')}${TOKEN_HYGIENE(runId)}[CONTEXT PACK]
@@ -603,7 +603,7 @@ ${CRAFT(state) ? `4b. [Craft bar · guidance — the AC is the floor, not the ce
 - ...（one line per verification run）
 - N/A: <explicit reason>（when nothing runnable — pure config/docs change, no test suite, etc.）
 7c. [End-to-end coverage · when the deliverable has runtime state · policy] Per-function assertions are NOT sufficient when this deliverable involves **stateful flow, a long-running loop/timer, or multi-step interaction** (games, engines, pipelines, installers — anything with a state machine). For those, [Verification evidence] MUST also include one **end-to-end run that drives the real main path to a terminal condition** (win / game over / all items processed / flow finished) and reports the actual terminal state (status, counters, level...). Unit assertions can all pass while the whole path is broken — e.g. a bounce formula decaying |vx| multiplicatively never reaches the 0 an unlock guard tests for, so the level becomes unclearable. Pure config / docs / rename deliverables genuinely without runtime state may declare N/A with the reason.
-8. [State] End with a state block (phase="dev"), touched = array of changed files, summary = implementation conclusion.${STATE_BLOCK_INSTRUCTION}`
+8. [State] End with a state block (phase="dev"), touched = array of changed files, summary = implementation conclusion.${stateBlockInstruction(stateBlockRelPath(runId, 'dev', task && task.ids && task.ids[0]))}`
 
 /** 视觉验证能力条款（ADR-2026-08-27，解锁 browser-use 视觉验证）：
  * 按当前模型多模态能力动态生成——vision=true 允许截图看图（人眼类项），精确值仍走 DOM 计算断言；
@@ -680,7 +680,7 @@ ${QAREVERIFY(state) ? `6b. [Re-verification round · policy] This round is a RE-
    - Do NOT re-invent a probe or a baseline that already exists (redoing an earlier round's work is pure waste — materialize it ONCE below).` : ''}
 7. ${langDirective(LOCALE(state))}, concrete & executable; write the **complete** report to ${RUN(state)}/QA-REPORT.md (write once, tight body) — **this file IS the deliverable**: scope & environment, cases & results (pass/fail/blocked), ${t(LOCALE(state), 'doc.manualChecklist')}, defect table (if any), conclusion (whether acceptance-ready). [Boundary] only under ${TF_DOCS}/.
 ${ARTIFACT_DELIVERY(RUN(state))}
-8. [State] End with a state block (phase="qa"), summary = test conclusion / blocked items, extra = { "verifyScripts": [...] }.${STATE_BLOCK_INSTRUCTION}`
+8. [State] End with a state block (phase="qa"), summary = test conclusion / blocked items, extra = { "verifyScripts": [...] }.${stateBlockInstruction(stateBlockRelPath(runId, 'qa'))}`
 
 /** QA 打回后的开发修复 prompt：确认缺陷是否属实 → 修复 → 复验交接（QA→dev 打回闭环用）。 */
 export const qaFixPrompt = (defects, qa, tech, prd, root, runId, state) => `You are a senior full-stack engineer. The QA report points out several defects — **confirm each one** and fix them, then hand back for QA re-verification.
@@ -719,7 +719,7 @@ ${clip(tech, 4000)}`
 - class sweep: <pattern or Check command> → <n> hits before → <n> after
 - ...（one line per verification run; the re-verified defect cases must be listed）
 - N/A: <explicit reason>（when nothing runnable — pure config/docs change, no test suite, etc.）
-5. [State] End with a state block (phase="dev"), touched = changed files array, summary = fix conclusion.${STATE_BLOCK_INSTRUCTION}`
+5. [State] End with a state block (phase="dev"), touched = changed files array, summary = fix conclusion.${stateBlockInstruction(stateBlockRelPath(runId, 'dev'))}`
 
 export const acceptancePrompt = (prd, qa, devSummary, root, runId, state, vision) => {
   const en = LOCALE(state) === 'en'
@@ -768,7 +768,7 @@ ${vision ? `[Visual re-check] If QA saved screenshots under the task folder, spo
 4. [Acceptance report · HOST-ENFORCED] Write the **complete** report to ${RUN(state)}/ACCEPTANCE.md (write once) — **this file IS the deliverable**: verdict line, per-criterion check table, opinions & leftovers. ${en ? accLastLineEn : accLastLineZh} — the host parses ONLY this line; missing it = contract violation → the run stops for human review; missing file = hard failure (needs-human, pipeline stops). [Memory write-back · convention changes ONLY] Update docs/teamflow/memory.md only if this requirement introduces new conventions/tech-stack decisions, or the ${L(state, 'doc.knownTodos')} list changes (same-topic line replace, idempotent, no changelog appending); otherwise don't touch memory. [Boundary] only under ${TF_DOCS}/; never modify AGENTS.md beyond the <!-- teamflow --> managed zone.
 5. ${langDirective(LOCALE(state))}.
 ${ARTIFACT_DELIVERY(RUN(state))}
-6. [State] End with a state block (phase="acceptance"), summary = acceptance conclusion, verdict = "accepted/rework/reject/needs-human", extra.done = confirmation of this delivery.${STATE_BLOCK_INSTRUCTION}`
+6. [State] End with a state block (phase="acceptance"), summary = acceptance conclusion, verdict = "accepted/rework/reject/needs-human", extra.done = confirmation of this delivery.${stateBlockInstruction(stateBlockRelPath(runId, 'acceptance'))}`
 }
 
 /**
@@ -843,7 +843,7 @@ ${requirement}
 2. Change sheet content: background & goal (one sentence), impact scope (files/modules), tech approach (key points), behavior-compatibility impact (any user-visible change), regression & verification plan (which verify commands, regression floor), risks & rollback.
 3. Sync the change's key points into docs/teamflow/memory.md (only when new conventions/todos change; same-topic line replace, idempotent); don't touch AGENTS.md beyond the teamflow managed zone.
 4. Tight (this is a contract for dev/QA, ≤120 lines), ${langDirective(LOCALE(state))}. [Boundary] only under ${TF_DOCS}/. Also add a short "${L(state, 'doc.assumptionsQ')}" section: every place the requirement was under-specified, OR where several technical options were equally defensible and the pick was the user's call (module boundaries, naming conventions, adding a dependency, algorithm or architecture choice) — with what would change if they decide otherwise (single line if none).
-5. [State] End with a state block (phase="tech"), extra = { "verifyScripts": [...], "scopedFiles": [...] }.${STATE_BLOCK_INSTRUCTION}`
+5. [State] End with a state block (phase="tech"), extra = { "verifyScripts": [...], "scopedFiles": [...] }.${stateBlockInstruction(stateBlockRelPath(runId, 'prd'))}`
 
 /** patch 档 PRD：单点修复快速确认（不产 PRD 文档）。 */
 export const patchConfirmPrompt = (requirement, root, runId, state) => `You are a senior engineer. The current workspace IS the target project. This is a **hotfix / single-point fix** requirement — no full PRD, just a short confirmation (≤40 lines).
@@ -855,4 +855,4 @@ ${requirement}
 2. [Requirement vs reality] **First verify the requirement description matches the workspace reality**: matches → produce the sheet per the outline below; mismatches → explicitly note ${L(state, 'doc.mismatchNoteQ')} in the sheet, **no fabricated changes**.
 3. Sheet content: fix point (file/location), change outline, regression impact (tiny / which verify commands to run), whether to bump version along the way, plus a one-line "${L(state, 'doc.assumptionsQ')}" note (what you had to assume; "none" if nothing).
 4. Output the confirmation sheet text ONLY (${langDirective(LOCALE(state))}) — **do not touch any product docs** (no PRD this time; memory write-back belongs to acceptance stage).
-5. [State] End with a state block (phase="patch"), summary = confirmation conclusion.${STATE_BLOCK_INSTRUCTION}`
+5. [State] End with a state block (phase="patch"), summary = confirmation conclusion.${stateBlockInstruction(stateBlockRelPath(runId, 'prd'))}`

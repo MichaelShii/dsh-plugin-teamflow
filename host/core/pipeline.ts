@@ -22,7 +22,7 @@ import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext, PipelineMode } from '../types.ts'
 import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, MODE_RANK, contractsForDeliverable, normalizeHost, forceHost, PLUGIN_ARTIFACTS, triageRecordOf, type TriageVerdict } from './triage.ts'
 import { loadTeams, findTeam, getActiveStages, teamNameOf } from './domain/teams.ts'
-import { loadState, saveState, extractStateBlock, mergeStateBlock, noteRun, stripStateBlock } from './domain/state.ts'
+import { loadState, saveState, extractStateBlock, mergeStateBlock, noteRun, stripStateBlock, readStateBlockFile, stateBlockRelPath } from './domain/state.ts'
 import { isDangerousVcsRoot, dirTooLargeForBaseline } from '../util.ts'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -368,7 +368,7 @@ export interface PipelineCtx {
   resumed: (phase: string) => boolean
   logSkip: (phase: string) => void
   stageFailError: (label: string, r: { attempts?: number; freshTokens?: number }) => Error
-  mergeStageState: (phaseKey: string, output: unknown) => void
+  mergeStageState: (phaseKey: string, output: unknown, relPath?: string | null) => void
   noteVerifyEvidence: (stage: any, output: unknown) => void
   stageTextOf: (r: any) => string | null
 }
@@ -779,9 +779,31 @@ export async function executePipeline(
     } catch (e) {
       journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.sanityFail', { msg: String((e && e.message) || e) }) })
     }
-    const mergeStageState = (phaseKey, output) => {
-      const block = extractStateBlock(output)
-      if (!block) return
+    /**
+     * 合并阶段产出的 state 块。
+     *
+     * **通道（2026-10-08 改）**：优先读**文件通道**（`relPath`）—— 块不该走人类可读通道，
+     * 见 `stateBlockInstruction` / `readStateBlockFile` 的注释。文件缺 ⇒ **回落**抽回复文本，
+     * 并记一条可数 warn。回落不是可选项：最坏情况只能是「退化成旧行为 + 一条 warn」，不能是静默丢状态。
+     */
+    const mergeStageState = (phaseKey, output, relPath = null) => {
+      // ⚠️ 基准是 **`journal.workspacePath`**（子代理的 CWD），**不是 `root`** ——
+      // `root = options.productRoot`，而它在生产里也常常是 `null`（真机 `tf-muzc59h9-pnbhyk` 就是 null）
+      // ⇒ 按 root 拼路径会让文件通道**永远读不到、永远回落**（等于这次改动白做）。prompt 里给的是
+      // **相对 workspacePath** 的路径，读取也必须以它为基准。这条是被行为测试 [24] 抓出来的。
+      const base = journal.workspacePath || root
+      const abs = relPath && base ? `${base}/${relPath}` : null
+      const fromFile = abs ? readStateBlockFile(abs) : null
+      const block = fromFile || extractStateBlock(output)
+      if (!block) {
+        // 契约违反要**可见**（不静默）：要求了文件却两条通道都没拿到 ⇒ 记 warn，但不阻断流水线
+        if (relPath) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.stateBlockMissing', { phase: phaseLabel(locale, phaseKey), path: String(relPath) }) })
+        return
+      }
+      if (!fromFile && relPath) {
+        // 回落：模型没写文件、把块留在回复里了。**可数** —— 这个数就是文件通道的真实兑现率。
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.stateBlockFallback', { phase: phaseLabel(locale, phaseKey) }) })
+      }
       // ⚠️ `mergeStateBlock` 是 load → 改 → save → **返回一个新对象**（不是就地改我们手上那份）。
       // **丢弃返回值 = 内存里的 `state` 永远停在「起跑快照」** ⇒ 本次 run 里 PRD 写下的
       // `extra.acIndex` / `product.summary` / `openQuestions` / `verifyScripts` / `modules`
@@ -845,7 +867,7 @@ export async function executePipeline(
       // 阶段的 prompt）—— 块在两边都是噪声。机器面（`extractStateBlock`）读的是**未剥**的 `r.text`。
       const shown = stripStateBlock(r.text)
       timeline[phase] = shown
-      mergeStageState(phase, r.text)
+      mergeStageState(phase, r.text, stateBlockRelPath(journal.id, phase))
       noteTaskStageUsage(journal)
       return { text: shown, cancelled: !!journal.cancelled, skipped: false }
     }
