@@ -854,6 +854,20 @@ assertContract({
   intent: '蓝图 schema 与说明都要求 modules 给出 api 精确签名（下游逐字使用，不得自创成员名）',
   include: [/"api":\[/, /api \(mandatory per module\)/],
 })
+/**
+ * **dev 任务集边界**（2026-10-08 真机 `tf-muzc59h9-pnbhyk` 实锤）：蓝图把 QA/验收的活划进了 dev 任务集 ——
+ * 8 个任务里第 6 个是「QA 三浏览器实测」，那个 **dev 子代理**写了 `QA-REPORT.md` **和** `ACCEPTANCE.md`。
+ * 后果两条都不好：① 开发方**自己写验收报告**（自己评自己，独立复核那一道没了）；② 独立的 QA/验收阶段没跑到。
+ *
+ * 判据是**实现范围**：每条任务必须是「要建的东西」；**自测属于某个任务内部**（跑一次 + 证据块），
+ * 不是独立任务。三处都要在（两个蓝图 prompt 各一条 + 「自测归任务内部」那句收口）。
+ * 变异：删掉任一处的 `[Implementation scope only` ⇒ 本契约立刻红。
+ */
+assertContract({
+  id: 'BLUEPRINT-TASKS-IMPL-SCOPE', level: 'policy', targets: ['techPrompt', 'architectPrompt'],
+  intent: '蓝图 tasks[] 只放「要实现的东西」；跨浏览器实测 / 写 QA-REPORT.md / ACCEPTANCE.md / AC 逐条核对矩阵属 QA 与验收阶段，不得作为 dev 任务',
+  include: [/\[Implementation scope only — never a QA\/acceptance task\]/, /grading its own homework/, /not as a task of its own/],
+})
 assertContract({
   id: 'DEV-INTERFACE-CONTRACT', level: 'policy', targets: 'devPrompt',
   intent: 'dev 只许调用蓝图/设计里声明的成员；禁止自创方法名（写调用前先 grep 目标文件确认存在）',
