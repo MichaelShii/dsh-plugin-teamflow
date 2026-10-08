@@ -7,6 +7,7 @@ import type { BacklogItem } from '../../types.ts'
 import { stores } from '../agent/context.ts'
 import { STATUS, PHASE_ROLE } from '../../constants.ts'
 import { snippet } from '../../util.ts'
+import { stripStateBlock } from './state.ts'
 import { t } from '../../locales.ts'
 import { ambientLocale, runLocaleOf } from '../locale.ts'
 
@@ -365,7 +366,9 @@ export function advanceTask(journal, to, summary, reason, _meta) {
   if (!task) { persistJournal(journal); return }
   const from = task.status
   store.pushEvent(task, from, to, reason || '')
-  if (summary) task.summary = snippet(summary, 2000)
+  // ⚠️ 剥掉机器契约块再截断（2026-10-08 用户截图实锤）：state 块**按契约写在子代理最终回复里**
+  // ⇒ 不剥就会被截进 summary ⇒ 任务卡上直接摊出一段 `{"phase":"qa",…}` 的 JSON。见 `stripStateBlock`。
+  if (summary) task.summary = snippet(stripStateBlock(summary), 2000)
   if (to === 'needs-human') task.humanIntervention = true
   if (to === 'accepted') task.humanIntervention = false
   store.persist()
@@ -451,7 +454,9 @@ export function completeSubtask(journal, subId, failed, summary, childId) {
   sub.status = failed ? 'failed' : 'done'
   sub.failed = !!failed
   sub.endedAt = Date.now()
-  if (summary) sub.summary = snippet(summary, 1000)
+  // 同 `advanceTask`：这份 summary 会渲染成**子任务卡**，机器块必须剥掉
+  //（真机 `tf-muzc59h9-pnbhyk` 的 dev-3 就是 1000 字符截断 + state 块，整段 JSON 摊在卡上）。
+  if (summary) sub.summary = snippet(stripStateBlock(summary), 1000)
   if (childId) sub.childId = childId
   sub.updatedAt = Date.now()
   store.persist()

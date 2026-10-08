@@ -161,6 +161,22 @@ ok(loadState(KEY).openQuestions.length === 1, 'state 块不含该键 → 保持�
  * 事故：模板原来只给 `{phase, summary, memory}`，而各阶段 rules 用**散文**要求 `extra:{acIndex,…}`
  * ⇒ 模型照模板写、忽略散文 ⇒ 实测 `extra.acIndex` 兑现率仅 7/34（20%）。
  * 这三条锁住「契约合并在模板里」这件事本身，而不只是「prompt 里有 openQuestions 这个词」。 */
+console.log('\n── stripStateBlock：机器契约块不得进展示面（2026-10-08 用户截图实锤）──')
+{
+  const { stripStateBlock, extractStateBlock } = await import('../host/core/domain/state.ts')
+  const body = '## 结论\n做完了。\n\n[Verification evidence]\n- 命令：node t.js\n- 退出码：0'
+  const blk = '<!-- state -->{"phase":"qa","summary":"x"}<!-- /state -->'
+  ok(stripStateBlock(body + '\n\n' + blk) === body, '成对的块 → 剥掉，正文逐字保留（不留空尾）')
+  ok(stripStateBlock(body + '\n\n' + blk + '\n\n补充一句') === body + '\n\n补充一句', '块在中间 → 剥掉后两段正文合并（不留双空行）')
+  ok(stripStateBlock(body) === body, '没有块 → **一字不改**（快路径，绝大多数文本走这条）')
+  // ⚠️ 缺关闭标签时**不剥**：`extractStateBlock` 为了尽量取到状态会按「到结尾」处理，但剥展示文本若也
+  // 这么做会**吃掉**后面可能存在的正常正文 ⇒ 宁可留在可见面上，把「契约被违反」暴露出来。
+  ok(stripStateBlock(body + '\n\n<!-- state -->{"phase":"qa"}') === body + '\n\n<!-- state -->{"phase":"qa"}', '**缺关闭标签 → 不剥**（不吞正文；契约违反要可见）')
+  ok(stripStateBlock('a' + blk + 'b' + blk + 'c') === 'abc', '多个块 → 全部剥掉')
+  ok(stripStateBlock('') === '' && stripStateBlock(null) === '' && stripStateBlock(undefined) === '', '空 / null / undefined → 空串（不炸）')
+  ok(extractStateBlock(body + '\n\n' + blk) !== null, '机器面仍能从**原始**文本取到块（剥的只是展示副本）')
+}
+
 console.log('\n── STATE_BLOCK_INSTRUCTION：extra 契约（ADR-0011 A）──')
 const { STATE_BLOCK_INSTRUCTION } = await import('../host/core/domain/state.ts')
 ok(/"extra":\{/.test(STATE_BLOCK_INSTRUCTION), '**模板本体含 `extra` 键**（只在散文里要求 = 模型照模板忽略它 —— 本日实测的根因）')

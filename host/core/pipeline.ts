@@ -22,7 +22,7 @@ import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext, PipelineMode } from '../types.ts'
 import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, MODE_RANK, contractsForDeliverable, normalizeHost, forceHost, PLUGIN_ARTIFACTS, triageRecordOf, type TriageVerdict } from './triage.ts'
 import { loadTeams, findTeam, getActiveStages, teamNameOf } from './domain/teams.ts'
-import { loadState, saveState, extractStateBlock, mergeStateBlock, noteRun } from './domain/state.ts'
+import { loadState, saveState, extractStateBlock, mergeStateBlock, noteRun, stripStateBlock } from './domain/state.ts'
 import { isDangerousVcsRoot, dirTooLargeForBaseline } from '../util.ts'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -840,10 +840,14 @@ export async function executePipeline(
       journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: opts && opts.enterLabel ? opts.enterLabel : phaseLabel(locale, phase) }) })
       const r = await withRetry(journal, parent, label, phase, prompt, signal, undefined, opts && opts.effort ? opts.effort : null)
       if (!r.text) throw stageFailError(phase, r)
-      timeline[phase] = r.text
+      // ⚠️ `mergeStageState` 之后**立刻剥掉机器契约块**（2026-10-08）：这一刻 block 已被消费进
+      // state.json，之后这段文本只作**展示**（timeline）与**下游输入**（`prd`/`design`/`tech` 进下一个
+      // 阶段的 prompt）—— 块在两边都是噪声。机器面（`extractStateBlock`）读的是**未剥**的 `r.text`。
+      const shown = stripStateBlock(r.text)
+      timeline[phase] = shown
       mergeStageState(phase, r.text)
       noteTaskStageUsage(journal)
-      return { text: r.text, cancelled: !!journal.cancelled, skipped: false }
+      return { text: shown, cancelled: !!journal.cancelled, skipped: false }
     }
 
     /* ── PRD 阶段 ── */
@@ -1178,12 +1182,13 @@ export function summarizeTimeline(timeline) {
   const out = {}
   for (const key of Object.keys(timeline || {})) {
     const val = timeline[key]
+    // ⚠️ 先剥机器契约块再截断（2026-10-08）：state 块随阶段原文进 timeline ⇒ 时间线上也会摊出 JSON。
     if (Array.isArray(val)) {
       out[key] = val.map((x) => (x && typeof x === 'object'
-        ? { title: x.title, failed: !!x.failed, output: clip(x.output || '', 2000) }
-        : clip(x, 2000)))
+        ? { title: x.title, failed: !!x.failed, output: clip(stripStateBlock(x.output || ''), 2000) }
+        : clip(stripStateBlock(x), 2000)))
     } else {
-      out[key] = clip(val, 2000)
+      out[key] = clip(stripStateBlock(val), 2000)
     }
   }
   return out

@@ -190,7 +190,7 @@ ok(/interruptedCount/.test(hostSrc), '中断残留计数提示')
 ok(/persistJournal\(journal\)/.test(hostSrc), 'checkpoint 落盘')
 ok(/resumeRun\(/.test(hostSrc) && /interruptedPhaseOf\(/.test(hostSrc) && /buildResumeProducts\(/.test(hostSrc), 'resume 逻辑（起点/产物重建）')
 ok(/resumed\(/.test(hostSrc) && /logSkip\(/.test(hostSrc), 'executePipeline 阶段跳过')
-ok(/stage\.output = clip\(text, 50000\)/.test(hostSrc), '阶段产物全文记录（续跑重建上下文）')
+ok(/stage\.output = clip\(stripStateBlock\(text\), 50000\)/.test(hostSrc), '阶段产物全文记录（续跑重建上下文；**先剥机器块**——见 3c）')
 const storeSrc = readFileSync(join(here, '../store.ts'), 'utf8')
 ok(/export function loadJournals/.test(storeSrc) && /export function persistJournal/.test(storeSrc) && /export function serializeJournal/.test(storeSrc), 'store.js 导出 journal 三件套')
 ok(/status === 'running' \|\| j\.status === 'pending'/.test(storeSrc), 'loadJournals 中断标记逻辑（store.js）')
@@ -787,6 +787,15 @@ const OPT_EXEMPT = new Set([])
 const optMissing = optKeys.filter((k) => !OPT_EXEMPT.has(k) && !new RegExp(`(^|[^A-Za-z0-9_$])${k}\\s*[:,]`).test(joptBlock) && !new RegExp(`(^|[^A-Za-z0-9_$])${k}\\s*[:,]`).test(execBlock))
 ok(optMissing.length === 0, `PipelineOptions 的每个字段都必须能被 executePipeline 收到${optMissing.length ? ` —— **漏了：${optMissing.join(', ')}**（只加 interface 不加白名单 = 静默失效；行为测试直调 executePipeline，绕过白名单 ⇒ 全绿也发现不了）` : ''}`)
 ok(/confirmMode: options\.confirmMode/.test(joptBlock), '本次实锤漏的字段已进白名单（确认单触发档）')
+// ⚠️ 机器契约块不得进**展示面**（2026-10-08 用户截图实锤）：`<!-- state -->…<!-- /state -->` 按契约写在
+// 子代理的**最终回复**里 ⇒ 不剥的话子任务卡 / 时间线 / 详情浮层上会摊出一整段 JSON。
+// 机器面（`extractStateBlock`）读的是**未剥**的原始文本 ⇒ 剥展示副本不丢信息。
+// 四个落点都要锁：漏一个就有一条路径把 JSON 摊给用户（每个都是 `snippet`/`clip` 前的那一步）。
+ok(/export function stripStateBlock/.test(hostSrc), 'state：stripStateBlock 存在（展示面剥机器块）')
+ok(/snippet\(stripStateBlock\(summary\), 2000\)/.test(hostSrc) && /snippet\(stripStateBlock\(summary\), 1000\)/.test(hostSrc), 'backlog：任务卡 / 子任务卡 summary 先剥再截断（**用户看到的就是这两个**）')
+ok(/const shown = stripStateBlock\(r\.text\)[\s\S]{0,120}timeline\[phase\] = shown[\s\S]{0,140}mergeStageState\(phase, r\.text\)/.test(pipelineSrc), 'pipeline：runSimpleStage 在 mergeStageState **之后**用剥离版喂 timeline 与下游（顺序反了就取不到块）')
+ok(/clip\(stripStateBlock\(x\.output \|\| ''\), 2000\)/.test(pipelineSrc), 'pipeline：summarizeTimeline 也剥（dev 的 timeline 是数组，走另一条分支）')
+ok(/stage\.output = clip\(stripStateBlock\(text\), 50000\)/.test(hostSrc) && /stage\.output = clip\(stripStateBlock\(text\), 4000\)/.test(hostSrc), 'runner：stage.output（详情浮层 + 断点续跑重建上下文）也要剥')
 // ⚠️ `clarifyStrength` 于 2026-10-08 **整体移出 `PipelineOptions`**（它从来不影响流水线，只选 ctx 文案
 // ⇒ 作为 run 参数结构上「迟一拍」）。⇒ 反向锁：字段不得复活。锚「interface 里的声明」而不是裸词
 // —— host 源码注释里就写着这个字段名（本仓第 9 次同型：注释会污染子串匹配）。

@@ -275,6 +275,26 @@ export function extractStateBlock(text: unknown): StageStateBlock | null {
   return null
 }
 
+/**
+ * 从**展示用**文本里剥掉机器可读的 `<!-- state -->…<!-- /state -->` 块。
+ *
+ * **为什么要剥**（2026-10-08 真机 `tf-muzc59h9-pnbhyk` 用户截图实锤）：state 块是**给 host 的机器契约**，
+ * 而它按契约写在子代理的**最终回复**里 ⇒ 会随子代理原文一路进**用户可见面**：
+ * 子任务卡 `summary`、事件时间线、失败详情浮层 —— 把一大段 JSON 摊在用户眼前（`{"phase":"qa",…}`）。
+ *
+ * ⚠️ **只剥展示面，不动机器面**：`extractStateBlock` 仍读**原始**文本；块的内容已按契约落进
+ * `state.json`，所以剥掉它不丢信息（不违反「不许静默丢东西」）。
+ *
+ * ⚠️ **要求成对的关闭标签才剥**（比 `extractStateBlock` 更保守）：那里缺关闭标签时按「到结尾」处理
+ * （为了尽量取到状态），但剥展示文本若也这么做，会**吃掉**关闭标签之后可能存在的正常正文。
+ * 缺关闭标签 ⇒ 不剥 ⇒ 那个块**留在可见面上**，正好把「契约被违反」暴露出来（与「空值必须可见」同源）。
+ */
+export function stripStateBlock(text: unknown): string {
+  const s = text === null || text === undefined ? '' : String(text)
+  if (!s || s.indexOf('<!--') < 0) return s // 快路径：绝大多数文本不含块
+  return s.replace(/<!--\s*state\s*-->[\s\S]*?<!--\s*\/state\s*-->/g, '').replace(/\n{3,}/g, '\n\n').trim()
+}
+
 /** 把阶段产出的 state 块合并进 state.json。 */
 export function mergeStateBlock(projectKey: string, block: StageStateBlock, phase?: string): TeamflowState {
   const state = loadState(projectKey)

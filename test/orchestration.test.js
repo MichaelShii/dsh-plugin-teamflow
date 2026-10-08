@@ -783,6 +783,14 @@ console.log('\n[22] 同一 run 内 state 刷新：PRD 的 extra.* 当场可见�
   ok(/【本次任务产物夹】/.test(designPrompt), 'design 阶段 prompt 仍带「任务产物夹」注入（__runCtx 未被 state 合并冲掉）')
   // `state.acIndex` 只注入 pm/qa/acceptance/tech 四角色 ⇒ QA 的 prompt 是这条链的证据面
   ok(/AC 索引/.test(qaPrompt) && /结构化 AC 一/.test(qaPrompt), 'QA 阶段 prompt 带上**本 run PRD** 写的 AC 索引（不是上一次 run 的遗留）')
+  // 机器契约块不得泄漏（2026-10-08 用户截图实锤：子任务卡把整段 `<!-- state -->{…}` 摊出来了）。
+  // 行为断言：块在 `mergeStageState` 消费之后**立刻**被剥掉 ⇒ 展示面与下游 prompt 都只见正文。
+  // 机器契约块不得泄漏（2026-10-08 用户截图实锤：子任务卡把整段 `<!-- state -->{…}` 摊出来了）。
+  // ⚠️ 断言必须针对**本 run 实际注入的那一段**，不能只匹配 `<!-- state -->` 这个词 ——
+  // `STATE_BLOCK_INSTRUCTION` 模板本身就把该标记当**示例**写进了每个阶段的 prompt（合法）。
+  const injectedBlock = `<!-- state -->${JSON.stringify(NESTED)}`
+  ok(!designPrompt.includes(injectedBlock) && !qaPrompt.includes(injectedBlock),
+    'PRD 的 state 块不进下游阶段的 prompt（块已消费；机器面读的是未剥的原始文本）')
 }
 
 /* ── [23] 确认单断点上的「改」：带 supplement 续跑 ⇒ **回退重跑 PRD**（作废面为零）──
