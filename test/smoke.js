@@ -817,7 +817,16 @@ ok(!/function clarifyStrengthForTeam\(/.test(hostSrc), 'host：反查历史 run 
 // 「把默认改回 once」时假绿。
 ok(/if \(v === 'once'\) return 'once'[\s\S]{0,80}if \(v === 'off'\) return 'off'[\s\S]{0,40}return 'interview'/.test(utilSrc), 'util：澄清变体**默认 interview**（一次一问＝产品默认行为，不是可选档；once/off 只服务对照）')
 // ★ 三档文案都要在词典里：`once` 是**逐字保留的旧文案**（A/B 对照组 + 零回归参照）。
-ok(/'tool\.ctx\.clarifyInterview'/.test(hostSrc) && /'tool\.ctx\.clarifyOnce'/.test(hostSrc) && /'tool\.ctx\.clarifyOff'/.test(hostSrc), 'locales：三档澄清文案齐备（默认 interview ／ A/B 对照组 once ／ off）')
+// ★「开工前对齐」也必须走 AUQ（2026-10-08 用户实锤）：手册里这三条原本只写「问什么」，没写「怎么呈现」
+// ⇒ 主 agent 直接把问题打在聊天里（新工作区首跑就这样，且**没创建 run**，从 journal 看不出来）。
+// ⚠️ `once`（A/B 对照组）也要带，否则 A/B 把「一次一问」与「AUQ vs 纯文本」两个变量混在一起。
+const ctxSrc = readFileSync(join(here, '../host/locales/tools.ts'), 'utf8')
+const auqIn = (key) => {
+  const m = ctxSrc.match(new RegExp(`'${key}': '(.*)',`))
+  return !!m && /ask_user_question/.test(m[1])
+}
+ok(auqIn('tool.ctx.clarifyInterview') && auqIn('tool.ctx.clarifyOnce'), 'locales：开工前对齐**两档都**点名 ask_user_question（默认档 + A/B 对照组，不允许混变量）')
+ok(auqIn('tool.start.explorationProtocol'), 'locales：探索态协议也点名 ask_user_question（闸门返回面没有 blocker 可挂时，这条是唯一指令）')
 // ★ 产品默认行为必须**写进 ctx 手册本身**（用户 2026-10-08 指的切口）：默认档文案要含「一次只问一个问题」，
 // 否则「把开关摘了但默认没接上」会静默退回旧行为。
 ok(/一次只问一个问题/.test(hostSrc) && /ask \*\*exactly one question at a time\*\*/.test(hostSrc), 'locales：默认澄清档写明「一次一问」（zh/en 都要，缺席则默认行为名存实亡）')
