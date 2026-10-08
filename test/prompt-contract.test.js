@@ -861,18 +861,22 @@ assertContract({
   include: [/"api":\[/, /api \(mandatory per module\)/],
 })
 /**
- * **dev 任务集边界**（2026-10-08 真机 `tf-muzc59h9-pnbhyk` 实锤）：蓝图把 QA/验收的活划进了 dev 任务集 ——
- * 8 个任务里第 6 个是「QA 三浏览器实测」，那个 **dev 子代理**写了 `QA-REPORT.md` **和** `ACCEPTANCE.md`。
- * 后果两条都不好：① 开发方**自己写验收报告**（自己评自己，独立复核那一道没了）；② 独立的 QA/验收阶段没跑到。
+ * **dev 自查任务的定位**（2026-10-08/09）：**保留，但降为「交付自检」**。
  *
- * 判据是**实现范围**：每条任务必须是「要建的东西」；**自测属于某个任务内部**（跑一次 + 证据块），
- * 不是独立任务。三处都要在（两个蓝图 prompt 各一条 + 「自测归任务内部」那句收口）。
- * 变异：删掉任一处的 `[Implementation scope only` ⇒ 本契约立刻红。
+ * ⚠️ 这条**不是**我拍的新主意 —— `docs/TODO.md` 观察中区早已「观点已定」（2026-09-25）：
+ * **保留**（dev 自查是全链路唯一「发现问题 → 当场修」的环节），改定位为「交付自检」：
+ * 当场修、**只记结论不写 `QA-REPORT.md`**、措辞与 QA 解耦（防「预演 QA」式全量重验）。
+ * 我第一版写成「不许有验证类任务、自测只能任务内部」＝**砍掉**它，与记录的决定相反 ⇒ 已改回。
+ *
+ * 新数据点（`tf-muzc59h9-pnbhyk`）：dev 任务「QA 三浏览器实测」**同时写了 QA-REPORT.md 和
+ * ACCEPTANCE.md**，然后在收尾 `edit` 上失手 ⇒ run 判 failed，而交付其实 13/14 AC 已验证。
+ * ⇒ 支持「重新定位」，但**不支持砍掉**。
+ * 变异：把 `IS welcome` 改成禁止式（`never`）或删掉「不许写 QA-REPORT.md」那句 ⇒ 立刻红。
  */
 assertContract({
-  id: 'BLUEPRINT-TASKS-IMPL-SCOPE', level: 'policy', targets: ['techPrompt', 'architectPrompt'],
-  intent: '蓝图 tasks[] 只放「要实现的东西」；跨浏览器实测 / 写 QA-REPORT.md / ACCEPTANCE.md / AC 逐条核对矩阵属 QA 与验收阶段，不得作为 dev 任务',
-  include: [/\[Implementation scope only — never a QA\/acceptance task\]/, /grading its own homework/, /not as a task of its own/],
+  id: 'DEV-SELFCHECK-NOT-QA-REHEARSAL', level: 'policy', targets: ['techPrompt', 'architectPrompt'],
+  intent: 'dev 自查任务**保留**（当场修是唯一现场修复点），但降为「交付自检」：只记结论、不写 QA-REPORT.md/ACCEPTANCE.md、不跑 QA 式全量矩阵',
+  include: [/\[Self-check, not a QA rehearsal\]/, /IS welcome/, /do \*\*NOT\*\* write/, /do \*\*NOT\*\* run a QA-style full matrix/],
 })
 assertContract({
   id: 'DEV-INTERFACE-CONTRACT', level: 'policy', targets: 'devPrompt',

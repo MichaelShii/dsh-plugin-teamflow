@@ -619,6 +619,57 @@ AC 与假设清单**不做题**，那是让人核对的），另给一个「全�
 **成本**：ctx 注入（每次选团队都进主会话上下文）zh `809 → 1474`（+82%）、en `2111 → 3892`（+84%）。
 ⚠️ 已偏高，后续若要加手册条款**先考虑压缩**（`tool.ctx.teamTail` 现在是全文最长的一段）。
 
+### 追加（2026-10-09 凌晨）：state 块改**文件通道** —— 机器契约不再走人类可读通道
+
+**起因**：用户第二次截图（`tf-muztv7c0-bt6c4v`）里块**还在**。分辨后确认泄漏有**两个所有者**：
+
+| 面 | 谁拥有 | 处置 |
+| --- | --- | --- |
+| 插件自己的展示面（任务卡 `summary` / 时间线 / 详情浮层 / `stage.output`） | 插件 | 上一轮的 `stripStateBlock` **已生效**（实测 `stage.output` 431 字符、无块） |
+| **宿主「子智能体执行记录」卡** | **宿主** | 直接渲染**子代理的末条回复原文** ⇒ **插件改不了** |
+
+实测证据：PRD 子代理（session `50957c3b`）**末条回复 1880 字符**里就带着块。
+而块**按契约就写在回复里**（`STATE_BLOCK_INSTRUCTION` 旧文案：「Append one section at the END of your answer」）。
+
+用户定调：**「改契约是不是收益更好，这种系统级别的字段不出现在用户 UI」** ⇒ 对。
+正确做法是**在源头分开**，而不是在下游过滤（我先前「接受它是排查视图」的说法＝给成本找理由）。
+
+**改动（`04f2ba0x` 批）**
+
+1. `STATE_BLOCK_INSTRUCTION`（常量）→ **`stateBlockInstruction(relPath)`**：明确要求「用文件工具写
+   `logs/teamflow/<runId>/state/<阶段键>[-<任务 id>].json`；**不要**写进回复正文」。
+2. 新增 `stateBlockRelPath()` / `readStateBlockFile()`；`mergeStageState(phase, text, relPath?)`
+   改为 **文件优先、回复回落**。
+3. 11 个 prompt 插值点全部参数化；5 个合并点传路径；dev 的 `touched` 记账**同源**（文件优先+回落）。
+4. **回落 + 可数 warn**：`log.stateBlockFallback`（回落发生了）/ `log.stateBlockMissing`（两条通道都没有）。
+
+**三条纪律**
+
+- **最坏退化必须是「旧行为 + 一条 warn」**：旧契约（写在回复里）是实测 100% 兑现的
+  （`kind` 6/6）⇒ 一次换通道若模型忘写，`openQuestions`/`acIndex`/`touched` 会整片消失。
+  回落不是可选项；而**文件通道的真实兑现率**就是 `log.stateBlockFallback` 的计数点。
+- **文件名一律用「阶段键」**（合并侧只知道阶段键）：`techChangePrompt`/`patchConfirmPrompt` 块里写
+  `phase="tech"`/`"patch"`，但它们**都是 prd 阶段的表单**；`architectPrompt` 与 `techPrompt`
+  同属 tech 阶段。写错的表现＝该阶段**永远回落**（不是静默错，但会污染兑现率）⇒ 源码锁钉死映射表。
+- ⚠️ **基准必须是 `journal.workspacePath`，不是 `root`**：`root = options.productRoot`，
+  而它在**生产里也常是 `null`**（真机 `tf-muzc59h9-pnbhyk` 就是 null）⇒ 按 root 拼路径会让文件通道
+  **永远读不到、永远回落**（等于这次改动白做）。
+
+**🔴 上一条是行为测试抓出来的**：单测 [24] 第一版就是红的，而**单看源码完全看不出来**
+（`root` 语义上像「项目根」，实际是 `productRoot`）。⇒ 「新通道必须有**双向**行为断言
+（写文件⇒不走回落；不写⇒记 missing）」这条纪律的价值当场兑现。
+
+**门禁与变异（实跑）**
+
+| 门禁 | 覆盖 |
+| --- | --- |
+| `state.test.js` | 路径（阶段键＋并发后缀）/ 指令（写文件、禁写回复）/ `stripStateBlock` 7 条 |
+| `orchestration [24]` | **双向**：桩把块写进文件（路径**从 prompt 里取**）⇒ PRD 无回落无缺失 ＋ 状态确实来自文件；其余阶段桩不写 ⇒ `missing` warn |
+| `smoke` 源码锁 | 11 个工厂 ↔ 阶段键**映射表**（名字错不会静默，但会污染兑现率） |
+| `prompt-contract` | 锚点句换成 `STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply` ＋ 每条路径含 `logs/teamflow/.../state/` |
+
+变异：把基准退回 `root` ⇒ **[24] 2 红**，对照（下游 prompt 无线索块）仍绿。
+
 ## 影响
 
 - `docs/TODO.md` 的「澄清闸门」条按本文收敛（Phase 2 与强度档合并设计）。
