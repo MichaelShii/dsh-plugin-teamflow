@@ -827,6 +827,13 @@ const auqIn = (key) => {
 }
 ok(auqIn('tool.ctx.clarifyInterview') && auqIn('tool.ctx.clarifyOnce'), 'locales：开工前对齐**两档都**点名 ask_user_question（默认档 + A/B 对照组，不允许混变量）')
 ok(auqIn('tool.start.explorationProtocol'), 'locales：探索态协议也点名 ask_user_question（闸门返回面没有 blocker 可挂时，这条是唯一指令）')
+// 确认单改成**两步**（2026-10-08 真机 `tf-muzc59h9-pnbhyk`：8 项做成 4+4 两批后，「全部按默认」的一键
+// 选项就没地方放了 —— 手册里「≤4 题/批」和「另给一键」在项数多时互相冲突）。
+// ⚠️ 锁「**单独一次**」这个形态本身：AUQ **没有条件跳转**，把「全部按默认」塞进逐项那张卡里等于没写。
+ok(/先单独问一次总问/.test(ctxSrc) && /first ask one leading question on its own/.test(ctxSrc), 'locales：确认单两步走 —— 先导总问**单独一次**（选「全部按默认」就直接 resume）')
+ok(/没有条件跳转/.test(ctxSrc) && /no conditional skip/.test(ctxSrc), 'locales：明写「AUQ 没有条件跳转」（否则后来者会把它塞回逐项那张卡，白写）')
+// 认可补录的语义（真机实测主 agent 会把「已拍板 N 项」写进 supplement）⇒ 改成「会固化进 PRD」而不是「不带」。
+ok(/带 `supplement` 会把结论固化进 PRD/.test(ctxSrc) && /passing `supplement` bakes the decisions into the PRD/.test(ctxSrc), 'locales：认可带 supplement 的语义＝**固化进 PRD**（原写「认可不带」，实测会被违反 ⇒ 改成事实陈述）')
 // ★ 产品默认行为必须**写进 ctx 手册本身**（用户 2026-10-08 指的切口）：默认档文案要含「一次只问一个问题」，
 // 否则「把开关摘了但默认没接上」会静默退回旧行为。
 ok(/一次只问一个问题/.test(hostSrc) && /ask \*\*exactly one question at a time\*\*/.test(hostSrc), 'locales：默认澄清档写明「一次一问」（zh/en 都要，缺席则默认行为名存实亡）')
