@@ -133,8 +133,12 @@ dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 > ⚠️ **The desktop app (dsh 0.2.0+) needs its own install**: it runs from a separate `desktop`
 > profile (`~/.dsh/profiles/desktop`) with its own `node_modules` — install it only into `web` and
 > **the desktop app will not show the plugin** (nothing is broken). The CLI also **refuses**
-> `--profile desktop` (`managed exclusively by the Electron application`) ⇒ **install it from the
-> desktop app's own plugin management UI**.
+> `--profile desktop` (`managed exclusively by the Electron application`) ⇒ **manage the desktop
+> copy from the "Plugins" page inside the desktop app**.
+>
+> ℹ️ **Both ends have a built-in "Plugins" page** (sidebar → Plugins): web and desktop share the
+> **same page**, where you can see the version, enable/disable and uninstall. The only difference is
+> **which profile it lands in** — install once per end (or run the command once per end).
 
 After install, **restart** `dsh --profile web` (or restart the desktop app) for the host `teamflow-host` to take effect:
 - The model side gains 12 `teamflow_*` tools: `start / triage / status / backlog / claim / update / assign / cancel / resume / pause / resume_session / merge`;
@@ -149,7 +153,11 @@ After install, **restart** `dsh --profile web` (or restart the desktop app) for 
 
 - Opening the **Team Workspace** shows a "New version x.y.z" banner at the top;
 - The **global panel header** (left sidebar) has a "Check for updates" button (manual, bypasses the cache);
-- The desktop app's **plugin management page** shows a new-version badge next to this plugin.
+- The **"Plugins" page** shows a new-version badge next to this plugin (same page on web and desktop).
+
+All three are visible on **both ends** (browser for web, app for desktop), but the **upgrade action
+belongs to each end's own profile**: use the command below for web, and the in-app "Plugins" page
+for desktop (the CLI does not accept `--profile desktop`).
 
 **Registry installs** (installed from `npm`) can upgrade with **one click**: click "Upgrade to x.y.z" on the banner → confirm → **restart** `dsh --profile web` (or restart the desktop app). Local / git / tarball installs get **no one-click button** (one click would silently swap the dependency to the registry version) — only a copyable command.
 

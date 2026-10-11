@@ -133,7 +133,10 @@ dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 > ⚠️ **桌面版（dsh 0.2.0 起）要单独装一次**：它用独立的 `desktop` profile（`~/.dsh/profiles/desktop`），
 > 与 `web` 各自一份 node_modules —— 只装在 `web` 上，桌面版里**看不到本插件**（不是插件坏了）。
 > 且 CLI **明确拒绝** `--profile desktop`（`managed exclusively by the Electron application`）
-> ⇒ **桌面版请用应用内的插件管理界面安装**。
+> ⇒ **桌面版那一份请在桌面应用内的「插件」页操作**。
+>
+> ℹ️ **两端都有内置的「插件」页**（左侧边栏「插件」）：web 与桌面版是**同一个页面**，可在其中查看版本、
+> 启用/停用、卸载。差别只在**装到哪个 profile** —— 两端各装一次（或各跑一次命令）。
 
 安装后**重启** `dsh --profile web`（桌面版则重启桌面应用），宿主行 `teamflow-host` 生效：
 - 模型侧出现 12 个 `teamflow_*` 工具：`start / triage / status / backlog / claim / update / assign / cancel / resume / pause / resume_session / merge`；
@@ -148,7 +151,10 @@ dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 
 - 打开**团队工作台**时，顶部出现「有新版本 x.y.z」提示条；
 - 左侧边栏**全局面板头部有「检查更新」按钮**（手动查，绕过缓存）；
-- 桌面版的**插件管理页**里，本插件旁会出现新版本徽标。
+- **「插件」页**里本插件旁会出现新版本徽标（web 与桌面版同一个页面）。
+
+三处都在**两端**可见（web 走浏览器、桌面版走应用），但**升级动作各归各的 profile**：web 用下面的命令，
+桌面版在应用内的「插件」页操作（CLI 不接受 `--profile desktop`）。
 
 **registry 安装**（`npm` 装的）可直接**一键升级**：点提示条上的「升级到 x.y.z」→ 确认 → 升完**重启** `dsh --profile web`（桌面版重启桌面应用）。本地 / git / tarball 安装**不会给一键**（一键会把依赖悄悄换成线上版本），只给可复制的命令。
 
