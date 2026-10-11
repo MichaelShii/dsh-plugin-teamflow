@@ -14,15 +14,16 @@ import { runAcceptancePhase } from './stages/acceptance.ts'
 export type { DevTaskDef } from './stages/dev.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
-import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv } from '../util.ts'
-import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv } from '../util.ts'
+import type { Blueprint } from '../util.ts'
+import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { RETRY_LIMIT, PHASE_ORDER, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, DEV_MAX_CONCURRENCY, DEV_DEFAULT_CONCURRENCY } from '../constants.ts'
 import { persistJournal, loadJournalById, dshHome } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext, PipelineMode } from '../types.ts'
 import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, MODE_RANK, contractsForDeliverable, normalizeHost, forceHost, PLUGIN_ARTIFACTS, triageRecordOf, type TriageVerdict } from './triage.ts'
 import { loadTeams, findTeam, getActiveStages, teamNameOf } from './domain/teams.ts'
-import { loadState, saveState, extractStateBlock, mergeStateBlock, noteRun, stripStateBlock, readStateBlockFile, stateBlockRelPath } from './domain/state.ts'
+import { loadState, saveState, extractStateBlock, mergeStateBlock, noteRun, stripStateBlock, readStateBlockFile, stateBlockRelPath, blueprintRelPath, saveBlueprintArchive } from './domain/state.ts'
 import { isDangerousVcsRoot, dirTooLargeForBaseline } from '../util.ts'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -1001,25 +1002,80 @@ export async function executePipeline(
       // 不跑蓝图提取**，`state.__runCtx.blueprint` 不注入 → dev 继承不到蓝图，退化成单任务整体开发
       // （r13 同款症状）。现在 resume 复用时也照样提取（存档 tech 文本里没有蓝图块 → 解析为 null，无副作用）。
       // 优先取 stage 回复输出；模型可能把蓝图写进任务夹 TECHNICAL.md（ADR-0008 收口约定）——回退读文件提取，绝不静默丢蓝图（实锤 r13：蓝图只在文档里，dev 退化为单任务整体开发、M2 拆卡失效）。
+      // ⚠️ 2026-10-09：判据从 `bd.summary === undefined` 改为「有无实质内容」。前者是**死条件**——
+      // `extractBlueprint` 里 `summary` 恒为 string（`typeof parsed.summary === 'string' ? parsed.summary : ''`），
+      // 永不 undefined ⇒ 两处判据实际退化成 `!bd` / `bd` ⇒ **语法合法但内容空的块**（`{}`、只有 summary 无
+      // modules/tasks）会被当成解析成功：既不回退读文件、也不告警，dev 静默退化成整体开发。
+      // 现判据＝「有 tasks 或 modules 才算可用」，不满足即走回退，回退也不满足才告警。
+      const bdUsable = (x: Blueprint | null): x is Blueprint =>
+        !!x && (((x.tasks || []) as unknown[]).length > 0 || Object.keys(x.modules || {}).length > 0)
+      // `<!-- blueprint`（不含 `/`）同时覆盖新形态（open 不带 `-->`）与旧形态（自闭合注释）。
+      const hasBlueprintMark = (s: unknown) => /<!--\s*blueprint/.test(String(s == null ? '' : s))
+      const bdBase = journal.workspacePath || root
+      // 任何一条通道上出现过蓝图标记，最终没能用上就必须可见（否则静默丢并行度）
+      let sawMark = hasBlueprintMark(tech)
+      // 原文落档路径（② 分支解析失败时填）—— 末尾统一发**一条** warn，避免与 `sawMark` 兜底重复
+      let archivedPath = ''
+      // ① 回复正文（旧主通道；也是文件通道失效时的回落）
       let bd = extractBlueprint(tech)
-      if (!bd || bd.summary === undefined) {
+      // ② **独立文件**（2026-10-09 新主通道，与 state 块同构）：`logs/teamflow/<runId>/blueprint.json`。
+      //    纯中转 —— 原文**无条件落档**到 `$DSH_HOME` 供人工复查，项目内那份随后读完即删，
+      //    所以项目内的停留窗口从「整个 run」缩到「几秒」，可续跑终态（不做归档）也不再残留。
+      const bpAbs = bdBase ? `${bdBase}/${blueprintRelPath(journal.id)}` : null
+      const bpExists = !!bpAbs && existsSync(bpAbs)
+      if (bpExists) {
+        let rawBp: string | null = null
+        try { rawBp = readFileSync(bpAbs, 'utf8') } catch (e) { /* 读不出 ⇒ 当它没有 */ }
+        if (rawBp) {
+          // 无条件落档：架构拆解生效后「审蓝图 = 审 dev 拆卡质量」，原文必须可复查
+          // （此前三处去向都不留原文：render 只在 prompt、journal 只存 modules/tasks、中转文件读完即删）。
+          const archived = saveBlueprintArchive(String(journal.workspace || 'default'), journal.id, rawBp)
+          if (archived) journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintArchived', { path: archived }) })
+          if (!bdUsable(bd)) {
+            const fromChannel = blueprintFromText(rawBp)
+            if (bdUsable(fromChannel)) {
+              bd = fromChannel
+              journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintFromChannel') })
+            } else {
+              sawMark = true // 文件写了却不可用 ⇒ 必须可见（由末尾统一告警，避免两条重复 warn）
+              if (archived) archivedPath = archived
+            }
+          }
+        }
+      }
+      // ⚠️ 清理**必须与「通道是否命中」无关**：模型可能「既回显蓝图、又写文件」（违反契约）——
+      // 那时 ① 命中、上面那块整段不解析，若把 unlink 写在里面就会**漏删**，
+      // 文件一直留在项目里直到归档；而可续跑终态（failed/cancelled/interrupted）**根本不归档** ⇒ 永久残留。
+      if (bpExists) { try { unlinkSync(bpAbs) } catch (e) { /* 清理尽力而为 */ } }
+      // ③ TECHNICAL.md 末尾的块（历史通道，兼容存量 run 与模型旧习惯）
+      if (!bdUsable(bd)) {
         try {
           const techFile = journal.runDocs && journal.workspacePath
             ? `${journal.workspacePath}/${journal.runDocs}/TECHNICAL.md`
             : null
-          if (techFile && existsSync(techFile)) bd = extractBlueprint(readFileSync(techFile, 'utf8'))
-          if (bd) journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintFromFile') })
+          if (techFile && existsSync(techFile)) {
+            const raw = readFileSync(techFile, 'utf8')
+            if (hasBlueprintMark(raw)) sawMark = true
+            const fromFile = extractBlueprint(raw)
+            if (bdUsable(fromFile)) {
+              bd = fromFile
+              journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintFromFile') })
+            }
+          }
         } catch (e) { /* 回退失败走既有告警 */ }
       }
-      if (bd && bd.summary !== undefined) {
+      if (bdUsable(bd)) {
         try {
           state.__runCtx = state.__runCtx || {}
           state.__runCtx.blueprint = bd.render
           journal.blueprint = { modules: bd.modules, tasks: bd.tasks }
         } catch (e) { /* 蓝图注入失败不影响 */ }
-      } else if (/<!-- blueprint -->/.test(String(tech))) {
-        // 蓝图块存在但解析失败：显式告警（否则静默回退整体开发，并行度丢失难排查）
-        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.blueprintParseFail') })
+      } else if (sawMark) {
+        // 蓝图标记出现过但没用上（解析失败 / 内容为空）：显式告警（否则静默回退整体开发，并行度丢失难排查）。
+        // 落档成功时把路径带上，省得再去翻轨迹。
+        journal.logs.push({ t: Date.now(), level: 'warn', message: archivedPath
+          ? t(locale, 'log.blueprintParseFailArchived', { path: archivedPath })
+          : t(locale, 'log.blueprintParseFail') })
       }
     }
 

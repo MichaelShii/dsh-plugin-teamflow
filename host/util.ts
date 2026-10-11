@@ -1041,12 +1041,24 @@ export interface Blueprint {
   render: string
 }
 
-const bdOpen = '<!-- blueprint -->'
+/** 蓝图 JSON 的原始形状（未经归一，字段全部可选）。 */
+type BlueprintShape = {
+  summary?: string
+  modules?: Record<string, BlueprintModule>
+  duplications?: string[]
+  tasks?: BlueprintTask[]
+}
+
+// ⚠️ open 标记**不带尾部 `-->`**（2026-10-09 修正）：`<!-- blueprint -->` 是**自闭合注释**
+// （`<!--` + `blueprint` + `-->`），渲染器把整条消化掉，紧随其后的 JSON 于是成了**裸文本**，
+// 在 Typora / VS Code 预览里直接显示给用户（实测：markdown-it + 无头 Chrome）。
+// 解析器**两种形态都认**（见下方 `(?:-->)?`），兼容存量产物与模型旧习惯。
+const bdOpen = '<!-- blueprint'
 const bdClose = '<!-- /blueprint -->'
 
 /**
  * 从 tech/architect 产出中提取架构蓝图 JSON 块。
- * 约定：产出内嵌 `<!-- blueprint -->{...json...}<!-- /blueprint -->`。
+ * 约定：产出内嵌 `<!-- blueprint` ＋换行＋ `{...json...}` ＋ `<!-- /blueprint -->`。
  * 解析失败返回 null（不影响主流程）。
  */
 /**
@@ -1078,18 +1090,80 @@ export function extractBlueprint(text: string | null | undefined, locale?: HostL
   const i = s.indexOf(bdOpen)
   const j = s.indexOf(bdClose)
   if (i === -1 || j === -1 || j <= i) return null
-  const raw = s.slice(i + bdOpen.length, j).trim()
-  let parsed: {
-    summary?: string
-    modules?: Record<string, BlueprintModule>
-    duplications?: string[]
-    tasks?: BlueprintTask[]
-  } | null = null
-  try { parsed = JSON.parse(raw) } catch (e) {
-    const repaired = repairBlueprintJson(raw)
-    if (repaired) { try { parsed = JSON.parse(repaired) } catch (e2) { parsed = null } }
+  // 兼容两种 open 形态：新的 `<!-- blueprint`＋换行、旧的 `<!-- blueprint -->`（自闭合）—— 跳过可选的 ` -->`
+  const after = s.slice(i + bdOpen.length)
+  const lead = after.match(/^\s*(?:-->)?\s*/)
+  const start = i + bdOpen.length + (lead ? lead[0].length : 0)
+  if (j <= start) return null
+  const raw = s.slice(start, j).trim()
+  const parsed = parseBlueprintJson(raw)
+  if (!parsed) return null
+  return toBlueprint(parsed, locale)
+}
+
+/**
+ * 抢救「**末尾截断**」的蓝图 JSON（2026-10-11 实锤 `tf-mv3op3i2-0ok7nb`）。
+ *
+ * 现象：模型把 5937 字符的完整蓝图写进 `blueprint.json`，尾部**少了 1 个 `}`** ⇒ `JSON.parse` 失败；
+ * 而 `repairBlueprintJson` 只治「**提前闭合**」（某个值后面多写一个 `}`），救不了「**末尾没收**」
+ * ⇒ 蓝图整片丢失、dev 退化为单任务整体开发（该 run 规划了 12 个任务，实际只跑了 1 个）。
+ *
+ * 策略：扫一遍字符（跳过字符串字面量与转义），统计未闭合的 `{` / `[`，按栈逆序补齐闭合符。
+ * ⚠️ **只在「截断不在字符串内、且转义已收尾」时才补**：断在字符串中间或转义符后 = 内容本身残缺，
+ * 硬补会得到一个「语法合法但语义缺失」的对象 —— 那比直接失败更危险（下游会拿残缺蓝图当权威）。
+ */
+function closeTruncated(raw: string): string | null {
+  const stack: string[] = []
+  let inStr = false
+  let esc = false
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]
+    if (esc) { esc = false; continue }
+    if (ch.charCodeAt(0) === 92) { esc = true; continue } // 92 = 反斜杠
+    if (ch === '"') { inStr = !inStr; continue }
+    if (inStr) continue
+    if (ch === '{' || ch === '[') stack.push(ch)
+    else if (ch === '}' || ch === ']') {
+      const want = ch === '}' ? '{' : '['
+      if (stack[stack.length - 1] === want) stack.pop()
+    }
   }
-  if (!parsed || typeof parsed !== 'object') return null
+  if (inStr || esc || stack.length === 0) return null
+  return raw + stack.slice().reverse().map((x) => (x === '{' ? '}' : ']')).join('')
+}
+
+/** `JSON.parse` ＋ 两种畸形抢救：**末尾截断**（`closeTruncated`）→ **提前闭合**（`repairBlueprintJson`）。非对象 ⇒ null。 */
+function parseBlueprintJson(raw: string): BlueprintShape | null {
+  let parsed: unknown = null
+  try { parsed = JSON.parse(raw) } catch (e) {
+    // 两种形态互不覆盖，都试一次：先补闭合（本批实锤的那类），再删提前闭合（历史那类）。
+    for (const cand of [closeTruncated(raw), repairBlueprintJson(raw)]) {
+      if (!cand) continue
+      try { parsed = JSON.parse(cand); break } catch (e2) { parsed = null }
+    }
+  }
+  return parsed && typeof parsed === 'object' ? (parsed as BlueprintShape) : null
+}
+
+/**
+ * 蓝图**文件通道**的内容 → `Blueprint`（2026-10-09）。
+ *
+ * 契约要求文件里是**纯 JSON**（无标记），但模型可能顺手把 `<!-- blueprint -->` 标记也写进去
+ * ⇒ 两种都吃：先按标记块提取（带 repair 抢救），失败再直接 parse 整份内容。
+ */
+export function blueprintFromText(raw: string | null | undefined, locale?: HostLocale | null): Blueprint | null {
+  const s = String(raw == null ? '' : raw).trim()
+  if (!s) return null
+  if (s.indexOf('<!--') >= 0) {
+    const byMark = extractBlueprint(s, locale)
+    if (byMark) return byMark
+  }
+  const parsed = parseBlueprintJson(s)
+  return parsed ? toBlueprint(parsed, locale) : null
+}
+
+/** 已解析的蓝图对象 → `Blueprint`（`render` 按 locale 输出）。 */
+function toBlueprint(parsed: BlueprintShape, locale?: HostLocale | null): Blueprint {
   const summary = typeof parsed.summary === 'string' ? parsed.summary : ''
   const modules = parsed.modules || {}
   const duplications = Array.isArray(parsed.duplications) ? parsed.duplications : []

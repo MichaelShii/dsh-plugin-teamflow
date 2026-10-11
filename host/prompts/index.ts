@@ -31,7 +31,7 @@
  * 列表分隔符随内容语言（文件路径等 ASCII 内容用英文逗号），不混用中文标点。
  */
 import { clip } from '../util.ts'
-import { stateSliceFor, stateBlockInstruction, stateBlockRelPath } from '../core/domain/state.ts'
+import { stateSliceFor, stateBlockInstruction, stateBlockRelPath, blueprintInstruction, blueprintRelPath } from '../core/domain/state.ts'
 // 形态契约的**参考样本**表（纯数据；core/triage.ts 不 import prompts → 无循环依赖）。
 // 只取样本路径给 PM 去读，**不引入任何判定逻辑**：字段名随宿主版本演进，必须读样本核实。
 import { ARTIFACT_REFERENCE_SAMPLES, LOCAL_PLUGIN_SAMPLES_HINT } from '../core/triage.ts'
@@ -525,8 +525,7 @@ ${JSON.stringify(tasks)}
 2. Output: data model & storage, API design (routes/params/returns), frontend component & page split, state management, key implementation points & edge cases, test strategy.
 3. Task split: if [PIPELINE-DISPATCHED TASKS] above exists, your split MUST align with it — verify/refine each dispatched task (file boundaries, interface contracts, acceptance criteria) rather than creating a separate task system; if none dispatched, provide a parallelizable task list. git actions from the PRD "${L(state, 'doc.engConstraints')}" section (branch/commit requirements) MUST be carried into tasks (into the matching task spec or a separate list) — never lost.
 4. ${langDirective(LOCALE(state))}, tight & complete; write to ${RUN(state)}/TECHNICAL.md (write once). [Boundary] only under ${TF_DOCS}/.
-5. [ARCHITECTURE BLUEPRINT JSON · mandatory (for dev inheritance / acceptance verification, M1/M2)] After the document, additionally output an architecture blueprint JSON block (same output, at the end of the document):
-<!-- blueprint -->{"summary":"one-sentence architecture judgment","modules":{"/relative.js":{"responsibility":"responsibility","api":["export class Foo","foo(a, b) -> Bar"],"dependsOn":["dep files"],"assemblyOrder":1,"why":"why designed this way / why separate"},"/another.js":{"responsibility":"","api":[],"why":""}},"duplications":["detected duplication / adapter drift risks"],"tasks":[{"title":"task name (by file boundary)","files":["/a.js"],"reads":["/types.js"],"spec":"one-sentence task brief"}]}<!-- /blueprint -->
+5. [ARCHITECTURE BLUEPRINT JSON · mandatory (for dev inheritance / acceptance verification, M1/M2)]${blueprintInstruction(blueprintRelPath(runId))}
    - modules: per touched file — responsibility + **api** + deps + assembly order + **architecture rationale (why)**.
    - **api (mandatory per module)**: the module's exact public signatures (class / function / method **names** + params + return). Downstream dev tasks MUST call these **verbatim** — a member name invented locally (e.g. calling 'move()' where the blueprint says 'update()') is a real defect QA will file as P1, because the app crashes on the first call. A few stable, accurate names beat a rich guess.
    - tasks: parallelizable tasks split by file boundary (disjoint files → parallel); merge or sequence where dependencies/conflicts exist.
@@ -553,8 +552,7 @@ ${clip(prd, 12000)}
    - **Whole-file reads of key source files are allowed this stage** (not just grep fragments): read through the responsibility/boundary/assembly order/dependency direction of related modules once. This is a prerequisite for architecture decisions, not waste.
    - Identify duplicated implementations (e.g. multiple security wrappers / storage utilities), blurred boundaries, extractable modules.
 2. [Architecture decision] Based on global awareness, judge: should this change extract a standalone module (e.g. independent storage/localStorage wrapper), dependency direction, assembly order, which files must change together, which can go parallel.
-3. [OUTPUT · one JSON block only (no prose, no Markdown code fences)]:
-<!-- blueprint -->{"summary":"one-sentence architecture judgment","modules":{"/relative.js":{"responsibility":"responsibility","api":["export class Foo","foo(a, b) -> Bar"],"dependsOn":["dep files"],"assemblyOrder":1,"why":"why designed this way / why separate"},"/another.js":{"responsibility":"","api":[],"why":""}},"duplications":["detected duplication / adapter drift risk 1","risk 2"],"tasks":[{"title":"task name (by file boundary)","files":["/a.js"],"reads":["/types.js"],"spec":"one-sentence task brief"}]}<!-- /blueprint -->
+3. [OUTPUT · TWO separate channels — never mix them] (a) **In your reply**: a human-readable architecture summary in Markdown (decisions, module boundaries, dependency direction, risks). This reply is the only human-readable artifact of this stage, so make it substantive. (b) **The blueprint JSON**: written to a file, never in your reply.${blueprintInstruction(blueprintRelPath(runId))}
    - modules: per involved file — responsibility + **api** + deps + assembly order + **why** (architecture rationale so devs understand, not blindly follow).
    - **api (mandatory per module)**: exact public signatures (class / function / method names + params + return). Dev tasks must call these verbatim; a locally invented name (e.g. 'move()' where you declared 'update()') crashes at the first call — QA files it as P1.
    - tasks: parallelizable tasks by file boundary (disjoint files → parallel / can mark concurrency); merge or sequence where dependencies/conflicts exist.
@@ -562,7 +560,7 @@ ${clip(prd, 12000)}
    - **[No checker-rebuild tasks]** logs/teamflow/<runId>/scripts/ is ONE shared area for the whole run (archived and KEPT at run end, not discarded) — never split a task to "rebuild"/"re-create" a checker that already exists there; when coverage is missing the task EXTENDS the existing file in place. A real run burned 33 model calls / 5 min re-creating three checkers that already existed and passed.
    - **files = files the task will MODIFY (ownership)**; add **reads** for files it only reads (types, existing module interfaces, shared constants). Only files blocks parallelism; reads does not. Omit reads when unsure — unmarked files are treated as owned (safe default).
    - If duplication / extract-the-module is found, add the new module to modules with why.
-4. Read-only: do not modify code; write NO document files.${LOCALE(state) === 'en' ? ` ${langDirective('en')} (including every JSON string value).` : ''}${stateBlockInstruction(stateBlockRelPath(runId, 'tech'))}`
+4. Read-only: do not modify code, and write NO document files — the blueprint JSON in rule 3 is a **machine-channel file** (not a document), and writing it IS required (a missing blueprint degrades dev to whole-requirement mode).${LOCALE(state) === 'en' ? ` ${langDirective('en')} (including every JSON string value).` : ''}${stateBlockInstruction(stateBlockRelPath(runId, 'tech'))}`
 
 export const devPrompt = (task, tech, prd, design, root, runId, state) => `You are a senior full-stack engineer (implementation executor). The current workspace IS the target project — actually implement the following task.
 ${productCtx(root, LOCALE(state))}${stateSliceFor(state, 'dev')}${TOKEN_HYGIENE(runId)}[CONTEXT PACK]
@@ -582,7 +580,7 @@ ${clip(design, 4000)}`
   : ''}
 [PRD] Relevant acceptance criteria: ${RUN(state)}/PRD.md (grep the AC number as needed; no full read).
 [REQUIREMENTS]
-1. **Architecture blueprint first**: if the injected blueprint JSON ("<!-- blueprint -->" from tech/architect stage) is present, implement ON the existing architecture per it — follow its module split / assembly order / whys (understand the intent, don't blindly follow or rebuild); if blueprint contradicts reality, state evidence in the summary.
+1. **Architecture blueprint first**: if an **architecture blueprint** section is injected above (it lists modules with their API signatures + assembly order), implement ON the existing architecture per it — follow its module split / assembly order / whys (understand the intent, don't blindly follow or rebuild); if blueprint contradicts reality, state evidence in the summary.
 1b. [Interface contract · mandatory] Call other modules ONLY through members declared in the blueprint 'api' field / the technical design. **Never invent a member name** — e.g. if the design declares 'GameEngine.update()', do NOT call 'engine.move()'. Before writing any cross-module call, grep the target file to confirm the member exists with a compatible signature. A call to a non-existent member is a hard defect: it crashes on first invocation and QA files it as P1. When the design is silent about a member you need, grep the actual source rather than guessing a conventional name.
 2. Touch ONLY task-relevant files (see [TASK TARGET FILES]; if absent, infer from spec). Respect existing architecture & code style. Use grep to confirm other files' interfaces; no whole-file reads of irrelevant big files. [Boundary] [TASK TARGET FILES] = files you OWN and may write; [READ-ONLY CONTEXT] = files you may read but must NOT modify (another agent may own them — a concurrent write is silently lost, and the host's version guard will reject your edit anyway). If you conclude you must change a file you do not own, do NOT do it: state it in the summary with evidence instead.
 3. If spec contradicts reality, explain with evidence in the summary instead of claiming completion or expanding scope on your own.
@@ -640,7 +638,7 @@ ${headTailClip(prd, 5000, 7000)}
 ${clip(devSummary, 15000)}
 [REQUIREMENTS]
 0. [Architecture verification · mandatory (M3 quality gate)] Besides functional testing, do a **lightweight architecture check** on the delivery:
-   - If the injected blueprint JSON ("<!-- blueprint -->") is present, verify the implementation follows it (was the to-be-extracted module extracted? deps/assembly per blueprint? any deviations?).
+   - If an **architecture blueprint** section is injected above, verify the implementation follows it (was the to-be-extracted module extracted? deps/assembly per blueprint? any deviations?).
    - Check for **duplicated implementations** (e.g. multiple security wrappers/storage/adapter utilities drifting), **abstraction not extracted where it should be**, **obviously broken existing structure**.
    - Report architecture findings in the defect table format (severity P1, module =${L(state, 'doc.archModuleQ')}). This is part of the delivery quality gate, not just functional bugs.
 0a. [Interface consistency · mandatory · static, no runtime needed] For **every** cross-module call in the delivery, verify the called member really exists in the target module — grep / Read is enough, **no browser and no runtime required**. Check: (i) each imported symbol is actually exported there; (ii) each 'obj.method()' / 'Cls.static()' exists on that class or object; (iii) the call's argument shape matches the signature; (iv) the delivery honours the blueprint 'api' field. Any mismatch = **P1 blocking defect**, with the check command being the grep that fails to find the member. This is exactly the class a "files exist / has exports" checklist passes while the app is **dead on arrival** — never sign off a delivery on presence checks alone.
@@ -759,7 +757,7 @@ ${clip(devSummary, 8000)}
 ${vision ? `[Visual re-check] If QA saved screenshots under the task folder, spot-check the human-eye items visually (occlusion / layout reasonableness / animation feel) before concluding; otherwise rely on the QA report + ${t(LOCALE(state), 'doc.manualChecklist')}.` : ''}
 [REQUIREMENTS]
 0. [Architecture consistency check · mandatory (M3 quality gate)] Beyond functional ACs, check structural quality:
-   - If the injected blueprint JSON ("<!-- blueprint -->") is present: does the implementation follow it (module extracted as planned? assembly order correct? abstraction missing where required?).
+   - If an **architecture blueprint** section is injected above: does the implementation follow it (module extracted as planned? assembly order correct? abstraction missing where required?).
    - Any obvious **duplicated implementation / adapter drift / broken existing structure** (this is a code-quality floor, not optional).
    - **Verdict impact**: only functionally green but with ${L(state, 'doc.archDeviationQ')} → verdict should be **${markConditional}** (architecture rework items listed, re-accept after rework); **significant deviation / broken structure → ${markReject}**. Never treat "verify all green" as the sole evidence of "no rework needed".
 1. Verify each PRD acceptance criterion one by one.

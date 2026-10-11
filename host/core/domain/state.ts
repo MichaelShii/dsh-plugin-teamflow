@@ -16,8 +16,19 @@ import { teamflowRoot } from '../../../store.ts'
 import type { RoleKey } from '../../constants.ts'
 import { t } from '../../locales.ts'
 import { runCtxLocale } from '../locale.ts'
+// 蓝图解析与类型（机器通道共用；util 不反向依赖本文件，无环）
+import { blueprintFromText } from '../../util.ts'
+import type { Blueprint } from '../../util.ts'
 
-/** 各阶段会额外输出一段 `<!-- state -->...<!-- /state -->` 的结构化 JSON，host 提取后合并进 state.json。 */
+/**
+ * 各阶段会额外输出一段 state 块（结构化 JSON），host 提取后合并进 state.json。
+ *
+ * ⚠️ **块标记形态（2026-10-09 修正）**：open 是 `<!-- state` —— **不带尾部 `-->`**，close 是 `<!-- /state -->`。
+ * 旧形态 `<!-- state -->` 是**自闭合注释**（`<!--` + `state` + `-->`）：渲染器把整条消化掉，紧随其后的
+ * JSON 于是成了**裸文本**，在 Typora / VS Code 预览里**直接显示给用户**（实测：markdown-it + 无头 Chrome，
+ * `<!-- state -->{…}<!-- /state -->` 渲染后 JSON 可见；去掉 open 尾部的 `-->` 后完全隐藏）。
+ * 解析器**两种形态都认**（`(?:-->)?`）—— 兼容存量产物与模型旧习惯。
+ */
 export interface StageStateBlock {
   /** phase key：prd/design/scaffold/tech/dev/qa/acceptance */
   phase?: string
@@ -27,8 +38,6 @@ export interface StageStateBlock {
   touched?: string[]
   /** 本次验收结论（acceptance 阶段） */
   verdict?: string
-  /** 需同步的记忆要点 */
-  memory?: string[]
   /** free-form 结构：可放模块契约、AC 索引等供后续 slice */
   extra?: Record<string, unknown>
 }
@@ -263,10 +272,10 @@ export function saveState(projectKey: string, state: TeamflowState): boolean {
   }
 }
 
-/** 从阶段产出文本中提取 `<!-- state -->{...}<!-- /state -->` 块（找不到返回 null）。 */
+/** 从阶段产出文本中提取 state 块（找不到返回 null）。标记形态见文件上方说明。 */
 export function extractStateBlock(text: unknown): StageStateBlock | null {
   const s = text === null || text === undefined ? '' : String(text)
-  const m = s.match(/<!--\s*state\s*-->([\s\S]*?)(?:<!--\s*\/state\s*-->|$)/)
+  const m = s.match(/<!--\s*state\s*(?:-->)?([\s\S]*?)(?:<!--\s*\/state\s*-->|$)/)
   if (!m || !m[1]) return null
   try {
     const raw = JSON.parse(m[1].trim())
@@ -276,7 +285,7 @@ export function extractStateBlock(text: unknown): StageStateBlock | null {
 }
 
 /**
- * 从**展示用**文本里剥掉机器可读的 `<!-- state -->…<!-- /state -->` 块。
+ * 从**展示用**文本里剥掉机器可读的 state 块（标记形态见 `extractStateBlock` 上方说明）。
  *
  * **为什么要剥**（2026-10-08 真机 `tf-muzc59h9-pnbhyk` 用户截图实锤）：state 块是**给 host 的机器契约**，
  * 而它按契约写在子代理的**最终回复**里 ⇒ 会随子代理原文一路进**用户可见面**：
@@ -289,10 +298,35 @@ export function extractStateBlock(text: unknown): StageStateBlock | null {
  * （为了尽量取到状态），但剥展示文本若也这么做，会**吃掉**关闭标签之后可能存在的正常正文。
  * 缺关闭标签 ⇒ 不剥 ⇒ 那个块**留在可见面上**，正好把「契约被违反」暴露出来（与「空值必须可见」同源）。
  */
+/**
+ * 从一段文本里取 state 块，**两种形态都认**（2026-10-11）。
+ *
+ * - **带标记**（`<!-- state … <!-- /state -->`）：模型按旧模板写、或把块留在**回复正文**时用这条；
+ * - **纯 JSON**（无标记）：文件通道的**新契约** —— 文件是独立的 `.json`，整份就是那个 JSON；
+ *   标记的作用是「在自然语言里定位哪段是机器块」，在独立文件里纯属冗余，
+ *   而且还会多出一类失败（模型写漏关闭标记 ⇒ 整块取不到）。
+ *
+ * ⚠️ `extractStateBlock`（按标记）**不能删**：`pipeline` 与 `dev.ts` 的**回落**是在子代理的回复正文里
+ * 找块，那里仍是一大段自然语言，标记是唯一的锚。
+ */
+export function stateFromText(raw: unknown): StageStateBlock | null {
+  const s = String(raw == null ? '' : raw).trim()
+  if (!s) return null
+  if (s.indexOf('<!--') >= 0) {
+    const byMark = extractStateBlock(s)
+    if (byMark) return byMark
+  }
+  try {
+    const o = JSON.parse(s)
+    if (o && typeof o === 'object') return o as StageStateBlock
+  } catch (e) { /* 既不是带标记的块、也不是合法 JSON ⇒ null */ }
+  return null
+}
+
 export function stripStateBlock(text: unknown): string {
   const s = text === null || text === undefined ? '' : String(text)
   if (!s || s.indexOf('<!--') < 0) return s // 快路径：绝大多数文本不含块
-  return s.replace(/<!--\s*state\s*-->[\s\S]*?<!--\s*\/state\s*-->/g, '').replace(/\n{3,}/g, '\n\n').trim()
+  return s.replace(/<!--\s*state\s*(?:-->)?[\s\S]*?<!--\s*\/state\s*-->/g, '').replace(/\n{3,}/g, '\n\n').trim()
 }
 
 /** 把阶段产出的 state 块合并进 state.json。 */
@@ -439,11 +473,72 @@ export function stateBlockRelPath(runId: string, phase: string, suffix?: string 
  */
 export function readStateBlockFile(absPath: string): StageStateBlock | null {
   try {
-    const txt = readFileSync(absPath, 'utf8')
-    return extractStateBlock(txt)
+    return stateFromText(readFileSync(absPath, 'utf8'))
   } catch (e) {
     return null // 文件缺失/权限/坏编码一律回落，不抛
   }
+}
+
+/**
+ * 蓝图文件路径：`logs/teamflow/<runId>/blueprint.json`。
+ *
+ * 与 state 块**同构的机器通道**（2026-10-09）。此前蓝图要求写在 `TECHNICAL.md` 末尾，但
+ * `<!-- blueprint -->` 是**自闭合注释** ⇒ 紧随其后的 JSON 成了裸文本，在 Typora / VS Code 预览里
+ * 直接显示给用户（实测截图）；且真机实测它占该交付文档 **31%** 字符（5403/17583）—— 而 TECHNICAL.md
+ * 是 `TEAMFLOW_ARTIFACT_ORDER` 里的 **user-facing deliverable**。改走独立文件后：文档回归纯人类可读、
+ * 不依赖任何 markdown 解析器的注释语义，并与 state 块共享「沙箱只许项目内 + host 读完即删」的生命周期。
+ */
+export function blueprintRelPath(runId: string): string {
+  return `logs/teamflow/${runId}/blueprint.json`
+}
+
+/** 读**文件通道**的蓝图（缺失 / 坏 JSON ⇒ null，调用方沿回退链继续往下走）。 */
+export function readBlueprintFile(absPath: string): Blueprint | null {
+  try {
+    return blueprintFromText(readFileSync(absPath, 'utf8'))
+  } catch (e) {
+    return null
+  }
+}
+
+/**
+ * 把蓝图**原文**落档到 `$DSH_HOME/teamflow/<ws>/blueprints/<runId>.json`（2026-10-11 用户拍板 A）。
+ *
+ * 为什么需要：蓝图有三个去向，但**没有一处保留原文** ——
+ * `bd.render` 只在注入 prompt 那一刻存在、`journal.blueprint` 只存 `{modules,tasks}`、
+ * 中转文件读完即删。于是「模型到底设计成什么架构」这件事**无从复查**
+ * （实锤：只能去解压 dsh 会话轨迹、从 `write` 的 `tool/call` 参数里抠出来）。
+ * 而架构拆解生效后，**蓝图质量直接决定 dev 拆卡质量** ⇒ 人工审蓝图会变成常见需求。
+ *
+ * 落点选 `$DSH_HOME` 而非项目内：项目零残留的诉求不变、与 run 同生命周期、不碰归档白名单。
+ * ⚠️ 这条让早先那个 `blueprint-failed/` 专用目录**变得多余** —— 留档是无条件的，解析成败都有原文，
+ * 失败与否只体现在日志级别上。
+ */
+export function saveBlueprintArchive(workspace: string, runId: string, raw: string): string | null {
+  try {
+    const safeWs = String(workspace || 'default').replace(/[^a-zA-Z0-9._-]/g, '_')
+    const safeRun = String(runId || 'unknown').replace(/[^a-zA-Z0-9._-]/g, '_')
+    const dir = join(teamflowRoot(), safeWs, 'blueprints')
+    mkdirSync(dir, { recursive: true })
+    const p = join(dir, `${safeRun}.json`)
+    writeFileSync(p, raw, 'utf8')
+    return p
+  } catch (e) {
+    return null // 落档是尽力而为，绝不影响主流程
+  }
+}
+
+/**
+ * 蓝图契约指令（tech / architect 共用）：写哪个文件、文件内容形态、两条禁令。
+ * ⚠️ 只讲**通道**；「蓝图该写什么内容」（modules / api / why / tasks / 自检条款）留在各阶段自己的规则里
+ * —— 这样两个阶段不会各抄一份通道说明（抄写的代价已有实据）。
+ */
+export function blueprintInstruction(relPath: string): string {
+  return `\n\n[ARCHITECTURE BLUEPRINT · MACHINE CHANNEL · do NOT put it in your reply, and do NOT append it to any document] Write the blueprint JSON to \`${relPath}\` with a file-write tool call (create the directory if needed). The host reads it **from disk**; it is not part of your document or your answer.
+- The file's entire content is exactly this JSON (one line, no Markdown fences, no comment markers):
+{"summary":"one-sentence architecture judgment","modules":{"/relative.js":{"responsibility":"responsibility","api":["export class Foo","foo(a, b) -> Bar"],"dependsOn":["dep files"],"assemblyOrder":1,"why":"why designed this way / why separate"},"/another.js":{"responsibility":"","api":[],"why":""}},"duplications":["detected duplication / adapter drift risks"],"tasks":[{"title":"task name (by file boundary)","files":["/a.js"],"reads":["/types.js"],"spec":"one-sentence task brief"}]}
+- **Never** echo this JSON in your reply, and **never** append it to TECHNICAL.md — a machine blob inside the delivered document renders as a wall of raw JSON in the user's Markdown preview.
+- Write the file **before** you finish; if your write fails, say so in your reply (a missing blueprint degrades dev to whole-requirement mode).`
 }
 
 /**
@@ -455,9 +550,10 @@ export function readStateBlockFile(absPath: string): StageStateBlock | null {
  */
 export function stateBlockInstruction(relPath: string): string {
   return `\n\n[STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply] Write the state JSON to \`${relPath}\` with a file-write tool call (create the directory if needed). The host reads it **from disk**; it is not part of your answer.
-- The file's entire content is exactly this one-line block (the markers included):
-<!-- state -->{"phase":"<stage-key>","summary":"<≤500 chars: this stage's conclusion, useful for the next run>","memory":["<memory points>"],"extra":{<the extra keys YOUR OWN stage rules above name>}}<!-- /state -->
-- **Never** echo this block in your reply text, and **never** wrap it in Markdown fences in the file.
+- The file's entire content is exactly this JSON (one line — no Markdown fences, **no comment markers**; the file *is* the channel, so nothing needs to be located):
+{"phase":"<stage-key>","summary":"<≤500 chars: this stage's conclusion, useful for the next run>","extra":{<the extra keys YOUR OWN stage rules above name>}}
+- **Never** echo this JSON in your reply text, and **never** wrap it in Markdown fences in the file.
+- ⚠️ Only if the file write **fails beyond repair**: say so in your reply AND append the JSON there wrapped in the <!-- state / <!-- /state --> markers — that wrapped form is the host's **only** fallback channel for a reply.
 - Write the file **before** you finish; if your write fails, say so in your reply (a missing state block is a hard contract violation the host will report).
 ⚠️ **\`extra\` is required whenever your stage rules above name extra keys** (e.g. prd → \`acIndex\`/\`summary\`/\`techStack\`/\`openQuestions\`; tech → \`verifyScripts\`/\`modules\`; qa → \`verifyScripts\`). The host reads those values from **inside \`extra\`** — writing them flat (or omitting \`extra\`) drops them silently, and no later stage will see them. Omit the \`extra\` key entirely **only** when your rules name no extra fields.`
 }
