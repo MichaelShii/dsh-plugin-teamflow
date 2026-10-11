@@ -114,6 +114,47 @@ expect(bd && Object.keys(bd.modules || {}).length === 1, true, '提取 modules')
 expect(extractBlueprint('没有蓝图块'), null, '无蓝图块 → null')
 expect(extractBlueprint('<!-- blueprint -->{bad json}<!-- /blueprint -->'), null, '非法 JSON → null')
 
+console.log('── 蓝图标记形态：新（真注释块）/ 旧（自闭合注释，兼容）──')
+// 2026-10-09：`<!-- blueprint -->` 是自闭合注释，渲染器消化它 ⇒ 后面的 JSON 裸露在预览里（用户截图实锤）。
+// 上面 `blueprinted` / `broken` 两段语料用的都是**旧形态** —— 它们仍通过，即向后兼容的证明。
+{
+  const NEW = '<!-- blueprint\n{"summary":"新形态蓝图","tasks":[{"title":"T","files":["/a.js"]}]}<!-- /blueprint -->'
+  const nb = extractBlueprint(NEW)
+  expect(nb !== null && nb.summary === '新形态蓝图', true, '新形态（open 不带 -->）可提取')
+  expect(nb && nb.tasks.length === 1, true, '新形态 tasks 提取正常')
+  expect(bd !== null, true, '旧形态（自闭合注释）**仍兼容**（上方语料即旧形态）')
+  // 组合形态（open 新式、行内紧跟 JSON）也不该漏
+  const inline = '<!-- blueprint{"summary":"行内新式","tasks":[]}<!-- /blueprint -->'
+  const nb2 = extractBlueprint(inline)
+  expect(nb2 !== null && nb2.summary === '行内新式', true, 'open 后**无换行**直接跟 JSON 也能提取')
+}
+
+console.log('── 蓝图抢救：末尾截断（补齐尾部闭合 ｜ 实锤 tf-mv3op3i2-0ok7nb）──')
+// 事故：模型把 5937 字符的完整蓝图写进 blueprint.json，尾部**少了 1 个 `}`** ⇒ JSON.parse 失败；
+// 既有 `repairBlueprintJson` 只治「提前闭合」（值后多写一个 `}`），救不了「末尾没收」
+// ⇒ 蓝图整片丢失、dev 退化为单任务整体开发（该 run 规划 12 个任务，实际只跑 1 个）。
+{
+  const TRUNCATED = '{"summary":"截断样本","modules":{"/a.js":{"responsibility":"A","api":["f()"],"why":"w"}},"duplications":[],"tasks":[{"title":"T1","files":["/a.js"],"spec":"s1"},{"title":"T2","files":["/b.js"],"spec":"s2"}]'
+  expect(JSON.parse(TRUNCATED + '}') !== null, true, '语料自检：只差最后 1 个 `}`，补上即合法')
+  const r = extractBlueprint('<!-- blueprint\n' + TRUNCATED + '\n<!-- /blueprint -->')
+  expect(r !== null, true, '末尾截断的蓝图可被抢救（不再整片丢失）')
+  expect(r && r.tasks.length === 2, true, '抢救后 tasks 数量正确')
+  expect(r && Object.keys(r.modules || {}).length === 1, true, '抢救后 modules 数量正确')
+  // ⚠️ 安全边界：截断落在字符串里 ⇒ **不得变成可用蓝图**。硬补会产出「语法合法但语义缺失」的对象，
+  // 下游会拿它当权威蓝图 —— 那比直接失败更危险。
+  // ⚠️ 变异实测（2026-10-11）：把 `closeTruncated` 里的 `inStr || esc` 守卫删掉，这条**不会变红** ——
+  // 因为括号统计本身就跳过字符串内（`if (inStr) continue`），且字符串未闭合时 `JSON.parse` 必然失败，
+  // 把守卫的效应兜住了 ⇒ 该守卫是**防御性代码，行为层不可观测**。
+  // 这条断言保障的是**行为**（语义残缺的内容不得变成权威蓝图），不是守卫那一行本身。
+  const IN_STR = '{"summary":"断在字符串里","modules":{"/a.js":{"responsibility":"A'
+  expect(extractBlueprint('<!-- blueprint\n' + IN_STR + '\n<!-- /blueprint -->'), null,
+    '截断在字符串内的内容**不得变成可用蓝图**（硬补会产出语义缺失的假对象）')
+  // 多条未闭合（对象 + 数组）也要能按栈补齐
+  const TWO = '{"summary":"s","modules":{},"tasks":[{"title":"T","files":["/a.js"]'
+  const r2 = extractBlueprint('<!-- blueprint\n' + TWO + '\n<!-- /blueprint -->')
+  expect(r2 !== null && r2.tasks.length === 1, true, '多层未闭合（{ 与 [ 同时）按栈逆序补齐')
+}
+
 console.log('── 回归：蓝图「顶层值提前闭合」抢救（实锤 tf-mt85o5jj：duplications 后多一个 }，tasks 被判为块外内容 → 静默回退整体开发）──')
 const broken = '<!-- blueprint -->{"summary":"踢墙开关","modules":{"/game.js":{"responsibility":"引擎","why":"状态闭环"}},"duplications":["与 ghost/BGM 开关模式不同，需 README 标注"]},"tasks":[{"title":"T1: game.js 引擎踢墙开关","files":["/game.js"],"spec":"偏移表+开关"},{"title":"T2: ui.js 面板开关","files":["/ui.js"],"spec":"开关控件"}]}<!-- /blueprint -->'
 const bdb = extractBlueprint(broken)

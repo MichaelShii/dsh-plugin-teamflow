@@ -509,7 +509,10 @@ assertContract({
   // `STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply` —— 旧措辞**就是**块泄漏到
   // 用户 UI 的唯一原因（宿主渲染子代理回复，插件管不到）。每条还要**点名该阶段的文件路径**。
   intent: '每个阶段必须指示把 state 块**写进文件**（且不许写进回复正文）——host 从磁盘读它，回复正文里不再出现机器契约',
-  include: [/STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply/, /<!-- state -->/, /logs\/teamflow\/[^\s`]+\/state\/[^\s`]+\.json/],
+  // ⚠️ 第二段锚点锁的是**纯 JSON 契约**（2026-10-11 起文件里不再有 `<!-- state` 包裹 ——
+  // 文件是独立 .json，整份就是那个 JSON，标记只是「在自然语言里定位块」用的，在文件里纯属冗余）。
+  // 旧锚点是 `/<!-- state\r?\n/`，模板改纯 JSON 后失效。
+  include: [/STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply/, /no comment markers/, /logs\/teamflow\/[^\s`]+\/state\/[^\s`]+\.json/],
 })
 // ⚠️ 「哪个工厂对应哪个阶段键」在**渲染后文本里看不出来**（路径那时已解析成字面量）⇒ 那条映射放在
 // `smoke.js` 的**源码锁**里（`STATE-BLOCK-PATH-PER-STAGE`）。写错的表现＝该阶段永远走**回落**，
@@ -527,8 +530,15 @@ assertContract({
 })
 assertContract({
   id: 'BLUEPRINT-JSON-SHAPE', level: 'structural', targets: ['techPrompt', 'architectPrompt'],
-  intent: 'tech/architect 必须产出 <!-- blueprint --> JSON 块（modules/tasks/duplications/why），dev 继承依据',
-  include: [/<!-- blueprint -->/, /<!-- \/blueprint -->/, /"modules"/, /"tasks"/, /duplications/],
+  // 2026-10-09 改通道：蓝图从「文档末尾的 <!-- blueprint --> 块」改为**独立文件**（机器通道）——
+  // 旧形态的 open 是**自闭合注释**，紧随其后的 JSON 会裸露在 Typora / VS Code 预览里（用户截图实锤），
+  // 且真机实测占 TECHNICAL.md **31%** 字符（5403/17583）。
+  // ⚠️ 锚点必须锁**实际契约**（写文件 + 路径 + 字段说明）。旧锚点 `<!-- blueprint -->` 是**假绿**：
+  // 它一度只在 dev/qa/acceptance 的**说明文字**里出现，所以即便 tech/architect 的产出契约被整段删掉，
+  // 这条锁照样为真（本日实证，已改为锁 MACHINE CHANNEL 短语 + 文件路径）。
+  intent: 'tech/architect 必须把蓝图 JSON 写进**独立文件**（机器通道），字段含 modules/api/tasks/duplications；不得写进文档或回复',
+  include: [/ARCHITECTURE BLUEPRINT · MACHINE CHANNEL/, /logs\/teamflow\/[^\s`]+\/blueprint\.json/, /"modules"/, /"tasks"/, /duplications/],
+  exclude: [/at the end of the document/],
 })
 assertContract({
   id: 'DEV-ON-BLUEPRINT', level: 'structural', targets: 'devPrompt',

@@ -22,7 +22,7 @@
  *   TF_ORCH_BASE=<能解析 peer 的源码副本> node test/orchestration.test.js
  * 等价的 A/B 对照脚本见 `.workbuddy/verify-2026-09-26/h5-stage-convergence.mjs`。
  */
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -127,7 +127,7 @@ const TRIAGE_EXPLORE = JSON.stringify({
 /** 构造一次 run：stub 子代理 + 隔离的 $DSH_HOME / 工作区。 */
 async function runScenario(
   name,
-  { options, resume = null, emptyNext = false, failLabel = null, artifacts = null, cancelAfter = 0, triage = null, extraFiles = 0, presetSupplement = null, prdOutput = null, stateViaFile = false },
+  { options, resume = null, emptyNext = false, failLabel = null, artifacts = null, cancelAfter = 0, triage = null, extraFiles = 0, presetSupplement = null, prdOutput = null, stateViaFile = false, techOutput = null, techDoc = null, blueprintViaFile = false, blueprintRaw = null },
 ) {
   const rootTmp = mkdtempSync(join(tmpdir(), `tf-orch-${name}-`))
   process.env.DSH_HOME = `${rootTmp}/home`
@@ -145,6 +145,7 @@ async function runScenario(
   let doEmpty = emptyNext
   let qaRound = 0
   let stateFileErr = '' // `stateViaFile` 的桩自检（块/路径没取到 ⇒ 断言会点名，而不是静默退化成回落）
+  let blueprintFileErr = '' // `blueprintViaFile` 的桩自检（同上，针对蓝图独立文件通道）
   const stubStart = async (_provider, init) => {
     const label = String((init && init.label) || '')
     // 捕获阶段 prompt（锁「同一 run 内 state 刷新」用：后续阶段的 state slice 必须带上 PRD 写下的东西）
@@ -184,6 +185,24 @@ async function runScenario(
         text = prdOutput
       }
     }
+    // 技术方案阶段的桩钩子。三者**互相独立**，可自由组合：
+    // · techDoc      → 落一份 TECHNICAL.md（历史通道 ③）
+    // · techOutput   → 回复文本（注入空块 / 双重产出等）
+    // · blueprintViaFile → 蓝图**独立文件**（新主通道 ②）；不给 techOutput 时回复默认 LONG（够长、不含蓝图）
+    const isTech = !labelHit && !doEmpty && /技术方案|架构蓝图/.test(label)
+    if (blueprintViaFile && isTech) {
+      // 路径**从 prompt 里取** —— 顺带证明「指令里真的点了路径」（写死会掩盖路径没注入的 bug）。
+      try {
+        const p = promptText.match(/logs\/teamflow\/[^\s`]+\/blueprint\.json/)
+        if (!p) throw new Error('技术方案 prompt 里没有蓝图文件路径')
+        const abs = join(work, p[0])
+        mkdirSync(dirname(abs), { recursive: true })
+        writeFileSync(abs, blueprintRaw == null ? BLUEPRINT_JSON : blueprintRaw, 'utf8')
+      } catch (e) { blueprintFileErr = String((e && e.message) || e) }
+    }
+    if (techDoc != null && isTech) putArtifact('TECHNICAL.md', techDoc)
+    if (techOutput && isTech) text = techOutput
+    else if (blueprintViaFile && isTech) text = LONG
     doEmpty = false
     return {
       id: `c-${children.length}`,
@@ -229,6 +248,9 @@ async function runScenario(
     childCount: children.length, blueprint: journal.blueprint,
     humanIntervention: !!journal.humanIntervention,
     stateFileErr,
+    blueprintFileErr,
+    // 蓝图中转文件是否还留在项目里（新契约要求 host 读完即删）—— 必须在 rmSync 之前取
+    blueprintFileLeft: existsSync(join(work, `logs/teamflow/${journal.id}/blueprint.json`)),
     // PRD 确认单（ADR-0011 ①）：暂停后必须能读到落盘的 sheet（进程重启后主线程还要靠它讲「批准什么」）
     confirmSheet: journal.confirmSheet ?? null,
     journalSupplement: journal.requirementSupplement ?? null,
@@ -692,6 +714,15 @@ console.log('\n[20] PRD 确认单：有主观项（kind=taste）⇒ 暂停；只
   const kids = afterResume.childLabels.filter((l) => !/需求分诊|triage/i.test(String(l)))
   ok(has(kids, '设计说明'), `resume 后 design 真跑（实测 ${JSON.stringify(kids).slice(0, 150)}）`)
   ok(!has(kids, '梳理 PRD'), `PRD 被跳过（复用已完成产物）（实测 ${JSON.stringify(kids).slice(0, 150)}）`)
+  // ⚠️ 标签不得把「**首次尝试**」说成「**补跑**」（2026-10-11 用户实测发现 run tf-mv3rdt0y-qmlxl3）：
+  // `todoDefs` 的判据 `!st || !st.done` 同时含「此前失败」与「从未尝试」两种形态，
+  // 而 `if (resume)` 分支原先**无条件**用 `dev.taskRerun` ⇒ 只要走 resume 路径（哪怕 dev 一次都没跑过，
+  // 比如确认单暂停后续跑）任务标签就全挂「（补跑）」，读起来像「上次跑挂了」，**不实**。
+  // 这个用例正是那种形态：PRD 被跳过、断点从 design 开始、dev 从未执行 ⇒ 标签里**不该**有「补跑」。
+  const devLabels = afterResume.journal.stages.map((s) => String(s.label || '')).filter((l) => l.startsWith('开发 · '))
+  ok(devLabels.length > 0, `resume 后 dev 真跑了（实测 ${devLabels.length} 条）`)
+  ok(devLabels.every((l) => !/补跑/.test(l)),
+    `**首次尝试的任务不得标「补跑」**（实测 ${JSON.stringify(devLabels.slice(0, 4))}）`)
 
   // ⑧ AC 的**兜底与来源标注**（ADR-0011 C 方案）：`extra` 兑现率仅 ~20%（7/34 state.json）
   //    ⇒ 结构化优先、正文兜底、**来源必须自曝**（空壳比空更糟：会让人以为「没什么要注意的」）。
@@ -912,6 +943,89 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
   ok(r2.ok === false && /补录被拒绝/.test(String(r2.error)),
     `对照：PRD 之后已有阶段跑过 ⇒ 仍**拒绝**补录（实测 ${String(r2.error).slice(0, 70)}）`)
   rmSync(home, { recursive: true, force: true })
+}
+
+/* ── [25] 蓝图判据：语法合法但**内容为空**的块不算解析成功 ── */
+console.log('\n[25] 蓝图判据：内容为空的块不算成功 —— 要么回退读文件，要么告警，绝不静默')
+{
+  // ⚠️ 夹具必须**过实质校验**：`judgeDeliverable` 有阶段长度下限，太短先判 insubstantial（且会回读任务夹
+  // 文件兜底）⇒ tech 阶段直接失败，压根跑不到蓝图提取代码。第一版夹具只 47 字符，测了个寂寞。
+  const BODY = '## 技术方案\n' + '本阶段已完成架构判断、文件边界划分与任务拆解，逐条对应验收条件与工程约束。'.repeat(20)
+  const EMPTY_BLOCK = `${BODY}\n\n<!-- blueprint -->{}<!-- /blueprint -->\n`
+  const TECH_DOC_LONG = `${BODY}\n\n<!-- blueprint -->\n${BLUEPRINT_JSON}\n<!-- /blueprint -->\n`
+
+  // (a) 回复给空块、但 TECHNICAL.md 里有真蓝图 ⇒ 必须回退读文件把任务拿回来
+  const a = await runScenario('bp-empty-fallback', {
+    options: FULL_OPTS, techOutput: EMPTY_BLOCK, techDoc: TECH_DOC_LONG,
+  })
+  ok(a.blueprint && (a.blueprint.tasks || []).length > 0,
+    `回复是空蓝图块时回退读 TECHNICAL.md 取任务（实测 tasks=${a.blueprint ? (a.blueprint.tasks || []).length : 0}）`)
+  ok(a.logs.some((l) => /蓝图从任务夹 TECHNICAL.md 提取/.test(l)),
+    '回退取到蓝图时有可见日志 blueprintFromFile')
+
+  // (b) 回复给空块、文件里也没有块 ⇒ 必须告警。
+  // ⚠️ 这是本批修的**死条件**：旧判据 `bd.summary === undefined` 里 summary 恒为 string
+  // （`extractBlueprint` 用 `typeof x === 'string' ? x : ''` 归一）⇒ 永不成立 ⇒ `{}` 被当成
+  // 解析成功 ⇒ 既不回退读文件也不告警，dev 静默退化成整体开发。
+  const b = await runScenario('bp-empty-warn', { options: FULL_OPTS, techOutput: EMPTY_BLOCK })
+  ok(b.warnLogs.some((m) => /蓝图块解析失败/.test(m)),
+    '空蓝图块且无从回退时必须告警 blueprintParseFail（旧判据下这里是静默）')
+  ok(!b.blueprint,
+    `空块不得被注入成蓝图（实测 blueprint=${JSON.stringify(b.blueprint ?? null)}）`)
+
+  // (c) 回复里**没有**块、但任务夹 TECHNICAL.md 里有块且不可用 ⇒ 同样必须告警。
+  // 锁的是 `sawBlock` **跨两条通道**这条设计：只盯回复文本的话，ADR-0008 收口约定下
+  // 「模型把蓝图写进文档、但写坏了」这个真实失败会整条静默。
+  const c = await runScenario('bp-file-broken', {
+    options: FULL_OPTS, techOutput: BODY, techDoc: `${BODY}\n\n<!-- blueprint -->{}<!-- /blueprint -->\n`,
+  })
+  ok(c.warnLogs.some((m) => /蓝图块解析失败/.test(m)),
+    '回复无块、文档里的块不可用 ⇒ 仍须告警（sawBlock 必须跨两条通道）')
+
+  // (d) 回复无蓝图、文档无蓝图，但**独立文件**（新主通道）里有 ⇒ 从文件提取，且中转文件读完即删
+  const d = await runScenario('bp-channel', { options: FULL_OPTS, blueprintViaFile: true })
+  ok(!d.blueprintFileErr, `桩自检：技术方案 prompt 里点出了蓝图文件路径（实测 ${d.blueprintFileErr || 'ok'}）`)
+  ok(d.blueprint && (d.blueprint.tasks || []).length > 0,
+    `蓝图从**独立文件**提取（实测 tasks=${d.blueprint ? (d.blueprint.tasks || []).length : 0}）`)
+  ok(d.logs.some((l) => /蓝图从独立文件/.test(l)), '走的是新通道（日志 blueprintFromChannel）')
+  ok(d.blueprintFileLeft === false, '中转文件**读完即删**（不留项目里；可续跑终态也不残留）')
+
+  // (e) 独立文件在但不可用 ⇒ 不得阻断回退链，须继续走 ③ TECHNICAL.md
+  const e = await runScenario('bp-channel-broken', {
+    options: FULL_OPTS, blueprintViaFile: true, blueprintRaw: '{}', techDoc: TECH_DOC_LONG,
+  })
+  ok(e.blueprint && (e.blueprint.tasks || []).length > 0,
+    '独立文件不可用时继续回退到 TECHNICAL.md（不阻断回退链）')
+  ok(e.logs.some((l) => /蓝图从任务夹 TECHNICAL.md 提取/.test(l)), '该回退有可见日志（blueprintFromFile）')
+  ok(e.blueprintFileLeft === false, '不可用的中转文件同样被清掉（不留垃圾）')
+
+  // (f) 模型**同时**回显蓝图 + 写文件（违反契约）⇒ ① 命中、② 的读取分支整段跳过，
+  //     但中转文件**仍须清掉** —— 清理必须与「通道是否命中」无关。
+  //     漏删的后果不对称：正常终态还能靠归档兜底，而可续跑终态（failed/cancelled/interrupted）**根本不归档**
+  //     ⇒ 文件会永久留在用户项目里。
+  const f = await runScenario('bp-double', {
+    options: FULL_OPTS,
+    techOutput: `${LONG}\n\n<!-- blueprint\n${BLUEPRINT_JSON}\n<!-- /blueprint -->`,
+    blueprintViaFile: true,
+  })
+  ok(f.blueprint && (f.blueprint.tasks || []).length > 0, '双重产出时 ① 回复正文优先（从回复提取，不误读文件）')
+  ok(f.blueprintFileLeft === false, '**双重产出也不漏删**中转文件（清理与通道命中无关）')
+
+  // (g) 蓝图原文**无条件落档**到 $DSH_HOME（2026-10-11 用户拍板 A）—— 项目内那份读完即删，
+  //     原文必须另有一处可复查。此前三处去向都不留原文：`bd.render` 只在注入 prompt 那一刻存在、
+  //     `journal.blueprint` 只存 {modules,tasks}、中转文件读完即删 ⇒ 只能去解压 dsh 会话轨迹。
+  const g = await runScenario('bp-unparsable', {
+    options: FULL_OPTS, blueprintViaFile: true, blueprintRaw: '{"summary":"只写了一半',
+  })
+  ok(g.blueprintFileLeft === false, '解析不出来的中转文件同样清掉（不留项目里）')
+  ok(g.logs.some((l) => /蓝图已落档到/.test(l)), '**解析失败时也落档**（原文供人工诊断）')
+  ok(g.logs.some((l) => /蓝图解析不出来/.test(l)), '解析失败仍须告警（不静默回退整体开发）')
+  ok(g.warnLogs.filter((m) => /蓝图/.test(m)).length === 1, '**只发一条蓝图 warn**（落档告警与 sawMark 兜底不得重复）')
+
+  // (h) **成功解析的蓝图同样要落档** —— 架构拆解生效后「审蓝图 = 审 dev 拆卡质量」，常态路径才是主场
+  const k = await runScenario('bp-archived-ok', { options: FULL_OPTS, blueprintViaFile: true })
+  ok(k.blueprint && (k.blueprint.tasks || []).length > 0, '成功路径仍照常解析')
+  ok(k.logs.some((l) => /蓝图已落档到/.test(l)), '**成功解析也落档**（常态路径不能漏）')
 }
 
 if (failed) {

@@ -15,7 +15,7 @@
  *
  * 运行时字段（`__runCtx`，注释明写"不持久化"）与常量（`version`，由 `emptyState` 供给）**豁免**。
  */
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -177,6 +177,53 @@ console.log('\n── stripStateBlock：机器契约块不得进展示面（2026
   ok(extractStateBlock(body + '\n\n' + blk) !== null, '机器面仍能从**原始**文本取到块（剥的只是展示副本）')
 }
 
+/* ── 标记形态：新（真注释块）必须能解析，旧（自闭合注释）必须仍兼容 ──
+ * 2026-10-09：`<!-- state -->` 是**自闭合注释**（`<!--`+`state`+`-->`），渲染器把整条消化掉
+ * ⇒ 紧随其后的 JSON 裸露在 Typora / VS Code 预览里（用户截图实锤）。新形态去掉 open 尾部的
+ * `-->`，让整块成为一个**真注释**。存量产物与模型旧习惯都可能是旧形态 ⇒ 解析器必须**两种都认**。 */
+console.log('\n── state 块标记形态：新形态解析 / 旧形态兼容 / 两种都能剥离 ──')
+{
+  const { stripStateBlock, extractStateBlock } = await import('../host/core/domain/state.ts')
+  const NEW = '<!-- state\n{"phase":"qa","summary":"新形态"}<!-- /state -->'
+  const OLD = '<!-- state -->{"phase":"qa","summary":"旧形态"}<!-- /state -->'
+  ok(extractStateBlock(NEW) && extractStateBlock(NEW).summary === '新形态', '新形态（open 不带 -->）可解析')
+  ok(extractStateBlock(OLD) && extractStateBlock(OLD).summary === '旧形态', '旧形态（自闭合注释）**仍兼容**解析')
+  ok(stripStateBlock('正文\n\n' + NEW) === '正文', '新形态可被剥离')
+  ok(stripStateBlock('正文\n\n' + OLD) === '正文', '旧形态仍可被剥离（兼容存量展示面）')
+  // ⚠️ 负向护栏：新 open（`<!-- state`）比旧 open 宽松得多，必须有「不成对就不动」的证明。
+  const prose = '正文 <!-- state 这个词出现在句子里 --> 尾部'
+  ok(stripStateBlock(prose) === prose, '**正文明文里出现 `<!-- state` 不误剥**（没有成对 close 就不动）')
+  ok(extractStateBlock(prose) === null, '同一段明文也不被误当成 state 块')
+}
+
+console.log('\n── state 块文件通道：纯 JSON（无标记）也能读 ──')
+{
+  const { stateFromText, extractStateBlock } = await import('../host/core/domain/state.ts')
+  const PURE = '{"phase":"tech","summary":"纯 JSON 无标记","extra":{"verifyScripts":["a.mjs"]}}'
+  // 2026-10-11 新契约：文件是独立 .json，整份就是那个 JSON ⇒ 标记纯属冗余。
+  ok(stateFromText(PURE) && stateFromText(PURE).summary === '纯 JSON 无标记', '**纯 JSON（无标记）可读**（文件通道新契约）')
+  ok(stateFromText(PURE) && stateFromText(PURE).extra && stateFromText(PURE).extra.verifyScripts.length === 1,
+    '纯 JSON 的 `extra` 也能取到（不因去掉标记而丢字段）')
+  // 带标记的仍要认：模型可能按旧模板写，或把块留在回复正文
+  const MARKED = '<!-- state\n' + PURE + '\n<!-- /state -->'
+  ok(stateFromText(MARKED) && stateFromText(MARKED).summary === '纯 JSON 无标记', '带标记的**仍兼容**读（旧模板 / 回复回落）')
+  // ⚠️ 回落侧（pipeline / dev.ts 在子代理回复正文里找块）**必须仍以标记为唯一锚**
+  ok(extractStateBlock('正文\n' + PURE + '\n正文') === null,
+    '回落侧的 `extractStateBlock` 不认裸 JSON（自然语言里没有标记就无法定位）')
+  // ⚠️ 接线：光有 `stateFromText` 单测不够 —— `readStateBlockFile` **真的用它**才作数
+  // （否则文件通道拿到的纯 JSON 会被按标记解析，静默返回 null）。
+  const { readStateBlockFile } = await import('../host/core/domain/state.ts')
+  const tmp = mkdtempSync(join(tmpdir(), 'tf-state-pure-'))
+  const fp = join(tmp, 'prd.json')
+  try {
+    writeFileSync(fp, PURE, 'utf8')
+    const got = readStateBlockFile(fp)
+    ok(got && got.summary === '纯 JSON 无标记', '`readStateBlockFile` 能读**纯 JSON 文件**（调用点接线，不只是单测）')
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+}
+
 console.log('\n── STATE BLOCK 契约：extra 在**模板本体**里 ＋ 走**文件通道**（ADR-0011 A ＋ 2026-10-08）──')
 const { stateBlockInstruction, stateBlockRelPath } = await import('../host/core/domain/state.ts')
 const SBI = stateBlockInstruction(stateBlockRelPath('tf-x', 'prd'))
@@ -184,8 +231,12 @@ ok(/"extra":\{/.test(SBI), '**模板本体含 `extra` 键**（只在散文里要
 ok(/acIndex/.test(SBI), '模板里点名 prd 的 extra 键（否则「required」落不到具体字段上）')
 // ⚠️ 锚点句从「Append one section at the END of your answer」换成 `STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply`
 // —— 旧措辞**就是**块泄漏到用户 UI 的唯一原因（宿主渲染子代理回复，插件管不到）。见 state.ts 注释。
-ok(/STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply/.test(SBI) && /<!-- state -->/.test(SBI), '契约锚点两句保留（prompt-contract 的 L1 门禁锁的就是它们）')
-ok(/do NOT put it in your reply/.test(SBI) && /Never\*\* echo this block in your reply/.test(SBI), '明确要求：**不许把块写进回复正文**（这是机器通道分离的核心条款）')
+// ⚠️ 第二段锚点锁的是**新契约**（2026-10-11 起：文件里是**纯 JSON**，不再有 `<!-- state` 包裹）。
+// 演变链：旧措辞「Append one section at the END of your answer」是块泄漏到用户 UI 的唯一原因 →
+// 改文件通道（回复里不许出现块）→ 再去掉文件里的标记（文件是独立 .json，标记纯属冗余，
+// 且会多出「写漏关闭标记」这类失败）。现在锁 `no comment markers` 证明契约确实是纯 JSON。
+ok(/STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply/.test(SBI) && /no comment markers/.test(SBI), '契约锚点两句保留（prompt-contract 的 L1 门禁锁的就是它们）')
+ok(/do NOT put it in your reply/.test(SBI) && /echo this JSON in your reply/.test(SBI), '明确要求：**不许把块写进回复正文**（这是机器通道分离的核心条款）')
 ok(SBI.includes(stateBlockRelPath('tf-x', 'prd')), '指令里**点出该阶段的文件路径**（否则模型无从写起）')
 ok(stateBlockRelPath('tf-x', 'dev', 'dev-2').endsWith('/state/dev-dev-2.json') && stateBlockRelPath('tf-x', 'prd').endsWith('/state/prd.json'), '路径：阶段键 ＋ 可选并发后缀（dev 多任务必须各写各的）')
 
