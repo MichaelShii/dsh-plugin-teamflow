@@ -137,7 +137,7 @@ console.log('── 3) host 模块结构 ──')
 // v0.2.5：core 已按职责分子目录（stages/ agent/ workspace/ domain/，pipeline/triage/locale/report 留根）；
 // 这里写**相对 core 的路径**（含子目录），与 smoke 的「真实文件 ⊆ 清单」门禁同一坐标系。
 const CORE_FILES = [
-  'pipeline', 'triage', 'clarify-log', 'locale', 'report', // core 根：编排门面 + 分诊决策 + 澄清埋点 + 语言/汇报横切
+  'pipeline', 'triage', 'clarify-log', 'confirm', 'locale', 'report', // core 根：编排门面 + 分诊决策 + 澄清埋点 + PRD 确认单 + 语言/汇报横切
   'stages/dev', 'stages/qa', 'stages/acceptance', // stages/：流水线各阶段的实现
   'agent/context', 'agent/runner', 'agent/guard', 'agent/metering', // agent/：子代理生命周期
   'workspace/sanity', 'workspace/runlogs', 'workspace/acl-preflight', 'workspace/products', 'workspace/browser-probe', // workspace/
@@ -190,7 +190,7 @@ ok(/interruptedCount/.test(hostSrc), '中断残留计数提示')
 ok(/persistJournal\(journal\)/.test(hostSrc), 'checkpoint 落盘')
 ok(/resumeRun\(/.test(hostSrc) && /interruptedPhaseOf\(/.test(hostSrc) && /buildResumeProducts\(/.test(hostSrc), 'resume 逻辑（起点/产物重建）')
 ok(/resumed\(/.test(hostSrc) && /logSkip\(/.test(hostSrc), 'executePipeline 阶段跳过')
-ok(/stage\.output = clip\(text, 50000\)/.test(hostSrc), '阶段产物全文记录（续跑重建上下文）')
+ok(/stage\.output = clip\(stripStateBlock\(text\), 50000\)/.test(hostSrc), '阶段产物全文记录（续跑重建上下文；**先剥机器块**——见 3c）')
 const storeSrc = readFileSync(join(here, '../store.ts'), 'utf8')
 ok(/export function loadJournals/.test(storeSrc) && /export function persistJournal/.test(storeSrc) && /export function serializeJournal/.test(storeSrc), 'store.js 导出 journal 三件套')
 ok(/status === 'running' \|\| j\.status === 'pending'/.test(storeSrc), 'loadJournals 中断标记逻辑（store.js）')
@@ -312,7 +312,7 @@ ok(!/次后仍无产出，需人工介入`/.test(pipelineSrc), 'pipeline：不�
 ok(/Engineering actions carried verbatim/.test(promptsSrc) && /git actions from the PRD/.test(promptsSrc), 'prompts：PRD 承接工程指令 + tech 蓝图传递 git 动作')
 ok(/Engineering action execution/.test(promptsSrc) && /execute the action BEFORE writing code/.test(promptsSrc), 'prompts：dev 先执行 git 动作再写码')
 ok(/repairBlueprintJson/.test(utilSrc), 'util：蓝图 JSON 提前闭合抢救（防静默回退整体开发）')
-ok(/TECHNICAL\.md.*extractBlueprint|extractBlueprint\(readFileSync/.test(pipelineSrc), 'pipeline：蓝图提取回退任务夹 TECHNICAL.md（模型写进文档而非回复输出时 M2 拆卡不退化，实锤 r13 单任务整体开发）')
+ok(/const fromFile = extractBlueprint\(raw\)/.test(pipelineSrc) && /bdUsable\(fromFile\)/.test(pipelineSrc), 'pipeline：蓝图提取回退任务夹 TECHNICAL.md，且回退结果**过实质校验**才采用（模型写进文档而非回复输出时 M2 拆卡不退化，实锤 r13 单任务整体开发）')
 ok(/token 观测/.test(guardSrc) && /重复 read|验证脚本重复执行/.test(hostSrc) && /observeToolCalls/.test(guardSrc), 'guard：token 观测信号（重复读/验证循环只记 warning 不中止）')
 ok(/蓝图块解析失败/.test(hostSrc) && /devAssign: \(mainTask && mainTask\.devAssign\) \|\| null/.test(backlogSrc), 'pipeline/backlog：蓝图解析失败告警 + 子卡继承 devAssign')
 
@@ -515,7 +515,7 @@ ok(/!verdict\.ok && text && stop === 'completed'/.test(runnerSrc), 'runner：**�
 ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
-ok(/"version": "0\.2\.6"/.test(pkgSrc), 'package.json：版本 0.2.6（release-v0.2.6 开发线）')
+ok(/"version": "0\.2\.7"/.test(pkgSrc), 'package.json：版本 0.2.7（release-v0.2.7 开发线）')
 // 安装期钩子白名单：只有 prepare 可以在消费者安装时**不**运行。
 // 实锤（2026-10-03 用户实锤）：v0.2.5 的 `postinstall: lefthook install` 在**消费者从 registry 安装**时也会跑，
 // 而 lefthook 是 devDependency（tarball 里不存在）⇒ `npm error 'lefthook' 不是内部或外部命令` ⇒ **整个安装失败**。
@@ -558,9 +558,9 @@ ok(!/queue as \{ __teamflowPending/.test(guardSrc) && !/function flushReminders/
 ok(/function timingOf/.test(guardSrc) && /stateOf\(session, 'subagentTiming'\)/.test(guardSrc) && /activeThrough/.test(guardSrc), 'guard：挂死检测首选 subagentTiming 投影（active.through）')
 ok(/来源：subagentTiming 投影/.test(hostSrc) && /投影不可用，回退事件视图/.test(hostSrc), 'guard：投影不可用才回退事件视图启发式（诊断区分两条路径）')
 ok(!/runtime\.tokenMeter/.test(contextSrc) && !/tokenMeter\?: any/.test(contextSrc), 'context：tokenMeter 死注入已清理（static inject / setRuntime / runtime 三处）')
-ok(/const FS_CONTENTION = \//.test(guardSrc) && /file no longer exists/.test(guardSrc), 'guard：fs 竞争类错误不进环境指纹（obs-r5 T3 实锤：单文件级可自愈冲突被误判成 env-unavailable，而活已干完）')
+ok(/isFsSelfHealFailure\(text\)/.test(guardSrc) && /const FS_SELF_HEAL_TEXT = \/file has not been read/.test(utilSrc) && /export function isFsSelfHealFailure/.test(utilSrc), 'util/guard：会话内可自愈的防护门禁失败（含 issue #15 的 FS_NOT_OBSERVED）不进环境指纹（行为断言见 diagnostic.test.js 的 issue #15 段）')
 ok(/lastSuccessAt = Date\.now\(\)/.test(guardSrc) && /GUARD_ENV_PROGRESS_GRACE_MS/.test(guardSrc), 'guard：env-unavailable 前有进展豁免（用**成功**调用判定，不用 lastMutationAt —— 后者在 tool/call 就更新，反复失败的 write 会让检测永不触发）')
-ok(/TOOL_SCOPE_LIMIT/.test(guardSrc) && /not a member of an active Agent Team/.test(guardSrc) && /TOOL_SCOPE_LIMIT\.test/.test(guardSrc), 'guard：\u300c工具在这一层不适用\u300d（Agent Team 成员身份 / maxDepth）不进环境指纹 —— obs-r5 实锤：QA 复验调 send_message 连错 3 次被 abort，整个 run failed')
+ok(/isToolScopeFailure\(text\)/.test(guardSrc) && /export function isToolScopeFailure/.test(utilSrc) && /\|unknown tool\/i/.test(utilSrc), 'util/guard：\u300c工具在这一层不适用\u300d（Agent Team 身份 / maxDepth / 工具名不存在）不进环境指纹 —— obs-r5 调 send_message 连错 3 次被 abort；`unknown tool` 同族（tf-mul7l30d 实测：把 git 当工具名调）。行为断言见 diagnostic.test.js')
 ok(/7c\. \[End-to-end coverage/.test(promptsSrc), 'prompts：dev 有状态交付物必须给端到端运行证据（obs-r5 实锤：单元断言全绿但首关永不可清空，QA 400k 帧模拟才暴露）')
 ok(/\[No collaboration tools/.test(promptsSrc) && /send_message \/ interrupt_agent \/ list_agents \/ subagent/.test(promptsSrc), 'prompts：禁调协作工具（depth-1 子代理无 Agent Team 身份，调用必失败且会被 env guard 误读）')
 
@@ -690,6 +690,9 @@ ok(/log\.prdAssumptionsMissing/.test(pipelineSrc), 'pipeline：PRD 未给假设�
 ok(/triage: journal\.triage \|\| null/.test(storeSrc) && /assumptions: journal\.assumptions \|\| null/.test(storeSrc) && /requirementSupplement: journal\.requirementSupplement \|\| null/.test(storeSrc), 'store：serializeJournal 序列化 triage/assumptions/requirementSupplement')
 ok(/report\.assumptions/.test(reportSrc) && /const assumptionsLine/.test(reportSrc), 'report：完成汇报显式回带「本次基于以下假设启动」')
 ok(/\[CLARIFIED — the user answered the open questions below/.test(pipelineSrc), 'pipeline：澄清答复作为权威输入进 PRD（[CLARIFIED] 块，声明不得再自行假设）')
+// 确认单「要改」走的是另一段语义（2026-10-08）：用户不是答我问的问题，是对上一版 PRD 提修改要求
+// ⇒ 必须有**自己的补录块**。共用 [CLARIFIED] 会让模型去找一份那时还不存在的「待澄清清单」。
+ok(/\[REVISED — the user reviewed the previous PRD and asked for these changes/.test(pipelineSrc) && /resume && resume\.redo/.test(pipelineSrc), 'pipeline：回退重跑 PRD 时用 [REVISED] 块（与澄清轮的 [CLARIFIED] 分叉，不共用措辞）')
 // B1 回归锁（2026-09-16 实测 tf-mu34afd2-wcjaw1）：`journal.options` 是白名单字面量，直接传给 executePipeline
 // 会把 requirementSupplement / __triage 静默丢掉（澄清结论进不了 PRD、journal.triage 永远为空、shadow 埋点空转）。
 ok(/const execOptions = Object\.assign\(\{\}, journal\.options, \{[\s\S]{0,220}requirementSupplement: options\.requirementSupplement \|\| null,[\s\S]{0,140}__triage:/.test(pipelineSrc), 'pipeline：executePipeline 收到「白名单 + 内部字段」（澄清答复/分诊裁决不得再被丢）')
@@ -734,6 +737,223 @@ ok(/log\.triagePreflightFail/.test(pipelineSrc) && /log\.clarifyAbort/.test(pipe
 ok(/do NOT re-ask/.test(hostSrc) && /do NOT re-ask/.test(pipelineSrc), '分诊输入必须带上 requirementSupplement（[CLARIFIED]），否则已答复的问题会被反复问')
 ok(/const alreadyClarified = !!String\(options\.requirementSupplement \|\| ''\)\.trim\(\)/.test(hostSrc) && /&& !alreadyClarified/.test(hostSrc), '收敛规则：调用方还没给过澄清答复时才拦（给过就不再拦，防不收敛）')
 ok(/log\.clarifyProceedWithAssumptions/.test(pipelineSrc) && /const clarified = !!String\(journal\.requirementSupplement/.test(pipelineSrc), 'pipeline 同收敛规则：已澄清 → 残余 blocker 作假设开工（可见 warn）')
+ok(/const resumed = \(phase\) => !!resume && PHASE_ORDER\.indexOf\(phase\) < PHASE_ORDER\.indexOf\(resume\.phase\)/.test(pipelineSrc), 'pipeline：跳过判定由 resume.phase 驱动（indexOf 比较）')
+// 零阶段断点修正（ADR-0011 ④，2026-10-06）：`interruptedPhaseOf` 只有一个循环出口，于是「什么都没做」与
+// 「什么都做完了」共用 `return 'acceptance'` ⇒ 零阶段 run（澄清闸门兜底 `abortForClarification` 落下的那一种）
+// 续跑时前六个阶段全走「复用存档产物」、而零阶段的 `buildResumeProducts` 返回 `{}` ⇒ 产物全 undefined
+// （PRD 为空）⇒ **跳过整条流水线直接拿空 PRD 跑验收**。实机探针：断点实测 = acceptance。
+// 行为侧断言（含「零阶段续跑后 PRD 真起子代理」）见 test/orchestration.test.js 第 ⑩ 组。
+ok(/if \(\(journal\.stages \|\| \[\]\)\.length === 0\) return 'prd'/.test(pipelineSrc), 'pipeline：零阶段 run 的断点 = prd（不得落进「全都跑完」出口，否则续跑 = 空 PRD 直接验收）')
+// 第二层（2026-10-07）：**启用过但从未尝试**的阶段也必须是断点，不得 continue。
+// 否则「PRD done、其后全空」（确认单暂停落下的形态）会一路走到 `return 'acceptance'` ⇒ 跳过
+// design/tech/dev/qa 直接验收。历史审计：95 个 journal 里 4 条命中（均 lite 档，old 全为 acceptance）。
+// ⚠️ 锁结构不锁排版/类型断言写法：`stageSet` 可能带 `as string[]` 之类的强制转换，
+// 把强制转换写进匹配串会让断言在无害改动下假红（本仓 §17「源码断言锁只锁内容、不锁排版」）。
+ok(/if \(phaseStages\.length === 0\) \{[\s\S]{0,200}\.includes\(phase\)\) return phase/.test(pipelineSrc) && /const stageSet = resolveStages\(/.test(pipelineSrc), 'pipeline：启用过但从未尝试的阶段 = 断点（条件阶段未启用才 skip；区别靠 resolveStages 阶段集）')
+
+// `guess` = blocker 的**软字段**（ADR-0011 批 3a，2026-10-07）：模型自己给的倾向，供用户快速作答。
+// ⚠️ 三条纪律各有门禁：① prompt 里必须标 OPTIONAL（不得升格必填）；② qualifyBlockers 不进合格线
+//   （缺它不该让这条问题被丢弃 —— 否则等于按「模型是否听话」筛需求）；③ 渲染层显式区分有无。
+ok(/OPTIONAL/.test(promptsSrc) && /"guess"/.test(promptsSrc), 'prompts：guess 在输出契约里标为 OPTIONAL（升格必填 = 与「模型无关」纪律冲突）')
+ok(/guess\?: string/.test(triageSrc) && /软字段/.test(triageSrc), 'triage：guess 是可选软字段（注释写明为什么不进合格线）')
+ok(/const guess = String\(\(o && o\.guess\)/.test(triageSrc), 'triage：guess 在合格判定之外单独采集（结构上无法混进判定条件）')
+// ⚠️ 这条是 M6 变异实测补上的（2026-10-07）：把 guess 升格进合格线时，上面三条锁**全绿**，
+// 只有行为断言（triage-gate）红 ⇒ 源码锁漏了「判定条件恰好是四段」这件事本身。补上。
+ok(/if \(question && readings\.length >= 2 && changes && rework\) \{/.test(triageSrc), 'triage：合格判定**恰好**四段（question/readings/changes/rework），不含 guess —— 锁住「软字段不得升格为必填」')
+ok(/blockerGuessNone/.test(hostSrc), 'host：渲染层显式区分「有倾向 / 未给倾向」（不静默省略那一条）')
+/* ── `PipelineOptions` 可达性（2026-10-07 实锤新增）──
+ * **被修的 bug**：`startPipeline` 的 `options: {…}` 是**白名单字面量**，而 `execOptions` 是
+ * `Object.assign({}, journal.options, {…具名内部字段…})` ⇒ **白名单漏一个字段，executePipeline 就永远收不到它**。
+ * 2026-10-07 实锤：`needConfirm`（确认单）与 `clarifyStrength`（澄清强度）两个新字段都漏在这里，
+ * 两个功能**在真实 `teamflow_start` 路径下完全不生效**；而行为测试直调 `executePipeline`、绕过本白名单
+ * ⇒ **测试全绿也发现不了**（这正是 §14「单测注入内存 backend ⇒ 全绿而功能坏着」的又一实例）。
+ * 既有那条 execOptions 门禁只检查**硬编码的内部字段清单**，覆盖不到「interface 新增了什么」⇒ 补这条结构性的。 */
+const typesSrc = readFileSync(join(here, '../host/types.ts'), 'utf8')
+const optIface = (typesSrc.match(/export interface PipelineOptions \{[\s\S]*?\n\}/) || [''])[0]
+const optKeys = []
+for (const line of optIface.split('\n')) {
+  const m = line.match(/^  ([A-Za-z_$][\w$]*)\??\s*:/)
+  if (m) optKeys.push(m[1])
+}
+ok(optKeys.length >= 12, `解析到 PipelineOptions 字段 ${optKeys.length} 个（${optKeys.join(', ')}）`)
+// journal.options 白名单（startPipeline 里 `options: { … }` 那一段）
+const joptBlock = (pipelineSrc.match(/options: \{[\s\S]*?\n    \},/) || [''])[0]
+ok(joptBlock.length > 100, '提取到 startPipeline 的 journal.options 白名单')
+// execOptions 的具名内部字段补充
+const execBlock = (pipelineSrc.match(/const execOptions = Object\.assign\(\{\}, journal\.options, \{[\s\S]*?\n  \}\)/) || [''])[0]
+ok(execBlock.length > 50, '提取到 execOptions 的具名补充段')
+// 不走 options 通道的（在这些地方单独传递）：显式例外，禁止默默扩大
+const OPT_EXEMPT = new Set([])
+const optMissing = optKeys.filter((k) => !OPT_EXEMPT.has(k) && !new RegExp(`(^|[^A-Za-z0-9_$])${k}\\s*[:,]`).test(joptBlock) && !new RegExp(`(^|[^A-Za-z0-9_$])${k}\\s*[:,]`).test(execBlock))
+ok(optMissing.length === 0, `PipelineOptions 的每个字段都必须能被 executePipeline 收到${optMissing.length ? ` —— **漏了：${optMissing.join(', ')}**（只加 interface 不加白名单 = 静默失效；行为测试直调 executePipeline，绕过白名单 ⇒ 全绿也发现不了）` : ''}`)
+ok(/confirmMode: options\.confirmMode/.test(joptBlock), '本次实锤漏的字段已进白名单（确认单触发档）')
+// ⚠️ 机器契约块不得进**展示面**（2026-10-08 用户截图实锤）：`<!-- state -->…<!-- /state -->` 按契约写在
+// 子代理的**最终回复**里 ⇒ 不剥的话子任务卡 / 时间线 / 详情浮层上会摊出一整段 JSON。
+// 机器面（`extractStateBlock`）读的是**未剥**的原始文本 ⇒ 剥展示副本不丢信息。
+// 四个落点都要锁：漏一个就有一条路径把 JSON 摊给用户（每个都是 `snippet`/`clip` 前的那一步）。
+ok(/export function stripStateBlock/.test(hostSrc), 'state：stripStateBlock 存在（展示面剥机器块）')
+// state 块的**文件通道接线**：哪个 prompt 用哪个**阶段键**当文件名，必须与合并侧一致
+// （合并侧只知道阶段键：`mergeStageState('<阶段键>', …, stateBlockRelPath(id, '<阶段键>'[, 任务 id]))`）。
+// ⚠️ 两个反直觉映射：`techChangePrompt`/`patchConfirmPrompt` 块里写 `phase="tech"`/`"patch"`，
+// 但它们**都是 prd 阶段的表单** ⇒ 文件名用 `prd`；`architectPrompt` 与 `techPrompt` 是**同一个 tech 阶段**
+// 的两个分支 ⇒ 都用 `tech`。名字错了不会静默：那条阶段永远走**回落**（有 warn 计数），但会污染兑现率。
+if (true) {
+  const promptsSrc = readFileSync(join(here, '../host/prompts/index.ts'), 'utf8')
+  const bodyOf = (name) => {
+    const i = promptsSrc.indexOf(`export const ${name} =`)
+    if (i < 0) return null
+    const j = promptsSrc.indexOf('\nexport const ', i + 1)
+    return promptsSrc.slice(i, j < 0 ? i + 4000 : j)
+  }
+  const PATH_MAP = {
+    prdPrompt: 'prd', techChangePrompt: 'prd', patchConfirmPrompt: 'prd',
+    designPrompt: 'design', scaffoldPrompt: 'scaffold',
+    techPrompt: 'tech', architectPrompt: 'tech',
+    devPrompt: 'dev', qaFixPrompt: 'dev',
+    qaPrompt: 'qa', acceptancePrompt: 'acceptance',
+  }
+  const bad = Object.entries(PATH_MAP).filter(([name, phase]) => {
+    const b = bodyOf(name)
+    return !b || !b.includes(`stateBlockRelPath(runId, '${phase}'`)
+  }).map(([n]) => n)
+  ok(bad.length === 0, `state 块文件路径逐个对上阶段键（错：${bad.length ? bad.join(', ') : '无'}）`)
+}
+ok(/snippet\(stripStateBlock\(summary\), 2000\)/.test(hostSrc) && /snippet\(stripStateBlock\(summary\), 1000\)/.test(hostSrc), 'backlog：任务卡 / 子任务卡 summary 先剥再截断（**用户看到的就是这两个**）')
+ok(/const shown = stripStateBlock\(r\.text\)[\s\S]{0,120}timeline\[phase\] = shown[\s\S]{0,160}mergeStageState\(phase, r\.text, stateBlockRelPath\(journal\.id, phase\)\)/.test(pipelineSrc), 'pipeline：runSimpleStage 在 mergeStageState **之后**用剥离版喂 timeline 与下游（顺序反了就取不到块）')
+ok(/clip\(stripStateBlock\(x\.output \|\| ''\), 2000\)/.test(pipelineSrc), 'pipeline：summarizeTimeline 也剥（dev 的 timeline 是数组，走另一条分支）')
+ok(/stage\.output = clip\(stripStateBlock\(text\), 50000\)/.test(hostSrc) && /stage\.output = clip\(stripStateBlock\(text\), 4000\)/.test(hostSrc), 'runner：stage.output（详情浮层 + 断点续跑重建上下文）也要剥')
+// ⚠️ `clarifyStrength` 于 2026-10-08 **整体移出 `PipelineOptions`**（它从来不影响流水线，只选 ctx 文案
+// ⇒ 作为 run 参数结构上「迟一拍」）。⇒ 反向锁：字段不得复活。锚「interface 里的声明」而不是裸词
+// —— host 源码注释里就写着这个字段名（本仓第 9 次同型：注释会污染子串匹配）。
+ok(!/^\s*clarifyStrength\?:/m.test(optIface), 'PipelineOptions 不再有 clarifyStrength 字段（它不是 run 级选项 ⇒ 不该占白名单与快照）')
+
+/* 临时/实验开关**不进公开工具 schema**（MEMORY §6；2026-10-08 用户实锤「用户又不知道这参数」）。
+ * 为什么是**反向锁**：这两条原先锁的是「host 暴露了参数」，方向正好相反 —— 必须改掉，
+ * 否则「把参数摘出 schema」这件事会被旧断言当成回归。真正的落点是环境变量通道：
+ *   · `confirmMode` → `TEAMFLOW_CONFIRM`（产品路径是**内容驱动**：PRD 有没有 kind=taste 项）
+ *   · `clarifyStrength` → `TEAMFLOW_CLARIFY`
+ * ⚠️ 锚定**参数声明/读取的字面形式**，不要写成 `!/needConfirm/.test(hostSrc)` ——
+ * host 源码的注释里就写着「用户否掉了 needConfirm 参数」这句话，子串匹配会被自己的注释污染
+ * （MEMORY §16：源码锁的关键词必须**只可能出现在被断言那一处**）。 */
+ok(!/needConfirm: \{ type: 'boolean'/.test(hostSrc) && !/args\.needConfirm/.test(hostSrc), 'host：不得再暴露 needConfirm 参数（用户不知道它 ⇒ 公开 = 功能不存在；改由内容判据 + 环境变量）')
+ok(!/clarifyStrength: \{ type: 'string'/.test(hostSrc), 'host：不得再暴露 clarifyStrength 参数（同上，改走 TEAMFLOW_CLARIFY）')
+ok(/export function confirmModeFromEnv/.test(utilSrc) && /export function clarifyStrengthFromEnv/.test(utilSrc), 'util：两个开关的环境变量通道都在（参数摘掉后必须有替代落点）')
+ok(/confirmMode: confirmModeFromEnv\(\)/.test(hostSrc), 'host：confirmMode 环境变量真的被接进 options（摘了参数却不接线 = 功能直接没了）')
+
+// 澄清强度 `clarifyStrength`（ADR-0011 ③，2026-10-07）：**独立字段，不进 MODE_REGISTRY**
+// —— `PipelineMode` 决定阶段集/PRD 形态/护栏，把「追问几次」塞进去会让同一张表承担两件正交的事。
+// 澄清策略（ADR-0011 ③；2026-10-08 **重构**）：不再是 base ＋ addendum，而是**中间槽位可换**。
+// 锁「三段拼接」这个形态本身 —— 只锁某个 key 存在会在「退回 base＋追加」时假绿。
+ok(/t\(locale, clarifyKey\)/.test(hostSrc) && /t\(locale, 'tool\.ctx\.teamTail'\)/.test(hostSrc), 'host：ctx 由「前半 ＋ 澄清槽位 ＋ 后半」三段拼成（澄清段可换，不是追加）')
+ok(/const strength = clarifyStrengthFromEnv\(\)/.test(hostSrc), 'host：澄清变体直接读**环境变量**（不再反查历史 run ⇒ 消掉「迟一拍 ＋ 重启丢失」）')
+ok(!/function clarifyStrengthForTeam\(/.test(hostSrc), 'host：反查历史 run 的旧机制已删除（它正是「本 run 传的值当次不生效」的根因）')
+// ★ 默认档锁：**默认必须是 `interview`（一次一问）**，而且它得落在「**默认值**」那一支
+// （`return 'interview'` 是兜底 return），不是某个 `if` 分支 —— 只锁「文案里有 interview」会在
+// 「把默认改回 once」时假绿。
+ok(/if \(v === 'once'\) return 'once'[\s\S]{0,80}if \(v === 'off'\) return 'off'[\s\S]{0,40}return 'interview'/.test(utilSrc), 'util：澄清变体**默认 interview**（一次一问＝产品默认行为，不是可选档；once/off 只服务对照）')
+// ★ 三档文案都要在词典里：`once` 是**逐字保留的旧文案**（A/B 对照组 + 零回归参照）。
+// ★「开工前对齐」也必须走 AUQ（2026-10-08 用户实锤）：手册里这三条原本只写「问什么」，没写「怎么呈现」
+// ⇒ 主 agent 直接把问题打在聊天里（新工作区首跑就这样，且**没创建 run**，从 journal 看不出来）。
+// ⚠️ `once`（A/B 对照组）也要带，否则 A/B 把「一次一问」与「AUQ vs 纯文本」两个变量混在一起。
+const ctxSrc = readFileSync(join(here, '../host/locales/tools.ts'), 'utf8')
+const auqIn = (key) => {
+  const m = ctxSrc.match(new RegExp(`'${key}': '(.*)',`))
+  return !!m && /ask_user_question/.test(m[1])
+}
+ok(auqIn('tool.ctx.clarifyInterview') && auqIn('tool.ctx.clarifyOnce'), 'locales：开工前对齐**两档都**点名 ask_user_question（默认档 + A/B 对照组，不允许混变量）')
+ok(auqIn('tool.start.explorationProtocol'), 'locales：探索态协议也点名 ask_user_question（闸门返回面没有 blocker 可挂时，这条是唯一指令）')
+// 确认单改成**两步**（2026-10-08 真机 `tf-muzc59h9-pnbhyk`：8 项做成 4+4 两批后，「全部按默认」的一键
+// 选项就没地方放了 —— 手册里「≤4 题/批」和「另给一键」在项数多时互相冲突）。
+// ⚠️ 锁「**单独一次**」这个形态本身：AUQ **没有条件跳转**，把「全部按默认」塞进逐项那张卡里等于没写。
+ok(/先单独问一次总问/.test(ctxSrc) && /first ask one leading question on its own/.test(ctxSrc), 'locales：确认单两步走 —— 先导总问**单独一次**（选「全部按默认」就直接 resume）')
+ok(/没有条件跳转/.test(ctxSrc) && /no conditional skip/.test(ctxSrc), 'locales：明写「AUQ 没有条件跳转」（否则后来者会把它塞回逐项那张卡，白写）')
+// 认可补录的语义（真机实测主 agent 会把「已拍板 N 项」写进 supplement）⇒ 改成「会固化进 PRD」而不是「不带」。
+ok(/带 `supplement` 会把结论固化进 PRD/.test(ctxSrc) && /passing `supplement` bakes the decisions into the PRD/.test(ctxSrc), 'locales：认可带 supplement 的语义＝**固化进 PRD**（原写「认可不带」，实测会被违反 ⇒ 改成事实陈述）')
+// ★ 产品默认行为必须**写进 ctx 手册本身**（用户 2026-10-08 指的切口）：默认档文案要含「一次只问一个问题」，
+// 否则「把开关摘了但默认没接上」会静默退回旧行为。
+ok(/一次只问一个问题/.test(hostSrc) && /ask \*\*exactly one question at a time\*\*/.test(hostSrc), 'locales：默认澄清档写明「一次一问」（zh/en 都要，缺席则默认行为名存实亡）')
+// 探索态加固：分诊判 exploration ⇒ 在**返回面**同一次调用内送达（ctx 注入喂不回去，见 host 注释）。
+ok(/'tool\.start\.explorationProtocol'/.test(hostSrc) && /value\.intent \|\| ''\) === 'exploration'/.test(hostSrc), 'host：exploration 时在 needs-clarification 返回面追加「一次一问」协议')
+ok(/verdict\.intent === 'exploration'/.test(pipelineSrc), 'pipeline：兜底闸门（abortForClarification）同样追加（两条路径必须同形，否则「谁先命中」决定行为）')
+
+// ① 的**代价条款**（ADR-0011 §裁决 ①，2026-10-07 补）：批准 = 放行一条已启动的流水线 ⇒
+// 文案必须写清「接下来会开始写代码」，否则用户会以为还在讨论（拍板时写下、当时漏实现）。
+ok(/'run\.needsConfirm': '[^']*立即开始写代码/.test(hostSrc), 'locales：run.needsConfirm 明示「批准 = 立即开始写代码」（不是继续讨论）')
+ok(/'report\.confirmSheet': '[^']*立即开始写代码/.test(hostSrc), 'locales：report.confirmSheet 同样明示（主线程看到的正是这条）')
+// 结构化优先（ADR-0011 ①，2026-10-07 补）：`prdPrompt` 一直要求 state 块带 extra.openQuestions，
+// 但 mergeStateBlock **从未消费** ⇒ 确认单只能退回文本抽取（journal.assumptions 的行）。
+// ⚠️ 从**判定条件**起锚，不能只锁赋值语句：M8 实测把前缀改成 `if (false && …)`，赋值那半句原样还在
+// ⇒ 只锁赋值的写法**假绿**。这是本日第三次同型（M6/M7/M8）—— 源码锁必须覆盖「条件 → 赋值」整条语句。
+ok(/if \(Array\.isArray\(block\.extra\.openQuestions\)\) state\.openQuestions = normalizeOpenQuestions\(block\.extra\.openQuestions\)/.test(hostSrc), 'state：mergeStateBlock 消费 extra.openQuestions（此前只要求、不落盘；条件与赋值必须同锁）')
+ok(/export function normalizeOpenQuestions/.test(hostSrc), 'state：openQuestions 容错归一是纯函数（模型形状不稳定 ⇒ 不抛、不污染 state）')
+ok(/openQuestions: state\.openQuestions/.test(hostSrc), 'pipeline：确认单接结构化 openQuestions（与 assumptions 语义不同，两段都呈现）')
+ok(/CONFIRM_QUESTIONS_MAX/.test(hostSrc) && /confirm\.questions/.test(hostSrc), 'confirm：待拍板项有独立上限与渲染段（不静默截断）')
+
+// ADR-0011 C 方案（2026-10-07）：AC **结构化优先 / 正文兜底 / 来源自曝**。
+// 依据：`STATE_BLOCK_INSTRUCTION` 原模板**没有 extra**，而各阶段 rules 只用散文要它 ⇒ 模型照模板写，
+// 实测 `extra.acIndex` 兑现率仅 **7/34（20%）** ⇒ 兜底是必要的，不是可选优化。
+ok(/export function extractAcIndexFromText/.test(utilSrc), 'util：AC 文本兜底抽取器是纯函数（逐行解析，不做跨行正则）')
+// ⚠️ **源必须是 PRD 文件、不是 stage.output**（2026-10-07 真实语料实测）：stage.output 是交接摘要
+// （中位 2.5k 字符，AC 常被压成 `（AC-1）、…` / `| Accept | AC-1…AC-8 |`）——
+// 同一抽取器两源命中率 **PRD.md 20/21（95%）vs stage.output 22/87（25%）**。锁整条回落链，不只锁尾参。
+ok(/prdText: artifactText\(journal, 'PRD\.md'\) \|\| artifactText\(journal, 'TECH-CHANGE\.md'\) \|\| prd/.test(pipelineSrc), 'pipeline：兜底**读 PRD 文件**（PRD.md → TECH-CHANGE.md → stage.output 逐级回落，不是拿交接摘要当正文）')
+// ⚠️ 必须锁到**调用**那一句：只锁「传参」会在「传了但不用」时假绿（M10 实测 —— 行为断言红了、这条全绿）。
+// 同型第五次（M6/M7/M8/M10/本条）：源码锁的匹配串必须覆盖「参数 → 实际使用」整条链，不能停在半路。
+ok(/extractAcIndexFromText\(v\.prdText\)/.test(hostSrc), 'confirm：兜底**真的调用了**抽取器（参数递进去 ≠ 用了）')
+// ★ A 方案的核心：模板**本体**必须带 extra —— 只写散文要求 = 模型照模板忽略它（本日实测的根因）
+ok(/"extra":\{/.test(hostSrc), 'state：STATE_BLOCK_INSTRUCTION 的模板本体含 `extra`（把两份互相不覆盖的契约合并成一份）')
+ok(/'confirm\.acExtracted'/.test(hostSrc) && /'confirm\.acMissing'/.test(hostSrc), 'locales：AC 来源标注两键齐备（抽取 / none 都要自曝，不能静默留空段落）')
+ok(/t\(locale, clarifyKey\)/.test(hostSrc) && !/function clarifyStrengthForTeam\(/.test(hostSrc), 'host：澄清变体按强度**选槽位**（不再反查 run 快照 —— 那是「迟一拍」的根因）')
+// 续跑补录入口：`supplement` 从 teamflow_resume 一路传到 resumeRun；PRD 是唯一消费点
+// ⇒ 断点晚于 prd 必须**显式拒绝**（静默接受 = 静默丢弃，本仓反复踩）
+ok(/supplement\?: string \| null/.test(pipelineSrc) && /resumeRun\(id, parent\.session\.id, sup\)/.test(hostSrc), 'resume：supplement 从 teamflow_resume 一路传到 resumeRun')
+// ⚠️ 2026-10-08：判据从「断点晚于 prd 一律拒绝」改成「**除 PRD 之后未跑过任何阶段外**一律拒绝」。
+// 锁必须覆盖**两边**：只要拒绝条件（`afterPrd && !redoPrd`）或「作废面为零」的前置（`prdOnly`）
+// 任一半被改掉，就有一种形态会静默走错（要么假承诺、要么白作废下游产物）。
+ok(/const redoPrd = !!supp && afterPrd && prdOnly/.test(pipelineSrc) && /if \(supp && afterPrd && !redoPrd\)/.test(pipelineSrc), 'resume：supplement 在断点晚于 prd 时**显式拒绝**，唯一例外是「PRD 之后没跑过任何阶段」（回退重跑 PRD）')
+ok(/const prdOnly = !\(j\.stages \|\| \[\]\)\.some\(\(s\) => phaseKeyOf\(s\.phase\) !== 'prd'\)/.test(pipelineSrc), 'resume：例外的前置判据是**内容**（PRD 之后是否真跑过阶段），不是「是不是确认单暂停」')
+ok(/const resumePhase = redoPrd \? 'prd' : phaseAtEntry/.test(pipelineSrc), 'resume：回退就是把检查点设回 prd（`resumed()` 是严格小于 ⇒ prd 会真的重跑）')
+ok(/\.filter\(\(s\) => !\(redoPrd && phaseKeyOf\(s\.phase\) === 'prd'\)\)/.test(pipelineSrc), 'resume：回退时**摘掉旧 prd 记录**（否则 enterStage 再推一条 ⇒ 同阶段两条记录，报告与断点定位都按「每阶段一条」读）')
+ok(/'run\.supplementTooLate'/.test(hostSrc) && /'run\.supplementApplied'/.test(hostSrc), 'resume：补录的拒绝与应用都有可见文案（zh/en 同形由 locale 门禁守）')
+// executePipeline 不得覆盖补录的答复（它收到的是 `journal.options` 白名单字面量，本就不含该键 —— 同型第四次）
+ok(/if \(!resume\) journal\.requirementSupplement = options\.requirementSupplement/.test(pipelineSrc) && /if \(!resume && journal\.requirementSupplement\)/.test(pipelineSrc), 'resume：executePipeline 不覆盖 supplement（否则补录的答复被静默清空）')
+// ⚠️ 「无断点」判据不得用「所有**已记录**的阶段都 done」——确认单暂停时 `stages` 只有 `[prd done]`，
+// `.every(done)` **恒真** ⇒ 该形态（正是本插件的主线功能）永远续不了（实锤 tf-muy63zgy-octoqj）。
+// 锁整句「条件 → 影响」：真判据 = 断点落在 acceptance **且该段也已 done**。
+ok(/phaseAtEntry === 'acceptance' && \(j\.stages \|\| \[\]\)\.some\(\(s\) => phaseKeyOf\(s\.phase\) === 'acceptance' && s\.status === 'done'\)/.test(pipelineSrc), 'resume：无断点判据 = 断点落 acceptance **且该段 done**（不得用「已记录阶段全 done」——确认单暂停时恒真）')
+ok(!/\(j\.stages \|\| \[\]\)\.every\(\(s\) => s\.status === 'done'\)/.test(pipelineSrc), 'resume：旧伪代理判据（「已记录阶段全 done」）不得复活')
+// ⚠️ **同一 run 内 state 必须刷新**（实锤 tf-muy63zgy-octoqj）：`mergeStateBlock` 是 load→改→save→
+// **返回新对象**。丢返回值 ⇒ 内存里的 `state` 停在**起跑快照** ⇒ PRD 写下的 `extra.*` 本次 run 的
+// design/tech/qa/acceptance 与确认单**全都看不见**（要等下一次 run 才可见）。三件缺一不可。
+ok(/state = mergeStateBlock\(journal\.workspace \|\| 'default', block, phaseKey\)/.test(pipelineSrc), 'pipeline：mergeStageState **接住** mergeStateBlock 的返回值（丢弃 = 本次 run 后续消费者看不见 PRD 写的 extra.*）')
+ok(/let state = loadState\(journal\.workspace \|\| 'default'\)/.test(pipelineSrc), 'pipeline：state 声明为 `let`（`const` 就换不掉绑定 ⇒ 刷新不了）')
+ok(/if \(rc !== undefined\) state\.__runCtx = rc/.test(pipelineSrc), 'pipeline：合并后**带回 `__runCtx`**（它不落盘，丢了 runDocs/locale/craft/artifactContracts/blueprint 整片消失）')
+// ⚠️ resume 文案不得把「**从未尝试**」说成「**失败**」（实测 tf-muy7kgbk-wpidsi：确认单暂停后 resume，
+// dev 一次都没跑过，原文案却报「补跑 5 个**失败**任务」）。`todoDefs` 的判据 `!st || !st.done` 同时含两态
+// ⇒ 必须把「此前失败」单独数出来分报，任何形态下才都成立。
+ok(/failed: failedBefore/.test(hostSrc) && /未完成任务/.test(hostSrc) && !/补跑 \{todo\} 个失败任务/.test(hostSrc), 'dev：resume 文案区分「未完成」与「此前失败」（断点在 dev 之前时不得称「失败任务」）')
+// PRD 确认单（ADR-0011 ①，2026-10-07）：PRD 完成后暂停，等用户批准
+// ⚠️ 落点与 `abortForClarification` 同构（interrupted + humanIntervention；P2：复用 interrupted/resume，不新增状态），
+// 且**依赖**上面「启用过但从未尝试的阶段 = 断点」那条 —— 断点错了，批准后续跑会跳过 design/tech/dev/qa。
+ok(/function abortForConfirmSheet/.test(pipelineSrc) && /return abortForConfirmSheet\(journal, sheet, locale\)/.test(pipelineSrc), 'pipeline：PRD 确认单的暂停落点（PRD 之后、design 之前）')
+// ⚠️ 判据 2026-10-08 从「显式开关」改成「**内容驱动**」⇒ 必须锁住 `tasteCount > 0` 这半句：
+// 只锁 `mode !== 'patch' && !resume` 的话，判据被改回开关形态时源码锁会**假绿**（后半句还在）。
+ok(/confirmMode === 'always' \|\| \(confirmMode === 'auto' && tasteCount > 0\)/.test(pipelineSrc), 'pipeline：确认单触发 = **内容驱动**（有 kind=taste 主观项才停）＋ 内部强制位 always/never')
+ok(/options\.mode !== 'patch' && !resume/.test(pipelineSrc), 'pipeline：patch 档不暂停 ＋ 只在非 resume 时停一轮')
+// 「缺 kind 不阻断」**不等于**「静默」：必须发 warn（否则就是又一次功能静默空转，§7③）。
+// ⚠️ 必须从**判定条件**起锚，不能只锁 `log.openQuestionsUntagged` 这个标识符 ——
+// M22 实测：把条件改成 `if (false && …)` 时，只锁标识符的写法**假绿**（标识符原样还在）。
+// 这是本仓第 7 次同型（M6/M7/M8/M10/M12/…），规则：**源码锁要覆盖「条件 → 调用」整条语句**。
+ok(/if \(untagged > 0\) journal\.logs\.push\(\{ t: Date\.now\(\), level: 'warn', message: t\(locale, 'log\.openQuestionsUntagged'/.test(pipelineSrc), 'pipeline：model 没标 kind 时必须发 warn（不阻断 ≠ 静默；条件与调用必须同锁，只锁 key 会假绿）')
+ok(/'log\.openQuestionsUntagged'/.test(hostSrc) && /'confirm\.tasteTag'/.test(hostSrc), 'locales：缺-kind warn 与「主观项」打标文案都齐（zh/en 互补由 locale.test.js 覆盖）')
+ok(/kind === 'taste'/.test(pipelineSrc), 'pipeline：主观项（kind=taste）被认出来 —— 只有它触发暂停')
+// ⚠️ 打标必须锁**条件 → 用法**整句，不能只锁 `tasteTag` 这个词：词典里那条 `'confirm.tasteTag'`
+// 也在 hostSrc 里 ⇒ M26 实测「把渲染改成 `const tag = ''`」时只锁词的写法**假绿**（第 8 次同型）。
+ok(/const tag = q\.kind === 'taste' \? t\(locale, 'confirm\.tasteTag'\) : ''/.test(hostSrc), 'confirm：主观项打标真的接在渲染里（用户要能一眼看出哪几条必须他定）')
+ok(/confirmSheet: journal\.confirmSheet \|\| null/.test(storeSrc) && /confirmSheet\?: unknown \| null/.test(storeSrc), 'store：确认单必须落盘（不落 ⇒ 重启后讲不出「批准什么」，只能让用户去重读 PRD.md）')
+// 确认单的**目标一句话**来自 PRD state 块的 extra.summary —— 此前该字段被要求却从未落盘，
+// 逼得确认单只能去抽模型自由写的段落标题（不可靠，同 `## 9. 假设与待澄清` 那次失手）。
+ok(/state\.product\.summary = block\.extra\.summary/.test(hostSrc), 'state：PRD 的一句话目标（extra.summary）落盘 = 确认单的目标来源（此前只要求不落盘）')
 // 验收结论行取值（2026-09-17 实测 bug tf-mu4bve7t-duux2k：`## 1. 验收结论摘要` 蒙住真正的结论行 →
 // 明明「验收结论：✅ 通过」却判 needs-human）。规则：只认**字面量模板行**（冒号连写），且取最后一个。
 ok(/const literal = \/\^\\s\*\(\?:#\{1,6\}\\s\*\|\[-\*\+\]\\s\*\)\?\(\?:验收结论\|整体结论\|Acceptance verdict\|Overall verdict\)\\s\*\[:：]\/i/.test(utilSrc), 'util：结论行按字面量模板行匹配（`验收结论：` 冒号连写，不被章节标题蒙住）')
@@ -813,6 +1033,9 @@ ok(/args\.preAction === 'stash' \|\| args\.preAction === 'commit' \|\| args\.pre
   ok(/TRIAGE_TIMEOUT_MS = 240000/.test(triageSrc), 'triage：分诊超时常量 240s（90s 时代分诊职责已翻倍，深思考模型答不完）')
   ok(/fallbackReason/.test(triageSrc) || /fallbackReason/.test(pipelineSrc), 'triage：fallback 必须带退化原因（fallbackReason → warn 可见化，不再黑盒）')
   ok(/log\.triageFallbackReason/.test(pipelineSrc), 'pipeline：分诊退化原因记 warn（含原因摘要）')
+  // ADR-0010 第 2 步（2026-10-04）：退兜底 ⇒ 闸门静默失效；除「原因」外要点名「后果」，且两条路径都覆盖
+  ok((pipelineSrc.match(/log\.clarifyGateSkipped/g) || []).length >= 2, 'pipeline：澄清闸门失效可见化覆盖两条 fallback 路径（preflight 透传 + pipeline 权威判定）')
+  ok(/report\.clarifySkipped/.test(reportSrc), 'report：分诊退兜底时汇报显式声明「本次未做需求澄清」（ADR-0010 第 2 步）')
 }
 // execOptions 白名单完整性（B1 同型 bug 第三次现身：2026-09-17 probe-clock 实锤——branchPolicy/preAction
 // 不在白名单 → 用户选了"开启存档"但 executePipeline 收到 undefined → git init 静默没执行）。
@@ -823,6 +1046,7 @@ ok(/args\.preAction === 'stash' \|\| args\.preAction === 'commit' \|\| args\.pre
   const body = start >= 0 ? lines.slice(start, start + 10).join('\n') : ''
   for (const f of ['requirementSupplement', '__triage', 'branchPolicy', 'branchName', 'preAction', 'commitMessage']) {
     ok(body.includes(f + ':'), `pipeline：execOptions 显式携带内部字段 ${f}（journal.options 白名单不承载内部字段——B1 同型防回退）`)
+
   }
 }
 // 输出 schema 严格性（2026-09-17 实锤 probe-clock：git-init 决策返回带 kind 未声明 → additionalProperties:false

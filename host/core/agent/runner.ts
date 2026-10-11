@@ -9,6 +9,7 @@ import { clip, extractText, blockShape, emptyTurnDocVerdict, normalizeSignal, ju
 import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../../constants.ts'
 import { t, type HostLocale } from '../../locales.ts'
 import { runLocaleOf } from '../locale.ts'
+import { stripStateBlock } from '../domain/state.ts'
 import type { Journal, ParentAgentLike, UsageBuckets } from '../../types.ts'
 import type { JournalStage } from '../../../store.ts'
 
@@ -220,13 +221,15 @@ export async function runAgent(
       stage.status = 'failed'
       stage.outcome = 'env-unavailable'
       stage.summary = t(locale, 'diag.envUnavailableStage', { label, detail: stage.envUnavailable })
-      if (text) stage.output = clip(text, 4000)
+      if (text) stage.output = clip(stripStateBlock(text), 4000)
       journal.logs.push({ t: Date.now(), level: 'error', message: stage.summary })
       return null
     }
     if (stop === 'completed' && text && (verdict.ok || docFallback)) {
       stage.status = 'done'; stage.outcome = 'completed'
-      stage.output = clip(text, 50000) // 阶段产物全文（断点续跑重建上下文）
+      // ⚠️ 剥掉机器契约块（2026-10-08）：这份落盘文本会进**详情浮层**与 resume 重建上下文，
+      // state 块只对 host 有意义，不该出现在任何展示面上。机器面读的是 `withRetry` 的返回值（未剥）。
+      stage.output = clip(stripStateBlock(text), 50000) // 阶段产物全文（断点续跑重建上下文）
       if (docFallback) {
         // 留痕（visible）：判交付的依据是文件而不是回复 —— 否则"为什么这次没重试"又成黑盒
         journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.docDelivered', { label, length: verdict.length, min: verdict.min, name: docFallback.name, docLen: docFallback.length }) })
@@ -241,7 +244,7 @@ export async function runAgent(
     // 空收尾兜底判交付（放在 envUnavailable 之后：环境不可用优先，防假交付）
     if (emptyTurnDoc) {
       stage.status = 'done'; stage.outcome = 'completed'
-      stage.output = clip(emptyTurnDoc.text, 50000)
+      stage.output = clip(stripStateBlock(emptyTurnDoc.text), 50000)
       stageText = emptyTurnDoc.text // handoff/state 合并用文件内容，不再拿空串
       journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.emptyTurnDelivered', { label, name: emptyTurnDoc.name, length: emptyTurnDoc.length, min: verdict.min }) })
       return emptyTurnDoc.text
@@ -252,7 +255,7 @@ export async function runAgent(
       stage.status = 'failed'
       stage.outcome = stage.guardOutcome || 'degenerated'
       stage.summary = t(locale, 'diag.guardAbort', { reason: stage.guardReason })
-      if (text) stage.output = clip(text, 4000) // 失败产出截断落盘（重试诊断/详情浮层）
+      if (text) stage.output = clip(stripStateBlock(text), 4000) // 失败产出截断落盘（重试诊断/详情浮层）
       journal.logs.push({ t: Date.now(), level: 'warn', message: `${label} ${stage.summary}` })
       return null
     }
@@ -269,7 +272,7 @@ export async function runAgent(
         stage.summary = t(locale, 'diag.tooShort', { length: verdict.length, min: verdict.min })
         journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.tooShortLog', { label, length: verdict.length }) })
       }
-      if (text) stage.output = clip(text, 4000)
+      if (text) stage.output = clip(stripStateBlock(text), 4000)
     } else {
       // 诊断必须能自证（2026-09-26 tf-muigy5eq r12 实踩）：此前只报 stopReason，
       // 「正文为空」与「provider 报错」长得一模一样，排查只能跳子代理会话原始记录。
@@ -283,7 +286,7 @@ export async function runAgent(
           ? t(locale, 'diag.emptyTurn', { stop: stop || 'unknown', shape })
           : t(locale, 'diag.noResult', { stop: stop || 'unknown', len: (text || '').length, shape, error: err })
       journal.logs.push({ t: Date.now(), level: 'error', message: `${label} ${stage.summary}` })
-      if (text) stage.output = clip(text, 4000) // 半截产出（如 stopReason=length）也落盘供诊断
+      if (text) stage.output = clip(stripStateBlock(text), 4000) // 半截产出（如 stopReason=length）也落盘供诊断
     }
     return null
   } catch (e) {

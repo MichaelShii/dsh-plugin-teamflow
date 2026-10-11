@@ -295,6 +295,36 @@ export function envFlagOn(name: string): boolean {
   if (raw === undefined || String(raw).trim() === '') return true
   return !/^(0|false|off|no)$/i.test(String(raw).trim())
 }
+
+/**
+ * **PRD 确认单的触发档**（2026-10-08）：`TEAMFLOW_CONFIRM` = `always` / `never`，其余/未设 = `auto`。
+ *
+ * 为什么要环境变量而不是工具参数（用户 2026-10-08 当场否掉公开参数 `needConfirm`）：
+ * 「用户又不知道这个参数」—— 公开一个用户不会用、且工具描述里**没有任何「何时该设它」的触发条件**
+ * 的开关，等于这个功能在实践中从来不会被触发（它当时也确实从未生效过）。产品路径必须是**内容驱动**
+ * （PRD 有没有主观品味项），这个环境变量只服务于 A/B 对照与端到端验证的**强制**需要。
+ */
+export function confirmModeFromEnv(): 'auto' | 'always' | 'never' {
+  const v = String(process.env.TEAMFLOW_CONFIRM ?? '').trim().toLowerCase()
+  if (v === 'always' || v === 'on' || v === '1' || v === 'true') return 'always'
+  if (v === 'never' || v === 'off' || v === '0' || v === 'false') return 'never'
+  return 'auto'
+}
+
+/**
+ * **澄清策略变体**（ADR-0011 ③）的环境变量通道（2026-10-08 **重构后**）：`TEAMFLOW_CLARIFY`。
+ * 缺省 `interview`（一次一问）—— 它现在是 **ctx 手册的默认行为**，不再是「缺省不追加」的档位。
+ * `once` / `off` 只服务**对照实验**（`interview` 的文案与 `once` 的旧文案逐字并存于词典）。
+ *
+ * ⚠️ **为什么不再有 `patch` 恒 off 的归一**：那条契约约束的是「run 级选项」，而本字段已不是 run 级选项
+ * （ctx 只在选团队时注入，那时还不知道档位）。契约随字段一起作废，见 ADR-0011。
+ */
+export function clarifyStrengthFromEnv(): 'off' | 'once' | 'interview' {
+  const v = String(process.env.TEAMFLOW_CLARIFY ?? '').trim().toLowerCase()
+  if (v === 'once') return 'once'
+  if (v === 'off') return 'off'
+  return 'interview'
+}
 export function sanitizeSnapOptions(o) {
   const opts = (o && typeof o === 'object') ? o : {}
   return {
@@ -829,6 +859,45 @@ export function isToolErrorResult(data: unknown): boolean {
   return /^\s*(?:error|failed|fatal)\b/i.test(toolResultText(data))
 }
 
+/* ── 会话内可自愈的防护门禁失败（2026-10-07 issue #15 实锤）──────────────────────────
+ * 宿主 `@deepseek-ai/dsh-tool-fs` 的 `remediateFsError()` 把两类**防护门禁**失败换成稳定文案：
+ *   `FS_NOT_OBSERVED`  → `cannot modify "<path>": file has not been read — read the file, then retry`
+ *   `FS_STALE_VERSION` → `<原 message> — re-read the file, then retry`
+ * 它们说的是**会话内的读前置 / 版本前置**，不是工作区状态 —— 一次 read 就能自愈，
+ * 与「环境不可用」的判据（同一错误反复出现 = 工作区坏了、重试无用）**语义相反**。
+ * 若计入环境指纹，模型正常重试 2 次就被判 env-unavailable：实测两例（dev `tf-mumguwdl-dein51`
+ * 09-29 / scaffold `tf-mupnk8h0-1otbl2` 10-01）都是「同一文件 write 没先 read」→ warn 后 7s / 55s
+ * 即被判死、汇报要求「先修工作区再 resume」，而活本来能做完。
+ * 只能用文本判定：工具结果里只有 remediated message，没有 code 字段可读（故两条 code 的文案都列出，
+ * 宿主换文案时这里同步）。 */
+const FS_SELF_HEAL_TEXT = /file has not been read|re-read the file, then retry|file no longer exists|file changed/i
+/** 同族错误的 code 名：remediated message 里通常没有它，但未被 remediate 的路径可能带上（防御性保留）。 */
+const FS_SELF_HEAL_CODE = /FS_STALE_VERSION|FS_NOT_OBSERVED/i
+
+/** 是否属于「会话内可自愈的文件防护门禁」失败 —— 据此**不计入**环境不可用指纹。 */
+export function isFsSelfHealFailure(text: unknown): boolean {
+  const s = String(text || '')
+  return FS_SELF_HEAL_TEXT.test(s) || FS_SELF_HEAL_CODE.test(s)
+}
+
+/* ── 「工具在这一层不适用」类失败（2026-09-30 obs-r5 实锤；2026-10-07 扩项）──────────────
+ * **权限 / 能力边界 / 名字不存在**，都不是「工作区坏了」——共同点是**换个工具就能继续**，
+ * 与「工作区全废」（重试 / 绕道 / 推理都救不了）不是一回事。
+ * 实锤代价（obs-r5 QA 复验轮）：子代理连调 send_message / list_agents（同一个
+ * "not a member of an active Agent Team"）共 3 次 → 被 abort → 整个 run failed，而它连一个
+ * checker 都还没跑（回归契约复跑为零）。注：进展豁免救不了这种 —— 它从第一次调用就失败，
+ * 全程没有任何**成功**调用。
+ * ⚠️ 2026-10-07 扩项（`unknown tool`，同根因第三类）：`ws-tf-ab-a` run `tf-mul7l30d`（09-28）
+ * QA 复验子代理把 git 当**工具名**调（原文 `Error: unknown tool "git "`，带尾空格）→ 连错 3 次
+ * 被判 env-unavailable + 「先修工作区」，而工作区毫发无损（12:17 人工 resume 后正常续跑）。
+ * 它想跑的是 `git` 命令，正解是换回 bash —— 正属此族。 */
+const TOOL_SCOPE_LIMIT = /is not a member of an active Agent Team|exceeds maxDepth|subagent depth \d+|unknown tool/i
+
+/** 是否属于「工具在这一层不适用」（换个工具即可继续）—— 据此**不计入**环境不可用指纹。 */
+export function isToolScopeFailure(text: unknown): boolean {
+  return TOOL_SCOPE_LIMIT.test(String(text || ''))
+}
+
 /** 失败指纹：工具名 + 归一化错误前 160 字符。同一指纹反复出现 = 同一个坏环境（而非模型措辞波动）。 */
 export function toolFailureSignature(tool: unknown, text: unknown): string {
   const name = String(tool || '').trim().toLowerCase() || 'tool'
@@ -972,12 +1041,24 @@ export interface Blueprint {
   render: string
 }
 
-const bdOpen = '<!-- blueprint -->'
+/** 蓝图 JSON 的原始形状（未经归一，字段全部可选）。 */
+type BlueprintShape = {
+  summary?: string
+  modules?: Record<string, BlueprintModule>
+  duplications?: string[]
+  tasks?: BlueprintTask[]
+}
+
+// ⚠️ open 标记**不带尾部 `-->`**（2026-10-09 修正）：`<!-- blueprint -->` 是**自闭合注释**
+// （`<!--` + `blueprint` + `-->`），渲染器把整条消化掉，紧随其后的 JSON 于是成了**裸文本**，
+// 在 Typora / VS Code 预览里直接显示给用户（实测：markdown-it + 无头 Chrome）。
+// 解析器**两种形态都认**（见下方 `(?:-->)?`），兼容存量产物与模型旧习惯。
+const bdOpen = '<!-- blueprint'
 const bdClose = '<!-- /blueprint -->'
 
 /**
  * 从 tech/architect 产出中提取架构蓝图 JSON 块。
- * 约定：产出内嵌 `<!-- blueprint -->{...json...}<!-- /blueprint -->`。
+ * 约定：产出内嵌 `<!-- blueprint` ＋换行＋ `{...json...}` ＋ `<!-- /blueprint -->`。
  * 解析失败返回 null（不影响主流程）。
  */
 /**
@@ -1009,18 +1090,80 @@ export function extractBlueprint(text: string | null | undefined, locale?: HostL
   const i = s.indexOf(bdOpen)
   const j = s.indexOf(bdClose)
   if (i === -1 || j === -1 || j <= i) return null
-  const raw = s.slice(i + bdOpen.length, j).trim()
-  let parsed: {
-    summary?: string
-    modules?: Record<string, BlueprintModule>
-    duplications?: string[]
-    tasks?: BlueprintTask[]
-  } | null = null
-  try { parsed = JSON.parse(raw) } catch (e) {
-    const repaired = repairBlueprintJson(raw)
-    if (repaired) { try { parsed = JSON.parse(repaired) } catch (e2) { parsed = null } }
+  // 兼容两种 open 形态：新的 `<!-- blueprint`＋换行、旧的 `<!-- blueprint -->`（自闭合）—— 跳过可选的 ` -->`
+  const after = s.slice(i + bdOpen.length)
+  const lead = after.match(/^\s*(?:-->)?\s*/)
+  const start = i + bdOpen.length + (lead ? lead[0].length : 0)
+  if (j <= start) return null
+  const raw = s.slice(start, j).trim()
+  const parsed = parseBlueprintJson(raw)
+  if (!parsed) return null
+  return toBlueprint(parsed, locale)
+}
+
+/**
+ * 抢救「**末尾截断**」的蓝图 JSON（2026-10-11 实锤 `tf-mv3op3i2-0ok7nb`）。
+ *
+ * 现象：模型把 5937 字符的完整蓝图写进 `blueprint.json`，尾部**少了 1 个 `}`** ⇒ `JSON.parse` 失败；
+ * 而 `repairBlueprintJson` 只治「**提前闭合**」（某个值后面多写一个 `}`），救不了「**末尾没收**」
+ * ⇒ 蓝图整片丢失、dev 退化为单任务整体开发（该 run 规划了 12 个任务，实际只跑了 1 个）。
+ *
+ * 策略：扫一遍字符（跳过字符串字面量与转义），统计未闭合的 `{` / `[`，按栈逆序补齐闭合符。
+ * ⚠️ **只在「截断不在字符串内、且转义已收尾」时才补**：断在字符串中间或转义符后 = 内容本身残缺，
+ * 硬补会得到一个「语法合法但语义缺失」的对象 —— 那比直接失败更危险（下游会拿残缺蓝图当权威）。
+ */
+function closeTruncated(raw: string): string | null {
+  const stack: string[] = []
+  let inStr = false
+  let esc = false
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]
+    if (esc) { esc = false; continue }
+    if (ch.charCodeAt(0) === 92) { esc = true; continue } // 92 = 反斜杠
+    if (ch === '"') { inStr = !inStr; continue }
+    if (inStr) continue
+    if (ch === '{' || ch === '[') stack.push(ch)
+    else if (ch === '}' || ch === ']') {
+      const want = ch === '}' ? '{' : '['
+      if (stack[stack.length - 1] === want) stack.pop()
+    }
   }
-  if (!parsed || typeof parsed !== 'object') return null
+  if (inStr || esc || stack.length === 0) return null
+  return raw + stack.slice().reverse().map((x) => (x === '{' ? '}' : ']')).join('')
+}
+
+/** `JSON.parse` ＋ 两种畸形抢救：**末尾截断**（`closeTruncated`）→ **提前闭合**（`repairBlueprintJson`）。非对象 ⇒ null。 */
+function parseBlueprintJson(raw: string): BlueprintShape | null {
+  let parsed: unknown = null
+  try { parsed = JSON.parse(raw) } catch (e) {
+    // 两种形态互不覆盖，都试一次：先补闭合（本批实锤的那类），再删提前闭合（历史那类）。
+    for (const cand of [closeTruncated(raw), repairBlueprintJson(raw)]) {
+      if (!cand) continue
+      try { parsed = JSON.parse(cand); break } catch (e2) { parsed = null }
+    }
+  }
+  return parsed && typeof parsed === 'object' ? (parsed as BlueprintShape) : null
+}
+
+/**
+ * 蓝图**文件通道**的内容 → `Blueprint`（2026-10-09）。
+ *
+ * 契约要求文件里是**纯 JSON**（无标记），但模型可能顺手把 `<!-- blueprint -->` 标记也写进去
+ * ⇒ 两种都吃：先按标记块提取（带 repair 抢救），失败再直接 parse 整份内容。
+ */
+export function blueprintFromText(raw: string | null | undefined, locale?: HostLocale | null): Blueprint | null {
+  const s = String(raw == null ? '' : raw).trim()
+  if (!s) return null
+  if (s.indexOf('<!--') >= 0) {
+    const byMark = extractBlueprint(s, locale)
+    if (byMark) return byMark
+  }
+  const parsed = parseBlueprintJson(s)
+  return parsed ? toBlueprint(parsed, locale) : null
+}
+
+/** 已解析的蓝图对象 → `Blueprint`（`render` 按 locale 输出）。 */
+function toBlueprint(parsed: BlueprintShape, locale?: HostLocale | null): Blueprint {
   const summary = typeof parsed.summary === 'string' ? parsed.summary : ''
   const modules = parsed.modules || {}
   const duplications = Array.isArray(parsed.duplications) ? parsed.duplications : []
@@ -1571,3 +1714,61 @@ export function dirTooLargeForBaseline(dir: string, maxFiles = 1000, maxBytes = 
     return walk(dir, 0)
   } catch (e) { return true } // 采样失败（权限等）→ 按过大处理（宁严勿松）
 }
+
+/**
+ * **AC 索引的文本兜底抽取**（ADR-0011 C 方案，2026-10-07）。
+ *
+ * **为什么需要兜底**：AC 的权威来源是 PRD state 块的 `extra.acIndex`，但实测兑现率只有 **~20%**
+ * （34 个 state.json 里 `acIndex` 非空仅 7 个）—— `STATE_BLOCK_INSTRUCTION` 原来的模板示例里**没有
+ * `extra`**，而各阶段 rules 只用散文要求它 ⇒ 模型照模板写。契约已按 A 方案补进模板，但按本仓纪律
+ * （§2：**能 host 客观判定的就不依赖模型自律**），**必须有兜底**，否则确认单/索引在多数 run 里是空的。
+ *
+ * ⚠️ **抽段不可靠是本仓的旧伤**（`## 9. 假设与待澄清` 曾让内联正则误报「契约未兑现」）⇒ 本函数：
+ * ① **逐行**解析、不做跨行正则；② 只认两种强特征 —— **行首** `AC-<数字>`（列表项 / 加粗 / 表格首列），
+ * 或**表格任意列**里 `AC-<数字>` **紧跟冒号**（`| 用户故事 | AC-1: …` 是真实产物里最常见的故事表形态）；
+ * ③ 返回为空即 `null`，**由调用方显式标注「来源 = 文本抽取」**，绝不冒充结构化来源（防静默降级）。
+ *
+ * **源必须传对**（2026-10-07 实测）：调用方要给**PRD 正文**（`artifactText(journal,'PRD.md')`），
+ * 不是 `stage.output` —— 后者在真实 run 里中位 2.5k 字符、且 AC 常被压成交接摘要
+ * （`（AC-1）、…` / `| Accept | AC-1…AC-8 |`）。同一实现两个源上的命中率：**PRD.md 19/21（90%）
+ * vs stage.output 21/87（24%）**。见 `docs/adr/0011-…md` 的 C 落地记录。
+ */
+export function extractAcIndexFromText(doc: string | null | undefined): Record<string, string> | null {
+  const text = String(doc || '')
+  if (!text.trim()) return null
+  const out: Record<string, string> = {}
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim()
+    if (!line) continue
+    // 表格分隔行 / 纯横线行：跳过
+    if (/^\|?[\s:|-]+\|?$/.test(line)) continue
+    // ① 行首锚定：可选 `-` / `*` / `|` / 加粗，然后是 AC-<数字>（大小写不敏感，统一成大写）
+    let m = line.match(/^[-*|>\s]*(?:\*\*)?\[?(AC[-\s]?\d+)\]?(?:\*\*)?\s*[：:|)-]?\s*(.+)$/i)
+    // ② 表格任意列：`| 用户故事 | AC-1: … |`（真实产物最常见的故事表）。
+    //    要求 AC-<数字> **紧跟冒号** —— 显著压低「引用型」误报（`| 关联验收项 | AC-1 |` 这种无冒号的引用不会命中）。
+    if (!m) m = line.match(/^(?:\|[^|]*)+?\|\s*(?:\*\*)?\[?(AC[-\s]?\d+)\]?(?:\*\*)?\s*[：:]\s*(.+?)\s*\|?\s*$/i)
+    if (!m) continue
+    const id = m[1].toUpperCase().replace(/\s+/g, '-').replace(/^AC(\d)/, 'AC-$1')
+    let desc = m[2].trim()
+    // 表格行：描述到下一个 `|` 为止；去掉尾部残留的分隔符
+    const pipe = desc.indexOf('|')
+    if (pipe >= 0) desc = desc.slice(0, pipe).trim()
+    // 去掉 markdown 强调与多余空白
+    desc = desc.replace(/\*\*/g, '').replace(/^\s*[：:]\s*/, '').trim()
+    if (!desc) continue
+    // 描述本身又是一个 AC 编号 ⇒ 这是「AC-1…AC-8」这类区间/引用行，不是正文，丢弃
+    if (/^AC[-\s]?\d/i.test(desc)) continue
+    if (!out[id]) out[id] = desc.slice(0, 300)
+    if (Object.keys(out).length >= 40) break
+  }
+  return Object.keys(out).length ? out : null
+}
+
+/**
+ * **已删除：`normalizeClarifyStrength`**（2026-10-08）。
+ *
+ * 它唯一的职责是「`patch` 恒 `off`，优先于显式 `interview`」——一条约束 **run 级选项**的契约。
+ * 而 `clarifyStrength` 自 2026-10-08 起**不再是 run 级选项**（它只选 ctx 文案，而 ctx 在选团队时注入，
+ * 那一刻还不知道档位，也不知道是不是 patch）⇒ **该契约随字段一起作废**，见 ADR-0011 落地记录。
+ * 需要复现旧档位做对照时用 `TEAMFLOW_CLARIFY`（见 `clarifyStrengthFromEnv`）。
+ */

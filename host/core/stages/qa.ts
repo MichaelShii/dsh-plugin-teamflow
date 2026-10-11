@@ -18,6 +18,7 @@ import { checkDeliverableInterfaces } from '../workspace/interface-check.ts'
 import { runHostSmoke } from '../workspace/smoke-check.ts'
 import { phaseLabel, t } from '../../locales.ts'
 import type { PipelineCtx } from '../pipeline.ts'
+import { stateBlockRelPath } from '../domain/state.ts'
 /**
  * QA 测试阶段（打回闭环：QA → 开发修复 → 复验；超 QA_REWORK_LIMIT 转人工）。
  * @returns qa / qaBlocked 交接给验收阶段（原先是 executePipeline 里的外层 let，现由返回值交回）
@@ -153,7 +154,7 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
       if (!qaR.text) { advanceTask(journal, 'needs-human', null, isReverify ? t(locale, 'event.qaReverifyFail', { round: round - 1 }) : t(locale, 'event.qaFail'), { by: 'qa' }); throw stageFailError('qa', qaR) }
       // 单轨契约：文件即产物——QA-REPORT.md 是缺陷表/补测清单/结论的唯一事实来源；
       // state 块仍在回复尾部（host 机器元数据，不进文件）
-      mergeStageState('qa', qaR.text)
+      mergeStageState('qa', qaR.text, stateBlockRelPath(journal.id, 'qa'))
       qa = artifactText(journal, 'QA-REPORT.md')
       if (!qa) {
         // 硬失败而非回退解析回复：回复仅摘要无缺陷表，回退=「QA 未发现缺陷」静默假交付（本次要治的病）

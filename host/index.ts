@@ -19,7 +19,7 @@ import type { JournalRecord } from '../store.ts'
 import { fileAddressFor } from '@deepseek-ai/dsh-util-workspace-path'
 
 import { phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER } from './constants.ts'
-import { toText, clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, envFlagOn } from './util.ts'
+import { toText, clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, envFlagOn, confirmModeFromEnv, clarifyStrengthFromEnv } from './util.ts'
 
 import { runtime, runs, setRuntime, setSessionProjections, setInstallCtx, workspaceScopeOf, getRun } from './core/agent/context.ts'
 import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/domain/backlog.ts'
@@ -260,11 +260,19 @@ function registerTools(ctx) {
           return [{ type: 'text', text: t(ambientLocale(), 'tool.start.needsConfirm', { question: value.question, note: value.note || '' }) }]
         }
         if (value && value.status === 'needs-clarification') {
-          // 闸门文本由 host 组好交给主线程：它必须**先问用户**，拿到答复后带 requirementSupplement 重调。
+          // 闸门文本由 host 组好交给主线程：它必须**先问用户**。答完有两条回带通道：带 requirementSupplement
+          // 重调本工具（另起 run），或带 supplement 调 `teamflow_resume` 续跑被中断的那个 run。
           const list = Array.isArray(value.blockers)
-            ? value.blockers.map((b, i) => `${i + 1}. ${b.question}\n   · ${t(ambientLocale(), 'tool.start.blockerReadings')}: ${(b.readings || []).join(' / ')}\n   · ${t(ambientLocale(), 'tool.start.blockerChanges')}: ${b.changes}\n   · ${t(ambientLocale(), 'tool.start.blockerRework')}: ${b.rework}`).join('\n')
+            ? value.blockers.map((b, i) => `${i + 1}. ${b.question}\n   · ${t(ambientLocale(), 'tool.start.blockerGuess')}: ${b.guess || t(ambientLocale(), 'tool.start.blockerGuessNone')}\n   · ${t(ambientLocale(), 'tool.start.blockerReadings')}: ${(b.readings || []).join(' / ')}\n   · ${t(ambientLocale(), 'tool.start.blockerChanges')}: ${b.changes}\n   · ${t(ambientLocale(), 'tool.start.blockerRework')}: ${b.rework}`).join('\n')
             : ''
-          return [{ type: 'text', text: t(ambientLocale(), 'tool.start.needsClarification', { intent: String(value.intent || 'requirement'), blockers: list }) }]
+          // 探索态加固（2026-10-08）：分诊已经判出 `intent`（`exploration` = 用户自己可能也没想清），
+          // 而**这条返回是同一次调用内送达的** ⇒ 把「一次一问」协议挂在这里。
+          // 为什么不在 ctx 注入里做：ctx 只在**选团队时**注入，分诊却在 `teamflow_start` 里才跑
+          // ⇒ 喂回 ctx 结构上不可能（迟一拍）；返回面还能随 journal 落盘 ⇒ 可审计。
+          const protocol = String(value.intent || '') === 'exploration'
+            ? `\n${t(ambientLocale(), 'tool.start.explorationProtocol')}`
+            : ''
+          return [{ type: 'text', text: t(ambientLocale(), 'tool.start.needsClarification', { intent: String(value.intent || 'requirement'), blockers: list }) + protocol }]
         }
         // paused / no-team：带 message 的拒绝路径（schema 已声明 message）——之前 schema 没这字段，
         // 这两条分支的返回会被宿主校验整条拒掉（实锤抽取发现），render 也从未覆盖 → 主线程只见裸错误。
@@ -306,6 +314,14 @@ function registerTools(ctx) {
         const options = {
           needDesign: !!args.needDesign,
           needScaffold: !!args.needScaffold,
+          // PRD 确认单（ADR-0011 ①）：**触发判据是内容**（PRD 的 openQuestions 里有 kind="taste"
+          // ⇒ 暂停），**不是**一个用户要自己敲的开关 —— 2026-10-08 用户否掉了 `needConfirm` 参数：
+          // 「用户又不知道这参数」⇒ 公开一个用户不会用、工具描述里又没说何时该设的开关 = 功能是死的。
+          // 环境变量只在 A/B 对照与端到端验证时用来强制（`always`/`never`）。
+          confirmMode: confirmModeFromEnv(),
+          // ⚠️ `clarifyStrength` **不再是 run 级选项**（2026-10-08）：它从来没影响过流水线，只选 ctx 文案，
+          // 而 ctx 在**选团队时**注入 ⇒ 作为 run 参数它结构上「迟一拍」。现由 `teamflowContextText`
+          // 直接读环境变量（`TEAMFLOW_CLARIFY`，默认 interview）。详见该函数上方注释。
           lite: !!args.lite,
           // craft 引导通道：环境变量开关（TEAMFLOW_CRAFT=0 关闭），**不做工具参数**
           // —— 工具 description 每次都进主会话上下文，而这是临时实验开关（详见 util.envFlagOn 注释）
@@ -656,16 +672,18 @@ function registerTools(ctx) {
 
   T({
     name: 'teamflow_resume',
-    description: 'Resume an interrupted/failed/cancelled pipeline from its checkpoint: skip completed stages (reuse artifacts), rerun from the first incomplete stage. For interrupted runs found after process restart, or stage-failure retries.',
+    description: 'Resume an interrupted/failed/cancelled pipeline from its checkpoint: skip completed stages (reuse artifacts), rerun from the first incomplete stage. For interrupted runs found after process restart, or stage-failure retries. Pass supplement to hand over input the run was waiting on (a clarification round\'s answers, or the user\'s edits to a PRD confirm sheet). Accepted at/before PRD; ALSO right after PRD while no later stage has run yet (the PRD confirm-sheet pause) — there it rewinds and re-runs PRD, so a "change these items" answer lands in the SAME run instead of starting a new one.',
     parameters: {
       runId: { type: 'string', required: true, description: 'Pipeline run id' },
+      supplement: { type: 'string', description: 'Authoritative extra context supplied while the run was interrupted (a clarification round\'s answers, or the user\'s edits to a PRD confirm sheet). Kept out of the original requirement, which stays a faithful transcription of the user\'s words. Consumed by PRD only ⇒ accepted at/before PRD, or right after PRD when no later stage has run yet (then PRD is re-run). Rejected once a later stage has run (that would waste its output).' },
     },
     output: { schema: { type: 'object', additionalProperties: false, required: ['ok'], properties: { ok: { type: 'boolean' }, runId: { type: 'string' }, resumedFrom: { type: 'string' }, error: { type: 'string' } } }, render: (args, value) => [{ type: 'text', text: value.ok ? t(ambientLocale(), 'tool.resume.ok', { runId: value.runId, phase: value.resumedFrom }) : t(ambientLocale(), 'tool.resume.fail', { error: value.error || t(ambientLocale(), 'err.tool.unknown') }) }] },
     async execute(args, exec) {
       const parent = exec && exec.agent
       if (!parent) throw new Error(t(ambientLocale(), 'err.tool.sessionAgentResume'))
       const id = args && typeof args.runId === 'string' ? args.runId : null
-      return resumeRun(id, parent.session.id)
+      const sup = args && typeof args.supplement === 'string' ? args.supplement : null
+      return resumeRun(id, parent.session.id, sup)
     },
   })
   return registeredCount
@@ -697,9 +715,30 @@ function saveActiveTeams(): void {
 const pendingInjections = new Map<string, { teamName: string; teamIcon: string; teamId: string }>()
 
 /** 尝试补发延迟注入：agent 可用时注入上下文并清除 pending。 */
-/** 会话注入的 TeamFlow 契约文案（单一事实来源）：何时走流水线 + 启动后主线程必须停手等汇报。 */
+/**
+ * 会话注入的 TeamFlow 契约文案（单一事实来源）：何时走流水线 + 怎么和用户对齐 + 启动后主线程必须停手等汇报。
+ *
+ * **2026-10-08 重构：澄清策略不再是「追加档位」，而是中间那个槽位。**
+ * 旧实现是 `base + addendum`（`once` 不加、`off`/`interview` 各追加一段），而「强度」靠
+ * `clarifyStrengthForTeam` **反查历史 run 快照**得到 —— 但 ctx 只在**选团队时**注入，
+ * 所以某次 run 传的强度**当次注入不进去**，只影响下一次（迟一拍），重启还会丢（runs 是内存 Map）。
+ * 用户当场指出切口错了：**这个判断本来就该由主 agent 在「看到需求」那一刻做**，
+ * 而 ctx 注入就是告诉它怎么用这个插件的地方 ⇒ 把「探索态 ⇒ 一次一问」写成**默认行为**，
+ * 而不是让人去设一个开关。三段拼接顺序与旧文案一致，只是中间那段可换。
+ *
+ * 强度只剩**对照实验**意义（`TEAMFLOW_CLARIFY=once|off`）：默认 `interview`（一次一问）。
+ */
 function teamflowContextText(teamIcon: string, teamName: string, teamId: string): string {
-  return t(ambientLocale(), 'tool.ctx.team', { icon: teamIcon, name: teamName, teamId })
+  const locale = ambientLocale()
+  const strength = clarifyStrengthFromEnv()
+  const clarifyKey = strength === 'off'
+    ? 'tool.ctx.clarifyOff'
+    : strength === 'once' ? 'tool.ctx.clarifyOnce' : 'tool.ctx.clarifyInterview'
+  return [
+    t(locale, 'tool.ctx.team', { icon: teamIcon, name: teamName, teamId }),
+    t(locale, clarifyKey),
+    t(locale, 'tool.ctx.teamTail'),
+  ].join('\n')
 }
 
 /**

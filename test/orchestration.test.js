@@ -22,7 +22,7 @@
  *   TF_ORCH_BASE=<能解析 peer 的源码副本> node test/orchestration.test.js
  * 等价的 A/B 对照脚本见 `.workbuddy/verify-2026-09-26/h5-stage-convergence.mjs`。
  */
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -36,6 +36,8 @@ process.env.DSH_HOME = `${sandboxRoot}/home`
 
 /* ── 加载编排核心（解析不到 → 明确跳过） ── */
 let executePipeline = null
+let interruptedPhaseOf = null
+let resumeRun = null
 let setRuntime = null
 let runtime = null
 try {
@@ -51,6 +53,8 @@ try {
   const ctxMod = await loadCore('agent/context.ts', 'context.ts')
   const pipeMod = await loadCore('pipeline.ts')
   executePipeline = pipeMod.executePipeline
+  interruptedPhaseOf = pipeMod.interruptedPhaseOf
+  resumeRun = pipeMod.resumeRun
   setRuntime = ctxMod.setRuntime
   runtime = ctxMod
 } catch (e) {
@@ -123,7 +127,7 @@ const TRIAGE_EXPLORE = JSON.stringify({
 /** 构造一次 run：stub 子代理 + 隔离的 $DSH_HOME / 工作区。 */
 async function runScenario(
   name,
-  { options, resume = null, emptyNext = false, failLabel = null, artifacts = null, cancelAfter = 0, triage = null, extraFiles = 0 },
+  { options, resume = null, emptyNext = false, failLabel = null, artifacts = null, cancelAfter = 0, triage = null, extraFiles = 0, presetSupplement = null, prdOutput = null, stateViaFile = false, techOutput = null, techDoc = null, blueprintViaFile = false, blueprintRaw = null },
 ) {
   const rootTmp = mkdtempSync(join(tmpdir(), `tf-orch-${name}-`))
   process.env.DSH_HOME = `${rootTmp}/home`
@@ -140,9 +144,13 @@ async function runScenario(
   const children = []
   let doEmpty = emptyNext
   let qaRound = 0
+  let stateFileErr = '' // `stateViaFile` 的桩自检（块/路径没取到 ⇒ 断言会点名，而不是静默退化成回落）
+  let blueprintFileErr = '' // `blueprintViaFile` 的桩自检（同上，针对蓝图独立文件通道）
   const stubStart = async (_provider, init) => {
     const label = String((init && init.label) || '')
-    children.push({ id: `c-${children.length + 1}`, label })
+    // 捕获阶段 prompt（锁「同一 run 内 state 刷新」用：后续阶段的 state slice 必须带上 PRD 写下的东西）
+    const promptText = String(((init && init.prompt && init.prompt[0] && init.prompt[0].text) || ''))
+    children.push({ id: `c-${children.length + 1}`, label, prompt: promptText })
     // 按 label 判定阶段并落产物文件（QA 每轮一份报告 → 用轮次索引取语料）
     if (artifacts) {
       if (/^QA (测试|复验)/.test(label) && artifacts.qa && artifacts.qa.length) {
@@ -158,6 +166,43 @@ async function runScenario(
     let text = labelHit || doEmpty ? '' : LONG
     // 分诊裁决注入：子代理直接回 JSON（runTriage 期望回复以 JSON 对象开头）
     if (triage && /需求分诊/.test(label)) text = triage
+    // PRD 产出覆盖：用来注入带 `extra.*` 的 state 块 —— 锁「同一 run 内 state 必须刷新」
+    if (prdOutput && !labelHit && !doEmpty && /梳理 PRD/.test(label)) {
+      if (stateViaFile) {
+        // **新契约**的模拟（2026-10-08 文件通道）：块写进文件，**回复里不留块**。
+        // 路径**从 prompt 里取** —— 顺带证明「指令里真的点了路径」（写死会掩盖路径没注入的 bug）。
+        try {
+          const blk = prdOutput.match(/<!--\s*state\s*-->[\s\S]*?<!--\s*\/state\s*-->/)
+          const p = promptText.match(/logs\/teamflow\/[^\s`]+\/state\/[^\s`]+\.json/)
+          if (!blk) throw new Error('prdOutput 里没有 state 块')
+          if (!p) throw new Error('PRD prompt 里没有 state 文件路径')
+          const abs = join(work, p[0])
+          mkdirSync(dirname(abs), { recursive: true })
+          writeFileSync(abs, blk[0], 'utf8')
+          text = prdOutput.replace(blk[0], '')
+        } catch (e) { stateFileErr = String((e && e.message) || e) }
+      } else {
+        text = prdOutput
+      }
+    }
+    // 技术方案阶段的桩钩子。三者**互相独立**，可自由组合：
+    // · techDoc      → 落一份 TECHNICAL.md（历史通道 ③）
+    // · techOutput   → 回复文本（注入空块 / 双重产出等）
+    // · blueprintViaFile → 蓝图**独立文件**（新主通道 ②）；不给 techOutput 时回复默认 LONG（够长、不含蓝图）
+    const isTech = !labelHit && !doEmpty && /技术方案|架构蓝图/.test(label)
+    if (blueprintViaFile && isTech) {
+      // 路径**从 prompt 里取** —— 顺带证明「指令里真的点了路径」（写死会掩盖路径没注入的 bug）。
+      try {
+        const p = promptText.match(/logs\/teamflow\/[^\s`]+\/blueprint\.json/)
+        if (!p) throw new Error('技术方案 prompt 里没有蓝图文件路径')
+        const abs = join(work, p[0])
+        mkdirSync(dirname(abs), { recursive: true })
+        writeFileSync(abs, blueprintRaw == null ? BLUEPRINT_JSON : blueprintRaw, 'utf8')
+      } catch (e) { blueprintFileErr = String((e && e.message) || e) }
+    }
+    if (techDoc != null && isTech) putArtifact('TECHNICAL.md', techDoc)
+    if (techOutput && isTech) text = techOutput
+    else if (blueprintViaFile && isTech) text = LONG
     doEmpty = false
     return {
       id: `c-${children.length}`,
@@ -176,6 +221,8 @@ async function runScenario(
     error: null, cancelled: false, humanIntervention: false, interrupted: false,
     interruptedAt: null, supersededBy: null,
   }
+  // 模拟「journal 里已经存着澄清答复」的续跑（补录入口写入的那一份）：用来验 executePipeline 不把它清成 null
+  if (presetSupplement != null) journal.requirementSupplement = presetSupplement
   /** 落一份任务夹产物（QA-REPORT.md / ACCEPTANCE.md），模拟子代理把交付写进文件。 */
   const putArtifact = (fileName, text) => {
     if (!journal.workspacePath || !journal.runDocs || text == null) return
@@ -200,7 +247,16 @@ async function runScenario(
     warnLogs: logOf('warn'), childLabels: children.map((c) => c.label),
     childCount: children.length, blueprint: journal.blueprint,
     humanIntervention: !!journal.humanIntervention,
+    stateFileErr,
+    blueprintFileErr,
+    // 蓝图中转文件是否还留在项目里（新契约要求 host 读完即删）—— 必须在 rmSync 之前取
+    blueprintFileLeft: existsSync(join(work, `logs/teamflow/${journal.id}/blueprint.json`)),
+    // PRD 确认单（ADR-0011 ①）：暂停后必须能读到落盘的 sheet（进程重启后主线程还要靠它讲「批准什么」）
+    confirmSheet: journal.confirmSheet ?? null,
+    journalSupplement: journal.requirementSupplement ?? null,
     timelineKeys: Object.keys((journal.result && journal.result.timeline) || {}).sort(),
+    // 各阶段真实 prompt（按 label；同名取最后一次）—— 供「同一 run 内 state 刷新」这类**注入面**断言
+    promptsByLabel: Object.fromEntries(children.map((c) => [c.label, c.prompt])),
   }
   rmSync(rootTmp, { recursive: true, force: true })
   return out
@@ -420,6 +476,24 @@ console.log('\n[16] 澄清闸门：分诊 intent 非需求 + must-know 缺口 �
   ok(!has(r.childLabels, '梳理 PRD'), '未进入 PRD 阶段（闸门在任何阶段之前——不得先干再问）')
   ok(/澄清|尚未对齐/.test(String(r.error)), `错误文案要求先向用户澄清（实测 ${String(r.error).slice(0, 40)}）`)
   ok(r.status !== 'running', `澄清中止后 status 不卡 running（实测 ${r.status}）`)
+  // 探索态加固（2026-10-08）：`intent === 'exploration'` ⇒ 中止文案**追加**「一次一问」协议。
+  // 这是**行为断言**（不是源码锁）：工具返回面与 pipeline 兜底闸门两条路径必须同形，
+  // 否则「谁先命中」会决定主 agent 拿到什么行为指令。
+  ok(/一次只问一个问题/.test(String(r.error)), `探索态 ⇒ 中止文案带「一次一问」协议（实测尾部 ${String(r.error).slice(-56)}）`)
+  ok(/停止追问/.test(String(r.error)), '协议同时给**硬终止**条件（只教「一次一问」不教「何时停」＝把用户拖进无限追问）')
+  // 对照：**非探索态**不得加协议 —— 否则等于每次澄清都被强制成访谈模式。
+  // （intent=requirement 但仍有 blocker ⇒ 同样走 needs-clarification，路径相同、只有 intent 不同。）
+  const reqClarify = await runScenario('triage-clarify-req', {
+    options: QA_OPTS,
+    triage: JSON.stringify({
+      mode: 'full', kind: 'feature', complexity: 'medium', confidence: 'high',
+      // ⚠️ blocker 必须**过 host 合格线**（≥2 个互斥读法 ＋ changes ＋ rework，见 `qualifyBlockers`）：
+      // 少了 `readings` 会被丢掉 ⇒ blockers 为空 ⇒ 闸门不触发，这条对照就测了个寂寞（第一版踩过）。
+      intent: 'requirement', blockers: [{ question: '用哪个库？', readings: ['A 库', 'B 库'], changes: '换库', rework: '重写' }], slug: 'clarify-req',
+    }),
+  })
+  ok(/澄清|尚未对齐/.test(String(reqClarify.error)) && !/一次只问一个问题/.test(String(reqClarify.error)),
+    `对照：intent=requirement ⇒ 同一路径**不加**协议（实测尾部 ${String(reqClarify.error).slice(-50)}）`)
 }
 
 console.log('\n[17] host 侧两项检查必须「可观测」—— 不许静默空转')
@@ -459,6 +533,499 @@ console.log('\n[9] 交付枚举被上限截断 ⇒ 负结论被显式撤回')
   ok(negIdx >= 0 && truncAt > negIdx, `撤回提示必须排在负结论**之后**（实测 neg@${negIdx} / warn@${truncAt}）`)
   ok(/不是事实|只是没枚举到|not facts/.test(String(logs[truncAt])),
     `撤回提示要点名那三条「不是事实」（实测 ${String(logs[truncAt]).slice(0, 100)}）`)
+}
+
+/* ── ⑩ 零阶段 run 的断点必须 = PRD（ADR-0011 ④，2026-10-06）──
+ * 为什么单列：`interruptedPhaseOf` 的循环出口只有一个（`return 'acceptance'`），于是
+ * **「什么都没做」与「什么都做完了」共用同一个出口** —— 零阶段 run（澄清闸门兜底 `abortForClarification`
+ * 落下的零阶段 interrupted run）续跑时 `resumed()` 对 prd/design/scaffold/tech/dev/qa 全为真，
+ * 而零阶段的 `buildResumeProducts` 返回 `{}` ⇒ 产物全 undefined（PRD 为空）⇒ 跳过整条流水线
+ * 直接拿空 PRD 跑验收。**是「跑错」，不只是「拿不回答复」**（实机探针：断点实测 = acceptance）。
+ * 变异：删掉 `if ((journal.stages || []).length === 0) return 'prd'` ⇒ 本组第 1 条立刻红。 */
+console.log('\n[18] 零阶段 run 的断点 = PRD（不得跳过整条流水线直接验收）')
+{
+  const zeroStage = {
+    id: 'tf-zero', requirement: 'r', status: 'interrupted', locale: 'zh',
+    workspace: 'ws-zero', stages: [], logs: [], options: { mode: 'full' },
+  }
+  ok(interruptedPhaseOf(zeroStage) === 'prd', `零阶段 → 断点 prd（实测 ${interruptedPhaseOf(zeroStage)}）`)
+
+  // 确认单形态（2026-10-07 第二层修正）：**PRD done、其后全空**。现实现在这里会一路 continue
+  // 到 `return 'acceptance'` ⇒ 跳过 design/tech/dev/qa 直接验收。改后应落在「启用但从未尝试」的阶段。
+  const afterPrd = interruptedPhaseOf({ ...zeroStage, options: QA_OPTS, stages: [{ phase: 'prd', status: 'done' }] })
+  ok(afterPrd === 'tech', `PRD done 且其后全空（full 档无 design/scaffold）→ 断点 tech（实测 ${afterPrd}）`)
+  const afterPrdFull = interruptedPhaseOf({
+    ...zeroStage, options: { mode: 'full', needDesign: true, needScaffold: true }, stages: [{ phase: 'prd', status: 'done' }],
+  })
+  ok(afterPrdFull === 'design', `同上但 needDesign=true → 断点 design（实测 ${afterPrdFull}）`)
+
+  // 对照：所有阶段都 done ⇒ 断点仍是 acceptance（「都做完了」那一路不能被这两次修正带偏）
+  const allDone = ['prd', 'design', 'scaffold', 'tech', 'dev', 'qa', 'acceptance'].map((p) => ({ phase: p, status: 'done', taskKey: 'T1' }))
+  ok(interruptedPhaseOf({ ...zeroStage, options: { mode: 'full', needDesign: true, needScaffold: true }, stages: allDone }) === 'acceptance',
+    '对照：全部阶段 done → 断点 acceptance（不是被「启用但未尝试」这条抢走）')
+
+  // 行为侧：用零阶段算出的断点驱动 executePipeline ⇒ PRD 必须真起子代理
+  const r = await runScenario('zero-stage-resume', {
+    options: QA_OPTS, resume: { phase: interruptedPhaseOf(zeroStage), products: {} },
+  })
+  ok(has(r.childLabels, '梳理 PRD'), `零阶段续跑后 PRD 真跑（实测子代理 ${JSON.stringify(r.childLabels).slice(0, 130)}）`)
+
+  // 对照：断点 = acceptance 时 PRD 被跳过 ⇒ 证明「跳过」确实由 resume.phase 驱动（上面那条有牙）
+  const skipped = await runScenario('late-phase-resume', {
+    options: QA_OPTS, resume: { phase: 'acceptance', products: {} },
+  })
+  ok(!has(skipped.childLabels, '梳理 PRD'), '对照：断点 = acceptance 时 PRD 被跳过（跳过由 resume.phase 驱动，非偶然）')
+}
+
+/* ── ⑪ 续跑补录入口：`supplement` 只在断点 ≤ PRD 时接受，晚于 PRD 显式拒绝 ──
+ * PRD 是 supplement 的**唯一消费点**（`prdInput` 拼 `[CLARIFIED]`）⇒ 断点晚于 PRD 时本轮没有任何阶段会读它。
+ * 拒绝而非接受，是因为「静默丢弃」正是本仓反复踩的坑（§7 工具返回体被 schema 吃掉 / §16 白名单吃掉内部字段）。
+ * 变异：把拒绝分支改成直接 `j.requirementSupplement = supp` ⇒ 本组第 1 条立刻红。 */
+console.log('\n[19] 续跑补录（supplement）：断点晚于 PRD ⇒ 显式拒绝')
+{
+  const home = join(tmpdir(), 'tf-orch-supp')
+  process.env.DSH_HOME = home
+  const mk = (ws, id, stages) => {
+    const dir = join(home, 'teamflow', ws, 'runs')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `${id}.json`), JSON.stringify({
+      id, requirement: '验证续跑补录校验', status: 'interrupted', locale: 'zh',
+      workspace: ws, logs: [], options: { mode: 'full' }, stages,
+    }), 'utf8')
+  }
+  mk('ws-stage-late', 'tf-late-supp', [{ phase: 'prd', status: 'done' }, { phase: 'tech', status: 'failed' }])
+  const bad = resumeRun('tf-late-supp', null, '用户答复：用 A 方案')
+  ok(bad.ok === false && /补录被拒绝/.test(String(bad.error)),
+    `断点晚于 PRD ⇒ 拒绝补录（实测 ${String(bad.error).slice(0, 100)}）`)
+
+  mk('ws-stage-zero', 'tf-zero-supp', [])
+  const zero = resumeRun('tf-zero-supp', null, '用户答复：用 A 方案')
+  ok(zero.ok === false && !/补录被拒绝/.test(String(zero.error)),
+    `零阶段断点 ≤ PRD ⇒ 补录过校验（此处因无 agent 停在 agentNotFound，实测 ${String(zero.error).slice(0, 80)}）`)
+  rmSync(home, { recursive: true, force: true })
+
+  // 行为侧（比源码锁强）：journal 里已存的答复，续跑时**不得被清成 null** ——
+  // `executePipeline` 收到的是 `journal.options`（白名单字面量，不含该键），无条件赋值就会清空。
+  const kept = await runScenario('resume-keeps-supplement', {
+    options: QA_OPTS, artifacts: { qa: [QA_CLEAN], acceptance: ACC.pass },
+    resume: { phase: 'tech', products: {} }, presetSupplement: '用户此前给的澄清答复',
+  })
+  ok(kept.journalSupplement === '用户此前给的澄清答复',
+    `续跑保留 journal 里已有的答复（实测 ${JSON.stringify(kept.journalSupplement)}）`)
+}
+
+/* ── ⑳ PRD 确认单（ADR-0011 ①，2026-10-08 第 2 步）：触发判据是**内容**，不是一个用户要敲的开关 ──
+ * 触发 = PRD 的 `openQuestions` 里存在 `kind: "taste"`（**主观品味项**）⇒ PRD 后暂停等用户拍板。
+ * 为什么单列：确认单的落点是 `interrupted`，而「PRD done、其后全空」正是上一批断点第二层修的那一种形态。
+ * 两者是**绑定关系** —— 断点修错，用户批准后 resume 会跳过 design/tech/dev/qa 直接验收。
+ * 为什么不是「任何待澄清项都停」：信息缺口有 `default` 兜底，而品味项猜错的代价是「成品不是我要的」
+ *   （表现为流失/差评，**不表现为 QA 打回**）⇒ 分开判据才既保住 §1 的无人值守卖点、又不让品味项溜过去。
+ * 变异：① 删掉 PRD 后的 `return abortForConfirmSheet(...)` ⇒ 暂停三条立刻红；
+ *       ② 判据退化成 `openQuestions.length > 0`（任何项都停）⇒ 「只有 fact 不停」立刻红；
+ *       ③ 判据里的 `'taste'` 写成 `'fact'` ⇒ 暂停条红、fact 条绿（单维度可分辨）。 */
+console.log('\n[20] PRD 确认单：有主观项（kind=taste）⇒ 暂停；只有信息缺口 ⇒ 直通')
+{
+  const { buildConfirmSheet, renderConfirmSheet } = await import(pathToFileURL(join(base, 'host/core/confirm.ts')).href)
+
+  // 造一份带 `extra.openQuestions` 的 PRD 产出 —— 判据读的就是它（`mergeStageState` 落进 `state.openQuestions`）。
+  // 正文要够长：产出 <400 字符会被实质校验判「未交付」，那样就测不到确认单了。
+  const prdWith = (questions) => '## 目标\n做一个小工具。\n\n## 验收标准\n- AC-1 能跑\n\n' +
+    '本 PRD 按契约逐条对应验收条件并给出可测判据，范围与非目标均已写明。'.repeat(12) +
+    `\n\n<!-- state -->${JSON.stringify({
+      phase: 'prd', summary: '一句话目标', memory: [],
+      extra: { acIndex: { 'AC-1': '能跑' }, summary: '一句话目标', openQuestions: questions },
+    })}<!-- /state -->`
+  const TASTE = { q: '桌宠长什么样？', why: '形象定了就不好改', changes: '换形象', default: '圆润小动物', kind: 'taste' }
+  const FACT = { q: '要不要支持导出？', why: '需求没说', changes: '加导出入口', default: '不支持', kind: 'fact' }
+
+  // ① 有主观项 ⇒ PRD 后停下，后续阶段一个都不跑
+  const paused = await runScenario('confirm-taste', { options: QA_OPTS, prdOutput: prdWith([TASTE]) })
+  ok(paused.status === 'interrupted', `有 kind=taste ⇒ 停成 interrupted（实测 ${paused.status}）`)
+  ok(paused.humanIntervention === true, '置 humanIntervention（工作台与汇报据此标「需人工」）')
+  ok(paused.confirmSheet && typeof paused.confirmSheet === 'object', `确认单已落盘（实测 ${JSON.stringify(paused.confirmSheet).slice(0, 120)}）`)
+  ok((paused.confirmSheet.questions || []).some((q) => q.kind === 'taste'), '确认单带上了 kind=taste（用户能看出「哪几条必须我定」）')
+  ok(renderConfirmSheet(paused.confirmSheet, 'zh').includes('［主观项］'), '**主观项要打标**（否则用户分不清「要你定」与「我已替你定」）')
+  // 只算**阶段子代理**：分诊子代理（label「需求分诊」）也在 children 里，不能拿来判「跑到哪个阶段」
+  const stageChildren = paused.childLabels.filter((l) => !/需求分诊|triage/i.test(String(l)))
+  ok(stageChildren.length === 1 && /梳理 PRD/.test(String(stageChildren[0])),
+    `只跑了 PRD，其后的 design/tech/dev/qa 一个都没起（实测阶段子代理 ${JSON.stringify(stageChildren)}）`)
+
+  // ② **只有信息缺口 ⇒ 不打断**（「不是任何待澄清项都停」的核心断言）。
+  //    断言必须证明「真的越过了 PRD 那道闸」——只写 `!== 'interrupted'` 的话，
+  //    「PRD 后崩了」也会读成绿（本组正是靠这条把「停」与「没停」分开的）。
+  const factOnly = await runScenario('confirm-fact-only', { options: QA_OPTS, prdOutput: prdWith([FACT]) })
+  ok(factOnly.status !== 'interrupted' && factOnly.confirmSheet === null,
+    `只有 kind=fact ⇒ 直通不打断（实测 status=${factOnly.status} / confirmSheet=${JSON.stringify(factOnly.confirmSheet)}）`)
+  ok(has(factOnly.childLabels, '技术方案') && has(factOnly.childLabels, '功能测试'),
+    `信息缺口不打断 ⇒ 后续阶段真的都跑了（实测 ${JSON.stringify(factOnly.childLabels)}）`)
+
+  // ③ 纯缺省（PRD 没给 openQuestions）⇒ 同样直通
+  const straight = await runScenario('confirm-none', { options: QA_OPTS })
+  ok(straight.status !== 'interrupted' && straight.confirmSheet === null,
+    `无待澄清项 ⇒ 直通（实测 status=${straight.status} / confirmSheet=${JSON.stringify(straight.confirmSheet)}）`)
+  ok(has(straight.childLabels, '技术方案'), `无待澄清项 ⇒ 后续阶段真的都跑了（实测 ${JSON.stringify(straight.childLabels)}）`)
+
+  // ④ **契约未兑现必须可见**（§7③）：模型没给 kind ⇒ 按 fact 处理（不暂停，依赖模型自律的判据在量出
+  //    真阳性率前不得有阻断权），但**必须发 warn** —— 否则又是一次「静默空转、长期没人发现」。
+  const untaggedRun = await runScenario('confirm-untagged', {
+    options: QA_OPTS,
+    prdOutput: prdWith([{ q: '没标 kind 的项', why: '?', changes: '?', default: '?' }]),
+  })
+  ok(untaggedRun.status !== 'interrupted', `没标 kind ⇒ 不暂停（实测 ${untaggedRun.status}）`)
+  ok(untaggedRun.warnLogs.some((m) => /没标 kind/.test(String(m))),
+    `没标 kind **必须发 warn**（实测 warn: ${JSON.stringify(untaggedRun.warnLogs).slice(0, 160)}）`)
+
+  // ⑤ patch 档恒不生效（STAGE_POLICY：单 agent 直改，PRD 是机械的单点确认）
+  const patchRun = await runScenario('confirm-patch', { options: PATCH_OPTS, prdOutput: prdWith([TASTE]) })
+  ok(patchRun.status !== 'interrupted', `patch 档 + 有主观项 仍不暂停（实测 ${patchRun.status}）`)
+
+  // ⑥ **内部强制位**（A/B 对照与端到端验证需要能强制开关）；它**不是工具参数**，
+  //    由环境变量 TEAMFLOW_CONFIRM 注入 —— 产品路径永远是内容驱动。
+  const forced = await runScenario('confirm-forced', { options: { ...QA_OPTS, confirmMode: 'always' }, prdOutput: prdWith([FACT]) })
+  ok(forced.status === 'interrupted', `confirmMode=always ⇒ 只有信息缺口也停（实测 ${forced.status}）`)
+  const never = await runScenario('confirm-never', { options: { ...QA_OPTS, confirmMode: 'never' }, prdOutput: prdWith([TASTE]) })
+  ok(never.status !== 'interrupted' && has(never.childLabels, '技术方案'),
+    `confirmMode=never ⇒ 有主观项也不停、照常往下跑（实测 ${never.status} / ${JSON.stringify(never.childLabels)}）`)
+
+  // ④ 纯函数：结构化数据源 + 截断必须**诚实标注**（不静默截断）
+  const sheet = buildConfirmSheet({
+    summary: '一句话目标',
+    acIndex: Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`AC-${i + 1}`, `第 ${i + 1} 条`])),
+    assumptions: Array.from({ length: 12 }, (_, i) => `假设 ${i + 1}`).join('\n'),
+    runDocs: 'docs/teamflow/20261007-r1',
+  })
+  ok(sheet.ac.length === 12 && sheet.acTotal === 20, `AC 只列前 12 条但 acTotal 记 20（实测 ${sheet.ac.length}/${sheet.acTotal}）`)
+  ok(sheet.assumptions.length === 8 && sheet.assumptionsTotal === 12, `假设同理（实测 ${sheet.assumptions.length}/${sheet.assumptionsTotal}）`)
+  ok(sheet.docPath.endsWith('/PRD.md'), `docPath 指向 PRD 全文（实测 ${sheet.docPath}）`)
+  ok(renderConfirmSheet(sheet, 'zh').split('\n').length <= 40, `渲染 ≤40 行（实测 ${renderConfirmSheet(sheet, 'zh').split('\n').length} 行）`)
+  // 数据全缺 ⇒ 摘要薄但仍要暂停（缺假设恰恰最该让人看一眼）
+  ok(buildConfirmSheet({}).ac.length === 0 && buildConfirmSheet({}).summary === '', '空输入不抛，产出空摘要（暂停与否由调用方判，与本函数无关）')
+
+  // ⑦ **闭环**：确认单暂停 ⇒ `interruptedPhaseOf` 落在 design ⇒ 用该断点续跑，design 真跑且 PRD 被跳过
+  const pausedFull = await runScenario('confirm-paused-full', { options: FULL_OPTS, prdOutput: prdWith([TASTE]) })
+  ok(pausedFull.status === 'interrupted', `有主观项 + full ⇒ 停在 interrupted（实测 ${pausedFull.status}）`)
+  ok(pausedFull.confirmSheet && typeof pausedFull.confirmSheet === 'object', '暂停时确认单落盘')
+  const resumeAt = interruptedPhaseOf(pausedFull.journal)
+  ok(resumeAt === 'design', `确认单暂停 ⇒ 断点 design（实测 ${resumeAt}）`)
+  const afterResume = await runScenario('confirm-resumed', {
+    options: { ...FULL_OPTS },
+    resume: { phase: resumeAt, products: {} },
+  })
+  const kids = afterResume.childLabels.filter((l) => !/需求分诊|triage/i.test(String(l)))
+  ok(has(kids, '设计说明'), `resume 后 design 真跑（实测 ${JSON.stringify(kids).slice(0, 150)}）`)
+  ok(!has(kids, '梳理 PRD'), `PRD 被跳过（复用已完成产物）（实测 ${JSON.stringify(kids).slice(0, 150)}）`)
+  // ⚠️ 标签不得把「**首次尝试**」说成「**补跑**」（2026-10-11 用户实测发现 run tf-mv3rdt0y-qmlxl3）：
+  // `todoDefs` 的判据 `!st || !st.done` 同时含「此前失败」与「从未尝试」两种形态，
+  // 而 `if (resume)` 分支原先**无条件**用 `dev.taskRerun` ⇒ 只要走 resume 路径（哪怕 dev 一次都没跑过，
+  // 比如确认单暂停后续跑）任务标签就全挂「（补跑）」，读起来像「上次跑挂了」，**不实**。
+  // 这个用例正是那种形态：PRD 被跳过、断点从 design 开始、dev 从未执行 ⇒ 标签里**不该**有「补跑」。
+  const devLabels = afterResume.journal.stages.map((s) => String(s.label || '')).filter((l) => l.startsWith('开发 · '))
+  ok(devLabels.length > 0, `resume 后 dev 真跑了（实测 ${devLabels.length} 条）`)
+  ok(devLabels.every((l) => !/补跑/.test(l)),
+    `**首次尝试的任务不得标「补跑」**（实测 ${JSON.stringify(devLabels.slice(0, 4))}）`)
+
+  // ⑧ AC 的**兜底与来源标注**（ADR-0011 C 方案）：`extra` 兑现率仅 ~20%（7/34 state.json）
+  //    ⇒ 结构化优先、正文兜底、**来源必须自曝**（空壳比空更糟：会让人以为「没什么要注意的」）。
+  const { extractAcIndexFromText } = await import(pathToFileURL(join(base, 'host/util.ts')).href)
+  const acDoc = '| AC | 描述 |\n|---|---|\n| AC-1 | 徽章显示今日番茄数 |\n- **AC-2**：暂停不计\nAC-3 - 跨日归零'
+  ok(extractAcIndexFromText(acDoc)['AC-1'] === '徽章显示今日番茄数', '抽取：表格首列形态')
+  ok(extractAcIndexFromText(acDoc)['AC-2'] === '暂停不计', '抽取：加粗列表形态')
+  ok(extractAcIndexFromText(acDoc)['AC-3'] === '跨日归零', '抽取：裸 `AC-n - 描述` 形态')
+  ok(extractAcIndexFromText('普通段落，没有任何 AC 特征') === null, '抽取：无特征 → null（**不瞎编**）')
+  ok(extractAcIndexFromText('') === null && extractAcIndexFromText(null) === null && extractAcIndexFromText(undefined) === null, '抽取：空/null/undefined → null（不炸）')
+  const manyAc = Array.from({ length: 60 }, (_, i) => `| AC-${i + 1} | 第 ${i + 1} 条 |`).join('\n')
+  ok(Object.keys(extractAcIndexFromText(manyAc)).length === 40, `抽取：上限 40 条（实测 ${Object.keys(extractAcIndexFromText(manyAc)).length}）`)
+  // ⑨ **真实语料逼出来的两条规则**（2026-10-07，拿 21 份真实 PRD.md 量出来的）：
+  //    · 最常见的故事表是 `| 用户故事 | AC-1: … |`（AC 在**第二列**）—— 只锚行首会漏（实测 tf-obs-r3 漏 4/4）；
+  //    · `| Accept | AC-1…AC-8 | export …` 是**区间引用行**，不是 AC 正文 ⇒ 不得造出 `AC-1 = "…AC-8"` 的垃圾条目。
+  const storyTable = '| 故事 | 验收标准 |\n|------|----------|\n| 用户可添加任务 | AC-1: 输入后立即出现 |\n| 用户可勾选任务 | AC-2: 点击后标记完成 |'
+  const stGot = extractAcIndexFromText(storyTable)
+  ok(stGot && stGot['AC-1'] === '输入后立即出现' && stGot['AC-2'] === '点击后标记完成', `抽取：**表格第二列** \`| 故事 | AC-1: … |\`（真实产物最常见形态，实测 ${JSON.stringify(stGot)}）`)
+  ok(extractAcIndexFromText('| Accept | AC-1…AC-8 | export + unit table |') === null, '抽取：区间引用行 → null（AC 后不是冒号 ⇒ 不命中，不造垃圾条目）')
+
+  const fromState = buildConfirmSheet({ acIndex: { 'AC-1': '结构化' }, prdText: '| AC-9 | 正文里的 |' })
+  ok(fromState.acSource === 'state' && fromState.ac[0].id === 'AC-1', '结构化有值 ⇒ 用它，来源=state（不被正文覆盖）')
+  const fromText = buildConfirmSheet({ acIndex: {}, prdText: acDoc })
+  ok(fromText.acSource === 'extracted' && fromText.ac.length === 3, `结构化空 ⇒ 正文兜底（实测来源=${fromText.acSource} 条数=${fromText.ac.length}）`)
+  ok(renderConfirmSheet(fromText, 'zh').includes('从 PRD 正文抽取'), '**抽取来的必须自曝来源**（否则用户分不清结构化与抽来的）')
+  const noAc = buildConfirmSheet({ acIndex: {}, prdText: '没有任何 AC' })
+  ok(noAc.acSource === 'none' && noAc.ac.length === 0, '两处都无 ⇒ 来源=none')
+  ok(renderConfirmSheet(noAc, 'zh').includes('没抓到验收条件'), '**none 也要显式告警**（不能静默留空段落骗人）')
+  ok(renderConfirmSheet(noAc, 'zh').split('\n').length <= 40, `无 AC 时仍 ≤40 行（实测 ${renderConfirmSheet(noAc, 'zh').split('\n').length}）`)
+}
+
+/* ── [21] 确认单暂停后的**续跑**：断点必须可续 —— 不得被「已记录阶段全 done」这条伪代理误判 ──
+ * 实锤 tf-muy63zgy-octoqj（2026-10-07，真实桌面版）：确认单**如期暂停**（`stages` 只有 `[prd done]`，
+ * P0 修复生效），但 `resumeRun` 里一条更早的守卫用「所有**已记录**的阶段都 done」当「全流程跑完」的
+ * 代理判据 ⇒ 该形态下**恒真** ⇒ 断点被误判成「无」，用户续跑被当场拒绝
+ * （而 `interruptedPhaseOf` 明明返回 `design`）。同一个「中途暂停」形态在 `interruptedPhaseOf` 里
+ * 已于今天修过（第二层），**这处漏了** —— 同型「只修一处、漏另一处」。
+ * 本组锁两个方向：① 该形态**必须可续**；② 真·全部完成（含 acceptance done）**仍必须拒绝**（防改过头）。 */
+console.log('\n[21] 确认单暂停后的续跑：断点可续（不得被「已记录阶段全 done」误判）')
+{
+  const home = join(tmpdir(), 'tf-orch-confirm-resume')
+  process.env.DSH_HOME = home
+  const mk = (ws, id, stages, options) => {
+    const dir = join(home, 'teamflow', ws, 'runs')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `${id}.json`), JSON.stringify({
+      id, requirement: '验证确认单后的续跑', status: 'interrupted', locale: 'zh',
+      workspace: ws, logs: [], options, stages,
+    }), 'utf8')
+  }
+  // ① 确认单形态：PRD done、其后一个都没跑（medium + needDesign ⇒ design/tech/dev/qa/acceptance 均启用）
+  mk('ws-confirm-pause', 'tf-confirm-pause', [{ phase: 'prd', status: 'done' }], { mode: 'medium', needDesign: true, needScaffold: false })
+  const r1 = resumeRun('tf-confirm-pause', null)
+  ok(r1.ok === false && !/无断点可续/.test(String(r1.error)),
+    `确认单暂停（stages=[prd done]）⇒ **不得**判「无断点」（此处因无 agent 停在 agentNotFound，实测 ${String(r1.error).slice(0, 80)}）`)
+  // ② 对照：真·全部完成（acceptance 也 done）⇒ 仍必须硬拒绝（tf-mt8kxyef 那条保护不能被改没）
+  const allDoneStages = ['prd', 'design', 'tech', 'dev', 'qa', 'acceptance'].map((p) => ({ phase: p, status: 'done', taskKey: 'T1' }))
+  mk('ws-confirm-all', 'tf-confirm-all', allDoneStages, { mode: 'medium', needDesign: true })
+  const r2 = resumeRun('tf-confirm-all', null)
+  ok(r2.ok === false && /无断点可续/.test(String(r2.error)),
+    `对照：全阶段（含 acceptance）done ⇒ 仍拒绝续跑（实测 ${String(r2.error).slice(0, 80)}）`)
+  rmSync(home, { recursive: true, force: true })
+}
+
+/* ── [22] 同一 run 内 state 必须刷新：PRD 写下的 `extra.*` 要**当场**被后续消费者看到 ──
+ * 实锤 tf-muy63zgy-octoqj（2026-10-07 真实桌面版）：磁盘 `state.json` 里 `acIndex` 9 条、
+ * `product.summary` 有值，而同一次 run 的确认单却是 `acSource=extracted`、`summary=''`。
+ * 根因：`mergeStateBlock` 是 load→改→save→**返回新对象**，而调用点丢了返回值 ⇒ 内存里的 `state`
+ * 停在**起跑快照** ⇒ 本次 run 里 PRD 写的东西，**同一 run 的 design/tech/qa/acceptance 与确认单全都看不见**
+ * （要等下一次 run 从磁盘载入才可见，即「晚一个 run」）。这是既有缺陷，确认单把它放大成可见故障。
+ * 变异：把调用改回「丢弃返回值」⇒ 本组 3 条立刻全红。 */
+console.log('\n[22] 同一 run 内 state 刷新：PRD 的 extra.* 当场可见（不得等到下一次 run）')
+{
+  const NESTED = {
+    phase: 'prd', summary: 'PRD 阶段摘要', memory: [],
+    extra: {
+      acIndex: { 'AC-1': '结构化 AC 一', 'AC-2': '结构化 AC 二' },
+      summary: '一句话目标',
+      openQuestions: [{ q: '要问吗', why: '因为会影响 AC-1', changes: '改 AC-1' }],
+    },
+  }
+  const r = await runScenario('state-refresh', {
+    // 本组考的是**同一 run 内 state 刷新**，与确认单的触发判据无关 ⇒ 用 `always` 强制暂停，
+    // 免得 NESTED 的 kind 一改就把这条断言连带弄红（判据由 [20] 单独钉）。
+    options: { ...FULL_OPTS, confirmMode: 'always' },
+    prdOutput: `${LONG}\n<!-- state -->${JSON.stringify(NESTED)}<!-- /state -->`,
+  })
+  const sheet = r.confirmSheet
+  ok(sheet && sheet.acSource === 'state' && sheet.ac.length === 2,
+    `PRD 的 extra.acIndex **当场**进确认单（实测来源=${sheet && sheet.acSource} 条数=${sheet && sheet.ac && sheet.ac.length}）`)
+  ok(sheet && sheet.summary === '一句话目标', `extra.summary 当场可见（实测 ${JSON.stringify(sheet && sheet.summary)}）`)
+  ok(sheet && sheet.questions && sheet.questions.length === 1, `extra.openQuestions 当场可见（实测 ${sheet && sheet.questions && sheet.questions.length}）`)
+
+  // ② 不暂停跑完整条：**后续阶段的 prompt** 里必须带上本 run PRD 写下的 state（两条不同的注入面）。
+  // `confirmMode: 'never'` 是**刻意**的：本组考的是 state 注入面，不该与确认单的内容判据耦合 ——
+  // 否则判据一改，这两条对照断言会跟着变红（变异实测过），control 就不再是 control。
+  const full = await runScenario('state-refresh-full', {
+    options: { ...FULL_OPTS, confirmMode: 'never' },
+    prdOutput: `${LONG}\n<!-- state -->${JSON.stringify(NESTED)}<!-- /state -->`,
+  })
+  const promptOf = (kw) => {
+    const hit = Object.entries(full.promptsByLabel || {}).find(([l]) => String(l).includes(kw))
+    return hit ? String(hit[1]) : ''
+  }
+  const designPrompt = promptOf('设计说明')
+  const qaPrompt = promptOf('QA 测试')
+  // `__runCtx.runDocs` 是**运行期字段**（loadState 不搬运）⇒ PRD 的 state 合并后若不带回，这里会整条消失
+  ok(/【本次任务产物夹】/.test(designPrompt), 'design 阶段 prompt 仍带「任务产物夹」注入（__runCtx 未被 state 合并冲掉）')
+  // `state.acIndex` 只注入 pm/qa/acceptance/tech 四角色 ⇒ QA 的 prompt 是这条链的证据面
+  ok(/AC 索引/.test(qaPrompt) && /结构化 AC 一/.test(qaPrompt), 'QA 阶段 prompt 带上**本 run PRD** 写的 AC 索引（不是上一次 run 的遗留）')
+  // 机器契约块不得泄漏（2026-10-08 用户截图实锤：子任务卡把整段 `<!-- state -->{…}` 摊出来了）。
+  // 行为断言：块在 `mergeStageState` 消费之后**立刻**被剥掉 ⇒ 展示面与下游 prompt 都只见正文。
+  // 机器契约块不得泄漏（2026-10-08 用户截图实锤：子任务卡把整段 `<!-- state -->{…}` 摊出来了）。
+  // ⚠️ 断言必须针对**本 run 实际注入的那一段**，不能只匹配 `<!-- state -->` 这个词 ——
+  // `STATE_BLOCK_INSTRUCTION` 模板本身就把该标记当**示例**写进了每个阶段的 prompt（合法）。
+  const injectedBlock = `<!-- state -->${JSON.stringify(NESTED)}`
+  ok(!designPrompt.includes(injectedBlock) && !qaPrompt.includes(injectedBlock),
+    'PRD 的 state 块不进下游阶段的 prompt（块已消费；机器面读的是未剥的原始文本）')
+}
+
+console.log('\n[24] state 块走**文件通道**：回复里不留块 ⇒ 宿主「执行记录」卡也不会显示机器契约')
+{
+  // 桩把块写进 `logs/teamflow/<runId>/state/prd.json`（路径从 prompt 里取），**回复正文里不留块**。
+  // 断言三件：① 桩真的取到了路径（否则等价于悄悄退化成回落）；② **没有回落 warn**（＝文件通道真被用上）；
+  // ③ 状态**确实来自文件**（下游 prompt 里出现只有文件里有的那句 —— 回复里根本没有块）。
+  const FILE_NESTED = {
+    phase: 'prd', summary: '文件通道 PRD 摘要',
+    extra: {
+      acIndex: { 'AC-1': '文件通道 AC 一' },
+      summary: '文件通道产品一句话',
+      openQuestions: [{ q: '风格？', why: '选型', changes: '视觉', default: 'A', kind: 'taste' }],
+    },
+  }
+  const r = await runScenario('state-file', {
+    options: { ...QA_OPTS, confirmMode: 'never' },
+    prdOutput: `${LONG}\n<!-- state -->${JSON.stringify(FILE_NESTED)}<!-- /state -->`,
+    stateViaFile: true,
+  })
+  ok(!r.stateFileErr, `桩把块写进了文件且路径取自 prompt（自检：${r.stateFileErr || '通过'}）`)
+  ok(!r.warnLogs.some((m) => /阶段「PRD 产品需求」/.test(String(m))), `PRD 走的是**文件通道**（既没回落也没缺失）（实测 warn：${JSON.stringify(r.warnLogs.filter((m) => /state 块/.test(String(m))))}）`)
+  // ⚠️ `QA_OPTS` 下**设计阶段被跳过**（needDesign:false）⇒ 断言目标必须是真跑过的阶段里**会读 state 切片**的那个。
+  // 用 QA（与 [22] 同一处证据面）：`state.acIndex` 注入 qa/acceptance/tech/pm，`productSummary` 全角色都有。
+  const qaP = String(Object.entries(r.promptsByLabel).find(([k]) => k.includes('QA 测试'))?.[1] || '')
+  ok(/文件通道产品一句话|文件通道 AC 一/.test(qaP), '状态**确实来自文件**（下游 prompt 里出现只写在文件里的内容 —— 回复里根本没有块）')
+  ok(!/<!--\s*state\s*-->/.test(qaP.replace(/STATE BLOCK[\s\S]{0,600}/, '')), '下游 prompt 里没有任何实际 state 块（只允许契约模板里的示例标记）')
+}
+
+/* ── [23] 确认单断点上的「改」：带 supplement 续跑 ⇒ **回退重跑 PRD**（作废面为零）──
+ * 2026-10-08 用户实锤：确认单那条 AUQ 选项写着「我再更新确认单后开工」，而 `supplement` 在断点晚于 PRD 时
+ * 被**明确拒绝** ⇒ 承诺无法兑现（**假承诺比「不能改」更糟**：用户以为能改，点完才发现要么重开、要么白跑）。
+ * 唯一安全的例外：**PRD 之后一个阶段都没跑过**（`stages` 只有 prd）⇒ 回退重跑 PRD 不浪费任何已产出物。
+ * 本组锁两个方向：① 该形态**必须接受**且检查点真的回到 prd（PRD 真跑、补录以 [REVISED] 进 prompt、
+ * 旧确认单作废）；② 对照组（PRD 之后已有阶段跑过）**仍必须拒绝**（防改过头，白作废下游产物）。 */
+console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD 之后有阶段跑过 ⇒ 仍拒绝')
+{
+  const home = join(tmpdir(), 'tf-orch-redo-prd')
+  process.env.DSH_HOME = home
+  const work = join(home, 'work')
+  mkdirSync(work, { recursive: true })
+  const seen = []
+  // `resumeRun` 要能从 runtime.agents 取到 agent（测试 [21] 那里取不到 ⇒ 只能观测到「被拒/放行」，
+  // 观测不到回退是否真的发生）。这里给它一个假 agent，才能把「PRD 真的重跑了」断言出来。
+  const fakeParent = {
+    session: { id: 'sid-redo', header: { cwd: work }, append() {} },
+    status: 'idle', followup() {}, inject() {}, options: {},
+  }
+  setRuntime({ get: (sid) => (sid === 'sid-redo' ? fakeParent : undefined) }, {
+    start: async (_p, init) => {
+      const label = String((init && init.label) || '')
+      seen.push({ label, prompt: String((init && init.prompt && init.prompt[0] && init.prompt[0].text) || '') })
+      return {
+        id: `c-${seen.length}`, localAgent: { session: null },
+        result: (async () => ({ stopReason: 'completed', output: [{ type: 'text', text: '' }] }))(),
+        dispose: async () => {},
+      }
+    },
+  })
+  const mk = (ws, id, stages) => {
+    const dir = join(home, 'teamflow', ws, 'runs')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, `${id}.json`), JSON.stringify({
+      id, requirement: '桌宠', status: 'interrupted', locale: 'zh',
+      workspace: ws, workspacePath: work, logs: [],
+      options: { mode: 'medium', needDesign: false, needScaffold: false },
+      stages, humanIntervention: true, interrupted: true, interruptedAt: Date.now(),
+      confirmSheet: { summary: '旧确认单', ac: [], questions: [], assumptions: [], at: 1 },
+    }), 'utf8')
+  }
+
+  // ① 确认单形态（只有 prd done）＋ supplement ⇒ 接受，检查点回退到 prd
+  mk('ws-redo', 'tf-redo', [{ phase: 'prd', status: 'done', output: '旧 PRD' }])
+  const r1 = resumeRun('tf-redo', 'sid-redo', '形象改成手绘 SVG，不要 emoji')
+  ok(r1.ok === true && r1.resumedFrom === 'prd',
+    `确认单断点 + supplement ⇒ **接受**并回退到 prd（实测 ok=${r1.ok} from=${r1.resumedFrom} err=${String(r1.error || '').slice(0, 60)}）`)
+  // ⚠️ `resumeRun` 里的 executePipeline 是**不 await** 的（fire-and-forget）⇒ 同步断言跑在流水线
+  // 到达 PRD 之前。这里给一个有界等待（最多 ~1.2s；拿到 PRD 子代理就立刻继续，不固定睡满）。
+  for (let i = 0; i < 60 && !seen.some((c) => /梳理 PRD/.test(String(c.label))); i++) {
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  ok(seen.some((c) => /梳理 PRD/.test(String(c.label))),
+    `PRD **真的重跑了**（不是复用旧产物）（实测子代理 ${JSON.stringify(seen.map((c) => c.label)).slice(0, 120)}）`)
+  ok(seen.some((c) => /\[REVISED —/.test(String(c.prompt))),
+    '补录以 **[REVISED]** 块进了 PRD prompt（与澄清轮 [CLARIFIED] 分叉；不是静默丢弃）')
+  ok(!seen.some((c) => /\[CLARIFIED —/.test(String(c.prompt))),
+    '对照：回退路径**不得**误用 [CLARIFIED]（那会让模型去找当时还不存在的「待澄清清单」）')
+  // 文件读放在等待之后：此时新 PRD 已至少尝试过一次 ⇒ 记录已重建。
+  const after = JSON.parse(readFileSync(join(home, 'teamflow', 'ws-redo', 'runs', 'tf-redo.json'), 'utf8'))
+  ok(after.confirmSheet === null || after.confirmSheet === undefined,
+    `旧确认单已作废（它描述的是被替换掉的那份 PRD）（实测 ${JSON.stringify(after.confirmSheet)}）`)
+  // 行为断言「旧 prd 记录真的被摘掉了」：源码锁只能锁住那行 `.filter(...)` 存在，
+  // 锁不住它**生效**。判据用**旧产物原文**（`output: '旧 PRD'`）：留着就说明记录没摘。
+  ok(!(after.stages || []).some((s) => String(s.output || '') === '旧 PRD'),
+    `回退时旧 prd 记录已摘掉（否则同阶段两条记录，报告与断点定位都按「每阶段一条」读）（实测 ${JSON.stringify((after.stages || []).map((s) => s.status))}）`)
+
+  // ② 对照：PRD 之后**已经有阶段跑过** ⇒ 仍必须拒绝（回退会白作废它们的产物）
+  mk('ws-late', 'tf-late', [{ phase: 'prd', status: 'done', output: 'x' }, { phase: 'design', status: 'done', output: 'y' }])
+  const r2 = resumeRun('tf-late', 'sid-redo', '改一下')
+  ok(r2.ok === false && /补录被拒绝/.test(String(r2.error)),
+    `对照：PRD 之后已有阶段跑过 ⇒ 仍**拒绝**补录（实测 ${String(r2.error).slice(0, 70)}）`)
+  rmSync(home, { recursive: true, force: true })
+}
+
+/* ── [25] 蓝图判据：语法合法但**内容为空**的块不算解析成功 ── */
+console.log('\n[25] 蓝图判据：内容为空的块不算成功 —— 要么回退读文件，要么告警，绝不静默')
+{
+  // ⚠️ 夹具必须**过实质校验**：`judgeDeliverable` 有阶段长度下限，太短先判 insubstantial（且会回读任务夹
+  // 文件兜底）⇒ tech 阶段直接失败，压根跑不到蓝图提取代码。第一版夹具只 47 字符，测了个寂寞。
+  const BODY = '## 技术方案\n' + '本阶段已完成架构判断、文件边界划分与任务拆解，逐条对应验收条件与工程约束。'.repeat(20)
+  const EMPTY_BLOCK = `${BODY}\n\n<!-- blueprint -->{}<!-- /blueprint -->\n`
+  const TECH_DOC_LONG = `${BODY}\n\n<!-- blueprint -->\n${BLUEPRINT_JSON}\n<!-- /blueprint -->\n`
+
+  // (a) 回复给空块、但 TECHNICAL.md 里有真蓝图 ⇒ 必须回退读文件把任务拿回来
+  const a = await runScenario('bp-empty-fallback', {
+    options: FULL_OPTS, techOutput: EMPTY_BLOCK, techDoc: TECH_DOC_LONG,
+  })
+  ok(a.blueprint && (a.blueprint.tasks || []).length > 0,
+    `回复是空蓝图块时回退读 TECHNICAL.md 取任务（实测 tasks=${a.blueprint ? (a.blueprint.tasks || []).length : 0}）`)
+  ok(a.logs.some((l) => /蓝图从任务夹 TECHNICAL.md 提取/.test(l)),
+    '回退取到蓝图时有可见日志 blueprintFromFile')
+
+  // (b) 回复给空块、文件里也没有块 ⇒ 必须告警。
+  // ⚠️ 这是本批修的**死条件**：旧判据 `bd.summary === undefined` 里 summary 恒为 string
+  // （`extractBlueprint` 用 `typeof x === 'string' ? x : ''` 归一）⇒ 永不成立 ⇒ `{}` 被当成
+  // 解析成功 ⇒ 既不回退读文件也不告警，dev 静默退化成整体开发。
+  const b = await runScenario('bp-empty-warn', { options: FULL_OPTS, techOutput: EMPTY_BLOCK })
+  ok(b.warnLogs.some((m) => /蓝图块解析失败/.test(m)),
+    '空蓝图块且无从回退时必须告警 blueprintParseFail（旧判据下这里是静默）')
+  ok(!b.blueprint,
+    `空块不得被注入成蓝图（实测 blueprint=${JSON.stringify(b.blueprint ?? null)}）`)
+
+  // (c) 回复里**没有**块、但任务夹 TECHNICAL.md 里有块且不可用 ⇒ 同样必须告警。
+  // 锁的是 `sawBlock` **跨两条通道**这条设计：只盯回复文本的话，ADR-0008 收口约定下
+  // 「模型把蓝图写进文档、但写坏了」这个真实失败会整条静默。
+  const c = await runScenario('bp-file-broken', {
+    options: FULL_OPTS, techOutput: BODY, techDoc: `${BODY}\n\n<!-- blueprint -->{}<!-- /blueprint -->\n`,
+  })
+  ok(c.warnLogs.some((m) => /蓝图块解析失败/.test(m)),
+    '回复无块、文档里的块不可用 ⇒ 仍须告警（sawBlock 必须跨两条通道）')
+
+  // (d) 回复无蓝图、文档无蓝图，但**独立文件**（新主通道）里有 ⇒ 从文件提取，且中转文件读完即删
+  const d = await runScenario('bp-channel', { options: FULL_OPTS, blueprintViaFile: true })
+  ok(!d.blueprintFileErr, `桩自检：技术方案 prompt 里点出了蓝图文件路径（实测 ${d.blueprintFileErr || 'ok'}）`)
+  ok(d.blueprint && (d.blueprint.tasks || []).length > 0,
+    `蓝图从**独立文件**提取（实测 tasks=${d.blueprint ? (d.blueprint.tasks || []).length : 0}）`)
+  ok(d.logs.some((l) => /蓝图从独立文件/.test(l)), '走的是新通道（日志 blueprintFromChannel）')
+  ok(d.blueprintFileLeft === false, '中转文件**读完即删**（不留项目里；可续跑终态也不残留）')
+
+  // (e) 独立文件在但不可用 ⇒ 不得阻断回退链，须继续走 ③ TECHNICAL.md
+  const e = await runScenario('bp-channel-broken', {
+    options: FULL_OPTS, blueprintViaFile: true, blueprintRaw: '{}', techDoc: TECH_DOC_LONG,
+  })
+  ok(e.blueprint && (e.blueprint.tasks || []).length > 0,
+    '独立文件不可用时继续回退到 TECHNICAL.md（不阻断回退链）')
+  ok(e.logs.some((l) => /蓝图从任务夹 TECHNICAL.md 提取/.test(l)), '该回退有可见日志（blueprintFromFile）')
+  ok(e.blueprintFileLeft === false, '不可用的中转文件同样被清掉（不留垃圾）')
+
+  // (f) 模型**同时**回显蓝图 + 写文件（违反契约）⇒ ① 命中、② 的读取分支整段跳过，
+  //     但中转文件**仍须清掉** —— 清理必须与「通道是否命中」无关。
+  //     漏删的后果不对称：正常终态还能靠归档兜底，而可续跑终态（failed/cancelled/interrupted）**根本不归档**
+  //     ⇒ 文件会永久留在用户项目里。
+  const f = await runScenario('bp-double', {
+    options: FULL_OPTS,
+    techOutput: `${LONG}\n\n<!-- blueprint\n${BLUEPRINT_JSON}\n<!-- /blueprint -->`,
+    blueprintViaFile: true,
+  })
+  ok(f.blueprint && (f.blueprint.tasks || []).length > 0, '双重产出时 ① 回复正文优先（从回复提取，不误读文件）')
+  ok(f.blueprintFileLeft === false, '**双重产出也不漏删**中转文件（清理与通道命中无关）')
+
+  // (g) 蓝图原文**无条件落档**到 $DSH_HOME（2026-10-11 用户拍板 A）—— 项目内那份读完即删，
+  //     原文必须另有一处可复查。此前三处去向都不留原文：`bd.render` 只在注入 prompt 那一刻存在、
+  //     `journal.blueprint` 只存 {modules,tasks}、中转文件读完即删 ⇒ 只能去解压 dsh 会话轨迹。
+  const g = await runScenario('bp-unparsable', {
+    options: FULL_OPTS, blueprintViaFile: true, blueprintRaw: '{"summary":"只写了一半',
+  })
+  ok(g.blueprintFileLeft === false, '解析不出来的中转文件同样清掉（不留项目里）')
+  ok(g.logs.some((l) => /蓝图已落档到/.test(l)), '**解析失败时也落档**（原文供人工诊断）')
+  ok(g.logs.some((l) => /蓝图解析不出来/.test(l)), '解析失败仍须告警（不静默回退整体开发）')
+  ok(g.warnLogs.filter((m) => /蓝图/.test(m)).length === 1, '**只发一条蓝图 warn**（落档告警与 sawMark 兜底不得重复）')
+
+  // (h) **成功解析的蓝图同样要落档** —— 架构拆解生效后「审蓝图 = 审 dev 拆卡质量」，常态路径才是主场
+  const k = await runScenario('bp-archived-ok', { options: FULL_OPTS, blueprintViaFile: true })
+  ok(k.blueprint && (k.blueprint.tasks || []).length > 0, '成功路径仍照常解析')
+  ok(k.logs.some((l) => /蓝图已落档到/.test(l)), '**成功解析也落档**（常态路径不能漏）')
 }
 
 if (failed) {

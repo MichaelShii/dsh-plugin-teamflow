@@ -339,6 +339,14 @@ export interface TriageBlocker {
   changes: string
   /** 猜错会返工什么（哪个阶段 / 哪份产物重来）。 */
   rework: string
+  /**
+   * **软字段 · 可选**（2026-10-07，ADR-0011 批 3a）：agent 自己倾向的读法与理由（供 PM 参考）。
+   *
+   * ⚠️ **刻意不进合格线**：「模型没给出倾向」绝不能让整条问题被 `qualifyBlockers` 丢弃 ——
+   * 那等于按「模型是否听话」筛需求，与本仓「模型无关」纪律（§2：能 host 客观判定的先判，别指望模型自律）
+   * 直接冲突。空值只影响渲染层（显示「未给倾向」），问题照常呈现给用户。
+   */
+  guess?: string
 }
 
 export const TRIAGE_INTENTS: TriageIntent[] = ['requirement', 'exploration', 'feedback']
@@ -418,6 +426,8 @@ export function qualifyBlockers(
       : []
     const changes = String((o && o.changes) || '').trim()
     const rework = String((o && o.rework) || '').trim()
+    // 软字段：收集但不参与合格判定（见 TriageBlocker.guess 的注释）
+    const guess = String((o && o.guess) || '').trim()
     if (question && readings.length >= 2 && changes && rework) {
       const settles = normalizeSettle(o && o.settles)
       // 自洽门禁：已明确判定可安装 → 不得再问「要不要能装」
@@ -430,6 +440,8 @@ export function qualifyBlockers(
         readings: readings.slice(0, 4).map((r) => r.slice(0, 200)),
         changes: changes.slice(0, 300),
         rework: rework.slice(0, 300),
+        // 软字段：有才带（缺省不写 key，避免 journal 里堆一串 guess:"" 噪声）
+        ...(guess ? { guess: guess.slice(0, 200) } : {}),
       })
     } else dropped++
   }

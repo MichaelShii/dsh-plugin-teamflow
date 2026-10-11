@@ -3,7 +3,20 @@
  * 背景：withRetry 原样重试 = 盲试——子代理不知道上次为什么失败（拒绝词？过短？stopReason？护栏？）。
  * 修复：重试 prompt 附诊断块（失败分类/详情/护栏原因/产出尾部），insubstantial 细分拒绝词命中点。
  */
-import { refusalHit, buildRetryDiagnostic, judgeDeliverable, toolResultText, isToolErrorResult, toolFailureSignature, toolFailureAction } from '../host/util.ts'
+import { existsSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { refusalHit, buildRetryDiagnostic, judgeDeliverable, toolResultText, isToolErrorResult, isFsSelfHealFailure, isToolScopeFailure, toolFailureSignature, toolFailureAction } from '../host/util.ts'
+
+/** 探测本机 dsh profile 里的宿主 `@deepseek-ai/dsh-tool-fs`（remediated 文案的唯一出处）。
+ *  找不到 → 返回 null，调用方 **skip 而非失败**（CI 通常没有宿主包）。 */
+function findHostFsErrorTs() {
+  const home = process.env.USERPROFILE || process.env.HOME || ''
+  if (!home) return null
+  const dshHome = process.env.DSH_HOME || join(home, '.dsh')
+  const bases = ['profiles', join('profiles', 'web'), join('profiles', 'desktop')].map((p) =>
+    join(dshHome, p, 'node_modules', '@deepseek-ai', 'dsh-tool-fs', 'src', 'error.ts'))
+  return bases.find((p) => existsSync(p)) || null
+}
 
 let failed = 0
 const expect = (actual, expected, msg) => {
@@ -152,6 +165,47 @@ expect(toolFailureAction(undefined, 3, 5), 'none', '未计数 → none（不抛�
 expect(toolFailureAction(1, 2, 3), 'none', '生产阈值：1 次 → none')
 expect(toolFailureAction(2, 2, 3), 'warn', '生产阈值：2 次 → warn（提醒要早于模型放弃）')
 expect(toolFailureAction(3, 2, 3), 'abort', '生产阈值：3 次 → abort（赶在它绕道成规模之前）')
+
+// 可自愈的防护门禁失败分类（issue #15）：文本形状取自宿主 dsh-tool-fs/src/error.ts remediateFsError()
+// —— 两条 gate 错误被换成稳定文案。判错一类的代价 = 把「一次 read 就能修好」误报成「工作区坏了」。
+console.log('── 可自愈的防护门禁失败不进环境指纹（issue #15）──')
+const gateNotObserved = 'Error: cannot modify "E:/ws/js/render.js": file has not been read — read the file, then retry'
+const gateStale = 'Error: cannot edit "E:/ws/AGENTS.md": file changed since it was read — re-read the file, then retry'
+const gateGone = 'Error: cannot modify "E:/ws/x.js": file no longer exists — re-read the file, then retry'
+const envAcl = 'Error: SetNamedSecurityInfoW failed (Win32 5): grantWrite(E:/tmp/probe-v4)'
+ok(isFsSelfHealFailure(gateNotObserved), 'FS_NOT_OBSERVED（file has not been read）→ 判可自愈（**issue #15 的漏网项**）')
+ok(isFsSelfHealFailure(gateStale), 'FS_STALE_VERSION（file changed / re-read…）→ 判可自愈（存量行为不回退）')
+ok(isFsSelfHealFailure(gateGone), 'file no longer exists → 判可自愈（存量行为不回退）')
+ok(!isFsSelfHealFailure(envAcl), 'ACL provision 失败**不**判可自愈（护栏本职：工作区坏了仍须早停）')
+ok(!isFsSelfHealFailure('') && !isFsSelfHealFailure(null) && !isFsSelfHealFailure(undefined), '空/缺文本 → 不抛且不判可自愈（宁严勿松）')
+
+// 「工具在这一层不适用」族（obs-r5 实锤 + 2026-10-07 扩项）：换个工具即可继续，同样不是环境故障
+console.log('── 「工具在这一层不适用」不进环境指纹 ──')
+const teamScope = 'Error: agent "0091ca11-1975-4cb8-92cb-12ca2db8fea5" is not a member of an active Agent Team'
+const depthScope = 'Error: subagent depth 2 exceeds maxDepth 1'
+const unknownTool = 'Error: unknown tool "git "'
+ok(isToolScopeFailure(teamScope), 'depth-1 子代理调协作工具（Agent Team 身份缺失）→ 判「工具不适用」')
+ok(isToolScopeFailure(depthScope), '超出子代理深度上限 → 判「工具不适用」')
+ok(isToolScopeFailure(unknownTool), '工具名不存在（把 git 当工具名调）→ 判「工具不适用」（扩项，tf-mul7l30d 实锤）')
+ok(!isToolScopeFailure(envAcl), 'ACL 真环境故障**不**误判（同族判据不得放宽）')
+ok(!isToolScopeFailure('') && !isToolScopeFailure(null), '空/缺文本 → 不抛且不判')
+
+// 宿主文案漂移保护（issue #15 的成因正是「同一个 code 换了句文案」）：本机能看见宿主包就直接断言
+// 它的 remediated 文案仍被判据覆盖；看不见则 skip —— CI 无宿主包属正常，不是失败。
+console.log('── 宿主文案漂移检查（可见则断言，不可见则 skip）──')
+const hostErrorTs = findHostFsErrorTs()
+if (!hostErrorTs) {
+  console.log('  ⚠ 未探测到 @deepseek-ai/dsh-tool-fs 的 src/error.ts → 跳过（CI 无宿主包属正常）')
+} else {
+  const src = readFileSync(hostErrorTs, 'utf8')
+  const templates = [...src.matchAll(/`([^`]+)`/g)].map((m) => m[1])
+  const modelFacing = templates.filter((t) => t.indexOf('displayPath') >= 0 || t.indexOf('error.message') >= 0)
+  expect(modelFacing.length, 2, '宿主 error.ts 仍有两处面向模型的 remediated 文案（结构未变）')
+  for (const t of modelFacing) {
+    const sample = t.split('${displayPath}').join('X').split('${error.message}').join('prior failure')
+    ok(isFsSelfHealFailure(sample), `宿主文案仍被判据覆盖：${sample.slice(0, 70)}`)
+  }
+}
 
 console.log(failed === 0 ? '\n✅ diagnostic 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

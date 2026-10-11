@@ -13,9 +13,9 @@ import {
   clip, snippet, buildRetryDiagnostic, runPool, devTaskStatuses, devTaskIdAt, backfillDevTaskIds,
   mergeFileOverlaps, concurrentWriteConflicts, planDevWaves,
 } from '../../util.ts'
-import { phaseKeyOf } from '../../constants.ts'
+import { phaseKeyOf, PHASE_ORDER } from '../../constants.ts'
 import { persistJournal } from '../../../store.ts'
-import { extractStateBlock } from '../domain/state.ts'
+import { extractStateBlock, stateBlockRelPath, readStateBlockFile } from '../domain/state.ts'
 import { phaseLabel, t, type HostLocale } from '../../locales.ts'
 import type { PipelineCtx } from '../pipeline.ts'
 
@@ -91,8 +91,11 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
        唯一绕不过去的事实是「这一舞台最终动了哪些文件」（state block 的 touched），
        所以各 dev 舞台结束时连同真实执行窗口记一笔，收尾统一求并发窗口内的文件交集。 */
   const devTouchEntries: Array<{ key: string; startedAt: number; endedAt: number; files: string[] }> = []
-  const trackDevTouched = (key: string, startedAt: number, endedAt: number, text: unknown) => {
-    const block = extractStateBlock(text)
+  const trackDevTouched = (key: string, startedAt: number, endedAt: number, text: unknown, relPath: string | null = null) => {
+    // 通道与 `mergeStageState` 同源：**文件优先、回复回落**（见 state.ts 的 readStateBlockFile 注释）。
+    // ⚠️ 基准用 `journal.workspacePath` 而不是 `root`（后者=productRoot，生产里常为 null ⇒ 会永远回落）。
+    const base = journal.workspacePath || root
+    const block = (relPath && base ? readStateBlockFile(`${base}/${relPath}`) : null) || extractStateBlock(text)
     const files = Array.isArray(block && block.touched)
       ? (block!.touched || []).map((f) => String(f || '').trim()).filter(Boolean)
       : []
@@ -149,7 +152,15 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
       logSkip('dev')
     } else {
       const reused = devResults.filter((r) => r && !todoDefs.some((d) => d.title === r.title))
-      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.resumeDev', { reused: reused.length, todo: todoDefs.length }) })
+      // ⚠️ `todoDefs` 的判据是 `!st || !st.done` ⇒ 它同时包含「**此前失败**」与「**从未尝试**」两种。
+      // 「从未尝试」是**断点落在 dev 之前**的正常形态（澄清暂停 / PRD 确认单暂停 / 早期取消）——
+      // 实测 tf-muy7kgbk-wpidsi（确认单暂停后 resume，dev 一次都没跑过）原文案却说
+      // 「补跑 5 个**失败**任务」，**不实**。故两个数分开报，任何形态下都成立。
+      const failedBefore = todoDefs.filter((d) => {
+        const st = taskStatuses.get(d.id)
+        return !!st && st.lastStatus === 'failed'
+      }).length
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.resumeDev', { reused: reused.length, todo: todoDefs.length, failed: failedBefore }) })
       // **补跑同样要过冲突护栏**（2026-09-24 issue #4 实锤修复）：补跑任务是从
       // `devDefs` 过滤出来的**原始**任务（未合并），直接喂 runPool 会让共享文件的任务并发执行——
       // 首次开发有护栏、补跑反而没有，是最容易被忽略的一半。复用结果仍按原始 title 判定，
@@ -170,7 +181,25 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
               : ((s.taskKey && task.ids.some((id) => s.taskKey === String(id))) || (!s.taskKey && task.title && (s.label || '').includes(String(task.title))))))
           const t0 = Date.now()
           const resumePrompt = devPrompt(task, tech, prd, design, root, journal.id, state) + (prevStage ? buildRetryDiagnostic(2, prevStage) : '')
-          const devR = await withRetry(journal, parent, t(locale, 'dev.taskRerun', { title: task.title }), 'dev', resumePrompt, signal, task.title, null, task.ids)
+          // ⚠️ 标签必须区分「**补跑**」与「**首次尝试**」（2026-10-11 用户实测发现）：
+          // `todoDefs` 的判据是 `!st || !st.done`，它同时含「**此前失败**」与「**从未尝试**」两种形态 ——
+          // 既有日志 `run.resumeDev` 已为此分两个数报（见上方注释），但**任务标签一直没区分**。
+          // 后果：走 resume 路径但 dev **一次都没跑过**的 run（确认单暂停 / 澄清暂停 / 早期取消），
+          // 12 个任务全被打上「（补跑）」，读起来像「上次跑挂了」，**不实**
+          // （实测 run tf-mv3rdt0y-qmlxl3：日志明写 `跳过已完成阶段：PRD`、dev 从未执行，标签却全是补跑）。
+          // 判据用 `taskStatuses.has(id)` —— `devTaskStatuses` 只收录**出现在 journal.stages 里**的任务，
+          // 即「真的尝试过」（无论成败）。
+          // 判据（两路取或）：
+          // ① **断点在 dev 或更晚** ⇒ 之前必然跑过 dev（哪怕全失败 / 产物为空）⇒ 算补跑；
+          // ② 否则看 journal 里有没有该任务的记录（`devTaskStatuses` 只收录出现过的任务）。
+          // ⚠️ 只看 ② 会漏：`resume.phase='dev'` 而 `products.dev` 为空的形态（测试 [6]），
+          // 新 journal 里没有任何 dev 记录 ⇒ 会被误判成「首次」，把真正的补跑说成首次，反向也不实。
+          const devRanBefore = PHASE_ORDER.indexOf(String(resume.phase)) >= PHASE_ORDER.indexOf('dev')
+          const attempted = devRanBefore || (Array.isArray(task.ids) && task.ids.some((id) => taskStatuses.has(String(id))))
+          const taskLabel = attempted
+            ? t(locale, 'dev.taskRerun', { title: task.title })
+            : t(locale, 'dev.task', { title: task.title })
+          const devR = await withRetry(journal, parent, taskLabel, 'dev', resumePrompt, signal, task.title, null, task.ids)
           const rerunText = stageTextOf(devR)
           trackDevTouched(task.title, t0, Date.now(), rerunText)
           noteVerifyEvidence(devR.stage, rerunText)
@@ -247,7 +276,7 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
         const t0 = Date.now()
         const devR = await withRetry(journal, parent, t(locale, 'dev.task', { title: task.title }), 'dev', devPrompt(task, tech, prd, design, root, journal.id, state), signal, task.title, null, task.ids)
         const devText = stageTextOf(devR)
-        trackDevTouched(task.title, t0, Date.now(), devText)
+        trackDevTouched(task.title, t0, Date.now(), devText, stateBlockRelPath(journal.id, 'dev', (task.ids && task.ids[0]) || null))
         noteVerifyEvidence(devR.stage, devText)
         const ok = !!devR.text
         // 完成子卡：记录状态 + childId + 摘要
@@ -257,7 +286,7 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
           // filter().pop() 会取错 stage：后完成的任务吸收先创建任务的 usage，且被多次累计超计）
           if (devR.stage) noteSubtaskUsage(journal, sub.id, devR.stage)
         }
-        return { title: task.title, failed: !ok, output: devText || t(locale, 'dev.failedPlaceholder') }
+        return { title: task.title, dtId: (task.ids && task.ids[0]) || null, failed: !ok, output: devText || t(locale, 'dev.failedPlaceholder') }
       }, () => journal.cancelled)
       devResults.push(...waveRes)
       // 失败传播（AC3）：本波有失败 ⇒ 后续波的组是在拿半成品往下做，直接记账跳过（提测门禁会拦住；
@@ -269,7 +298,7 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
           const g = devPlan.groups[gi]
           const sub = subCards[gi]
           if (sub) completeSubtask(journal, sub.id, true, snippet(t(locale, 'dev.depBlocked'), 1000), null)
-          devResults.push({ title: g.title, failed: true, output: t(locale, 'dev.depBlocked') })
+          devResults.push({ title: g.title, dtId: (g.ids && g.ids[0]) || null, failed: true, output: t(locale, 'dev.depBlocked') })
         }
         break
       }
@@ -278,7 +307,9 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
     timeline.dev = devResults
     // dev 阶段 state 沉淀：汇总各 dev 产出中提取的 state 块
     for (const r of devResults) {
-      if (r && r.output) mergeStageState('dev', r.output)
+      // ⚠️ 只给**本次真跑过**的任务传路径（`dtId` 只挂在新跑/补跑的条目上）：resume **复用**的旧条目
+      // 在上一轮才写过 state 文件（本轮没有），传了会白白触发一次「回落」warn ⇒ 把兑现率计数污染成假警报。
+      if (r && r.output) mergeStageState('dev', r.output, r.dtId ? stateBlockRelPath(journal.id, 'dev', r.dtId) : null)
     }
     // 累计全部 dev stage usage 到主卡（汇总）
     noteTaskStageUsage(journal)

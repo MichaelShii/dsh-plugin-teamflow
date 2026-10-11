@@ -161,10 +161,55 @@ assertContract({
   intent: 'en run 的 PRD 同样要求假设段（语言跟随 run 快照，不写死中文标题）',
   include: [/\[Assumptions · mandatory\]/, /openQuestions/, /Assumptions & open questions/],
 })
+/**
+ * **主观决策项**（2026-10-08，用户实锤需求）。加这条的目的不是「防返工」，是**让用户确认自己要实现的东西**：
+ * 原判据只有 `under-specified`（信息不足）⇒ 「我想实现一个桌宠」这类需求**必然不列**
+ * （信息足够、模型能自查、猜错也不返工）⇒ 风格/形象/架构选型**全由模型独裁** ⇒
+ * 专业用户感官很差（「这插件也就给小白用用」）。⚠️ 这个损失**用返工率量不出来**（表现为流失/差评），
+ * 所以**不能**拿历史数据当判据 —— 判据是**产品意图**。
+ * ⚠️ 只在 prompt 层要求（§2：prompt 提标准不当保障）。
+ * 变异：删掉 (b) 段或那句「NOT a reason to omit」⇒ 本契约立刻红。
+ */
+assertContract({
+  id: 'PRD-TASTE-DECISIONS', level: 'policy', targets: 'prdPrompt',
+  intent: 'PRD 必须把「主观决策项」（多种同样成立、取决于用户品味）也列进假设段/openQuestions，且不得以「我能自己定」为由省略',
+  include: [/User-taste decisions/, /is NOT a reason to omit/, /feel "not mine"/],
+  exclude: [/If ANY part of the requirement is under-specified/],
+})
+/**
+ * **`kind` 判别位**（2026-10-08 第 2 步）：确认单的触发判据从「显式开关」改成**内容驱动** ——
+ * 只有 `kind: "taste"`（主观品味项）会暂停。没有这个判别位，host 就分不清「信息缺口」与「品味项」，
+ * 判据只能退化成「有任何待澄清项都停」，而那会毁掉 §1 的无人值守卖点。
+ *
+ * 为什么同一件事**两处都要写死**（state 块示例 ＋ (a)/(b) 两行各带一次）：MEMORY §7 的实锤——
+ * `extra` 契约当年就是「模板示例」与「散文 rules」**两份互相不覆盖的契约**，模型照模板写 ⇒
+ * 兑现率只有 ~20%。所以 `kind` 必须同时出现在**模板本体**里。
+ * 第三句锁的是**判别定义**（靠问题性质、不靠难度）：没有它，模型会把「难答的事实」误判成 taste ⇒ 乱停。
+ * 变异：把示例里的 `"kind"` 删掉 / 把 (b) 行的 `"kind": "taste"` 删掉 ⇒ 本契约立刻红。
+ */
+assertContract({
+  id: 'PRD-OPENQUESTION-KIND', level: 'policy', targets: 'prdPrompt',
+  intent: 'PRD 的 openQuestions 必须带 kind 判别位（fact=信息缺口 / taste=主观品味项），且模板示例与 (a)(b) 两行都要写死',
+  include: [/"kind": "fact\|taste"/, /"kind": "fact"/, /"kind": "taste"/, /by the NATURE of the question, not by how hard it is to answer/],
+})
+/** 第 7 条（state 块示例）必须与第 8 条（散文 rules）**互相指向**：模型写 `openQuestions` 时要按第 8 条
+ *  给的 `kind` 来标；两份契约不互相引用 = 又一次「两份冲突契约」（§7 的根因）。 */
+assertContract({
+  id: 'PRD-KIND-CROSSREF', level: 'policy', targets: 'prdPrompt',
+  intent: 'state 块示例要显式回指第 8 条的 kind 判定（两份契约必须互相指向，不能各说一套）',
+  include: [/the same `kind` rule 8 assigns it/, /every bullet ALSO goes into `openQuestions` with the matching `kind`/],
+})
 assertContract({
   id: 'TECH-PATCH-ASSUMPTIONS', level: 'policy', targets: ['techChangePrompt', 'patchConfirmPrompt'],
   intent: '非 PRD 档位（tech 变更单 / patch 确认单）也要一句话假设，避免覆盖缺口',
   include: [/假设与待澄清/],
+})
+/** `tech` 档（重构/优化/架构）的**同类扩维**：架构选型同样不该由模型独裁
+ *  （用户实锤例子里明确点了「架构选项」）。`patch` 档不改 —— 它 `needConfirm` 恒关，没人消费。 */
+assertContract({
+  id: 'TECH-TASTE-DECISIONS', level: 'policy', targets: 'techChangePrompt',
+  intent: 'tech 档的假设段要含「多种同样成立的**技术**选型（模块边界/命名/加依赖/算法或架构）」',
+  include: [/several technical options were equally defensible/, /module boundaries, naming conventions, adding a dependency/],
 })
 
 // 交付形态契约（2026-09-17 实测：dddd 的插件"看着完整"却装不进 profile——"能被宿主加载"从未进过 AC）
@@ -460,9 +505,18 @@ assertContract({
 // ── structural：state 块 / 产物路径 / 蓝图 JSON / git 纪律 ──
 assertContract({
   id: 'STATE-BLOCK-EVERY-STAGE', level: 'structural', targets: 'ALL',
-  intent: '每个阶段产出末尾必须指示附 state 块（host 提取合并 state.json 的前提）',
-  include: [/STATE BLOCK · mandatory at the end/, /<!-- state -->/],
+  // 2026-10-08 改通道：锚点句从「Append one section at the END of your answer」换成
+  // `STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply` —— 旧措辞**就是**块泄漏到
+  // 用户 UI 的唯一原因（宿主渲染子代理回复，插件管不到）。每条还要**点名该阶段的文件路径**。
+  intent: '每个阶段必须指示把 state 块**写进文件**（且不许写进回复正文）——host 从磁盘读它，回复正文里不再出现机器契约',
+  // ⚠️ 第二段锚点锁的是**纯 JSON 契约**（2026-10-11 起文件里不再有 `<!-- state` 包裹 ——
+  // 文件是独立 .json，整份就是那个 JSON，标记只是「在自然语言里定位块」用的，在文件里纯属冗余）。
+  // 旧锚点是 `/<!-- state\r?\n/`，模板改纯 JSON 后失效。
+  include: [/STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply/, /no comment markers/, /logs\/teamflow\/[^\s`]+\/state\/[^\s`]+\.json/],
 })
+// ⚠️ 「哪个工厂对应哪个阶段键」在**渲染后文本里看不出来**（路径那时已解析成字面量）⇒ 那条映射放在
+// `smoke.js` 的**源码锁**里（`STATE-BLOCK-PATH-PER-STAGE`）。写错的表现＝该阶段永远走**回落**，
+// 不是静默错（有 warn 计数），但会污染兑现率 ⇒ 必须在源码侧钉死。
 assertContract({
   id: 'DOC-BOUNDARY-POLICY', level: 'policy', targets: 'ALL',
   intent: '所有阶段共用 productCtx：文档只写 docs/teamflow/，日志只写 logs/teamflow/，禁宿主 docs/ 散落',
@@ -476,8 +530,15 @@ assertContract({
 })
 assertContract({
   id: 'BLUEPRINT-JSON-SHAPE', level: 'structural', targets: ['techPrompt', 'architectPrompt'],
-  intent: 'tech/architect 必须产出 <!-- blueprint --> JSON 块（modules/tasks/duplications/why），dev 继承依据',
-  include: [/<!-- blueprint -->/, /<!-- \/blueprint -->/, /"modules"/, /"tasks"/, /duplications/],
+  // 2026-10-09 改通道：蓝图从「文档末尾的 <!-- blueprint --> 块」改为**独立文件**（机器通道）——
+  // 旧形态的 open 是**自闭合注释**，紧随其后的 JSON 会裸露在 Typora / VS Code 预览里（用户截图实锤），
+  // 且真机实测占 TECHNICAL.md **31%** 字符（5403/17583）。
+  // ⚠️ 锚点必须锁**实际契约**（写文件 + 路径 + 字段说明）。旧锚点 `<!-- blueprint -->` 是**假绿**：
+  // 它一度只在 dev/qa/acceptance 的**说明文字**里出现，所以即便 tech/architect 的产出契约被整段删掉，
+  // 这条锁照样为真（本日实证，已改为锁 MACHINE CHANNEL 短语 + 文件路径）。
+  intent: 'tech/architect 必须把蓝图 JSON 写进**独立文件**（机器通道），字段含 modules/api/tasks/duplications；不得写进文档或回复',
+  include: [/ARCHITECTURE BLUEPRINT · MACHINE CHANNEL/, /logs\/teamflow\/[^\s`]+\/blueprint\.json/, /"modules"/, /"tasks"/, /duplications/],
+  exclude: [/at the end of the document/],
 })
 assertContract({
   id: 'DEV-ON-BLUEPRINT', level: 'structural', targets: 'devPrompt',
@@ -808,6 +869,24 @@ assertContract({
   id: 'BLUEPRINT-API-SIGNATURES', level: 'structural', targets: ['techPrompt', 'architectPrompt'],
   intent: '蓝图 schema 与说明都要求 modules 给出 api 精确签名（下游逐字使用，不得自创成员名）',
   include: [/"api":\[/, /api \(mandatory per module\)/],
+})
+/**
+ * **dev 自查任务的定位**（2026-10-08/09）：**保留，但降为「交付自检」**。
+ *
+ * ⚠️ 这条**不是**我拍的新主意 —— `docs/TODO.md` 观察中区早已「观点已定」（2026-09-25）：
+ * **保留**（dev 自查是全链路唯一「发现问题 → 当场修」的环节），改定位为「交付自检」：
+ * 当场修、**只记结论不写 `QA-REPORT.md`**、措辞与 QA 解耦（防「预演 QA」式全量重验）。
+ * 我第一版写成「不许有验证类任务、自测只能任务内部」＝**砍掉**它，与记录的决定相反 ⇒ 已改回。
+ *
+ * 新数据点（`tf-muzc59h9-pnbhyk`）：dev 任务「QA 三浏览器实测」**同时写了 QA-REPORT.md 和
+ * ACCEPTANCE.md**，然后在收尾 `edit` 上失手 ⇒ run 判 failed，而交付其实 13/14 AC 已验证。
+ * ⇒ 支持「重新定位」，但**不支持砍掉**。
+ * 变异：把 `IS welcome` 改成禁止式（`never`）或删掉「不许写 QA-REPORT.md」那句 ⇒ 立刻红。
+ */
+assertContract({
+  id: 'DEV-SELFCHECK-NOT-QA-REHEARSAL', level: 'policy', targets: ['techPrompt', 'architectPrompt'],
+  intent: 'dev 自查任务**保留**（当场修是唯一现场修复点），但降为「交付自检」：只记结论、不写 QA-REPORT.md/ACCEPTANCE.md、不跑 QA 式全量矩阵',
+  include: [/\[Self-check, not a QA rehearsal\]/, /IS welcome/, /do \*\*NOT\*\* write/, /do \*\*NOT\*\* run a QA-style full matrix/],
 })
 assertContract({
   id: 'DEV-INTERFACE-CONTRACT', level: 'policy', targets: 'devPrompt',

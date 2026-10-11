@@ -14,15 +14,16 @@ import { runAcceptancePhase } from './stages/acceptance.ts'
 export type { DevTaskDef } from './stages/dev.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
-import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv } from '../util.ts'
-import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv } from '../util.ts'
+import type { Blueprint } from '../util.ts'
+import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { RETRY_LIMIT, PHASE_ORDER, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, DEV_MAX_CONCURRENCY, DEV_DEFAULT_CONCURRENCY } from '../constants.ts'
 import { persistJournal, loadJournalById, dshHome } from '../../store.ts'
 import type { JournalRecord } from '../../store.ts'
 import type { Journal, PipelineOptions, ResumeContext, PipelineMode } from '../types.ts'
 import { normalizeMode, runTriage, normalizeIntent, normalizeArtifact, qualifyBlockers, guardrailUpgrade, MODE_RANK, contractsForDeliverable, normalizeHost, forceHost, PLUGIN_ARTIFACTS, triageRecordOf, type TriageVerdict } from './triage.ts'
 import { loadTeams, findTeam, getActiveStages, teamNameOf } from './domain/teams.ts'
-import { loadState, saveState, extractStateBlock, mergeStateBlock, noteRun } from './domain/state.ts'
+import { loadState, saveState, extractStateBlock, mergeStateBlock, noteRun, stripStateBlock, readStateBlockFile, stateBlockRelPath, blueprintRelPath, saveBlueprintArchive } from './domain/state.ts'
 import { isDangerousVcsRoot, dirTooLargeForBaseline } from '../util.ts'
 import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -43,6 +44,7 @@ import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddPlan,
 import type { GitResult } from './workspace/sanity.ts'
 import { archiveRunLogs, sweepWorkspaceLogs } from './workspace/runlogs.ts'
 import { preflightWorkspaceAcl } from './workspace/acl-preflight.ts'
+import { buildConfirmSheet, renderConfirmSheet, confirmHook, type ConfirmSheet } from './confirm.ts'
 import { parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
 import { ambientLocale, localeForMissingSnapshot, runLocaleOf } from './locale.ts'
 import { noteClarifyAnswered, noteClarifyProceeded } from './clarify-log.ts'
@@ -221,7 +223,10 @@ function notePrdAssumptions(journal: Journal, locale: HostLocale): string | null
 /**
  * 需求澄清闸门 · pipeline 侧兜底（2026-09-16 实测补充）：分诊判「还不是明确需求」或存在合格 must-know
  * 缺口 → **不开工**，把 run 落成**可续跑的中断态**（不建任何阶段），由完成汇报把问题交给主线程去问用户，
- * 用户答完带 `requirementSupplement` 重调（或 `teamflow_resume` 续跑）。
+ * 用户答完有**两条闭环通道**（2026-10-06 补齐第 ② 条）：① 带 `requirementSupplement` 重调 `teamflow_start`
+ * ——另起一个 run，本 run 成为僵尸；② 带 `supplement` 调 `teamflow_resume` **续跑本 run**（推荐：保住 run
+ * 身份与断点，答复直接进 PRD 的 `[CLARIFIED]` 段）。resume 时 `supplement` **只在断点 ≤ prd 时可应用**
+ * （PRD 是唯一消费点），晚于 prd 显式拒绝而不是静默吞掉（ADR-0011 待拍板 ④ / 前置 P3）。
  *
  * 为什么兜底放在 pipeline 而不是只靠 tool 侧预检：预检在**工具调用内**跑，模型分诊可能失败并静默退回
  * 正则兜底（实测 `tf-mu35oza7-wmuckz` 漏传 signal → 0.4s fallback）→ 只靠预检会让闸门在那种情况下静默失效。
@@ -236,11 +241,35 @@ function abortForClarification(journal: Journal, locale: HostLocale, verdict: Tr
   // 正是本函数头注释承诺的那个「零阶段 run（status=interrupted + humanIntervention）」。
   journal.status = 'interrupted'
   journal.humanIntervention = true
+  // 探索态加固（2026-10-08）：与 tool 返回面同一协议（两条路径必须同形，否则「谁先命中」决定行为）。
   journal.error = t(locale, 'run.needsClarification', { intent: verdict.intent, n: verdict.blockers.length })
+    + (verdict.intent === 'exploration' ? `\n${t(locale, 'tool.start.explorationProtocol')}` : '')
   journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyAbort', { intent: verdict.intent, n: verdict.blockers.length }) })
   for (const b of verdict.blockers) {
     journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyBlocker', { q: clip(b.question, 200), changes: clip(b.changes, 160), rework: clip(b.rework, 160) }) })
   }
+}
+
+/**
+ * **PRD 确认单的暂停**（ADR-0011 ①，2026-10-07）：PRD 已完成 ⇒ 把「目标一句话 + AC + 假设清单」交给
+ * 用户批准，**其后的阶段一个都不开始**。
+ *
+ * 与 `abortForClarification` 的区别只是**位置**：那个在起跑前（零阶段），这个在 PRD 之后
+ * （`stages` 只有 prd 一条 done）⇒ 两者的落点**同构**（`interrupted` + `humanIntervention`）：
+ * ADR-0011 P2 已定「复用 interrupted/resume 基座，不新增状态」。
+ *
+ * ⚠️ 落点正确依赖 `interruptedPhaseOf` 的第二层修正（2026-10-07）：PRD done 且其后全空时，
+ * 断点必须落在「启用过但从未尝试」的阶段（design/tech），而不是 `acceptance`。
+ */
+function abortForConfirmSheet(journal: Journal, sheet: ConfirmSheet, locale: HostLocale): void {
+  journal.interrupted = true
+  journal.interruptedAt = Date.now()
+  journal.status = 'interrupted'
+  journal.humanIntervention = true
+  journal.confirmSheet = sheet
+  const rendered = renderConfirmSheet(sheet, locale)
+  journal.error = t(locale, 'run.needsConfirm', { n: rendered.split('\n').length, id: String(journal.id) })
+  journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.confirmAbort', { ac: sheet.acTotal, as: sheet.assumptionsTotal }) })
 }
 
 /**
@@ -254,9 +283,34 @@ export function interruptedPhaseOf(journal) {
   // 必须在「第一个无 done 阶段」之前判定——否则验收阶段失败过（无 done）时断点又定位到验收，
   // 带缺陷继续验收必再次失败（用户实锤：resume 进验收 2 次失败，再 resume 仍定位验收，缺陷未闭环）。
   if (hasOpenBlockingBugs(journal)) return 'qa'
+  // ⚠️ 零阶段 run 的断点必须是**第一个阶段**，不得落到下面那个「全都跑完」的出口。
+  // 零阶段只有一种来路：**起跑即中断**（澄清闸门兜底 `abortForClarification`，或起跑早期的取消/失败）——
+  // 两种输入的 `stages` 过滤结果都是空 ⇒ 循环里每个阶段都 `continue` ⇒ 走完循环 → `return 'acceptance'`
+  // ⇒ **「什么都没做」与「什么都做完了」共用同一个出口**。
+  // 实测后果（2026-10-05 直调本函数）：零阶段 run 续跑时 `resumed(phase)` 对 prd/design/scaffold/tech/dev/qa
+  // 全为真 ⇒ 全部走「复用存档产物」，而零阶段的 `buildResumeProducts` 返回 `{}` ⇒ 产物全 undefined
+  // （**PRD 为空**）⇒ 只剩没有 `resumed` 门控、也不做 prd 空值保护的验收照常开跑
+  // = 跳过需求澄清/技术方案/开发/QA，直接拿空 PRD 跑产品验收。是「跑错」，不只是「拿不回答复」。
+  if ((journal.stages || []).length === 0) return 'prd'
+  // 档位阶段集（ADR-0004 差异执行的单一事实来源）：用来区分**两种「没有 stage 记录」**——
+  //   ① 条件阶段（design/scaffold）在本档位未启用 ⇒ 确实该跳过；
+  //   ② 启用过、但**从未发生过任何尝试** ⇒ **它就是断点**。
+  // ② 若也 `continue`，「PRD done、design 之后全空」这一形态会一路走到 `return 'acceptance'`
+  // = **跳过 design/tech/dev/qa 直接验收**（2026-10-07 历史审计：lite 档 4 条命中，old 全为 acceptance）。
+  // 该形态今天 0 例（PRD 之后还没有暂停点），但**确认单一旦落地就会批量产生** ⇒ 必须先行修掉。
+  // ⚠️ 只用 `resolveStages` 重建，不引团队阶段列表：团队裁剪后的集合无从恢复，而差集只会让
+  // 断点**更靠前**（多跑一个阶段），不会更靠后（漏跑）——方向是安全的。
+  const opts = journal.options || {}
+  const stageSet = resolveStages(normalizeMode(opts.mode) || 'full', {
+    needDesign: opts.needDesign === true,
+    needScaffold: opts.needScaffold === true,
+  })
   for (const phase of PHASE_ORDER) {
     const phaseStages = (journal.stages || []).filter((s) => phaseKeyOf(s.phase) === phase)
-    if (phaseStages.length === 0) continue
+    if (phaseStages.length === 0) {
+      if ((stageSet as string[]).includes(phase)) return phase
+      continue
+    }
     if (phase === 'dev') {
       // 任务级聚合（状态机 2026-09-06）：任务有 done stage = 成功；存在未成功任务 → 阶段未完成。
       // 历史失败尝试不算失败（同名任务已有 done stage）——dev 部分完成时 resume 起点 = 开发（补跑未完成）。
@@ -315,7 +369,7 @@ export interface PipelineCtx {
   resumed: (phase: string) => boolean
   logSkip: (phase: string) => void
   stageFailError: (label: string, r: { attempts?: number; freshTokens?: number }) => Error
-  mergeStageState: (phaseKey: string, output: unknown) => void
+  mergeStageState: (phaseKey: string, output: unknown, relPath?: string | null) => void
   noteVerifyEvidence: (stage: any, output: unknown) => void
   stageTextOf: (r: any) => string | null
 }
@@ -347,10 +401,15 @@ export async function executePipeline(
   const root = options.productRoot || null
   journal.product = root
   // 澄清答复随 run 落盘（可审计：这份需求在对齐阶段补过什么）；PRD 阶段会作为权威输入下发。
-  journal.requirementSupplement = options.requirementSupplement ? String(options.requirementSupplement) : null
+  // ⚠️ resume 时**不得覆盖**：`resumeRun` 可能刚把补录的 supplement 写上（`teamflow_resume` 的补录入口），
+  // 而这里收到的是 `journal.options`（白名单字面量，本就不含该键）⇒ 无条件赋值会把答复清成 null
+  // = 静默丢弃（同 1106-1113 那类「白名单吃掉内部字段」的坑，这是第四次同型）。
+  if (!resume) journal.requirementSupplement = options.requirementSupplement ? String(options.requirementSupplement) : null
   // 澄清埋点（ADR-0010 D2）：**答复真的随 run 落盘**才算一次闭环 —— 与「问了但用户没答」区分开。
   // 需求原文用未加 `[CLARIFIED]` 的 `requirement`，与 tool 侧 `asked` 的指纹保持一致。
-  if (journal.requirementSupplement) {
+  // resume 路径的 `answered` 埋点由 `resumeRun` 自己记（只有它知道 supplement 是不是**本次新带入**的）
+  // ⇒ 这里加 `!resume`，否则续跑会把同一份答复重复计一次，`answered` 与 `asked` 的配对比失真。
+  if (!resume && journal.requirementSupplement) {
     noteClarifyAnswered(journal.workspace || root, requirement, {
       runId: String(journal.id), supplement: String(journal.requirementSupplement),
       mode: String((journal.options && journal.options.mode) || '') || undefined,
@@ -410,6 +469,10 @@ export async function executePipeline(
     const upFrom = (preTriage as { upgradedFrom?: string | null }).upgradedFrom
     if (upFrom) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.modeUpgraded', { from: upFrom, to: preTriage.mode }) })
     if (preTriage.blockersDropped > 0) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageBlockersDropped', { n: preTriage.blockersDropped }) })
+    // 澄清闸门失效可见化（ADR-0010 第 2 步）：分诊退兜底（超时/解析失败/子代理不可用）时 `fallbackVerdict`
+    // 硬编码「永不拦启动」⇒ 闸门**静默失效**。旧行为只落一条 info「source=fallback」，看不出「本次没做澄清」；
+    // 这里补 warn 点名后果（实锤 tf-mu4bve7t-duux2k「我想开发一个 dsh 插件」退兜底后直接跑完，用户侧不可见）。
+    if (preTriage.source === 'fallback') journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyGateSkipped') })
   } else if (resume) {
     // 断点续跑：档位已定稿（首次启动时定的），**不再跑分诊**；只补一条 shadow 记录保住样本连续性
     // （`journal.triage` 在续跑前若已存在则原样保留——首轮的真实裁决比这里补的更有价值）。
@@ -448,6 +511,8 @@ export async function executePipeline(
       // 原文）记 warn——下次再出现 fallback，一眼可见"是 90s 掐的还是 JSON 坏了"。
       const fbReason = (verdict as { fallbackReason?: string }).fallbackReason
       if (verdict.source === 'fallback' && fbReason) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageFallbackReason', { msg: clip(fbReason, 200) }) })
+      // 同上（pipeline 侧权威判定路径）：退兜底 ⇒ 澄清闸门未生效——除了「原因」还要点名「后果」
+      if (verdict.source === 'fallback') journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.clarifyGateSkipped') })
       const upFrom2 = (verdict as { upgradedFrom?: string | null }).upgradedFrom
       if (upFrom2) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.modeUpgraded', { from: upFrom2, to: verdict.mode }) })
       if (verdict.blockersDropped > 0) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.triageBlockersDropped', { n: verdict.blockersDropped }) })
@@ -634,7 +699,9 @@ export async function executePipeline(
     }
 
     // 预编译 state（跨 run 累积索引）：各阶段 prompt 注入 slice；结束后提取/合并 state 块
-    const state = loadState(journal.workspace || 'default')
+    // ⚠️ **必须是 `let`**：`mergeStageState` 合并后要**换掉这个绑定**（见下），否则本次 run 内
+    // 后续阶段（含 PRD 确认单）读到的永远是**起跑快照**。
+    let state = loadState(journal.workspace || 'default')
     state.__runCtx = { ...(state.__runCtx || {}) }
     if (journal.runDocs) state.__runCtx.runDocs = journal.runDocs
     // 注入块语言（AC-3⑤）：快照经既有 __runCtx 通道下发（不改任何 prompt 工厂签名）
@@ -713,9 +780,43 @@ export async function executePipeline(
     } catch (e) {
       journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.sanityFail', { msg: String((e && e.message) || e) }) })
     }
-    const mergeStageState = (phaseKey, output) => {
-      const block = extractStateBlock(output)
-      if (block) mergeStateBlock(journal.workspace || 'default', block, phaseKey)
+    /**
+     * 合并阶段产出的 state 块。
+     *
+     * **通道（2026-10-08 改）**：优先读**文件通道**（`relPath`）—— 块不该走人类可读通道，
+     * 见 `stateBlockInstruction` / `readStateBlockFile` 的注释。文件缺 ⇒ **回落**抽回复文本，
+     * 并记一条可数 warn。回落不是可选项：最坏情况只能是「退化成旧行为 + 一条 warn」，不能是静默丢状态。
+     */
+    const mergeStageState = (phaseKey, output, relPath = null) => {
+      // ⚠️ 基准是 **`journal.workspacePath`**（子代理的 CWD），**不是 `root`** ——
+      // `root = options.productRoot`，而它在生产里也常常是 `null`（真机 `tf-muzc59h9-pnbhyk` 就是 null）
+      // ⇒ 按 root 拼路径会让文件通道**永远读不到、永远回落**（等于这次改动白做）。prompt 里给的是
+      // **相对 workspacePath** 的路径，读取也必须以它为基准。这条是被行为测试 [24] 抓出来的。
+      const base = journal.workspacePath || root
+      const abs = relPath && base ? `${base}/${relPath}` : null
+      const fromFile = abs ? readStateBlockFile(abs) : null
+      const block = fromFile || extractStateBlock(output)
+      if (!block) {
+        // 契约违反要**可见**（不静默）：要求了文件却两条通道都没拿到 ⇒ 记 warn，但不阻断流水线
+        if (relPath) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.stateBlockMissing', { phase: phaseLabel(locale, phaseKey), path: String(relPath) }) })
+        return
+      }
+      if (!fromFile && relPath) {
+        // 回落：模型没写文件、把块留在回复里了。**可数** —— 这个数就是文件通道的真实兑现率。
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.stateBlockFallback', { phase: phaseLabel(locale, phaseKey) }) })
+      }
+      // ⚠️ `mergeStateBlock` 是 load → 改 → save → **返回一个新对象**（不是就地改我们手上那份）。
+      // **丢弃返回值 = 内存里的 `state` 永远停在「起跑快照」** ⇒ 本次 run 里 PRD 写下的
+      // `extra.acIndex` / `product.summary` / `openQuestions` / `verifyScripts` / `modules`
+      // **在同一 run 的后续阶段全都看不见**（要等**下一次 run** 从磁盘载入才可见）。
+      // 2026-10-07 实锤 tf-muy63zgy-octoqj（真实桌面版）：磁盘 `state.json` 里 `acIndex` 9 条、
+      // `product.summary` 有值，而同一次 run 的确认单却是 `acSource=extracted`、`summary=''`
+      // —— 因为确认单读的正是这份没刷新的内存 state。
+      const rc = state.__runCtx
+      state = mergeStateBlock(journal.workspace || 'default', block, phaseKey)
+      // `__runCtx` 是**运行期字段、`loadState` 不搬运**（`state.test.js` 有豁免断言）⇒
+      // 不显式带回的话，runDocs / locale / craft / artifactContracts / blueprint 会整片消失。
+      if (rc !== undefined) state.__runCtx = rc
     }
     // 验证证据块存证（dev/qaFix 契约；policy 级——缺失记 warn 不中断）。
     // 按 withRetry 返回的 stage 引用直写——并发 dev 下绝不错位（reverse().find
@@ -762,10 +863,14 @@ export async function executePipeline(
       journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: opts && opts.enterLabel ? opts.enterLabel : phaseLabel(locale, phase) }) })
       const r = await withRetry(journal, parent, label, phase, prompt, signal, undefined, opts && opts.effort ? opts.effort : null)
       if (!r.text) throw stageFailError(phase, r)
-      timeline[phase] = r.text
-      mergeStageState(phase, r.text)
+      // ⚠️ `mergeStageState` 之后**立刻剥掉机器契约块**（2026-10-08）：这一刻 block 已被消费进
+      // state.json，之后这段文本只作**展示**（timeline）与**下游输入**（`prd`/`design`/`tech` 进下一个
+      // 阶段的 prompt）—— 块在两边都是噪声。机器面（`extractStateBlock`）读的是**未剥**的 `r.text`。
+      const shown = stripStateBlock(r.text)
+      timeline[phase] = shown
+      mergeStageState(phase, r.text, stateBlockRelPath(journal.id, phase))
       noteTaskStageUsage(journal)
-      return { text: r.text, cancelled: !!journal.cancelled, skipped: false }
+      return { text: shown, cancelled: !!journal.cancelled, skipped: false }
     }
 
     /* ── PRD 阶段 ── */
@@ -778,9 +883,14 @@ export async function executePipeline(
         : { label: t(locale, 'dev.prdFull'), fn: prdPrompt }
     // 澄清答复（2026-09-16 需求澄清闸门）：用户在澄清轮补充的说明是**权威输入**——拼在需求之后并显式声明
     // 「不得再自行假设」，否则 PM 会把自己的旧猜测再填一遍。原始 requirement 保持逐字不变（可审计）。
+    // 2026-10-08 分叉：**确认单上「要改」**（`resume.redo`）是另一种语义 —— 用户不是答我问的问题，而是
+    // 对上一版 PRD 提了修改要求。共用「权威输入」的效力，但**不能用「你问的问题的答案」这个说法**：
+    // 那时 PRD 的待澄清清单还没生成，模型会照字面去找一份不存在的清单。
     const supplement = journal.requirementSupplement
     const prdInput = supplement
-      ? `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-assume]\n${supplement}`
+      ? resume && resume.redo
+        ? `${requirement}\n\n[REVISED — the user reviewed the previous PRD and asked for these changes; treat them as authoritative and do NOT re-ask]\n${supplement}`
+        : `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-assume]\n${supplement}`
       : requirement
     // patch 档的「单点确认」是机械阶段（核对现状 + 给直改指令，不做架构判断）→ 降档省 token
     const prdStage = await runSimpleStage('prd', pForm.fn(prdInput, root, journal.id, state), pForm.label, {
@@ -795,6 +905,64 @@ export async function executePipeline(
     // 缺失 → 抛阶段失败走重试（附诊断），不放过"连开发对象是什么都没搞清"的 PRD。
     // 注：此处不引 `prdR`——resume 分支没有它（PRD 是复用的产物），重试计数由 stageFailError 自行兜底。
     if (notePrdAssumptions(journal, locale)) throw stageFailError('prd', {})
+
+    /* ── PRD 确认单（ADR-0011 ①）：PRD 后暂停，等用户批准 ── */
+    // **触发判据 = 内容**（2026-10-08 第 2 步，取代原来的 `needConfirm` 显式开关）：
+    // PRD 的 `openQuestions` 里存在 `kind: "taste"`（**主观品味项**：多种走法同样成立、没有客观对错，
+    // 取舍取决于「用户想要什么」）⇒ 暂停，让用户拍板后再往下建。
+    //
+    // 为什么不是「任何待澄清项都停」：**信息缺口**的代价由 `default` 兜住（模型研究过、有明显默认值），
+    // 而品味项猜错的代价是「成品不是我要的」—— 它表现为**流失/差评、不表现为 QA 打回**，用返工率量不出来
+    // （用户 2026-10-08 定调）；反过来，纯信息缺口也打断用户会白毁 §1「批量可靠交付」的无人值守卖点。
+    //
+    // 为什么旧的显式开关**必须消失**：`needConfirm` 是公开工具参数，而「用户不该感知这个变量」——
+    // 真实用户不知道它、工具描述里也没有任何「何时该设它」的触发条件 ⇒ 实践中没人设它 ⇒
+    // 就算白名单 bug 修好了，功能依然是死的（2026-10-08 用户实锤）。
+    const openQuestions = state.openQuestions || []
+    const tasteCount = openQuestions.filter((q) => q && q.kind === 'taste').length
+    // **契约未兑现必须可见**（§7③）：模型没给 `kind` ⇒ 归一成 `fact`（不暂停，见 `normalizeOpenQuestions`
+    // 的「不得有阻断权」论证），但这件事要留痕 + 发 warn，否则又是一次「静默空转、长期没人发现」。
+    const untagged = openQuestions.filter((q) => q && q.kindMissing).length
+    if (untagged > 0) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.openQuestionsUntagged', { n: untagged }) })
+    // 为什么还留一个内部位：自动判据是**内容驱动**的，但 A/B 对照与端到端验证需要能**强制**开关
+    // （`always` / `never`）。它是环境变量 `TEAMFLOW_CONFIRM`，**不进工具 schema**
+    // （MEMORY §6：临时/实验开关不进公共工具契约——description 每次进主会话上下文 ≈137 tok/会话）。
+    const confirmMode = options.confirmMode || 'auto'
+    const shouldConfirm = confirmMode === 'always' || (confirmMode === 'auto' && tasteCount > 0)
+    // 为什么 `!resume`：确认单只做**一轮**（轮次上限归 `interview` 档，ADR-0011 ③）。
+    // 为什么排除 `patch`：patch = 单 agent 直改（STAGE_POLICY），它的 PRD 是「单点确认」机械阶段，
+    // 不为它加一道人工闸门（ADR-0011 策略档矩阵：`patch` 恒 off）。
+    if (shouldConfirm && options.mode !== 'patch' && !resume) {
+      const sheet = buildConfirmSheet({
+        summary: state.product ? state.product.summary : null,
+        acIndex: state.acIndex,
+        // PRD 正文：`extra.acIndex` 缺失时由确认单兜底抽取（ADR-0011 B/C；实测 extra 兑现率 ~20%）。
+        // ⚠️ **必须是 PRD 文件、不是 `prd`（stage.output）**：真实 run 的 stage.output 是**交接摘要**
+        // （中位 2.5k 字符，AC 常被压成 `（AC-1）、…` / `| Accept | AC-1…AC-8 |`）——
+        // 同一抽取器两个源上的命中率实测 **PRD.md 19/21（90%）vs stage.output 21/87（24%）**。
+        // 与 `notePrdAssumptions` 同源（`PRD.md`，tech 档回落 `TECH-CHANGE.md`）；都读不到才退回 stage.output。
+        prdText: artifactText(journal, 'PRD.md') || artifactText(journal, 'TECH-CHANGE.md') || prd,
+        // 结构化待澄清项优先于文本抽取：PRD state 块的 openQuestions 带「为什么问 / 缺省怎么办」，
+        // 用户能直接挑默认值（`journal.assumptions` 只是 PRD 段落里抄下来的行）。
+        openQuestions: state.openQuestions,
+        assumptions: journal.assumptions,
+        runDocs: journal.runDocs,
+      })
+      // 审批面择路：**有登记的批准能力 ⇒ 试；否则（含抛错 / 返回空）⇒ 回落**停在 interrupted
+      // 交主线程兜底（用 `ask_user_question`，已在生产验证）。
+      // ⚠️ 为什么当前不登记批准能力：① ① 的裁决＝「保留自动 resume」⇒ 批准＝`resume`，
+      // 原生审批卡不是功能必需，只是「体验更顺」；② **P1 未验到客户端 UI**
+      // （只验到「请求进入转发队列」）；③ **`ask()` 带 carrier 且无客户端应答时会一直挂住**
+      // ⇒ 放进生产路径＝常态化「流水线卡死」风险。端到端验成前不接。
+      const approved = typeof confirmHook.ask === 'function'
+        ? await confirmHook.ask(journal, sheet).then((a) => (a == null ? null : String(a))).catch(() => null)
+        : null
+      if (approved === null) {
+        return abortForConfirmSheet(journal, sheet, locale)
+      }
+      journal.confirmAnswer = approved
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.confirmed') })
+    }
 
     /* ── UI/UX 设计阶段（档位阶段集启用；lite+needDesign 也保留，显式要求的 UI 需求不被吞） ── */
     let design = null
@@ -834,25 +1002,80 @@ export async function executePipeline(
       // 不跑蓝图提取**，`state.__runCtx.blueprint` 不注入 → dev 继承不到蓝图，退化成单任务整体开发
       // （r13 同款症状）。现在 resume 复用时也照样提取（存档 tech 文本里没有蓝图块 → 解析为 null，无副作用）。
       // 优先取 stage 回复输出；模型可能把蓝图写进任务夹 TECHNICAL.md（ADR-0008 收口约定）——回退读文件提取，绝不静默丢蓝图（实锤 r13：蓝图只在文档里，dev 退化为单任务整体开发、M2 拆卡失效）。
+      // ⚠️ 2026-10-09：判据从 `bd.summary === undefined` 改为「有无实质内容」。前者是**死条件**——
+      // `extractBlueprint` 里 `summary` 恒为 string（`typeof parsed.summary === 'string' ? parsed.summary : ''`），
+      // 永不 undefined ⇒ 两处判据实际退化成 `!bd` / `bd` ⇒ **语法合法但内容空的块**（`{}`、只有 summary 无
+      // modules/tasks）会被当成解析成功：既不回退读文件、也不告警，dev 静默退化成整体开发。
+      // 现判据＝「有 tasks 或 modules 才算可用」，不满足即走回退，回退也不满足才告警。
+      const bdUsable = (x: Blueprint | null): x is Blueprint =>
+        !!x && (((x.tasks || []) as unknown[]).length > 0 || Object.keys(x.modules || {}).length > 0)
+      // `<!-- blueprint`（不含 `/`）同时覆盖新形态（open 不带 `-->`）与旧形态（自闭合注释）。
+      const hasBlueprintMark = (s: unknown) => /<!--\s*blueprint/.test(String(s == null ? '' : s))
+      const bdBase = journal.workspacePath || root
+      // 任何一条通道上出现过蓝图标记，最终没能用上就必须可见（否则静默丢并行度）
+      let sawMark = hasBlueprintMark(tech)
+      // 原文落档路径（② 分支解析失败时填）—— 末尾统一发**一条** warn，避免与 `sawMark` 兜底重复
+      let archivedPath = ''
+      // ① 回复正文（旧主通道；也是文件通道失效时的回落）
       let bd = extractBlueprint(tech)
-      if (!bd || bd.summary === undefined) {
+      // ② **独立文件**（2026-10-09 新主通道，与 state 块同构）：`logs/teamflow/<runId>/blueprint.json`。
+      //    纯中转 —— 原文**无条件落档**到 `$DSH_HOME` 供人工复查，项目内那份随后读完即删，
+      //    所以项目内的停留窗口从「整个 run」缩到「几秒」，可续跑终态（不做归档）也不再残留。
+      const bpAbs = bdBase ? `${bdBase}/${blueprintRelPath(journal.id)}` : null
+      const bpExists = !!bpAbs && existsSync(bpAbs)
+      if (bpExists) {
+        let rawBp: string | null = null
+        try { rawBp = readFileSync(bpAbs, 'utf8') } catch (e) { /* 读不出 ⇒ 当它没有 */ }
+        if (rawBp) {
+          // 无条件落档：架构拆解生效后「审蓝图 = 审 dev 拆卡质量」，原文必须可复查
+          // （此前三处去向都不留原文：render 只在 prompt、journal 只存 modules/tasks、中转文件读完即删）。
+          const archived = saveBlueprintArchive(String(journal.workspace || 'default'), journal.id, rawBp)
+          if (archived) journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintArchived', { path: archived }) })
+          if (!bdUsable(bd)) {
+            const fromChannel = blueprintFromText(rawBp)
+            if (bdUsable(fromChannel)) {
+              bd = fromChannel
+              journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintFromChannel') })
+            } else {
+              sawMark = true // 文件写了却不可用 ⇒ 必须可见（由末尾统一告警，避免两条重复 warn）
+              if (archived) archivedPath = archived
+            }
+          }
+        }
+      }
+      // ⚠️ 清理**必须与「通道是否命中」无关**：模型可能「既回显蓝图、又写文件」（违反契约）——
+      // 那时 ① 命中、上面那块整段不解析，若把 unlink 写在里面就会**漏删**，
+      // 文件一直留在项目里直到归档；而可续跑终态（failed/cancelled/interrupted）**根本不归档** ⇒ 永久残留。
+      if (bpExists) { try { unlinkSync(bpAbs) } catch (e) { /* 清理尽力而为 */ } }
+      // ③ TECHNICAL.md 末尾的块（历史通道，兼容存量 run 与模型旧习惯）
+      if (!bdUsable(bd)) {
         try {
           const techFile = journal.runDocs && journal.workspacePath
             ? `${journal.workspacePath}/${journal.runDocs}/TECHNICAL.md`
             : null
-          if (techFile && existsSync(techFile)) bd = extractBlueprint(readFileSync(techFile, 'utf8'))
-          if (bd) journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintFromFile') })
+          if (techFile && existsSync(techFile)) {
+            const raw = readFileSync(techFile, 'utf8')
+            if (hasBlueprintMark(raw)) sawMark = true
+            const fromFile = extractBlueprint(raw)
+            if (bdUsable(fromFile)) {
+              bd = fromFile
+              journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintFromFile') })
+            }
+          }
         } catch (e) { /* 回退失败走既有告警 */ }
       }
-      if (bd && bd.summary !== undefined) {
+      if (bdUsable(bd)) {
         try {
           state.__runCtx = state.__runCtx || {}
           state.__runCtx.blueprint = bd.render
           journal.blueprint = { modules: bd.modules, tasks: bd.tasks }
         } catch (e) { /* 蓝图注入失败不影响 */ }
-      } else if (/<!-- blueprint -->/.test(String(tech))) {
-        // 蓝图块存在但解析失败：显式告警（否则静默回退整体开发，并行度丢失难排查）
-        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.blueprintParseFail') })
+      } else if (sawMark) {
+        // 蓝图标记出现过但没用上（解析失败 / 内容为空）：显式告警（否则静默回退整体开发，并行度丢失难排查）。
+        // 落档成功时把路径带上，省得再去翻轨迹。
+        journal.logs.push({ t: Date.now(), level: 'warn', message: archivedPath
+          ? t(locale, 'log.blueprintParseFailArchived', { path: archivedPath })
+          : t(locale, 'log.blueprintParseFail') })
       }
     }
 
@@ -1037,12 +1260,13 @@ export function summarizeTimeline(timeline) {
   const out = {}
   for (const key of Object.keys(timeline || {})) {
     const val = timeline[key]
+    // ⚠️ 先剥机器契约块再截断（2026-10-08）：state 块随阶段原文进 timeline ⇒ 时间线上也会摊出 JSON。
     if (Array.isArray(val)) {
       out[key] = val.map((x) => (x && typeof x === 'object'
-        ? { title: x.title, failed: !!x.failed, output: clip(x.output || '', 2000) }
-        : clip(x, 2000)))
+        ? { title: x.title, failed: !!x.failed, output: clip(stripStateBlock(x.output || ''), 2000) }
+        : clip(stripStateBlock(x), 2000)))
     } else {
-      out[key] = clip(val, 2000)
+      out[key] = clip(stripStateBlock(val), 2000)
     }
   }
   return out
@@ -1079,6 +1303,14 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
       craft: options.craft !== false,
       mode,
       teamId: options.teamId || undefined,
+      // ⚠️ **这个白名单是 `PipelineOptions` 的「可达性关口」**：`execOptions = Object.assign({},
+      // journal.options, {…具名内部字段…})` ⇒ 白名单漏掉一个字段，executePipeline 就**永远收不到它**。
+      // 而行为测试（`test/orchestration.test.js`）是**直调 executePipeline**、绕过本白名单 ⇒
+      // 功能静默失效时测试照样全绿（2026-10-07 实锤：`needConfirm` 与 `clarifyStrength` 两个新字段
+      // 都漏在这里，确认单与澄清强度**在真实 `teamflow_start` 路径下根本不生效**）。
+      // **门禁**：`test/smoke.js` 解析 `PipelineOptions` 接口键，断言每个键要么在本白名单、要么在
+      // `execOptions` 的具名补充里（新增字段漏搬就红）。
+      confirmMode: options.confirmMode || undefined,
       tasks: normalizeTasks(options.tasks),
       productRoot: normalizeRoot(options.productRoot),
       maxConcurrency: normalizeConcurrency(options.maxConcurrency),
@@ -1124,6 +1356,9 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
 export function resumeRun(
   runId: string | null | undefined,
   sessionId: string | null | undefined,
+  /** 续跑时**补录的权威输入**（`teamflow_resume` 的 `supplement`；ADR-0011 待拍板 ④）。
+   *  PRD 是唯一消费点（`prdInput` 拼 `[CLARIFIED]` 段）⇒ 只在断点 ≤ prd 时接受。 */
+  supplement?: string | null,
 ): { ok: boolean; runId?: string; resumedFrom?: string; error?: string } {
   const id = typeof runId === 'string' ? runId : null
   if (!id) return { ok: false, error: t(ambientLocale(), 'run.missingId') }
@@ -1145,9 +1380,35 @@ export function resumeRun(
     return { ok: false, error: t(locale, 'run.badStatus', { status: j.status }) }
   }
   // 全阶段已 done 的 failed/cancelled：没有断点可续（阶段全绿≠run 成功，如「需求与现状不符」拦截单），
-  // 续跑只会兜底重跑验收、循环失败——硬拒绝，引导起新流水线（实锤 tf-mt8kxyef-29ruxt）
-  if ((j.stages || []).length > 0 && (j.stages || []).every((s) => s.status === 'done')) {
+  // 续跑只会兜底重跑验收、循环失败——硬拒绝，引导起新流水线（实锤 tf-mt8kxyef-29ruxt）。
+  // ⚠️ 判据**不得**用「所有**已记录**的阶段都 done」——那是「全流程跑完」的**伪代理**，只在「跑满全程」
+  // 时与真判据重合。**中途暂停**（PRD 确认单，ADR-0011 ①）会让它失效：那时 `stages` 只有 `[prd done]`，
+  // `.every(done)` 恒真 ⇒ 断点被误判成「无」、续跑当场拒绝，而 `interruptedPhaseOf` 明明返回 `design`。
+  // 2026-10-07 实测 tf-muy63zgy-octoqj：确认单如期暂停（P0 修复生效），却因这条守卫**完全无法续跑**。
+  // 真判据 = **断点落在最后一段（acceptance）且该段也已 done** ⇒ 那才是「确实没活可干」。
+  // （acceptance 只是断点、自身未 done 时不得拒绝——那是合法续跑。）
+  const phaseAtEntry = interruptedPhaseOf(j)
+  if (phaseAtEntry === 'acceptance' && (j.stages || []).some((s) => phaseKeyOf(s.phase) === 'acceptance' && s.status === 'done')) {
     return { ok: false, error: t(locale, 'run.noBreakpoint', { status: j.status }) }
+  }
+  // 补录校验放在**取 agent 之前**：纯参数校验不该有副作用，也不该先占用并发锁。
+  // 断点晚于 prd 时本轮不会有任何阶段读 supplement ⇒ 直接拒绝。**不许静默吞掉**——那正是本仓反复踩的
+  // 「静默丢弃」（§7 工具返回体被 schema 吃掉 / §16 白名单吃掉内部字段，同类第四次）。
+  //
+  // ⚠️ **2026-10-08 加一个例外：回退重跑 PRD**。PRD 确认单暂停时 `stages` **只有 `[prd done]`**
+  // ⇒ 「带上补充说明重跑 PRD」的**作废面为零**（下游一个阶段都没跑过）。
+  // 为什么必须有这个例外：确认单的「我要调整几项」分支原本**无处可答** —— 断点是 `design`（晚于 PRD）
+  // ⇒ `supplement` 在这里被拒 ⇒ 用户选完只能起新 run、刚跑完的 PRD 作废。用户 2026-10-08 实锤：
+  // 那条 AUQ 选项的文案许诺「我再更新确认单后开工」，而**没有任何机制能兑现它** —— 假承诺比「不能改」更糟。
+  //
+  // 判据刻意落在**内容**上（PRD 之后是否真跑过阶段），不是「是不是确认单暂停」：
+  // 这样任何未来出现的「恰好停在 PRD 之后」形态都自动获得同一条能力，而安全理由（作废面为零）恒成立。
+  const supp = typeof supplement === 'string' && supplement.trim() ? supplement.trim() : null
+  const afterPrd = PHASE_ORDER.indexOf(phaseAtEntry) > PHASE_ORDER.indexOf('prd')
+  const prdOnly = !(j.stages || []).some((s) => phaseKeyOf(s.phase) !== 'prd')
+  const redoPrd = !!supp && afterPrd && prdOnly
+  if (supp && afterPrd && !redoPrd) {
+    return { ok: false, error: t(locale, 'run.supplementTooLate', { phase: phaseLabel(locale, phaseAtEntry) }) }
   }
   const productKey = j.workspace || j.product || 'default'
   if (activeProducts.has(productKey) && activeProducts.get(productKey) !== id) {
@@ -1157,7 +1418,7 @@ export function resumeRun(
   const agent = sid && runtime.agents ? runtime.agents.get(sid) : undefined
   if (agent === undefined) return { ok: false, error: t(locale, 'run.agentNotFound', { sid }) }
   try {
-    const resumePhase = interruptedPhaseOf(j)
+    const resumePhase = redoPrd ? 'prd' : phaseAtEntry
     const products = buildResumeProducts(j)
     j.status = 'running'
     j.cancelled = false
@@ -1185,10 +1446,36 @@ export function resumeRun(
     j.endedAt = null
     j.logs = (j.logs || []).slice(-200)
     j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.resume', { phase: phaseLabel(locale, resumePhase) }) })
-    j.stages = (j.stages || []).filter((s) => s.status !== 'running' && s.status !== 'pending') // 清理未完成 stage；保留 done/failed 历史（失败痕迹不消失）
+    j.stages = (j.stages || [])
+      .filter((s) => s.status !== 'running' && s.status !== 'pending') // 清理未完成 stage；保留 done/failed 历史（失败痕迹不消失）
+      // 回退重跑 PRD：把旧的 prd 记录**摘掉**，否则 `enterStage` 会再推一条 ⇒ 同一阶段两条记录
+      // （报告与断点定位都按「每阶段一条」读）。安全前提正是 `prdOnly`：PRD 之后确实没跑过任何阶段。
+      .filter((s) => !(redoPrd && phaseKeyOf(s.phase) === 'prd'))
+    if (redoPrd) {
+      // 旧确认单描述的是**即将被替换**的那份 PRD ⇒ 必须清掉，否则在新 PRD 出结论前主线程会看到过期内容。
+      j.confirmSheet = null
+      // 文本兜底（`journal.assumptions`）同理清空。
+      j.assumptions = null
+      // ⚠️ 结构化 `state.openQuestions` 也要清：新 PRD 若没给 `openQuestions`（`extra` 契约实测 ~20% 不达），
+      // `mergeStateBlock` 是**条件式替换** ⇒ 旧主观项会残留 ⇒ 按**过期项**再次暂停，用户看到同一份旧确认单。
+      try {
+        const st = loadState(productKey)
+        if ((st.openQuestions || []).length) { st.openQuestions = []; saveState(productKey, st) }
+      } catch (e) { /* 清不掉也不影响重跑（新 PRD 会覆盖） */ }
+      j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.redoPrd', { n: String(supp || '').length }) })
+    }
+    // 补录的答复落 journal（PRD 会读它拼 `[CLARIFIED]`）；`answered` 埋点只在这里记一次
+    // —— `executePipeline` 的同一埋点已按 `!resume` 排除续跑路径，否则会重复计一次。
+    if (supp) {
+      j.requirementSupplement = supp
+      j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.supplementApplied', { n: supp.length }) })
+      noteClarifyAnswered(productKey, String(j.requirement || ''), {
+        runId: String(j.id), supplement: supp, mode: String((j.options && j.options.mode) || '') || undefined,
+      })
+    }
     runs.set(id, j) // 内存换用磁盘完整版（含 output 全文）
     persistJournal(j)
-    executePipeline(j, agent, j.requirement, j.options, undefined, { phase: resumePhase, products })
+    executePipeline(j, agent, j.requirement, j.options, undefined, { phase: resumePhase, products, redo: redoPrd })
     return { ok: true, runId: id, resumedFrom: resumePhase }
   } catch (e) {
     return { ok: false, error: String((e && e.message) || e) }

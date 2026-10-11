@@ -15,7 +15,7 @@
  *
  * 运行时字段（`__runCtx`，注释明写"不持久化"）与常量（`version`，由 `emptyState` 供给）**豁免**。
  */
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -64,6 +64,9 @@ const full = {
   modules: { 'src/a.ts': '模块 A' },
   verifyScripts: ['pnpm test'],
   acIndex: { 'AC-1': '第一条' },
+  // 结构化待澄清项（ADR-0011 ①，2026-10-07；`kind` 于 2026-10-08 第 2 步加入）：key 顺序必须与
+  // `normalizeOpenQuestions` 的产出顺序一致（q→why→changes→default→kind）—— 往返断言用 `JSON.stringify` 全等。
+  openQuestions: [{ q: '要装到哪个 profile？', why: '决定形态契约', changes: 'AC 集', default: 'web', kind: 'taste' }],
   stages: { prd: 'PRD 结论' },
   lastRun: { runId: 'tf-x', requirement: '需求', folder: 'docs/teamflow/20260918-r1', verdict: 'accepted', endedAt: 1 },
   gitMode: 'repo',
@@ -111,6 +114,131 @@ ok(sees('acceptance'), '**acceptance 必须能看到蓝图** —— 模块抽取
 ok(sees('arch') && sees('tech'), 'arch / tech 仍能看到（原有行为不回退）')
 ok(!stateSliceFor(bpState(''), 'qa').includes('blueprint'), '无蓝图时不得凭空注入（条件式契约的「条件」仍要真判）')
 ok(!sees('pm') && !sees('design'), 'pm / design 不注入（它们跑在 tech 之前，此时蓝图尚不存在）')
+
+
+/* ── 结构化待澄清项（ADR-0011 ①，2026-10-07）──
+ * `prdPrompt` 一直要求 state 块带 `extra.openQuestions`（且有 prompts 侧 L1 门禁），
+ * 但 `mergeStateBlock` 从未消费 ⇒ 确认单只能退回**文本抽取**。这里锁住「结构化优先」这条链。
+ * 重点在**容错**：模型给的形状不稳定（别名 question / 缺字段 / 纯字符串 / 超长），一律不抛、不污染 state。 */
+console.log('\n── normalizeOpenQuestions：模型形状容错 ──')
+const { normalizeOpenQuestions } = await import('../host/core/domain/state.ts')
+ok(normalizeOpenQuestions([{ q: 'Q1', why: 'W', changes: 'C', default: 'D' }]).length === 1, '四字段齐全 → 保留')
+ok(JSON.stringify(Object.keys(normalizeOpenQuestions([{ q: 'Q1', kind: 'fact' }])[0])) === JSON.stringify(['q', 'why', 'changes', 'default', 'kind']), '字段顺序稳定（往返断言用 JSON.stringify 全等，顺序是契约）')
+ok(normalizeOpenQuestions([{ question: '别名', why: 'W' }])[0].q === '别名', '`question` 别名 → 采纳（模型常见变体）')
+ok(normalizeOpenQuestions([{ why: 'W', changes: 'C' }]).length === 0, '缺 q/question → 丢弃（没有问题的条目无意义）')
+ok(normalizeOpenQuestions([{ q: '   ' }]).length === 0, 'q 只有空白 → 丢弃')
+ok(normalizeOpenQuestions([{ q: 'Q1' }])[0].why === '' && normalizeOpenQuestions([{ q: 'Q1' }])[0].default === '', '缺可选字段 → 补空串（不是 undefined，避免 JSON 里丢键）')
+ok(normalizeOpenQuestions(['纯字符串', 3, null, {}]).length === 0, '非对象条目全部丢弃（不炸）')
+ok(normalizeOpenQuestions(null).length === 0 && normalizeOpenQuestions(undefined).length === 0 && normalizeOpenQuestions('x').length === 0, '非数组输入 → 空数组（不炸）')
+const many = Array.from({ length: 30 }, (_, i) => ({ q: 'Q' + i }))
+ok(normalizeOpenQuestions(many).length === 12, `上限 12 条（实测 ${normalizeOpenQuestions(many).length}）`)
+ok(normalizeOpenQuestions([{ q: 'x'.repeat(999) }])[0].q.length <= 300, '单字段截断 ≤300')
+
+/* `kind`（2026-10-08，ADR-0011 ① 第 2 步）：确认单的**触发判据**就是它 —— 只有 `taste` 会让 PRD 后暂停。
+ * 两条纪律决定了缺省值：
+ *   ① 「依赖模型自律的判据，在量出真阳性率前**不得有阻断权**」⇒ 缺/非法一律归 `fact`（不暂停），
+ *      **不能**默认成 `taste` —— 那等于把用户否掉的「任何待澄清项都停」偷偷放回来。
+ *   ② 「空值必须可见」⇒ 缺 `kind` 要打 `kindMissing` 留痕（否则又是一次静默空转）。
+ * 三条锁「只认 kind、不给别名」：别名会把契约违反洗成兑现，把要测的兑现率测没。 */
+ok(normalizeOpenQuestions([{ q: 'Q', kind: 'taste' }])[0].kind === 'taste', 'kind=taste → 主观项保留（会触发确认单）')
+ok(normalizeOpenQuestions([{ q: 'Q', kind: 'fact' }])[0].kind === 'fact', 'kind=fact → 信息缺口保留')
+ok(normalizeOpenQuestions([{ q: 'Q', kind: 'TASTE' }])[0].kind === 'taste', 'kind 大小写不敏感（模型常见变体）')
+ok(normalizeOpenQuestions([{ q: 'Q', type: 'taste' }])[0].kind === 'fact', '**不做别名**：`type: taste` 不予采纳（否则测不出契约兑现率）')
+const untagged0 = normalizeOpenQuestions([{ q: 'Q' }])[0]
+ok(untagged0.kind === 'fact' && untagged0.kindMissing === true, '缺 kind → 归 fact（不暂停）＋ kindMissing 留痕')
+ok(normalizeOpenQuestions([{ q: 'Q', kind: 'taste' }])[0].kindMissing === undefined && normalizeOpenQuestions([{ q: 'Q', kind: 'fact' }])[0].kindMissing === undefined, '标了合法 kind 就不留 kindMissing（标记不得常驻）')
+
+console.log('\n── mergeStateBlock：openQuestions 整组替换（不累加）──')
+saveState(KEY, { ...full, openQuestions: [{ q: '旧问题', why: '', changes: '', default: '' }] })
+mergeStateBlock(KEY, { phase: 'prd', summary: 's', extra: { openQuestions: [{ q: '新问题', why: '', changes: '', default: '' }] } })
+const qAfter = loadState(KEY).openQuestions
+ok(qAfter.length === 1 && qAfter[0].q === '新问题', `PRD 是本次 run 的权威 ⇒ 整组替换（实测 ${JSON.stringify(qAfter)}）`)
+mergeStateBlock(KEY, { phase: 'tech', summary: 's', extra: {} })
+ok(loadState(KEY).openQuestions.length === 1, 'state 块不含该键 → 保持原值（不清空）')
+
+
+/* ── STATE_BLOCK_INSTRUCTION：`extra` 必须在**模板本体**里（ADR-0011 A，2026-10-07）──
+ * 事故：模板原来只给 `{phase, summary, memory}`，而各阶段 rules 用**散文**要求 `extra:{acIndex,…}`
+ * ⇒ 模型照模板写、忽略散文 ⇒ 实测 `extra.acIndex` 兑现率仅 7/34（20%）。
+ * 这三条锁住「契约合并在模板里」这件事本身，而不只是「prompt 里有 openQuestions 这个词」。 */
+console.log('\n── stripStateBlock：机器契约块不得进展示面（2026-10-08 用户截图实锤）──')
+{
+  const { stripStateBlock, extractStateBlock } = await import('../host/core/domain/state.ts')
+  const body = '## 结论\n做完了。\n\n[Verification evidence]\n- 命令：node t.js\n- 退出码：0'
+  const blk = '<!-- state -->{"phase":"qa","summary":"x"}<!-- /state -->'
+  ok(stripStateBlock(body + '\n\n' + blk) === body, '成对的块 → 剥掉，正文逐字保留（不留空尾）')
+  ok(stripStateBlock(body + '\n\n' + blk + '\n\n补充一句') === body + '\n\n补充一句', '块在中间 → 剥掉后两段正文合并（不留双空行）')
+  ok(stripStateBlock(body) === body, '没有块 → **一字不改**（快路径，绝大多数文本走这条）')
+  // ⚠️ 缺关闭标签时**不剥**：`extractStateBlock` 为了尽量取到状态会按「到结尾」处理，但剥展示文本若也
+  // 这么做会**吃掉**后面可能存在的正常正文 ⇒ 宁可留在可见面上，把「契约被违反」暴露出来。
+  ok(stripStateBlock(body + '\n\n<!-- state -->{"phase":"qa"}') === body + '\n\n<!-- state -->{"phase":"qa"}', '**缺关闭标签 → 不剥**（不吞正文；契约违反要可见）')
+  ok(stripStateBlock('a' + blk + 'b' + blk + 'c') === 'abc', '多个块 → 全部剥掉')
+  ok(stripStateBlock('') === '' && stripStateBlock(null) === '' && stripStateBlock(undefined) === '', '空 / null / undefined → 空串（不炸）')
+  ok(extractStateBlock(body + '\n\n' + blk) !== null, '机器面仍能从**原始**文本取到块（剥的只是展示副本）')
+}
+
+/* ── 标记形态：新（真注释块）必须能解析，旧（自闭合注释）必须仍兼容 ──
+ * 2026-10-09：`<!-- state -->` 是**自闭合注释**（`<!--`+`state`+`-->`），渲染器把整条消化掉
+ * ⇒ 紧随其后的 JSON 裸露在 Typora / VS Code 预览里（用户截图实锤）。新形态去掉 open 尾部的
+ * `-->`，让整块成为一个**真注释**。存量产物与模型旧习惯都可能是旧形态 ⇒ 解析器必须**两种都认**。 */
+console.log('\n── state 块标记形态：新形态解析 / 旧形态兼容 / 两种都能剥离 ──')
+{
+  const { stripStateBlock, extractStateBlock } = await import('../host/core/domain/state.ts')
+  const NEW = '<!-- state\n{"phase":"qa","summary":"新形态"}<!-- /state -->'
+  const OLD = '<!-- state -->{"phase":"qa","summary":"旧形态"}<!-- /state -->'
+  ok(extractStateBlock(NEW) && extractStateBlock(NEW).summary === '新形态', '新形态（open 不带 -->）可解析')
+  ok(extractStateBlock(OLD) && extractStateBlock(OLD).summary === '旧形态', '旧形态（自闭合注释）**仍兼容**解析')
+  ok(stripStateBlock('正文\n\n' + NEW) === '正文', '新形态可被剥离')
+  ok(stripStateBlock('正文\n\n' + OLD) === '正文', '旧形态仍可被剥离（兼容存量展示面）')
+  // ⚠️ 负向护栏：新 open（`<!-- state`）比旧 open 宽松得多，必须有「不成对就不动」的证明。
+  const prose = '正文 <!-- state 这个词出现在句子里 --> 尾部'
+  ok(stripStateBlock(prose) === prose, '**正文明文里出现 `<!-- state` 不误剥**（没有成对 close 就不动）')
+  ok(extractStateBlock(prose) === null, '同一段明文也不被误当成 state 块')
+}
+
+console.log('\n── state 块文件通道：纯 JSON（无标记）也能读 ──')
+{
+  const { stateFromText, extractStateBlock } = await import('../host/core/domain/state.ts')
+  const PURE = '{"phase":"tech","summary":"纯 JSON 无标记","extra":{"verifyScripts":["a.mjs"]}}'
+  // 2026-10-11 新契约：文件是独立 .json，整份就是那个 JSON ⇒ 标记纯属冗余。
+  ok(stateFromText(PURE) && stateFromText(PURE).summary === '纯 JSON 无标记', '**纯 JSON（无标记）可读**（文件通道新契约）')
+  ok(stateFromText(PURE) && stateFromText(PURE).extra && stateFromText(PURE).extra.verifyScripts.length === 1,
+    '纯 JSON 的 `extra` 也能取到（不因去掉标记而丢字段）')
+  // 带标记的仍要认：模型可能按旧模板写，或把块留在回复正文
+  const MARKED = '<!-- state\n' + PURE + '\n<!-- /state -->'
+  ok(stateFromText(MARKED) && stateFromText(MARKED).summary === '纯 JSON 无标记', '带标记的**仍兼容**读（旧模板 / 回复回落）')
+  // ⚠️ 回落侧（pipeline / dev.ts 在子代理回复正文里找块）**必须仍以标记为唯一锚**
+  ok(extractStateBlock('正文\n' + PURE + '\n正文') === null,
+    '回落侧的 `extractStateBlock` 不认裸 JSON（自然语言里没有标记就无法定位）')
+  // ⚠️ 接线：光有 `stateFromText` 单测不够 —— `readStateBlockFile` **真的用它**才作数
+  // （否则文件通道拿到的纯 JSON 会被按标记解析，静默返回 null）。
+  const { readStateBlockFile } = await import('../host/core/domain/state.ts')
+  const tmp = mkdtempSync(join(tmpdir(), 'tf-state-pure-'))
+  const fp = join(tmp, 'prd.json')
+  try {
+    writeFileSync(fp, PURE, 'utf8')
+    const got = readStateBlockFile(fp)
+    ok(got && got.summary === '纯 JSON 无标记', '`readStateBlockFile` 能读**纯 JSON 文件**（调用点接线，不只是单测）')
+  } finally {
+    rmSync(tmp, { recursive: true, force: true })
+  }
+}
+
+console.log('\n── STATE BLOCK 契约：extra 在**模板本体**里 ＋ 走**文件通道**（ADR-0011 A ＋ 2026-10-08）──')
+const { stateBlockInstruction, stateBlockRelPath } = await import('../host/core/domain/state.ts')
+const SBI = stateBlockInstruction(stateBlockRelPath('tf-x', 'prd'))
+ok(/"extra":\{/.test(SBI), '**模板本体含 `extra` 键**（只在散文里要求 = 模型照模板忽略它 —— 本日实测的根因）')
+ok(/acIndex/.test(SBI), '模板里点名 prd 的 extra 键（否则「required」落不到具体字段上）')
+// ⚠️ 锚点句从「Append one section at the END of your answer」换成 `STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply`
+// —— 旧措辞**就是**块泄漏到用户 UI 的唯一原因（宿主渲染子代理回复，插件管不到）。见 state.ts 注释。
+// ⚠️ 第二段锚点锁的是**新契约**（2026-10-11 起：文件里是**纯 JSON**，不再有 `<!-- state` 包裹）。
+// 演变链：旧措辞「Append one section at the END of your answer」是块泄漏到用户 UI 的唯一原因 →
+// 改文件通道（回复里不许出现块）→ 再去掉文件里的标记（文件是独立 .json，标记纯属冗余，
+// 且会多出「写漏关闭标记」这类失败）。现在锁 `no comment markers` 证明契约确实是纯 JSON。
+ok(/STATE BLOCK · MACHINE CHANNEL · do NOT put it in your reply/.test(SBI) && /no comment markers/.test(SBI), '契约锚点两句保留（prompt-contract 的 L1 门禁锁的就是它们）')
+ok(/do NOT put it in your reply/.test(SBI) && /echo this JSON in your reply/.test(SBI), '明确要求：**不许把块写进回复正文**（这是机器通道分离的核心条款）')
+ok(SBI.includes(stateBlockRelPath('tf-x', 'prd')), '指令里**点出该阶段的文件路径**（否则模型无从写起）')
+ok(stateBlockRelPath('tf-x', 'dev', 'dev-2').endsWith('/state/dev-dev-2.json') && stateBlockRelPath('tf-x', 'prd').endsWith('/state/prd.json'), '路径：阶段键 ＋ 可选并发后缀（dev 多任务必须各写各的）')
 
 cleanup()
 console.log(failed ? `\n✗ state：${failed} 条失败\n` : '\n✓ state：全部通过\n')

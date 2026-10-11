@@ -1,139 +1,141 @@
 # TeamFlow 待办（TODO）— 未完成事项，按需查阅
 
 > **本文件不注入 agent 会话**（AGENTS.md 只含当前态约束）；维护者/按需查阅用。
-> 已完成条目直接删除（不留 ✅ 残骸，git log 可追溯）。
+> 三段：**真待办**（需人决策 / 行动）· **观察中**（已埋点或已上报，等数据 / 上游）· **已否决**（勿再调研 / 勿再提）。
+> **已完成条目直接删除**（不留 ✅ 残骸，git log 可追溯）；论证流水下沉 `docs/devlog.md`，规格下沉 `docs/anchors/`，版本说明下沉 `docs/releases/`。
 
-## 真待办（需人决策/行动）
+## 真待办（需人决策 / 行动）
 
-- 🔜 **澄清的可观测性与失效路径（ADR-0010，2026-09-30 立项）**：顺序已定 —— ① **补澄清埋点**；② **修分诊 fallback 时闸门静默失效**；③ 再定澄清强度策略（`interview` 档 + 硬终止）。**前两步未完成前不实现 `interview`**（否则无法验收）。
-  **纠错背景（勿再犯）**：`journal.triage.blockers` 恒为 0 是**结构性盲区**——澄清命中时 `needs-clarification` **不建 run**，那次裁决不落盘；落盘的是澄清后建 run 那次（blockers 已被收敛规则放过）。据此统计会得出「闸门从未触发」的**反结论**（实测 28 run 全 0）。真实澄清至少 **4 例**（贪吃蛇 ×2 的运行形态/技术栈/玩法范围、返工方式裁定、插件安装形态）⇒ **统计前先问「该字段在哪条路径上被写入」**。
-  **失效路径实证**：28 个有 triage 记录的 run 里 **4 个 `source: fallback`**，而 `fallbackVerdict` 硬编码「永不拦启动」——含 `tf-mu4bve7t-duux2k`「我想开发一个 dsh 插件」→ **直接跑完**（即社区 #6405 那例）。
-  **设计约束（ADR-0010 D5）**：访谈只能发生在主会话（子代理不能提问），故 issue #11 的「新增前置阶段 `discovery`」不成立。
-  详见 `docs/adr/0010-clarification-observability.md`（含 5 项待定：埋点落点/字段、fallback 行为、`interview` 默认矩阵、去交互化机制的取舍）。
+### 需求澄清与分诊
 
-- 🔜 **子代理形态按阶段选择（continuable 试点；2026-09-30 立项，含 fork 评估结论）**：
-  **宿主事实（2026-09-30 查实，勿再当「几种模式」）**：子代理 = 两个正交维度 —— 形态（one-shot / continuable）× 后端（spawn = 全新 / fork = 以父级**已完成轮次**为初始内容）。本机 `dsh-base` 组合**两个后端都注册**（`dsh-base/cordis.patch.yml:351-359`）；模型侧工具 `subagent` = spawn + **continuable**、`subagent_fork` = fork + one-shot。本插件走 `subagents.start()` 直连 API = **spawn + one-shot**（调用点仅 `runner.ts:165` 与 `triage.ts:644`）。
-  **fork 已评估 → 对本插件不适用**：它继承的是「发起委派那个 agent」的已完成轮次，而我们的阶段子代理由 **主会话 agent** 发起 ⇒ 继承的是用户对话而非上游阶段产物；且 token 暴增（复制整段历史）、一次性快照、工具作用域与权限全不继承。
-  **continuable 的真实成本**（⚠️ 勿引用已作废的旧版「撞 8 / 无 outputSchema」论证：8 是**按父池**的驻留上限、混合方案不撞；`outputSchema` 全仓 0 命中 = 假障碍）：① 必须主动 `drainContinuableChildren`（驻留不释放会累积到 `maxActiveSubagents=8` → `ACTIVATION_LIMIT_REACHED`，**不排队**）；② **结算通知会进父级上下文**（每个结算 Activation 往父级塞一条 `Background subagent X finished…` user 消息 → 主会话 token 成本）；③ `run.result` → inbox/turn 适配层；④ `interrupt` 只停当前轮不销毁 → 取消 run 要补 drain 才是真停。
-  **前提 = 按阶段选择，不是一刀切**（用户主张）：真正需要「续」的只有 **dev**（空收尾）与 **qa / qa-fix**（复用同一 dev 子代理）；prd / design / scaffold / tech / acceptance / 分诊 都是一次产出 → 保持 one-shot（且**不占池**）。**机制可行性**：`sendMessage` 要求 sender = 确切在线 Agent —— 我们**有**（`runtime.agents.get(sessionId)` → 主会话 agent，`host/index.ts:997` 已在用）。
-  **⚠️ 判据待定（先攒数据）—— tf-obs-r1 实测给出的反证**（`tf-muliqvaq-v8c58b`：medium，16 阶段 / 50 min / 369 调用 / 2424 万 token / ⚠️需人工）：① 该 run **无空收尾**（16 阶段全 done）⇒ continuable 的主要目标场景**未发生**；② 「省重灌」的**可确证部分极小** —— 打回修复两轮（seq12/14）的 fresh input 仅 3.0 万 + 3.5 万，**占总 token 0.27%**（prefill 的 ~95% 已落在廉价的 cacheRead 上）；而「复用上下文 → 减少重复探索调用」的收益**无法从现有数据推出**，须实测；③ 真实大头是 **QA 闭环 41.7%** 与 **scaffold 15.4%（48 调用 / 327s，机械阶段却第三贵）** —— 两者都与子代理形态无关。**⇒ 继续攒空收尾样本；本条优先级低于对「scaffold 成本」与「QA 三轮 + 复验超限」的评估。**
+- 🔜 **澄清闸门：Phase 2 计划确认单 + 策略档**（ADR-0010 §影响 明写：Phase 2 确认单与其 D3/D4 是同一件事的两个侧面，**须合并为一条、不得各做一套**）：
+  - **已落地**（细节见 git log 与 `docs/adr/0010-clarification-observability.md`）：**Phase 1 启动前闸门**（`intent` / `blockers` 合格线 / `needs-clarification` 不建 run / `requirementSupplement` 回带）；**ADR-0010 ① 澄清埋点**（`host/core/clarify-log.ts` → `$DSH_HOME/teamflow/<product>/clarify.jsonl`，四事件 append-only，含 `triage-fallback`）；**ADR-0010 ② 失效可见化**（2026-10-04：分诊退兜底 ⇒ 闸门静默失效——两条 fallback 路径各记 `log.clarifyGateSkipped` warn ＋ 汇报 `report.clarifySkipped` 行）。
+  - **① PRD 确认单（主；2026-10-07 批 1 已落地）**：`prdPrompt` 增**必填**「假设 / 待澄清」段 + 机器可读（state extra 带 `openQuestions:[{q,why,changes,default}]`）→ PRD 完成后 host **暂停**（复用 interrupted/resume 断点基座）→ 把「目标一句话 + AC + 范围/非目标 + 假设清单 + `PRD.md` 路径」**≤40 行**交主线程；**无合格待澄清项 → 直通不打断**。**2026-10-07 补齐**：`openQuestions` 已从「只要求不落盘」补成落地（`mergeStateBlock` 消费 ＋ 确认单接结构化，见 ADR §落地记录 ① 批 1.5）；批准文案已按要求明示「立即开始写代码」。批 1 落地范围＝`needConfirm` 选项（**默认关** / `patch` 恒 off / 只停一轮）+ PRD 后暂停 `abortForConfirmSheet` + `host/core/confirm.ts`（纯函数、结构化数据源、≤40 行）+ `extra.summary` 落盘 + 确认单落盘 + 汇报带确认单。**2026-10-07 C 方案落地**（`791a610` ＋ `c641ce0`，细节见 ADR §C 落地记录）：AC 的 `extra.acIndex` 契约**真实兑现率仅 ~20%**（34 份 state.json 中 7 份）⇒ 三层补偿 —— **A** `STATE_BLOCK_INSTRUCTION` 模板**本体**补 `extra`（真调用 A/B：改前 1/3、改后 4/4 含 extra，n 小不显著但机制可复现）＋ **B** `extractAcIndexFromText` host 兜底（⚠️ **源必须是 `PRD.md` 文件、不是 `stage.output`** —— 同一实现两源命中率 **95%（20/21）vs 25%（22/87）**）＋ **C** `acSource` 来源自曝（`state`/`extracted`/`none` 三态，zh/en 齐备）。**未做**：审批面**原生 seam** 接线（现为可插拔择路 + 回落 interrupted）。
+    **2026-10-08 深夜补**：`redoFrom`（改计划重跑 PRD）**已部分落地** —— 判据落在**内容**上
+    （`phaseAtEntry > prd` 且 `stages` 除 prd 外无记录 ＝ 作废面为零）⇒ 开放 supplement 回退重跑 PRD
+    （检查点拨回 `prd`、摘旧 prd 记录、清 `confirmSheet`/`assumptions`/`state.openQuestions`，
+    PRD 用 `[REVISED]` 块与澄清轮的 `[CLARIFIED]` **分叉**）。⚠️ 仅限**确认单断点**这个形态；
+    其它「PRD 之后已有阶段跑过」的断点**仍拒绝**（回退会白作废 design/tech/dev）。
+    **呈现**：「怎么把确认单交给用户」写进 **ctx 手册**（每个`［主观项］`一道单选 AUQ、首选项=推荐默认、
+    一次 ≤4 题、AC/假设不做题、另给「全部按默认」），**刻意不进汇报**（汇报用户也看得到，会漏 meta 话）。
+    **仍未做**：把判定做成可配置的「改哪几个阶段」（`redoFrom` 的完整形态）。
+  - ✅ **「主观决策项」扩维（2026-10-08，第 1＋2 步均已落地）**：原判据只有
+    `under-specified`（信息不足）⇒ 「我想实现一个桌宠」这类需求**必然不列**（信息足够/模型能自查/猜错不返工）
+    ⇒ 风格·形象·架构选型**全由模型独裁**，用户看不到也没机会确认（用户实锤：专业用户感官差，「这插件也就给小白用用」）。
+    ⚠️ **这是产品意图，不是返工数据问题** —— 那种损失表现为**流失/差评**，**用返工率量不出来**。
+    **第 1 步（`7e2cf0a`）**：`prdPrompt` 假设段/`openQuestions` 明写两类都要列（(a) 信息缺口 ＋
+    **(b) 主观决策项**，含「I can decide this myself **不是**省略理由」＋ 合格线防仪式化）；
+    `techChangePrompt` 同类扩维（技术选型：模块边界/命名/加依赖/算法或架构）；两条 L1 契约
+    （含「旧一维措辞不得复活」的 exclude）。
+    **第 2 步（本次）**：`openQuestions` 每条加 `kind: 'fact' | 'taste'` ⇒ 确认单**按内容自动停**：
+    **有 `taste`（主观项）才停**，纯 `fact`（信息缺口，`default` 能兜住）或没有待澄清项 ⇒ 直通。
+    **不是**按数据阈值、**不是**「任何待澄清项都停」（后者会毁掉 §1「批量可靠交付」的无人值守卖点）。
+    ⚠️ **缺 `kind` 一律归 `fact`（不阻断）＋ 发 warn 留痕**：依赖模型自律的判据在量出真阳性率前
+    **不得有阻断权**；而「不阻断 ≠ 静默」——`kindMissing` 让契约兑现率**可数**（首次实测见 ADR §落地记录）。
+    **同批顺带**：`needConfirm` / `clarifyStrength` **从公开工具 schema 摘到环境变量**
+    （`TEAMFLOW_CONFIRM` / `TEAMFLOW_CLARIFY`）——用户实锤「用户又不知道这参数」，公开一个用户不会用、
+    工具描述里又没说何时该设的开关 = 功能根本不存在（`craft` / `TEAMFLOW_CRAFT` 是同一模式的先例）。
+    **留给实测**：一条「桌宠」需求零参数跑通，看 ① 是否自动停在品味项上、② `kind` 兑现率。
+  - **② 审批面选型**：优先宿主直调 user-questions seam（`intent:{kind:'plan-review'}` + `detail` = 计划 markdown → 原生审阅卡 `Approve`/`Keep planning`/`Chat about it`）——**2026-10-07 已实机验证**（详见 `docs/adr/0011-…md` §P1 实机验证）：插件 `inject(['userQuestions','agents'])` 成功、能取到 **live root 实例**、**传实例能进桥转发**（挂到 4013ms 超时）；**但「省 `agent`」形态被证伪**（全局 dispatch 无 scope carrier ⇒ 桥第一出口 `next()` ⇒ `NO_PROVIDER`）⇒ 必须传真实例，且多 root 时按 `journal.ownerSession` 选（勿 `roots()[0]`）、必须带 `signal`。**未验**：真客户端 UI 端到端（本探针组合无 `ui-user-questions`）；兜底沿用既有的「返回 status → 主线程 `ask_user_question`」通道（已在生产验证）。
+  - **③ 策略档 `interview`（与 ① 一体两面，ADR-0010 D3/D4）**：澄清强度~~进 `MODE_REGISTRY` 作为新维度~~（`off` ＝ patch 现状 / `once` ＝ 现行默认 / `interview` ＝ **显式开**；**`patch` 恒 `off`**）；**必须带硬终止**（D4：轮数上限 ＋ 置信度不再上升即停 ＋ 用户可随时「够了」，三条并存）——同一闸门早期版本因反复追问造成 **6 轮零 run**。
+    **⚠️ 2026-10-08 重写这一条（原描述已不成立）**：
+    - **不进 `MODE_REGISTRY`**（原措辞作废）：`PipelineMode` 决定阶段集 / PRD 形态 / 架构护栏，把「追问几次」塞进去会让同一张表承担两件正交的事。
+    - **不是「显式开」、也不是 run 级选项**：`clarifyStrength` 已整体移出 `PipelineOptions`（`clarifyStrengthForTeam` 删除）。原因：它**只选 `tool.ctx.team` 中间那段文案**，而 ctx 只在**选团队时**注入 ⇒ 作为 run 参数**结构上「迟一拍」**（本 run 传的值当次不生效），反查历史 run 还带来「重启丢失」。
+    - **一次一问现在是默认行为**，写在 ctx 手册里（**切口 = 告诉主 agent 怎么用这个插件**）：`tool.ctx.team` 拆为「前半 ＋ 澄清槽位 ＋ 后半」，默认档 = `interview` 文案；`once`/`off` 只留作**对照实验**（`TEAMFLOW_CLARIFY`）。
+    - **「`patch` 恒 off」契约作废**：它约束的是 run 级选项，而 ctx 注入时既不知道档位、也不知道是不是 patch。
+    - **硬终止已落地（文案层）**：默认档文案明写三条停止条件（能预测剩下的 / 用户说够了 / 同问题问过两轮）。⚠️ 仍属**模型自律**（§2：prompt 提标准不当保障）⇒ **未做机器侧强制**。
+    - **探索态加固**：`intent === 'exploration'` 时在 `needs-clarification` **返回面**追加同一协议（工具返回面 ＋ pipeline 兜底闸门两处同形）。
+  - **④ 强度按数据定（ADR-0010 待定 #3，已收窄）**：`fallbackVerdict` 仍硬编码「永不拦启动」。三候选：① 保留放行但**可见**（**已做**，见上）；② 降级为**确定性形态判据**兜底拦一次；③ ①+② 叠加。**② 属「加拦截」，按纪律要先定判据 ＋ 量真阳性率 —— 而 `clarify.jsonl` 当前样本 ≈0（1 条产品线 / 2 行）⇒ 这是真正的瓶颈，先攒。**
+  - **位置论证（勿再争）**：确认单**必须放 PRD 之后、tech 之前**——放启动前只能问抽象问题，放 tech 之后是**事后追认**（驳回要连 PRD+tech 一起重做）。实测调用占比：PRD 后 ≈2–6%、dev+QA ≈89–95%。
+  - **已定约束**：合格线由 host 判（每条 blocker 须同时给 ①≥2 个互斥读法 ②改变哪个 AC/范围 ③猜错要重做什么，缺一丢弃并 warn）；模态豁免 `patch` 直通 / `lite` 仅在有项时停 / `medium·full` 默认停 / headless 不停（走「假设 + 汇报高亮」）；闸门语义 ＝ 只负责「唤起第一轮对齐」，不负责「追问到满意」（多轮追问需跨调用状态：`clarify-state.json` + 轮次上限 + TTL）。
+  - **设计约束（ADR-0010 D5）**：访谈只能发生在主会话（子代理不能提问）⇒ issue #11 的「新增前置阶段 `discovery`」**不成立**。
+  - **纠错背景（勿再犯）**：`journal.triage.blockers` 恒为 0 是**结构性盲区**——澄清命中时 `needs-clarification` **不建 run**，那次裁决不落盘；落盘的只有澄清后建 run 那次（blockers 已被收敛规则放过）。据此统计会得出「闸门从未触发」的**反结论**（实测得 0，真实至少 **4 例**）⇒ **统计前先问「该字段在哪条路径上被写入」**，这正是 ① 埋点存在的理由。
+  - 详见 `docs/adr/0010-clarification-observability.md`（埋点落点/字段、fallback 行为、`interview` 默认矩阵、去交互化机制的取舍）与 **`docs/adr/0011-clarification-interview-and-confirm-sheet.md`（草案：借 `interview-me` 精华的逐条适配裁决 · 四处冲突（**④ 已拍板并落地**：补 `teamflow_resume` 的 `supplement` 入口 ＋ 零阶段断点修正 ＋ 文案收口；①②③ 仍待拍板） · D5 结论＝主会话纯对话 · 并推翻「需要 `clarify-state.json`」）**。
 
-- 🔜 **空收尾续跑（B 档，continuable 换轨）——2026-09-27 立项，实测依据 tf-muigy5eq-dw5dv0**：推理模型空收尾（DeepSeek `deepseek-flash`：`finish kind=stop`，reasoning 之后、正文之前被服务端收尾，非宿主动手——宿主中断走 `aborted`、预算截断走 `max-tokens`，均有源码锚点）当前只能整轮重跑自愈，QA 一次实测浪费 **112 万 token + 2 分钟**（重跑那次又花 147 万）。已落地的 A 档（runner 文件兜底判交付）只救「文件已合格、只差说话」的变体；**「干到一半死掉」（实锤：attempt3 死在第 19 步，只写了验证脚本、QA-REPORT.md 未动）只有续跑能救**。宿主能力已查实：`sendMessage`/`coldResume`（`dsh-subagent/lib/types/continuation.js`）可对已持久化的子会话投消息再跑一轮，**但只覆盖 `startContinuable` 创建的驻留子代理；one-shot（`subagents.start`）在 `run.dispose()` 后不可续**。改造内容 = 子代理生命周期从 one-shot 换轨 continuable：驻留占 `maxActiveSubagents=8` 配额、管线收口须主动 drain 防泄漏、`withRetry` 的 `run.result` 语义改 inbox/turn 模型、父代理须处 admitting 态。**先定判据再动**（回滚成本高）：预计空收尾在 dev 阶段的频率（本轮 4 dev 0 命中）攒到实测样本后再排期。
+- **需求有效性前置拦截**（ADR-0005 触发信号）：在 PRD/确认单阶段判别「需求与现状不符」即停，避免走完开发/验收。
 
-- 🔜 **v0.2.0 对外通稿投放（本次默认发英文稿）**：两份完整正文已定稿于 `docs/announcement/show-your-plugin-v0.2.0.{zh,en}.md`（2026-09-23，锚定 v0.2.0），**投放平台仍待定**——上一版（v0.1.8）发在上游 `deepseek-ai/deepseek-harness` Discussions [#6405](https://github.com/deepseek-ai/deepseek-harness/discussions/6405)（2026-09-12），该帖评论里的「有英文版吗」正是本次默认发英文稿的依据。待办动作：① 选定平台并发布；② **发布后把英文稿正文第一行的相对路径换成中文版帖子 URL**（`[中文](<URL>) | English`；文件头注释已写模板与理由——相对路径贴进 Discussion / 站外即死链）；③ 两个帖子 URL 与投放日期回填 `docs/devlog.md`。
+### 编排与状态机
 
-- 🔜 **D（QA 轮次改成收敛判据）——先埋点再定**：52 个历史 run 实测——发生打回 **7/52**（每次至多 1 轮，唯一 2 轮那次是幻影）、**触达复验上限 1/52**、验收未跑 1/52，即「真正需要第 3 轮修复」**从未真实发生**；且「同一缺陷原样复现就早停」**按缺陷 id 判不出来**（QA 每轮重新编号：r9 三轮分别是 `QA-*` → `R2-*` → `R3-*`），稳定身份键只有 B 方案刚加的「检测命令」。**待定**：是否先在 QA 循环里埋点、把每轮阻断集合（id + 检测命令 + 类别命中数）记进 journal，等攒到若干真实复验轮数据，再决定要不要把 `QA_REWORK_LIMIT` 的硬上限换成收敛判据（阻断数严格下降且缺陷不重复 → 允许再来一轮；停滞 → 立即转人工）。**先定判据再动状态机**（ADR-0007 语义，回滚成本高）。**E 已落地**（超限时以「已知问题」只读模式跑验收，结论强制需人工裁定）。**D 埋点已落地（2026-09-15）**：QA 循环每轮把阻断集合的稳定身份与增/减/停滞计数写进 `journal.qaRounds`（`{round, seq, blocking, p3, defects:[{id,sev,module,fp}], withCheck, withCriterion, qaCalls, fixCalls, gate, newFps, repeats, resolved, outcome}`，留最近 12 轮），配只读读侧 **`node scripts/qa-rounds-report.mjs`**（每 run 轮次表 + 聚合：收敛 vs 停滞次数、检测命令可用率、门禁落地率、单轮成本）。**待定**：等攒到若干真实复验轮（最好含至少一次 `repeats > 0` 的停滞样本）后再决定要不要动 `QA_REWORK_LIMIT` 的语义。
-- 🔜 **流水线执行体数量 = 阶段 × 子任务 × 打回轮次（文件/成本的最大乘数；需人决策）**：r9 实测（`tf-mu2ioilr-95l4th`）一次 full run 起了 **10 个子代理**（PRD 1 + 技术 1 + 开发 5 = T1–T5 三个并发执行体 + 两轮 QA 打回修复 + QA 首轮 + 两轮复验），**718 次模型调用 / 59 分钟**，其中**首轮 QA + 2 轮打回 + 2 轮复验 = 440 次（61%）**花在打回闭环，且该轮最终因一个 P2 走到复验超限、**验收被跳过**（status=completed + humanIntervention）。这也解释了「为什么一次 run 会有上百个日志文件」（每个执行体各自留痕；生成量纪律已单独收敛，见 AGENTS §5 日志生命周期锚点）。**待定**：QA 独立探针/复验的输入能否复用（当前 prompt 明令独立，防同源假绿）、打回上限与轮次成本是否要按缺陷严重级分档（P3 观察项不该触发整轮复验）、以及 dev 子任务拆分的粒度收益是否值这份上下文开销。**先定判据再动**（回滚成本高、质量是这个项目的第一约束）。
+- 🔜 **流水线执行体数量 = 阶段 × 子任务 × 打回轮次（文件/成本的最大乘数；需人决策）**：r9 实测（`tf-mu2ioilr-95l4th`）一次 full run 起了 **10 个子代理**（PRD 1 + 技术 1 + 开发 5 = T1–T5 三个并发执行体 + 两轮 QA 打回修复 + QA 首轮 + 两轮复验），**718 次模型调用 / 59 分钟**，其中**首轮 QA + 2 轮打回 + 2 轮复验 = 440 次（61%）**花在打回闭环，且该轮最终因一个 P2 走到复验超限、**验收被跳过**（status=completed + humanIntervention）。**待定**：QA 独立探针/复验的输入能否复用（当前 prompt 明令独立，防同源假绿）、打回上限与轮次成本是否要按缺陷严重级分档（P3 观察项不该触发整轮复验）、以及 dev 子任务拆分的粒度收益是否值这份上下文开销。**先定判据再动**（回滚成本高、质量是第一约束）。
+
+- 🔜 **熔断预算的作用域 = 单阶段单次尝试（跨 resume 累计不设闸；需产品决策）**：`tf-mucx3sq1-53262i` 实测 —— scaffold 重试链 6 次尝试累计 fresh **315,623 > `FRESH_TOKEN_BUDGET` 200k**，但单次最大仅 **122,091**，故全程未触发熔断（两次 env-unavailable 之后都是**人工 `teamflow_resume`**，每次 resume = 新的一次阶段尝试，预算重新起算）。即：预算挡得住「单次失控」，挡不住「人工反复续跑」。若要给跨 resume 的累计设闸，需在 journal 上加 run 级累计口径，**与 `freshTokensOf` 的单次口径并存、不得合并**。
+
+- 🔜 **用「持久化」类需求重跑验证 ADR-0006**：确认 M0 状态核对注入、M1 蓝图产出（架构阶段不再被 lite 跳过）、M2 dev 按蓝图拆任务、M3 验收架构核验（重复适配器应被打回）全链路生效。
+
 - 🔜 **P2 双语遗留的 P3（原 6 项，2026-09-15 已清 4 项）**：
   - **`clip()` 截断标记未本地化**（`host/util.ts` 的 `…[已截断 N 字符]` 会出现在 en 注入文本/Remote 报文里）：41 个调用点需加 locale 参数——**风险在 zh 逐字平价**（AC-9 只增不改），建议按面分批（先 prompts/state 注入面，再 Remote/持久化面）。
   - **`teamflow_*` 工具描述内嵌中文**（`host/index.ts` 的状态名与中文短语示例）：插件**加载期**注册 = 此时无语言源（客户端还没推），改双语需先定方案（惰性 description / 注册后更新）；且中文短语对**中文需求的工具触发**有正向作用，直接删反而有害——**先定判据再动手**。
   - **R3-5 口径确认**：zh prompt 文本有 7 处语义等价改动（`(Markdown)`→`(Chinese Markdown)` + 中英混排处插空格），需确认 AC-9「逐字不变」是否覆盖 prompt 文本；不覆盖则关闭为备案。
   - **R3-6 备案**：`resolveLocale({get client(){throw}})` 自身无 try/catch（生产调用方 `ambientLocale()` 已整体兜住，实际不可达）——是否加防御由维护者定。
-- 🔜 **`$DSH_HOME/teamflow/` 无遗忘机制（演练脚本实测佐证）**：11 个目录里 6 个是空壳（只写过 `teams.json`，从未跑流水线）、1 个旧格式 key 残留；`runs/` 无 TTL 无归档策略（单个最大 137 KB，`ws-tetris-e22c5cf9` 累计 2.90 MB），`backlog/*.json` 各配一个等大 `.bak`，`_archive/` 只有一次手工归档。宿主自己有 `dsh-output-retention` / `dsh-compaction`，插件这块空白。待定：空壳目录自动归档阈值（如「90 天无 run 且无 backlog」）+ runs 滚动上限。**注（2026-09-15）**：`logs/` 这一块已有遗忘机制（每工作区保留最近 20 次 run，起跑时淘汰——见 AGENTS §5 日志生命周期锚点）；本条的 `runs/` 与空壳目录仍未覆盖。
+
+### 子代理形态
+
+- 🔜 **子代理形态：按阶段选择 one-shot / continuable（2026-09-30 立项；含 fork 评估结论与两个应用场景）**
+  - **宿主事实**：子代理 = 两正交维度 —— 形态（one-shot / continuable）× 后端（spawn = 全新 / fork = 以父级**已完成轮次**为初始内容）。本机 `dsh-base` 组合**两个后端都注册**（`cordis.patch.yml:351-359`）；模型侧工具 `subagent` = spawn + **continuable**、`subagent_fork` = fork + one-shot。本插件走 `subagents.start()` 直连 API = **spawn + one-shot**（调用点仅 `runner.ts:165` 与 `triage.ts:644`）。
+  - **fork 已否决（对本插件不适用）**：它继承的是「发起委派那个 agent」的已完成轮次，而我们的阶段子代理由**主会话 agent** 发起 ⇒ 继承的是用户对话而非上游阶段产物；且 token 暴增（复制整段历史）、一次性快照、工具作用域与权限全不继承。
+  - **continuable 的真实成本**（⚠️ 勿引用已作废旧论证「撞 8 / 无 outputSchema」——8 是**按父池**的驻留上限、混合方案不撞；`outputSchema` 全仓 0 命中 = 假障碍）：① 必须主动 `drainContinuableChildren`（驻留不释放会累积到 `maxActiveSubagents=8` → `ACTIVATION_LIMIT_REACHED`，**不排队**）；② **结算通知进父级上下文**（每个结算 Activation 往父级塞一条 `Background subagent X finished…` user 消息 → 吃主会话 token）；③ `run.result` → inbox/turn 适配层；④ `interrupt` 只停当前轮不销毁 → 取消 run 要补 drain 才是真停；⑤ 初始 prompt 会被追加 return guidance（动 prompt 契约，L1/L2 要同步）。
+  - **前提 = 按阶段选择，不是一刀切**：真正需要「续」的只有 **dev**（空收尾）与 **qa / qa-fix**（复用同一 dev 子代理）；prd / design / scaffold / tech / acceptance / 分诊 一次产出 → 保持 one-shot（且**不占池**）。**机制可行**：`sendMessage` 要求 sender = 确切在线 Agent —— 我们有（`runtime.agents.get(sessionId)` → 主会话 agent，`index.ts:997`）。
+  - **应用场景 (a) 空收尾续跑（2026-09-27，实测 `tf-muigy5eq-dw5dv0`）**：推理模型空收尾（`deepseek-flash`：`finish kind=stop`，reasoning 之后、正文之前被**服务端**收尾，非宿主动手）当前只能整轮重跑自愈，QA 一次实测浪费 **112 万 token + 2 分钟**（重跑那次又花 147 万）。已落地的 A 档（runner 文件兜底判交付）只救「文件已合格、只差说话」；**「干到一半死掉」（attempt3 死在第 19 步）只有续跑能救**——但 **one-shot 在 `run.dispose()` 后不可续**，须换轨 `startContinuable`。
+  - **应用场景 (b) QA 打回复用同一 dev 子代理**：替掉「重开子代理 + 重灌蓝图」（`startContinuable` + `steerHostSubagentPrompt` / `queueHostSubagentPrompt` + `interrupt`）。
+  - **宿主容量约束（2026-09-22 实测，上 continuable 前必须评估）**：`maxActiveSubagents`（默认 8）**只**约束 continuable 子代理的**驻留数**；one-shot `subagents.start` **不占该池**（core 层无别的子代理数量闸门）。故 dev 那套并发（`runPool`，默认 3、`Math.min(..., 8)` 硬截断）与宿主 8 **是同名巧合、互不相干**。切 continuable 后：① dev 并发会被池容量真正卡住（出现两处同名上限，需明确谁兜底、超限是排队还是报错）；② `maxDepth`（默认 1）约束嵌套深度，QA 打回若走「父→子→孙」要多留一层。
+  - ⚠️ **判据待定（先攒数据）—— tf-obs-r1 实测给出的反证**（`tf-muliqvaq-v8c58b`：medium，16 阶段 / 50 min / 369 调用 / 2424 万 token）：① 该 run **无空收尾**（16 阶段全 done）⇒ 主要目标场景**未发生**；② 「省重灌」可确证部分极小 —— 打回修复两轮 fresh input 仅 3.0 万 + 3.5 万，**占总 token 0.27%**（prefill 的 ~95% 落在廉价 cacheRead 上）；「复用上下文 → 减少重复探索调用」的收益**无法从现有数据推出**，须实测。**⇒ 继续攒空收尾样本；优先级低于「QA 闭环成本」与「scaffold 成本」的评估。**
+
+### 宿主适配与兼容
+
+- 🔜 **宿主事件 source v4 适配缺直接断言**：目前只有间接证据（整条流水线跑通、20 阶段无事件格式报错、`agentsStarted=20`）。建议补一条 L2 conformance 语料（把 v4 `kind: 'plugin:dsh-plugin-teamflow'` 的 source 形态冻结进 `docs/benchmarks/corpus/` 回放），避免宿主下次再改 source 形态时又是「用起来才发现」。
+
+- 🔜 **跨父会话跳转子代理 —— 新 API 可能已支持，待实测解锁**：现状是 `client/index.tsx` 的 `crossSession` 守卫在 `ownerSession ≠ 当前会话` 时**禁用按钮**（旧依据：DSH 子代理目录按父会话加载，`selectSubagent` 不支持跨父导航）。**新证据（2026-09-23）**：宿主 0.1.7-alpha.1 的 `uiWorkspace.openSession(target)` 接受持久子代理地址，`ui-workspace/README.zh.md:68` 明写「显式地址不需要预加载父会话目录」——跨父导航的宿主前提可能已消失。**测法**：会话 A 跑一个 run，在会话 B 的工作台打开该 run 的阶段详情，看按钮是否变亮、点击是否真跳到 A 的子代理会话；通过则删掉 `crossSession` 守卫（数据面已备好：`journal.ownerSession` + stageDetail 下发）。
+
 - 🔜 **护栏复读检测迁出弃用读取器（唯一剩余处）**：提醒通道已改官方 `Agent.inject`、挂死检测已改官方 `subagentTiming` 投影（v0.1.7）；只剩**复读检测**仍读事件（需要流式文本内容）。官方替代是**订阅 `'session/event'` post-commit 投递**（`packages/core/session/src/index.ts:62-72`，agent-scoped 过滤）——把 15s 轮询 + 历史扫描换成增量推送。**动手前先定等价判据**（判据漂移直接影响误杀率：参考 tf-mte906e9 退化误判、json-parse r1 挂死误杀两次实锤）。
-- 🔜 **工作区 key 迁移（破坏性）**：`context.ts` 的 UUID 分支**当前不可达**（宿主 `resolveByPath` 是 `async`，我们同步调用 → 永远走 `slugPath(cwd)` 路径派生 key）。要真用 UUID 须改 `await` + **迁移 `$DSH_HOME/teamflow/<key>/`**。v0.1.7 已把文档/注释改成事实。
-  - **v0.1.9 已出演练脚本** `scripts/migrate-workspace-key-dryrun.mjs`（只读，反推 `runs/*.json` 的 `workspacePath` 重算期望 key + 按路径分组出合并计划 + 同名文件内容冲突检测）。
-  - **实测结论（2026-09-12，本机 11 个产品线目录）**：key 与路径自洽 4 条、**漂移 0 条**、旧格式 key 1 条（`tetris-f06370e8`，无 `ws-` 前缀，0 run）、**空壳 6 条**（只写过 `teams.json`，从未跑流水线）。**即「同一项目裂成两条产品线」尚未实际发生**——此前按目录名推断的 tetris 分裂是误判（旧格式目录是空的）。
-  - **因此优先级下调**：迁移按「风险」排（换盘符大小写/软链/移动目录即裂），不按「已发生损失」排。真做时先 `await` 化再合并，顺序反了会新旧 key 同时写入。
-- 🔜 **用「持久化」类需求重跑验证 ADR-0006**：确认 M0 状态核对注入、M1 蓝图产出（架构阶段不再被 lite 跳过）、M2 dev 按蓝图拆任务、M3 验收架构核验（重复适配器应被打回）全链路生效。
-- **需求有效性前置拦截**（ADR-0005 触发信号）：在 PRD/确认单阶段判别"需求与现状不符"即停，避免走完开发/验收。
-- `STAGE_TOKEN_BUDGET=60k` 硬编码 → 可升级为 service Config（熔断阈值可调）。
-- 🔜 **跨父会话跳转子代理 —— 新 API 可能已支持，待实测解锁**：现状是 `client/index.tsx` 的 `crossSession` 守卫在 `ownerSession ≠ 当前会话` 时**禁用按钮**（旧依据：DSH 子代理目录按父会话加载，`selectSubagent` 不支持跨父导航）。**新证据（2026-09-23）**：宿主 0.1.7-alpha.1 的 `uiWorkspace.openSession(target)` 接受持久子代理地址，`ui-workspace/README.zh.md:68` 明写「显式地址不需要预加载父会话目录」——跨父导航的宿主前提可能已消失。**测法**：会话 A 跑一个 run，在会话 B 的 `conversation.view` 工作台打开该 run 的阶段详情，看按钮是否变亮、点击是否真跳到 A 的子代理会话；通过则删掉 `crossSession` 守卫（数据面已备好：`journal.ownerSession` + stageDetail 下发）。
-  > 原「给官方提 PR：`conversation` 服务增加 `setView(viewId)`」条目**已作废删除**——宿主 0.1.7-alpha.1 自己提供了 `uiWorkspace.openSession`（真跳转：同步替换 owned `mainView` reference 并让主区回到 Conversation），本插件已在 0.2.0 迁过去（commit `4935f4e`）。
 
-- 🔜 **需求澄清 / 计划确认闸门（两段式：启动前 must-know + **PRD 确认单**；2026-09-16 重写）**：
-  **现状（已核实）**：`teamflow_start` 三道预检（`no-team` `host/index.ts:160` / `needs-confirmation` 疑问句式正则 `:168` / `needs-decision` 分支决策 `:197-239`）只覆盖「要不要做」「怎么开工」，**零需求澄清**；陈述式探索（「我最近在想加个 X」）不匹配正则 → 直接开跑。`prdPrompt` 7 条 REQUIREMENTS（`prompts/index.ts:354-365`）无一条「信息不足时提问/列待澄清项」。**内容侧约束**：宿主 `DELEGATED_CALLER`（`tool-ask-user/README.md:142`）与 `exit_plan_mode`（`plan/plan-mode/README.md:186`）都**拒绝存活子级**——阶段子代理永远不能问用户，澄清只能由 host 发起、落主线程。
-  **新证据（2026-09-16 只读回溯，近 12 天 23 个 run）**：① PRD 可查 12 份 → **0 份**记录假设/待澄清（另一次 39 份 PRD 全量扫描同为 0）；② `humanIntervention` **8/23（35%）**（含 09-07 旧 era 失败样本）；③ 明确「需求理解/范围偏差」案例 **2–3 条**（`tf-mtmv0x8e-n8tqwr`：用户事后指出「排行榜不该放设置里」「排行榜 model 关不掉」+ 一连串部署/安全追问；`tf-mtvpho6h-zfu75e`：「冒烟产物要不直接忽略掉？按正常来说应该用其他项目更合适」）；④ **社区实证**（讨论 deepseek-ai/deepseek-harness#6405，tongwoojun）：「我想开发一个 dsh 插件」→ 直接开跑跑完，他本人说「我都不知道自己想要啥」= 整条流水线白跑。**方法/局限**：会话侧用纠正话术扫（已过滤 `system-reminder`/汇报注入/checkpoint 文本）；样本以维护者自测为主（需求多为精确需求）→ **~10% 是偏乐观下界**；真正的比例要靠下面的 shadow 埋点。
-  **位置论证（本次核心结论，实测代价）**：`tf-mu2ioilr-95l4th`（full，718 calls）prd 12（2%）/ tech 29（4%）/ dev 458（64%）/ qa 219（31%）；`tf-mu2ye559-obtauw`（lite，168 calls）prd 10（6%）/ tech 6（4%）/ dev 141（84%）/ qa 11（7%）→ **PRD 后 ≈ 2–6%，dev+QA ≈ 89–95%**。故确认单**必须放 PRD 之后、tech 之前**：放启动前看不到东西（只能问抽象问题，用户答不出），放 tech 之后是**事后追认**（驳回要连 PRD+tech 一起重做）。
-  **两段设计**：
-  - **① 启动前（轻，只 must-know）**：`runTriage` 增 `intent`（`requirement` / `exploration` / `feedback`）+ `blockers[]`；非明确需求 → `teamflow_start` 返回 `needs-clarification`（硬 no-start），主线程在对话里问，答复作 `requirementSupplement` 回带。**疑问句式正则保留为快路径**（不删——AGENTS §5「正则只做确定性护栏」，模型 triage 有假阴性）。同一 payload 里与 `needs-decision` 合并返回（省一轮往返）。
-  - **② PRD 确认单（主）**：`prdPrompt` 增**必填**「假设 / 待澄清」段 + **机器可读**（state block extra 带 `openQuestions:[{q,why,changes,default}]`）→ PRD 完成后 host **暂停**（复用 interrupted/resume 断点基座；`resumeRun` 已能跳过已完成阶段）→ 把「目标一句话 + AC + 范围/非目标 + 假设清单 + `PRD.md` 路径」**≤40 行**交给主线程；**无合格待澄清项 → 直通不打断**（好需求零打扰）。
-  - **多轮与"可改"**：批准的 `resume` 直接进 tech；**用户要改计划**（社区要的 Antigravity 形态：计划上直接改）走 `resume(runId, { redoFrom: 'prd', supplement })` → **只重跑 PRD**；轮次上限 1–2 轮，之后按「默认假设」继续并把假设写进 journal + 汇报高亮。
-  - **合格线（host 判，不靠 prompt 自觉）**：每条 blocker/question 必须同时给 ① ≥2 个互斥读法 ② 改变哪个 AC/范围 ③ 猜错要重做什么；三项缺一 → host 丢弃并记 warn（防仪式化）。
-  - **模态豁免**：`patch` 直通；`lite` 仅在有待澄清项时停；`medium/full` 默认停；headless（无客户端）**不停**，走「假设 + 汇报高亮」。
-  - **审批面两条路**：优先 **host 直调 user-questions seam**（`intent: {kind:'plan-review'}` + `detail` = 计划 markdown → 宿主原生审阅卡 `Approve` / `Keep planning` / `Chat about it`）——**待验证**：web profile 里插件能否 `inject(['userQuestions'])`、seam 是否接受「插件代 runtime root 提问」（README 称校验的是**传入的 agent** 是否为存活实例，看起来可行）；兜底沿用既有的「返回 status → 主线程 `ask_user_question`」通道（分支决策已在生产验证）。
-  **已完成、不必再做**：社区同一条诉求里的「干活途中随时能打断」= v0.2.0 开发线的「⏹ 中断」（三处入口 + 两段式确认 + 并发一次全停 + 取消后不再补位 + 终态归一 + 中断来源可辨），已实测通过（`tf-mu2ye559-obtauw`）。
-  **✅ Phase 1 已落地（2026-09-16，本批 commit）**：① 启动前闸门（`intent` + `blockers` 合格线 + `needs-clarification` 不建 run + `requirementSupplement` 回带）；② 假设可见化（PRD 必填「假设与待澄清」段 + state 块 `openQuestions` + 汇报 `report.assumptions` 高亮）；③ shadow 埋点（`journal.triage`/`assumptions`/`requirementSupplement` 落盘）。显式 `mode`/`lite` 不走闸门、分诊失效放行（零回归）。**注意**：shadow 埋点（`journal.triage`）此前是空转的（`__triage` 被白名单丢弃）——2026-09-16 已修（`execOptions` 透传），攒数据要从修复后重启的 run 开始算。门禁：`test/triage-gate.test.js` 31 断言 + smoke 19 条 + L1 四条契约。**另补注入闭环**（同日实测）：`tool.ctx.team` 增「澄清前置 / 澄清后务必调用 teamflow_start（原话进 requirement、结论进 requirementSupplement）/ needs-clarification 处理」三段（zh+en）——实测会话 `session-518e9188` 里模型 0 次调用工具、闸门没机会生效，注入不敢再留这个缺口。
-  **Phase 2 待办（未做）**：① **PRD 确认单**（PRD 后暂停 → `resume` 批准 / `resume(redoFrom:'prd', supplement)` 打回改计划 / 无合格待澄清项直通）——需先定「暂停」在状态机里的落点（复用 interrupted/resume 基座 or 新状态）；② **审批面选型**：宿主直调 user-questions seam（`intent:{kind:'plan-review'}` + `detail` → 原生审阅卡）需先验证 web profile 里插件能否 `inject(['userQuestions'])`、seam 是否接受「插件代 runtime root 提问」；兜底走已验证的「返回 status → 主线程问」；③ **闸门强度按数据定**：读 `journal.triage` 攒若干 run 后看 `blockers` 合格率 / 用户答复率 / 答复是否真的改了范围，再决定硬拦（medium/full）还是只做 advisory；④ 覆盖缺口**已收紧**（2026-09-16）：只有 `patch` 豁免；**权威判定在 pipeline**（工具内预检仅为快路径，它失败会静默退兜底——实测 `tf-mu35oza7-wmuckz`）→ 闸门 + 架构护栏强升（`guardrailUpgrade`）+ 闸门兜底（`abortForClarification`：不建阶段的 interrupted run）三重保险。**剩余待观察**：① 分诊对纯 `lite` 需求是否会把档位判重（升档率与 token 放大从 `journal.triage.upgradedFrom` 攒）；② 显式 `lite`/`mode` 路径现在都会多一次分诊调用（成本 <1%，但要实测确认）；③ 预检与 pipeline 各跑一次分诊的可能性（预检失败时）→ 是否合并为「预检只做确定性正则、模型分诊统一在 pipeline」。✅ **续跑重复分诊已修（2026-09-17）**：新增 `} else if (resume) {` 分支——续跑不跑分诊、沿用 `journal.options.mode`，仅在 `journal.triage` 缺失时补 `source: 'resume'` 记录 + `log.triageResumed`；smoke +2 守门。
-⑤ ✅ **外部供应商故障已与交付缺陷解耦（2026-09-17）**：分类 + 长退避（30s/60s/120s/240s，不计熔断、不受 RETRY_LIMIT 约束）+ 用尽落 `interrupted/external` + 汇报明写「非交付缺陷」。**待观察**：① 分类是**启发式**（宿主无结构化错误码）→ 攒 `diag.externalBackoff` 日志看命中率与误判（若某供应商的错误文本总不命中，补词表；若误判内容失败为外部，需收紧）；② 退避总时长上限（现 ≈7.5 分钟）是否够跨过真实限流窗口（dddd 实测 16 分钟→**未跨过**，靠 resume 兜底）。
-⑥ ✅ **② 安装形态澄清项已做（2026-09-17）**：`TRIAGE_PROMPT` 把「新交付物但需求未写交付/安装形态」定为必问 must-know blocker（L1 `TRIAGE-INSTALL-BLOCKER` 守门）。
-⑦ ✅ **改动存档两态已落地（2026-09-17）**：`gitMode` 记工作区 state + 人话决策 + 出口遵从 + 两层防线（详见 AGENTS「多团队/工作台」行）。
-⑧ **交付形态契约的后续（policy 级）**：① 现在只要求 PRD 把形态契约写成 AC（缺失不拦，靠 QA/验收按 AC 走）→ 若仍有漏，可升级为 **host 硬门禁**（PRD 产物里检查是否含形态 AC，缺则不进 dev）；② QA/验收侧尚未加"可安装性探针"（`ARTIFACT_CONTRACTS` 的 criteria 已写好判据形态，可复用成 QA 探针清单）；③ `plugin-client` 形态的契约目前只有 2 条（bundle 声明 + files），待真实案例补充。
-⑦ **闸门语义已定**：只负责"唤起第一轮对齐"（未带 `requirementSupplement` 才拦），不负责"追问到满意"（已澄清 → 按假设开工 + 假设可见化兜底）。若将来要支持"多轮追问到满意"，需要一个**跨调用的状态**（例如把 blocker 指纹与轮次存进产品线目录的 `clarify-state.json`，并设轮次上限与 TTL），否则不可能在不污染 journal 的前提下记住上一轮问了什么。
-  **回溯基线（2026-09-16，供前后对比）**：近 12 天 23 run——PRD 记假设 0/12；humanIntervention 8/23；明确需求偏差 2–3 条；社区实证 1 例（全身浪费）。
-- 🔜 **0.2.0 发布后收口 CHANGELOG**：`CHANGELOG.md` 的 `[0.2.0]` 段 35 条条目 / 约 80 KB 详细论证（取证、源码坐标、事故复盘）应在发布后迁到 `docs/releases/v0.2.0.md`，段内只留 TL;DR + 用户可感知变更；同时把 `test/changelog.test.js` 的 `GRANDFATHERED_HITS` 从 50 下调研判基线（迁走后应 ≈6）。现状：已发布版本段都有 release note（门禁已守），但 0.2.0 的论证仍留在 CHANGELOG 里 —— 属「债不是 bug」。
-- 🔜 **熔断预算的作用域 = 单阶段单次尝试（跨 resume 累计不设闸；需产品决策）**：`tf-mucx3sq1-53262i` 实测 —— scaffold 重试链 6 次尝试累计 fresh **315,623 > `FRESH_TOKEN_BUDGET` 200k**，但单次最大仅 **122,091**，故全程未触发熔断。原因是两次 env-unavailable 之后都是**人工 `teamflow_resume`**（每次 resume = 新的一次阶段尝试，预算重新起算）。即：预算挡得住「单次失控」，挡不住「人工反复续跑」。若要给跨 resume 的累计设闸，需在 journal 上加 run 级累计口径，**与 `freshTokensOf` 的单次口径并存、不得合并**（AGENTS §5「token 官方口径」）。
-- 🔜 **AGENTS.md §5 余量很浅**：`test/instruction-budget.test.js` 实测 §5 **5,907 B / 上限 6,144 B（余量 237 B）**、全文 **20,297 B / 22 KiB**。注意门禁读的是**工作树原样字节**，Windows 下 `core.autocrlf` 交付 CRLF（同一份内容为 LF 时是 5,881 / 20,177 B，差 ~26 / ~120 B），所以余量随 checkout 波动。下一条不变量锚点加入前**必须先压缩**（把某行的论证再迁 `docs/anchors/`），否则门禁直接红。
-- 🔜 **宿主 Windows 沙箱 ACL provision 失败（已上报，跟踪上游）**：`SetNamedSecurityInfoW failed (Win32 5): grantWrite(E:\tmp\probe-v4)` —— 工作区里 `pwsh`/`shell` 任何命令都失败，用户视角就是「插件完全不可用」。`tf-mucx3sq1-53262i` 实测：两次触发我们的 `env-unavailable` 早停（01:38:48 / 01:51:00，日志 + 阶段 `outcome` 均可查），之后**自行恢复**（seq6 子代理报告 "shell 恢复可用"），run 完整跑完。上报件：`docs/reports/2026-09-23-dsh-windows-sandbox-acl-provision-failure.md`；**已提交上游**：`deepseek-ai/deepseek-harness` Discussions [#7538](https://github.com/deepseek-ai/deepseek-harness/discussions/7538)（2026-09-23；该仓 public 但 **issues 关闭**，官方通道是 Discussions，见其 `CONTRIBUTING.md:11`）。待观察：上游是否采纳；是否与「非系统盘工作区 + 首次 ACL 授予」相关、能否稳定复现。
-- 🔜 **宿主 0.1.7-alpha.1 事件 source v4 适配缺直接断言**：目前只有间接证据（整条流水线跑通、20 阶段无事件格式报错、`agentsStarted=20`）。建议补一条 L2 conformance 语料（把 v4 `kind: 'plugin:dsh-plugin-teamflow'` 的 source 形态冻结进 `docs/benchmarks/corpus/` 回放），避免宿主下次再改 source 形态时又是「用起来才发现」。
-- 🔜 **`host/core/pipeline.ts` 巨型函数收敛（评估改进 #1，2026-09-26 实测定拆法）**：文件 1,559 行的表象不重要，**真问题是 `executePipeline` 单函数 322→1401 = 1080 行**（占文件 69%），不可单测、不可局部回归。
-  **内部形态实测**：`prd`/`design`/`scaffold`/`tech` **四阶段完全同构**——`enabled(X)` → `resumed(X)?logSkip` → `log.enterStage` → `withRetry(...)` → `!R.text?stageFailError` → `mergeStageState(X)`，各占 25–35 行；`dev`（分波并发 + 任务重跑分支）、`qa`（打回循环 + `hasOpenBlockingBugs`）、`acceptance`（交付判定）**各自特殊**，不是同构体。
-  ✅ **② 已落地（2026-09-26）：三个异形阶段包成命名单元**——`runDevStage()` / `runQaStage()` / `runAcceptanceStage()`
-  （executePipeline 内闭包）。做法是**命名 + 隔离而非搬家**：函数体一字未改、连缩进都不重排（否则 diff 变 400+ 行
-  全量改动、掩盖语义差异）；dev/qa 的顶层 `return` 改返回 `{cancelled:true}`；qa 的 `qa`/`qaBlocked` 由返回值交给
-  验收段。**A/B 6 场景全等**（新增 `devmulti` 场景把 dev 的并发分波主路径纳入验证：3 任务 + 依赖边 → 实测
-  「依赖分波：3 组任务排成 1 波（每波路数 3）」）。
-  **仍未做的部分**：① 三块**外移**到独立文件（依赖面尚未收敛，外移要显式化约 20 个闭包变量，风险高于收益，
-  等真有第二个消费方再动）；② 真正的 **STAGES 表驱动**（现在仍是顺序调用，不是数据驱动的表）——
-  评估价值有限：阶段间有产物依赖链（prd→design→scaffold→tech→dev→qa→acceptance），表只能表达「顺序 + enabled」，
-  真正的差异逻辑仍在各 runner 内部，**表本身不减复杂度**，故暂不做。
-  **建议两级走法（反对一步上 StageRunner registry）**：① **先做同形阶段收敛**——抽 `runSimpleStage(phase, prompt, label, opts)`，4×30 行 → 1 helper + 4 处 2–4 行调用；② **registry 表驱动留到 dev/qa 也收敛之后**——现在硬把 7 个阶段套进统一 `StageRunner` 接口，dev 的分波与 qa 的循环会逼出「接口里塞可选钩子」，可读性反而劣化（评估提的 registry 是终态，不是第一步）。
-  ✅ **① 已落地（2026-09-26）**：`executePipeline` 内闭包 helper `runSimpleStage`（`pipeline.ts` PRD 阶段之前），四阶段各缩到 2–4 行；**A/B 验等价通过**（pre=`git archive HEAD` vs post=工作树，4 场景 × 11 个对比字段全等：`patch` / `full`（四阶段全跑）/ `fail`（空产出抛 stageFailError）/ `resume`（四阶段全走复用分支）），详见 `.workbuddy/verify-2026-09-26/REPORT-h5.md`。**副产物**：该 harness（`h5-stage-convergence.mjs` + `diff-ab.cjs` + `make-stubs.cjs`）可升正式 e2e 测试。
-  ✅ **两处历史行为缺陷已随收敛一并修掉（2026-09-26，同一 release 周期）**：
-  - **`tech` 阶段失败错误传本地化 label 而非 phase key** → 现统一传 phase key。A/B 实测：错误文案从「…2 次尝试未交付，**无阶段记录**」变为「…未交付，**末次 completed（未产出有效结果（stopReason=completed））**」，`outcome/summary` 不再丢。
-  - **`resume` 复用 tech 产物时不跑蓝图提取** → 现 resume 也照样提取（存档文本无蓝图块则解析为 null，无副作用）。A/B 实测：resume 场景下 `journal.blueprint` 从 `null` 变为注入成功，dev 子代理 label 从「开发 · **整体开发**（补跑）」变为「开发 · **任务一**（补跑）」——即续跑时 dev 不再退化成单任务整体开发（r13 同款症状消除）。
-  - 回归面：`patch` / `full` / `fail` 三场景 A/B 仍**全部一致**，修复未波及其它路径。
-- ⛔ **成本从「量」到「钱」——已否决（2026-09-28 拍板，不再排期）**：出金额需 `pricing.json`（per-model 每百万单价），
-  **判定不做，理由是价格这件事本身不成立为可维护的数据**：① **每个模型单价不同**（同 provider 内部也分层级）；
-  ② **会调价**，任何静态价目表都会腐化且无校验手段；③ **plan / 套餐式计费**（订阅、包月、额度池）下「token × 单价」
-  这个算式**根本不适用**——算出来的金额是假的。**结论：计量就到 token 量为止**（四桶 + 命中率 + 调用数），
-  汇报与工作台维持无量纲口径；用户自己拿量去对账比我们给一个可能错的钱更诚实。以后谁再提这条，先看这三条。
-- ⛔ **移动端支持 —— 不在范围内（2026-09-29 拍板，不排期）**：宿主 dsh 自身未做移动端，本插件**目标平台是桌面浏览器**；
-  触摸与窄屏为 best-effort，**不作受支持能力、不保证回归**。**为什么要写下来**：issue #10 复盘时发现「支持范围」
-  从来没声明过 ⇒ 同类问题会被反复提出、每次靠临时判断处置（也**不写进 README**：那是使用者上手材料，
-  一段"移动端不承诺"对 99% 的桌面读者只是噪音，还会反过来提示这件事存在）。
-  **现状（已做且保留，宽屏零回归 —— `min()` 在宽容器是 no-op，桌面交互与 v0.2.5 一致）**：画布走 Pointer Events +
-  双指捏合；窄容器（< 560px）默认列表视图、可显式切图形；缩放下限**保持 0.5**（理由与实测账见
-  `client/viewport.ts` 注释：0.12 时卡片 37×7px、间距 0.9px 会糊成一团，图形就此失去唯一的独有价值＝结构）。
-  **以后谁再提移动端问题**：按此口径处置（可修可不修、不排期）；若要转为"支持"，先补最小防线再谈
-  —— 列表视图目前**只有纯函数有单测，DOM 层无覆盖**。
-- 🔜 **`catch (e) {}` 分类 lint 规则（oxlint 现行配置未覆盖）**：全仓大量空 catch（起跑清扫 / 状态记忆 / 资源释放等"失败不影响主流程"处有正当理由，但也可能吞掉真错误）。现 `.oxlintrc.json` 关掉了 `no-empty`（未启用），无分类手段。待做：给正当空 catch 统一加 `// ignore: <理由>` 注释前缀 + 自定义规则/脚本统计无注释空 catch 数量并设上限；**实测基线（2026-09-26，57 文件 / 133 个 catch）**：裸空 `catch (e) {}` **0 个**；注释-only 静默 **81 个**（top：`pipeline.ts` 14、`guard.ts` 13、`index.ts` 7、`panel.tsx` 6、`runlogs.ts` 5），真处理 52 个。**结论：现有纪律已达标（静默处均写了理由，如 `/* 清扫失败不影响起跑 */`）→ 本条降为低优先级**，真要做也不是加规则，而是给这 81 处静默加**可选 warn 级日志**（排障时能看到被吞的异常），不是门禁。
+- 🔜 **AGENTS.md §5 余量很浅**：`test/instruction-budget.test.js` 实测 §5 **5,907 B / 上限 6,144 B（余量 237 B）**、全文 **20,297 B / 22 KiB**。门禁读的是**工作树原样字节**，Windows 下 `core.autocrlf` 交付 CRLF（同一份内容为 LF 时是 5,881 / 20,177 B，差 ~26 / ~120 B），余量随 checkout 波动。下一条不变量锚点加入前**必须先压缩**（把某行的论证再迁 `docs/anchors/`），否则门禁直接红。
 
-## 优化候选（2026-09-10 四路调研 + 自查，按收益/成本排序）
+- **`STAGE_TOKEN_BUDGET=60k` 硬编码** → 可升级为 service Config（熔断阈值可调）。
 
-- 🔜 **dev 末尾「QA 独立验证」任务：先攒拦截率数据，再决定收不收/怎么收（2026-09-25 观点已定，待数据）**：
-  tech 蓝图模型会自发把「验证自查」拆成 dev 任务——实测 `tf-mufssxpv-o3cb3m` T7「QA 独立验证（补跑）」、
-  `tf-mufvwupp-uiukmu` 第 5 任务「QA 独立验证（QA-REPORT）」（`files:[]` → 分波规则正确送入末波独占串行；
-  产出 `QA-REPORT.md` 与 QA 阶段产物同名同职责）。**观点**：保留（dev 自查是全链路唯一「发现问题→当场修」的
-  环节，QA 只读、打回一轮 = qa-fix + 重测 ≥2 个子代理），但改定位为「交付自检」：发现问题当场修（不越 files
-  边界）、只记结论不写 QA-REPORT.md（证据链留给 QA）、措辞与 QA 解耦防「预演 QA」式全量重验。改动 =
-  tech prompt 蓝图指引一句话（须过 `prompt-contract` + `conformance` 评测门禁）。**决策依据**：攒 3~5 条
-  流水线看 ① 自查任务的实际拦截率（拦下过本会走到 QA 打回的缺陷吗）② 是否系统性拆任务倾向；样本不足不动。
-  **数据点 1（2026-09-25 `tf-mufvwupp-uiukmu`）**：dev 自查任务正常完成后，QA 第 1 轮仍发现 **2 个阻断缺陷**
-  （打回修复 1 轮 + 复验通过）——自查拦截率 **0/1**，暂支持「自查验证质量有限」的担心；继续攒。
+### 存储与日志生命周期
 
-- **按阶段下发 `reasoningEffort`（token 大杠杆）**：✅ v0.1.7 已落地两处机械阶段降档（patch 单点确认 + scaffold → `low`；重试回升 high；先经 `resolveModelInfo` 探测能力再下发），链路正确性已证（降档日志只在 low 臂出现）。**A/B（n=3/臂，同需求同档位，只比「单点确认」阶段）**：均值 output 8,774 → 5,047（−42.5%）、每次调用 output 1,211 → 612（−49.5%）、耗时 96.4s → 42.9s，但 **计费总量只 −12.8%**，且**区间大量重叠**（low 的 L4 自己探索 13 次调用，反比 high 的 H6 更贵）——**n=3 下差异统计上不可分**，因此**不宣称节约百分比**。**剩余**：① 要可信数字需要更大任务样本或固定调用数的评测场（本任务 run 间方差压倒 effort 效应）；② 是否把 `dev` 的机械改动也纳入降档（当前保守不动——判据型阶段，需更多证据）。
-- **产物可见性（客户端）**：✅ v0.1.8 已做完（v0.1.7 的 present 交付卡 + 工作台 `openResource` 预览 + v0.1.8 的 `main`+`sidebar.panellist` 全局面板 + 右栏 run 详情 tab）。**剩余**：run tab 的 `sidebar.right.pane.tab.title` seat（chip 标题现取 `definition.title`）；全局面板**只读**——没有 backlog 流转写路径（缺 product-keyed 的 `productBacklogUpdate`；补写要带审计 reason 且服务端仍有状态机守卫）。
+- 🔜 **`$DSH_HOME/teamflow/` 无遗忘机制（演练脚本实测佐证）**：11 个目录里 6 个是空壳（只写过 `teams.json`，从未跑流水线）、1 个旧格式 key 残留；`runs/` 无 TTL 无归档策略（单个最大 137 KB，`ws-tetris-e22c5cf9` 累计 2.90 MB），`backlog/*.json` 各配一个等大 `.bak`，`_archive/` 只有一次手工归档。宿主自己有 `dsh-output-retention` / `dsh-compaction`，插件这块空白。待定：空壳目录自动归档阈值（如「90 天无 run 且无 backlog」）+ runs 滚动上限。**注**：`logs/` 已有遗忘机制（每工作区保留最近 20 次 run，起跑时淘汰——见 AGENTS §5 日志生命周期锚点）；本条的 `runs/` 与空壳目录仍未覆盖。
+
+- 🔜 **工作区 key 迁移（破坏性）**：`context.ts` 的 UUID 分支**当前不可达**（宿主 `resolveByPath` 是 `async`，我们同步调用 → 永远走 `slugPath(cwd)` 路径派生 key）。要真用 UUID 须改 `await` + **迁移 `$DSH_HOME/teamflow/<key>/`**（顺序反了会新旧 key 同时写入）。v0.1.9 已出只读演练脚本 `scripts/migrate-workspace-key-dryrun.mjs`（反推 `runs/*.json` 的 `workspacePath` 重算期望 key + 按路径分组合并计划 + 同名文件内容冲突检测）。**实测（2026-09-12，本机 11 个产品线目录）**：key 与路径自洽 4、**漂移 0**、旧格式 1（`tetris-f06370e8`，0 run）、**空壳 6** ⇒ 「同一项目裂成两条产品线」**尚未实际发生**。**因此优先级按「风险」排**（换盘符大小写 / 软链 / 移动目录即裂），不按「已发生损失」排。
+
+### 客户端
+
+- **产物可见性剩余**（v0.1.8 已完成主体，见 `docs/releases/`）：① run 详情 tab 的 `sidebar.right.pane.tab.title` seat（chip 标题现取 `definition.title`）；② 全局面板**只读**——没有 backlog 流转写路径（缺 product-keyed 的 `productBacklogUpdate`；补写要带审计 reason 且服务端仍有状态机守卫）。
+
 - **客户端渲染组件分叉**：`client/shared.tsx` 只统一了主题/词表/格式化，`TeamFlowView`/`PipelinePanel`（会话内）与 `panel.tsx` 的 `RunList`/`BacklogGroups`/`RunDetailPane`（全局 + 右栏）仍是两套渲染实现——收敛成一个组件族（数据源差异用 adapter 表达：sessionId 寻址 vs 产品线寻址），否则后续每加一个字段都要改两处。
-- 🔜 **已核实的宿主门控（勿重复踩）**：**右侧栏的会话内容只在对话视图存在**——`ui-sidebar-right/src/client/shell/RightbarRoot.tsx:13` 用 `activePanelId === null` 门控（源码注释原文「or no content for a global panel」）。任何占 `main` 的面板里调 `ctx.sidebarRight.openResource` 都会抛 `no session surface is mounted`（binding 未发布）；正确姿势是先 `layout.selectPanel(null)` 切回对话、等 seat 挂载 bind（切换后的 effect）再打开——本项目已按此法实现并带小步重试（实测 tf-mtvrsakj-l2vj5u）。
+
 - **工作台「列出子代理」改用 `ctx.subagents.listChildren`**（官方 API，覆盖 one-shot + continuable，带 `activity`）；注意它**无 `createdAt`/`runId`/`outcome`**——run 顺序与归属仍以 journal 为准。
-- 🔜 **continuable 试点（独立 ADR 规模）**：QA 打回复用**同一个** dev 子代理（`startContinuable` + `steerHostSubagentPrompt`/`queueHostSubagentPrompt` + `interrupt`），替掉「重开子代理 + 重灌蓝图」。代价明确：无 `run.result`（改走 `subagent/end` + `finalAssistantOutput`）、**不支持 `outputSchema`**、初始 prompt 会被追加 return guidance（动 prompt 契约，L1/L2 要同步）、web 主流程**无人 drain**（须自行 `drainContinuableChildren`）、中断语义变化。
-  - **宿主容量约束（2026-09-22 实测，上 continuable 前必须先评估）**：`maxActiveSubagents`（默认 8）**只**约束 continuable 子代理的**驻留数**（`SubagentContinuationManager` → `ActivationPool.reserve(capacity)`）；one-shot `subagents.start`（我们当前全部阶段用的形态）**不占该池**——core 层也没有别的子代理数量闸门（`DEFAULT_MAX_PARALLEL_TOOL_CALLS = 10` 是模型单回合的工具并行度，不同层）。因此 dev 阶段那套并发（`runPool`，`maxConcurrency` 默认 3、`host/core/pipeline.ts:426` 的 `Math.min(..., 8)` 硬截断）与宿主这个 8 **是同名巧合、互不相干**。一旦切到 continuable：① dev 并发路数会被 8 这个池容量真正卡住（出现「我们自己 8 / 宿主 8」两处同名上限，需明确谁兜底、超限时是排队还是报错）；② `maxDepth`（默认 1）约束委托工具的嵌套深度，QA 打回若走「父→子→孙」要多留一层。
-- **评估过但否决（勿重复调研）**：
-  - **插件级用户记忆层（ADR-0009，2026-09-12 否决）**：曾设计 `$DSH_HOME/teamflow/_user/{memory.md,index.json}` + 流水线启动时注入索引。否决理由：① **场所错位**——用户偏好是多轮对话的产物，流水线是「一需求一链路」批处理，没有这个场所；② **输入不足以判断普适性**——流水线任一时刻只有当前产品线上下文，归纳出的「通用约定」都是当前需求里的约定，普适性是猜的；③ **两条替代路径已够**——跨产品用户约定写宿主原生的 `$DSH_HOME/AGENTS.md`（`dsh-agent-instructions` 无条件注入，插件零代码），插件硬规矩直接进 prompt/模板（已在做）；④ **突破 ADR-0002 写域边界**。再评估触发信号见 ADR-0009 末节（宿主取消该能力 / 出现用户无法用一次文件表达的真实需求 / 流水线形态变为长期持续交互）。
-  - 迁移到 `dsh-workflow` 原语（`agent/pipeline/parallel/phase`）：host plane 解析不到 `ctx.workflowEngine`（标准 preset 把它 `isolate` 在 agent 组内）+ 前台运行/无持久化/**无重试** → 等于丢掉 resume/熔断/护栏。
-  - 依赖实验性 Agent Teams 包（`@deepseek-ai/dsh-experimental-*` 5 个）：无稳定性承诺、**稳定包被禁止依赖实验包**、用户须显式加 profile → 与「可分发插件」定位冲突。
-  - **`subagent.toolFilter` 做宿主强制工具裁剪**：`tools.restrict()` 对**未知工具名 fail-loud 抛错**，而子代理工具集随 preset/深度变化（如 maxDepth 下没有 subagent）→ 跨 profile 会让子代理 **start 直接失败**；`maxDepth` 也不是嵌套约束（`resolveChildDepth` 超限只是抛错，不传播限制）。即「QA 禁改产品代码」这类按名字裁剪无法安全表达。
-  - 把阶段指令搬进 system prompt（会作废跨子代理前缀复用，冒烟 93% 命中率靠它）；`contextBreakdown` 当熔断/计费依据（官方明确是启发式）。
-- ✅ **风格门禁已收口（2026-09-27 定案，规范落在 `docs/anchors/code-style.md`）**：
-  - **单一仲裁者**：不引 formatter（Prettier 与 `@stylistic/indent` 在 JSX 缩进上互斥，只能有一个定义源）；
-    格式由 `.oxlintrc.json` 的 `@stylistic/*` 规则裁决，经 oxlint `jsPlugins` 执行。
-  - **行宽 140**（对齐宿主 dsh）：含缩进计数，字符串/模板/URL 豁免；53 处超额已全数手工断行收口。
-  - **执行三层**：`pnpm format`（两遍 `--fix`，一遍不收敛）+ lefthook `pre-commit`（staged 文件自动回灌）+ CI `pnpm lint`（0 warning）。
-    判据是规则数 `64 files with 103 rules`——数字掉下来 = 配置没被吃到（退出码仍可能是 0）。
-  - **`arrow-parens` 用 `always`**（宿主 `as-needed` 会改 270 处写法并炸 12 条源码断言）——与宿主的有意差异已写进规范文档。
-  - **源码断言锁只锁内容不锁排版**：跨行处分隔符写 `\s*`、容忍尾逗号，否则行宽合规与门禁会互相打架。
-  - 另注：`jsPlugins` 在 schema 里明写 **alpha、不受 semver**，所以 `oxlint` devDep 已锁精确版本（宿主 likewise 锁 1.76.0），
-    升级前先在临时目录验一遍规则仍生效（已知 `@stylistic/comma-dangle` 对 interface 成员静默失效）。
-- 🔜 **换行/折行仍无自动手段**（唯一已知缺口）：`max-len` 只报警不修，缩进已由 `@stylistic/indent` 兜住，
-  但「把一行断成两行」仍靠作者/AI 手写。若日后要补，只考虑**可声明、可进门禁**的形态（不是再引一个 printer 与之互斥）。
+
+### 工程与工具链
+
+- 🔜 **`catch (e) {}` 分类 lint 规则（低优先级）**：全仓大量空 catch 有正当理由，但现 `.oxlintrc.json` 无分类手段。**实测基线（2026-09-26，57 文件 / 133 个 catch）**：裸空 `catch (e) {}` **0 个**；注释-only 静默 **81 个**；真处理 52 个 ⇒ **现有纪律已达标 → 降为低优先级**。真要做也不是加规则，而是给这 81 处静默加**可选 warn 级日志**（排障时能看到被吞的异常），不是门禁。
+
+- 🔜 **换行/折行仍无自动手段（低优先级，唯一已知缺口）**：`max-len` 只报警不修，缩进已由 `@stylistic/indent` 兜住，但「把一行断成两行」仍靠作者/AI 手写。若日后要补，只考虑**可声明、可进门禁**的形态（不是再引一个 printer 与之互斥）。
+
+## 观察中（已埋点 / 已上报，等数据或上游）
+
+- **D：QA 轮次改成收敛判据（先埋点再定）**：52 个历史 run 实测——发生打回 **7/52**（每次至多 1 轮，唯一 2 轮那次是幻影）、**触达复验上限 1/52**、验收未跑 1/52 ⇒ 「真正需要第 3 轮修复」**从未真实发生**。且「同一缺陷原样复现就早停」**按缺陷 id 判不出来**（QA 每轮重新编号：r9 三轮分别是 `QA-*` → `R2-*` → `R3-*`），稳定身份键只有「检测命令」。**埋点已落地（2026-09-15）**：QA 循环每轮把阻断集合的稳定身份与增/减/停滞计数写进 `journal.qaRounds`（留最近 12 轮），配只读读侧 **`node scripts/qa-rounds-report.mjs`**。**待定**：等攒到若干真实复验轮（最好含至少一次 `repeats > 0` 的停滞样本）后，再决定要不要把 `QA_REWORK_LIMIT` 的硬上限换成收敛判据（阻断数严格下降且缺陷不重复 → 允许再来一轮；停滞 → 立即转人工）。**先定判据再动状态机**（ADR-0007 语义，回滚成本高）。
+
+- **dev 末尾「QA 独立验证」任务：先攒拦截率数据（2026-09-25 观点已定）**：tech 蓝图模型会自发把「验证自查」拆成 dev 任务（实测 `tf-mufssxpv-o3cb3m` T7、`tf-mufvwupp-uiukmu` 第 5 任务，`files:[]` → 正确送末波串行，产出 `QA-REPORT.md`）。**观点**：保留（dev 自查是全链路唯一「发现问题 → 当场修」的环节），但改定位为「交付自检」：发现问题当场修、只记结论不写 `QA-REPORT.md`（证据链留给 QA）、措辞与 QA 解耦防「预演 QA」式全量重验。改动 = tech prompt 蓝图指引一句话（须过 `prompt-contract` + `conformance`）。**数据点 1（`tf-mufvwupp-uiukmu`）**：dev 自查正常完成后，QA 第 1 轮仍发现 **2 个阻断缺陷** ⇒ 自查拦截率 **0/1**（暂支持「自查质量有限」的担心）。**数据点 2（`tf-muzc59h9-pnbhyk`，2026-10-08）**：dev 任务「QA 三浏览器实测」**同时写了 `QA-REPORT.md` 和 `ACCEPTANCE.md`**，随后在收尾 `edit` 上失手 ⇒ **run 判 failed，而交付其实 13/14 AC 已验证**（假失败）。⇒ 支持「重新定位」，但**不支持砍掉**。**已落地**（tech/architect prompt 各一句话，锚点 `[Self-check, not a QA rehearsal]`）：dev 自查**保留**但明确降为「交付自检」——只记结论、**不许写 `QA-REPORT.md`/`ACCEPTANCE.md`**、**不许跑 QA 式全量矩阵**。⚠️ 第一版误写成「不许有验证类任务」＝砍掉它，与本节「观点已定」相反，已改回（教训：**动 tech prompt 前先读本节**）。**仍等样本**：① 自查的实际拦截率 ② 是否系统性拆任务倾向。
+
+- **按阶段下发 `reasoningEffort`（token 大杠杆，需更大样本才能宣称节约）**：v0.1.7 已落地两处机械阶段降档（patch 单点确认 + scaffold → `low`；重试回升 high；先经 `resolveModelInfo` 探测能力再下发）。**A/B（n=3/臂，只比「单点确认」阶段）**：均值 output 8,774 → 5,047（−42.5%）、耗时 96.4s → 42.9s，但**计费总量只 −12.8%**，且**区间大量重叠**（low 的 L4 自己探索 13 次调用，反比 high 的 H6 更贵）⇒ **n=3 下统计上不可分，不宣称节约百分比**。**剩余**：① 要可信数字需更大样本或固定调用数的评测场；② 是否把 `dev` 的机械改动也纳入降档（当前保守不动——判据型阶段，需更多证据）。
+
+## 已否决（勿再调研 / 勿再提）
+
+- ⛔ **成本从「量」到「钱」（2026-09-28 拍板）**：出金额需静态价目表（per-model 每百万单价），**判定不做**——① 每模型单价不同（同 provider 内部也分层）；② 会调价，任何静态表都会腐化且无校验；③ plan / 套餐式计费下「token × 单价」**根本不适用**，算出来的金额是假的。⇒ 计量就到 **token 量**为止（四桶 + 命中率 + 调用数），汇报与工作台维持无量纲口径；用户自己拿量对账比我们给一个可能错的钱更诚实。以后谁再提，先看这三条。
+
+- ⛔ **移动端支持 —— 不在范围内（2026-09-29 拍板，不排期）**：宿主 dsh 自身未做移动端，本插件**目标平台是桌面浏览器**；触摸与窄屏 best-effort、**不作受支持能力、不保证回归**、**不写 README**（那是使用者上手材料，一段「移动端不承诺」对 99% 的桌面读者只是噪音，还会反过来提示这件事存在）。已做且保留（宽屏零回归，`min()` 在宽容器是 no-op）：Pointer Events + 双指捏合、<560px 默认列表视图、缩放下限**保持 0.5**（理由与实测账见 `client/viewport.ts` 注释）。以后再提移动端问题按此口径处置；要转「支持」须先补最小防线（列表视图目前**只有纯函数有单测，DOM 层无覆盖**）。
+
+- ⛔ **插件级用户记忆层（ADR-0009，2026-09-12 否决）**：① **场所错位**——用户偏好是多轮对话的产物，流水线是「一需求一链路」批处理；② 输入不足以判断普适性（归纳出的「通用约定」都是当前需求里的）；③ 两条替代路径已够（跨产品用户约定写宿主原生 `$DSH_HOME/AGENTS.md`；插件硬规矩进 prompt/模板）；④ 突破 ADR-0002 写域边界。再评估触发信号见 ADR-0009 末节。
+
+- ⛔ **`pipeline.ts` 巨型函数进一步重构（三块外移 + STAGES 表驱动）—— 已评估后不做**：①② 已落地（`runSimpleStage` 收敛四同形阶段 + `runDevStage`/`runQaStage`/`runAcceptanceStage` 命名单元，A/B 验零行为变化）；③ 外移需显式化约 20 个闭包变量（风险 > 收益，等真有第二消费方再动）、表驱动**不减复杂度**（阶段间有产物依赖链，表只能表达「顺序 + enabled」，真正的差异逻辑仍在各 runner 内部）。**维持现状。**
+
+- ⛔ **迁移到 `dsh-workflow` 原语**（`agent/pipeline/parallel/phase`）：host plane 解析不到 `ctx.workflowEngine`（标准 preset 把它 `isolate` 在 agent 组内）+ 前台运行 / 无持久化 / **无重试** → 等于丢掉 resume / 熔断 / 护栏。
+
+- ⛔ **依赖实验性 Agent Teams 包**（`@deepseek-ai/dsh-experimental-*` 5 个）：无稳定性承诺、**稳定包被禁止依赖实验包**、用户须显式加 profile → 与「可分发插件」定位冲突。
+
+- ⛔ **`subagent.toolFilter` 做宿主强制工具裁剪**：`tools.restrict()` 对**未知工具名 fail-loud 抛错**，而子代理工具集随 preset / 深度变化（如 maxDepth 下没有 subagent）→ 跨 profile 会让子代理 **start 直接失败**；`maxDepth` 也不是嵌套约束（`resolveChildDepth` 超限只是抛错，不传播限制）。即「QA 禁改产品代码」这类按名字裁剪**无法安全表达**。
+
+- ⛔ **把阶段指令搬进 system prompt / `contextBreakdown` 当熔断依据**：前者会作废跨子代理前缀复用（冒烟 93% 命中率靠它）；后者官方明确是启发式。
+
+- ⛔ **宿主 Windows 沙箱 ACL provision 失败 —— 已闭环，勿再当待修 / 待跟踪项（2026-10-04）**：宿主 `grantWrite` 在一次调用里同时写 DACL 与 SACL（Low label），写 label 需 **`WRITE_OWNER`**（对象权限，**不是** `SeSecurityPrivilege`）；上游在 [Discussion #7538](https://github.com/deepseek-ai/deepseek-harness/discussions/7538) 明确这是 **documented intent**（Modify-only 目录「fails loudly」是 integrity label 层有意的代价），我们建议的「跳过 label 降级」**已被否决** ⇒ 上游**无可等**（唯一开口＝失败时点名缺 WRITE_OWNER 的诊断，属上游、非阻塞，非我方待办）。**我方早已闭环**：`host/core/workspace/acl-preflight.ts`（2026-09-25）在 `executePipeline` 内、任何阶段 / 模型调用之前预检自愈（补 `user:(OI)(CI)(WO)`，无需提权），且失败文案已点名 WRITE_OWNER。**代码实证**：`0.1.7-alpha.1` → `0.2.0-rc.2` → `0.2.1-alpha.1` 的 grant bundle sha256 逐字相同（`e6014e93…`）。详见 `docs/reports/2026-09-23-dsh-windows-sandbox-acl-provision-failure.md`（含 2026-10-04 更正块）。

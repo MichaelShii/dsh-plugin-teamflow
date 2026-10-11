@@ -9,6 +9,7 @@ import { gitCmd } from './workspace/sanity.ts'
 import { loadState } from './domain/state.ts'
 import { modeLabel, t } from '../locales.ts'
 import { phaseKeyOf } from '../constants.ts'
+import { renderConfirmSheet, type ConfirmSheet } from './confirm.ts'
 import { runLocaleOf } from './locale.ts'
 import type { Journal, ParentAgentLike } from '../types.ts'
 
@@ -120,6 +121,20 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
     const assumptionsLine = (journal.assumptions && String(journal.assumptions).trim())
       ? t(locale, 'report.assumptions', { list: clip(String(journal.assumptions), 900) })
       : ''
+    // 澄清闸门失效可见化（ADR-0010 第 2 步，2026-10-04）：分诊退兜底（超时/失败）⇒ `fallbackVerdict`
+    // 硬编码「永不拦启动」，闸门**静默失效**（意图未经确认就开工）。实锤 `tf-mu4bve7t-duux2k`
+    // （「我想开发一个 dsh 插件」）退兜底后直接跑完、用户侧完全不可见 ⇒ 汇报显式声明「本次未做澄清」。
+    const clarifySkippedLine = (journal.triage as { source?: string } | null | undefined)?.source === 'fallback'
+      ? t(locale, 'report.clarifySkipped')
+      : ''
+    // PRD 确认单（ADR-0011 ①，2026-10-07）：确认单暂停时，汇报必须讲清「批准什么 + 怎么批准」——
+    // 否则主线程只看到「已中断 + 需人工」，不知道 PRD 其实已经好了、下一步只是让人批一下。
+    const confirmLine = (journal.confirmSheet && journal.status === 'interrupted')
+      ? t(locale, 'report.confirmSheet', {
+        sheet: renderConfirmSheet(journal.confirmSheet as ConfirmSheet, locale),
+        id: String(journal.id),
+      })
+      : ''
     // 外部供应商故障可见化（2026-09-17）：把"限流/无额度/上游故障"与"交付有缺陷"分开讲清楚——
     // dddd 实测那批失败 16 分钟后同请求即成功，属外部窗口问题；旧文案只给「失败 + 需人工」，
     // 会让人误判成交付质量。此处显式说明「非交付缺陷 + 可续跑只补这一段」。
@@ -161,6 +176,8 @@ export function deliverCompletion(journal: Journal, parent: ParentAgentLike): vo
       vcsLine,
       cancelSourceLine,
       assumptionsLine,
+      clarifySkippedLine,
+      confirmLine,
       t(locale, 'report.stagesLine', { stages: stagesLine }),
       t(locale, 'report.agents', { n: journal.agentsStarted || 0 }),
       tokenLine,

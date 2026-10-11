@@ -35,3 +35,11 @@
 
 **门禁**：`test/client-host-api.test.js` —— 客户端引用的宿主成员必须落在冻结白名单内、
 禁止引用已移除成员、用到就必须 inject 且桥接到 props；宿主下次再删成员会**测试变红**而不是按钮变灰。
+
+---
+
+## 补记（2026-10-04，自 `docs/TODO.md` 迁入）：全局面板里开右栏的正确姿势
+
+占 `main` 的全局面板里**直接**调 `ctx.sidebarRight.openResource` 会抛 **`no session surface is mounted`**（右侧栏 binding 未发布）。
+正确姿势：先 `layout.selectPanel(null)` 切回对话视图（`client/panel.tsx` 已按此法实现并带小步重试），**等 seat 挂载 bind（切换后的 effect）再打开**——实测 `tf-mtvrsakj-l2vj5u`。
+（本条原为 `docs/TODO.md` 的「已核实的宿主门控（勿重复踩）」，2026-10-04 清理 TODO 时迁入；与上文「右侧栏是会话级的」同源。）

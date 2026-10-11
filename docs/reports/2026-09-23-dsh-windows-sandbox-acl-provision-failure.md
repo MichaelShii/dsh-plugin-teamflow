@@ -21,6 +21,25 @@
 
 ---
 
+> ⚠️ **更正（2026-10-04）——读 §5 与 §7 前请先看这条；原文保留不删（留痕）**
+>
+> **§5 的根因认定与 §7 的建议① 已被推翻。** 来源：上游维护者 argszero 在 Discussion [#7538](https://github.com/deepseek-ai/deepseek-harness/discussions/7538)（2026-09-22）的逐条复核 ＋ 本仓代码（`host/core/workspace/acl-preflight.ts`，2026-09-25）**当时即按正确口径实现**。
+>
+> | 本文原主张 | 更正后 |
+> |---|---|
+> | 门槛是 **`SeSecurityPrivilege`**（令牌特权），三项编辑共用一个调用 ⇒ 整次 ACCESS_DENIED | ❌ **门槛是 `WRITE_OWNER`（对象权限）**。宿主 `README.md:122` / `src/acl.ts:368-370` / feature note **三处**均写 WRITE_OWNER。本文 §5 的三项实验**分离不了两个假设**（测试目录同时缺 WRITE_OWNER，两个假设都预测拒绝；提权互证同样不可分）。 |
+> | 「非系统盘 + 新建目录」才中 | ❌ **与驱动器 / 「新建」无关**——只看该目录是否给**调用者自己的 SID** 授了 Full control。本文命中的是宿主 documented 的「**Modify-only 目录 fails loudly**」形态（SDDL 里访问权来自 `AU:Modify` 继承，无点名自己 SID 的 ACE）。 |
+> | §7 建议①：无 SACL 权限时**降级为纯 DACL 写入** | ❌ **被上游否决**：label 是围栏的一半，跳过 ⇒ 受限子进程仍写不进去（把「早失败」换成「晚失败」）＋ 破坏 fail-closed。 |
+> | §7 建议②：失败时**点名缺什么** | ✅ **唯一对的杠杆**（上游认可，且便宜——代码已有 `hasExactGrant/Deny/Label` 与 owner SID）。**截至 `0.2.1-alpha.1` 未做，属上游。** |
+>
+> **性质更正**：这不是宿主 bug，而是 **integrity label 层有意付出的设计代价** ⇒ 不应按「待修缺陷」跟踪；上游唯一认的开口只有「诊断信息」。
+>
+> **代码实证**（2026-10-04 下 tarball 逐字比对）：`0.1.7-alpha.1`（本报告版本）→ `0.2.0-rc.2` → `0.2.1-alpha.1` 的 `dsh-sandbox-windows-acl` grant bundle **sha256 逐字相同**（`e6014e930810e6a6`）；`0.2.1-alpha.1` 相对 `0.2.0-rc.2` 的 91 行差异**全部**在新增的 `acl-skill.js`（诊断技能注册），grant 段未动。
+>
+> **我方处置**：`host/core/workspace/acl-preflight.ts` 在 `executePipeline` 内、**任何阶段 / 任何模型调用之前**预检自愈（补 `user:(OI)(CI)(WO)`，**无需提权**）——这正是上游认可的「不需要提权」的那条路；且失败文案已点名 WRITE_OWNER（比上游现状更好）。故本仓使用者不会遇到本报告描述的故障。
+
+---
+
 ## 1. 最小复现
 
 1. 在一个**没有继承过沙箱 ACE** 的目录建工作区（例：`D:\proj`；`mkdir` 即可，无需任何特殊操作）。

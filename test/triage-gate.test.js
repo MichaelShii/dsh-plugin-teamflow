@@ -13,7 +13,7 @@
  * 另外锁住意图归一（非法值一律 requirement，绝不因字段缺失拦启动）。
  */
 import { qualifyBlockers, normalizeSettle, TRIAGE_SETTLES, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, LOCAL_PLUGIN_SAMPLES_HINT, triageRecordOf, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, triageCacheIsPending, triageCacheMarkPending, triageCacheSettle, TRIAGE_CACHE_MAX, normalizeHost, forceHost, contractsForDeliverable, ARTIFACT_HOSTS } from '../host/core/triage.ts'
-import { extractAssumptionsSection, extractHostResearchSection, detectInstallEnv, profileFromModulePath, profileDirFromBaseUrl, isAbsolutePath, installRecipe } from '../host/util.ts'
+import { clarifyStrengthFromEnv, extractAssumptionsSection, extractHostResearchSection, detectInstallEnv, profileFromModulePath, profileDirFromBaseUrl, isAbsolutePath, installRecipe } from '../host/util.ts'
 import { prdPrompt } from '../host/prompts/index.ts'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -60,6 +60,18 @@ ok(capped.dropped === 2, '超额部分计入 dropped')
 ok(qualifyBlockers([{ ...full, question: 'q'.repeat(999) }]).blockers[0].question.length <= 300, '问题文本截断 ≤300 字符')
 const longReadings = qualifyBlockers([{ ...full, readings: ['r'.repeat(999), 'r2'] }]).blockers[0].readings
 ok(longReadings.length === 2 && longReadings[0].length <= 200, '读法截断 ≤200 字符、条数 ≤4')
+
+// guess = **软字段**（ADR-0011 批 3a，2026-10-07）：模型给了就带、没给**不影响合格判定**。
+// ⚠️ 反向断言才是重点：若哪天把 guess 写进合格线，弱模型的 blocker 会被成批丢弃 ——
+// 那等于按「模型是否听话」筛需求，与本仓「模型无关」纪律（§2）直接冲突。
+ok(qualifyBlockers([full]).blockers[0].guess === undefined, '无 guess ⇒ 不写该 key（不留 guess:"" 噪声）')
+const withGuess = qualifyBlockers([{ ...full, guess: '倾向 A，因为仓库里已有 X' }])
+ok(withGuess.blockers.length === 1 && withGuess.blockers[0].guess === '倾向 A，因为仓库里已有 X', '给了 guess ⇒ 保留并透传')
+ok(qualifyBlockers([{ ...full, guess: '   ' }]).blockers.length === 1, 'guess 为空白 ⇒ 仍保留该 blocker（软字段不进合格线）')
+ok(qualifyBlockers([{ ...full, guess: 'x'.repeat(999) }]).blockers[0].guess.length <= 200, 'guess 截断 ≤200 字符')
+const noG = qualifyBlockers([full]).blockers[0]
+ok(Object.keys(noG).length === Object.keys(withGuess.blockers[0]).length - 1,
+  '有/无 guess 只差 guess 这一个 key（其余判据完全不受影响）')
 
 console.log('\n[2b] 自洽门禁：已判定的字段不得再被当成未知来问（2026-09-18 probe-v2 实锤）')
 console.log('     实测：需求结尾写着「装进我的 dsh web profile 里真实可用」、分诊自己已输出 installable=true，')
@@ -469,6 +481,31 @@ console.log('     `dsh plugin --profile web add` 在他机器上跑不通；故�
   ok(/function installBlock\(/.test(prdSrc) && /installBlock\(en, rc\)/.test(prdSrc), 'prdPrompt：注入「本机环境」块（含谁执行安装）')
   ok(/主 agent 执行|for the main agent/.test(prdSrc), '注入块点明**安装由主 agent 执行**（子代理权限固定）')
 }
+
+
+// ── 澄清变体（ADR-0011 ③；2026-10-08 **重构**）──────────────────────────────
+// ⚠️ 旧的 `normalizeClarifyStrength` 与其「patch 恒 off，优先于显式 interview」契约**已随字段删除**：
+// 那条契约约束的是 **run 级选项**，而 `clarifyStrength` 不再是 run 级选项（它只选 ctx 文案，
+// 而 ctx 在**选团队时**注入 —— 那一刻既没有档位、也不知道是不是 patch）。见 ADR-0011 落地记录。
+// 现由 `clarifyStrengthFromEnv` 读环境变量，**默认 interview**：一次一问是**产品默认行为**，
+// `once`/`off` 只服务对照实验。⇒ 这里锁「默认值 + 非法值不静默降级」两条。
+const withEnv = (v, fn) => {
+  const prev = process.env.TEAMFLOW_CLARIFY
+  if (v === undefined) delete process.env.TEAMFLOW_CLARIFY
+  else process.env.TEAMFLOW_CLARIFY = v
+  try { return fn() } finally {
+    if (prev === undefined) delete process.env.TEAMFLOW_CLARIFY
+    else process.env.TEAMFLOW_CLARIFY = prev
+  }
+}
+ok(withEnv(undefined, clarifyStrengthFromEnv) === 'interview', '缺省 = interview（一次一问＝产品默认行为，不是可选档）')
+ok(withEnv('', clarifyStrengthFromEnv) === 'interview', '空串 = interview（不静默降级成 off）')
+ok(withEnv('once', clarifyStrengthFromEnv) === 'once', '显式 once → once（A/B 对照组）')
+ok(withEnv('OFF', clarifyStrengthFromEnv) === 'off', '大小写不敏感（模型/人手写环境变量常见变体）')
+ok(withEnv('  off  ', clarifyStrengthFromEnv) === 'off', '值带空白 → trim 后生效')
+ok(withEnv('bogus', clarifyStrengthFromEnv) === 'interview', '非法值 → 回落 interview（**不静默变成 off** —— 那会让默认行为消失）')
+// 旧机制必须真的没了：反查历史 run 是「本 run 传的值当次不生效」的根因（迟一拍 + 重启丢）。
+ok(!/function clarifyStrengthForTeam\(/.test(readFileSync(join(here, '../host/index.ts'), 'utf8')), 'host：反查历史 run 的旧机制已删除（迟一拍 ＋ 重启丢失）')
 
 console.log(failed ? `\n✗ triage-gate：${failed} 条失败\n` : '\n✓ triage-gate：全部通过\n')
 process.exit(failed ? 1 : 0)

@@ -49,10 +49,44 @@ export interface BacklogItem {
 }
 /** 需求分诊路由模式（ADR-0004：full/medium/lite/tech/patch）。 */
 export type PipelineMode = 'full' | 'medium' | 'lite' | 'tech' | 'patch'
+
+/**
+ * **澄清策略变体**（ADR-0011 ③；2026-10-08 收窄为**对照实验开关**）。
+ *
+ * 历史：它曾是 `PipelineOptions` 的独立字段（`off`/`once`/`interview`），并在 ADR-0011 里
+ * **刻意不做成 `PipelineMode` 的一档**——`PipelineMode` 决定阶段集 / PRD 形态 / 架构护栏
+ * （`resolveStages` / `MODE_RANK` / `guardrailUpgrade` 三处按它分派），把「追问几次」塞进去会让
+ * 同一张表承担两件正交的事，并把 `interview` 变成「没有对应阶段集」的伪档位。**该论证仍成立。**
+ *
+ * ⚠️ **2026-10-08 字段本身被删掉**，理由与论证无关：它**从来没影响过流水线**，只选 `tool.ctx.team`
+ * 中间那段文案；而 ctx 只在**选团队时**注入 ⇒ 作为 run 参数结构上「迟一拍」（反查历史 run 还带来
+ * 「重启丢失」）。用户指出切口应是**手册本身** ⇒ 默认行为写进 ctx（`once` 的文案保留为对照组），
+ * 这个 union 只剩 `TEAMFLOW_CLARIFY` 的取值域，不再是 pipeline 选项。
+ */
+export type ClarifyStrength = 'off' | 'once' | 'interview'
+/**
+ * **PRD 确认单的触发档**（ADR-0011 ①；2026-10-08 由显式 `needConfirm` 开关改为内容驱动）。
+ *
+ * - `auto`（缺省）—— **判据是内容**：PRD 的 `openQuestions` 里存在 `kind: "taste"`（主观品味项）
+ *   ⇒ 暂停等用户拍板；只有信息缺口（`fact`）或没有待澄清项 ⇒ 直通不打断。
+ *   为什么两类要分开：信息缺口的代价由 `default` 兜住，品味项猜错的代价是「成品不是我要的」
+ *   ——后者表现为流失/差评、**不表现为 QA 打回**（用户 2026-10-08 定调）；而纯信息缺口也打断用户
+ *   会白毁 §1 的无人值守卖点。
+ * - `always` / `never` —— **只是 A/B 对照与端到端验证的内部强制位**。
+ *
+ * ⚠️ **不是工具参数**：由环境变量 `TEAMFLOW_CONFIRM` 传入（`always` / `never`，其余/未设 = `auto`）。
+ * 2026-10-08 之前它是公开参数 `needConfirm`，被用户当场否掉：「用户又不知道这参数」——
+ * 而工具描述里也没有任何「何时该设它」的触发条件 ⇒ 实践中没人设 ⇒ 功能是死的。
+ * `patch` 档恒不生效（STAGE_POLICY：单 agent 直改，PRD 是机械的单点确认）。
+ */
+export type ConfirmMode = 'auto' | 'always' | 'never'
 /** 流水线启动选项。 */
 export interface PipelineOptions {
   needDesign?: boolean
   needScaffold?: boolean
+  /** **PRD 确认单**（ADR-0011 ①）：触发档见 `ConfirmMode`（缺省 `auto` = 有主观品味项才停）。
+   *  环境变量通道，不进工具 schema。 */
+  confirmMode?: ConfirmMode
   tasks?: unknown
   productRoot?: string | null
   maxConcurrency?: number
@@ -95,6 +129,10 @@ export interface PipelineOptions {
 export interface ResumeContext {
   phase: string
   products: Record<string, unknown>
+  /** **回退重跑 PRD**（2026-10-08）：检查点被主动拨回 `prd`（`resumeRun` 在「PRD 之后没跑过任何阶段」
+   *  且带 supplement 时这么做，见 `resume.phase==='prd'`）。用来给 PRD 换一段**语义不同**的补录块：
+   *  澄清轮是「用户答了我问的问题」，而这次是「用户要求改这些地方」（见 `pipeline.ts` 的 prdInput 拼装）。 */
+  redo?: boolean
 }
 /** 子代理运行句柄的鸭子类型（避免强依赖内部类型）。 */
 export interface SubagentRunLike {
