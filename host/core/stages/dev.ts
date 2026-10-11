@@ -13,7 +13,7 @@ import {
   clip, snippet, buildRetryDiagnostic, runPool, devTaskStatuses, devTaskIdAt, backfillDevTaskIds,
   mergeFileOverlaps, concurrentWriteConflicts, planDevWaves,
 } from '../../util.ts'
-import { phaseKeyOf } from '../../constants.ts'
+import { phaseKeyOf, PHASE_ORDER } from '../../constants.ts'
 import { persistJournal } from '../../../store.ts'
 import { extractStateBlock, stateBlockRelPath, readStateBlockFile } from '../domain/state.ts'
 import { phaseLabel, t, type HostLocale } from '../../locales.ts'
@@ -181,7 +181,25 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
               : ((s.taskKey && task.ids.some((id) => s.taskKey === String(id))) || (!s.taskKey && task.title && (s.label || '').includes(String(task.title))))))
           const t0 = Date.now()
           const resumePrompt = devPrompt(task, tech, prd, design, root, journal.id, state) + (prevStage ? buildRetryDiagnostic(2, prevStage) : '')
-          const devR = await withRetry(journal, parent, t(locale, 'dev.taskRerun', { title: task.title }), 'dev', resumePrompt, signal, task.title, null, task.ids)
+          // ⚠️ 标签必须区分「**补跑**」与「**首次尝试**」（2026-10-11 用户实测发现）：
+          // `todoDefs` 的判据是 `!st || !st.done`，它同时含「**此前失败**」与「**从未尝试**」两种形态 ——
+          // 既有日志 `run.resumeDev` 已为此分两个数报（见上方注释），但**任务标签一直没区分**。
+          // 后果：走 resume 路径但 dev **一次都没跑过**的 run（确认单暂停 / 澄清暂停 / 早期取消），
+          // 12 个任务全被打上「（补跑）」，读起来像「上次跑挂了」，**不实**
+          // （实测 run tf-mv3rdt0y-qmlxl3：日志明写 `跳过已完成阶段：PRD`、dev 从未执行，标签却全是补跑）。
+          // 判据用 `taskStatuses.has(id)` —— `devTaskStatuses` 只收录**出现在 journal.stages 里**的任务，
+          // 即「真的尝试过」（无论成败）。
+          // 判据（两路取或）：
+          // ① **断点在 dev 或更晚** ⇒ 之前必然跑过 dev（哪怕全失败 / 产物为空）⇒ 算补跑；
+          // ② 否则看 journal 里有没有该任务的记录（`devTaskStatuses` 只收录出现过的任务）。
+          // ⚠️ 只看 ② 会漏：`resume.phase='dev'` 而 `products.dev` 为空的形态（测试 [6]），
+          // 新 journal 里没有任何 dev 记录 ⇒ 会被误判成「首次」，把真正的补跑说成首次，反向也不实。
+          const devRanBefore = PHASE_ORDER.indexOf(String(resume.phase)) >= PHASE_ORDER.indexOf('dev')
+          const attempted = devRanBefore || (Array.isArray(task.ids) && task.ids.some((id) => taskStatuses.has(String(id))))
+          const taskLabel = attempted
+            ? t(locale, 'dev.taskRerun', { title: task.title })
+            : t(locale, 'dev.task', { title: task.title })
+          const devR = await withRetry(journal, parent, taskLabel, 'dev', resumePrompt, signal, task.title, null, task.ids)
           const rerunText = stageTextOf(devR)
           trackDevTouched(task.title, t0, Date.now(), rerunText)
           noteVerifyEvidence(devR.stage, rerunText)
