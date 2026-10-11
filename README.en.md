@@ -143,6 +143,27 @@ After install, **restart** `dsh --profile web` (or restart the desktop app) for 
 
 > Note: `@deepseek-ai/*` are host-private packages; running requires the DeepSeek Harness (dsh) host environment; this package is neither published standalone nor runnable alone.
 
+## Upgrade (for users)
+
+**Since 0.2.8 the plugin tells you when a new version is out** (no need to watch the releases page):
+
+- Opening the **Team Workspace** shows a "New version x.y.z" banner at the top;
+- The **global panel header** (left sidebar) has a "Check for updates" button (manual, bypasses the cache);
+- The desktop app's **plugin management page** shows a new-version badge next to this plugin.
+
+**Registry installs** (installed from `npm`) can upgrade with **one click**: click "Upgrade to x.y.z" on the banner → confirm → **restart** `dsh --profile web` (or restart the desktop app). Local / git / tarball installs get **no one-click button** (one click would silently swap the dependency to the registry version) — only a copyable command.
+
+Command-line upgrade (the equivalent manual path):
+
+```bash
+# web profile
+dsh plugin --profile web add dsh-plugin-teamflow@latest
+
+# For the desktop app, use the in-app plugin management page (the CLI refuses --profile desktop)
+```
+
+Don't want a specific version nagging you? The banner has "Skip this version" — it skips that **exact version**; a newer one will still notify you.
+
 ## Quick start
 
 1. **Pick a team**: click the 🏭 button next to the input box and choose a team (or "no team" = chat directly, no pipeline);
