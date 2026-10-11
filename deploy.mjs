@@ -51,6 +51,7 @@ const FILES = [
   'host/core/stages/acceptance.ts',
   'host/core/clarify-log.ts',
   'host/core/confirm.ts', // PRD 确认单（ADR-0011 ①）：纯函数模块，也要同步到 profile 副本
+  'host/core/update-check.ts', // 版本探测（ADR-0012）：同上，纯逻辑模块
   'host/core/triage.ts',
   'host/core/workspace/sanity.ts',
   'host/core/workspace/runlogs.ts',
@@ -64,6 +65,7 @@ const FILES = [
   'client/index.tsx',
   'client/panel.tsx',
   'client/shared.tsx',
+  'client/update-ui.tsx', // 「有新版本 / 升级」UI 的唯一实现（工作台 / 全局面板 / 宿主插件页三处共用）
   'client/locales.ts',
   'client/viewport.ts',
   'lib/host.mjs',

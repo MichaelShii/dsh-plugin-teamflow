@@ -236,3 +236,15 @@ export function resolveStages(mode: StageMode | string | null | undefined, opts:
   const rules = STAGE_POLICY[(mode || 'full') as StageMode] || STAGE_POLICY.full
   return rules.filter((r) => !r.when || r.when(opts)).map((r) => r.key)
 }
+
+/** 本插件在 registry 上的包名（版本探测的查询对象；也是「升级命令」里那个 spec 的名字）。 */
+export const PLUGIN_PACKAGE_NAME = 'dsh-plugin-teamflow'
+
+/** 版本探测缓存有效期（24h，ADR-0012 已定档：两处各按需触发 + 缓存，不做后台定时）。
+ *  取 24h 的理由：本插件的发版粒度是「天」，比这更短只会白跑网络；更长则用户可能整整一天
+ *  对着已经过期的提示。 */
+export const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000
+
+/** 单次 registry 查询的超时（**必须短**：这是个提示功能，不得让 UI 等网络）。
+ *  超时/失败一律降级成「不知道」，不抛、不重试、不挡任何流程。 */
+export const UPDATE_CHECK_TIMEOUT_MS = 4000

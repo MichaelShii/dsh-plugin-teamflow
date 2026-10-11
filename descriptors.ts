@@ -252,6 +252,34 @@ export const TEAMFLOW_DESCRIPTORS: readonly InvocationDescriptor[] = Object.free
     parameters: [p('product'), p('kind'), p('id'), p('sessionId')],
     result: strict,
   },
+  /* ── 版本探测（ADR-0012）：工作台提示条按需调用 ── */
+  {
+    id: 'dsh-plugin-teamflow#teamflow/updateStatus',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'updateStatus',
+    invocation: { kind: 'direct' },
+    parameters: [p('force')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/skipUpdateVersion',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'skipUpdateVersion',
+    invocation: { kind: 'direct' },
+    parameters: [p('version')],
+    result: strict,
+  },
+  {
+    id: 'dsh-plugin-teamflow#teamflow/upgradeSelf',
+    service: 'teamflow',
+    namespace: 'teamflow',
+    method: 'upgradeSelf',
+    invocation: { kind: 'direct' },
+    parameters: [p('version')],
+    result: strict,
+  },
 ])
 
 /** client 端 $mount 使用的贡献对象。 */

@@ -14,14 +14,14 @@ import { TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { parameterSchemaSpecToJsonSchema } from '@deepseek-ai/dsh-tools'
 import { TEAMFLOW_DESCRIPTORS } from '../descriptors.ts'
-import { teamflowRoot, readJsonAny, writeJson, persistJournal, loadJournals } from '../store.ts'
+import { teamflowRoot, readJsonAny, writeJson, persistJournal, loadJournals, dshHome } from '../store.ts'
 import type { JournalRecord } from '../store.ts'
 import { fileAddressFor } from '@deepseek-ai/dsh-util-workspace-path'
 
-import { phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER } from './constants.ts'
-import { toText, clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, envFlagOn, confirmModeFromEnv, clarifyStrengthFromEnv } from './util.ts'
+import { phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER, PLUGIN_PACKAGE_NAME } from './constants.ts'
+import { toText, clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, envFlagOn, confirmModeFromEnv, clarifyStrengthFromEnv, detectInstallEnv, installCommand } from './util.ts'
 
-import { runtime, runs, setRuntime, setSessionProjections, setInstallCtx, workspaceScopeOf, getRun } from './core/agent/context.ts'
+import { runtime, runs, setRuntime, setSessionProjections, setInstallCtx, workspaceScopeOf, getRun, installCtx, inFlight } from './core/agent/context.ts'
 import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/domain/backlog.ts'
 import { runsFor, runAddress, productKeyOf, runVisibleIn, runBrief, productMetaOf, listProducts } from './core/workspace/products.ts'
 import { loadTeams, findTeam, teamNameOf, teamDescOf, type TeamConfig } from './core/domain/teams.ts'
@@ -33,7 +33,7 @@ import { loadState } from './core/domain/state.ts'
 import { isDangerousVcsRoot, dirTooLargeForBaseline } from './util.ts'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { mkdirSync, readdirSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync } from 'node:fs'
 
 /** 有界计数（决策问句里的"现有 N 个文件"；不精确——只采样，超阈值即停）。 */
 function countFilesBounded(dir: string, cap = 1000): number {
@@ -51,12 +51,13 @@ function countFilesBounded(dir: string, cap = 1000): number {
   walk(dir, 0)
   return n
 }
-import { startPipeline, resumeRun } from './core/pipeline.ts'
+import { startPipeline, resumeRun, selfModulePath, cliOnPath } from './core/pipeline.ts'
 import { cancelRun } from './core/agent/context.ts'
 import { MODE_REGISTRY, PIPELINE_MODES, MODE_RANK, normalizeMode, runTriage, guardrailUpgrade, triageCacheKey, triageCacheGet, triageCachePut, triageCacheMarkPending, triageCacheSettle, type TriageVerdict } from './core/triage.ts'
 import { t, modeDesc } from './locales.ts'
 import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.ts'
 import { noteClarifyAsked, noteTriageFallback } from './core/clarify-log.ts'
+import { checkForUpdate, skipVersion, updateCacheFile, upgradeGate, classifyInstallSource } from './core/update-check.ts'
 
 /* BacklogStore / storeFor 见 core/domain/backlog.ts（数据层与状态机）。 */
 
@@ -766,6 +767,45 @@ function tryFlushPendingInjections(sessionId: string): void {
   } catch (e) { /* inject 失败静默 */ }
 }
 
+/** 宿主的插件管理服务（**可选能力**）。走 `ctx.inject` 而非 `static inject`：精简 profile 里它可能
+ *  不存在，插件仍要能加载（同 `sessionProjections` 的处置）。ADR-0012 D2 的「真一键」靠它。 */
+let pluginManagerRef: any = null
+
+/** 活跃 run 数（升级门禁用）。**在飞子代理与 journal 的 running/pending 取大者**：
+ *  `inFlight` 是实时集但异常路径可能漏登记，journal 是落盘态但可能还没写。 */
+function activeRunCount(): number {
+  let n = 0
+  try { n = Math.max(n, inFlight ? inFlight.size : 0) } catch (e) { /* 忽略：门禁不因统计失败而放行 */ }
+  try {
+    let j = 0
+    for (const rec of runs.values()) {
+      const st = rec && rec.status
+      if (st === 'running' || st === 'pending') j++
+    }
+    n = Math.max(n, j)
+  } catch (e) { /* 忽略 */ }
+  return n
+}
+
+/**
+ * 本插件在**当前 profile** 里的依赖 spec 及其来源形态（ADR-0012：非 registry 不给一键）。
+ *
+ * ⚠️ 读不到一律 `unknown`——**保守方向**：不给一键、只给可复制的命令。
+ * 为什么值得单做一维：`upgradeSelf` 走 registry spec，对 `file:`/git/tarball 安装会**静默换源**
+ * （10-12 真机把 desktop 的本地 `file:` 装成了线上版）。
+ */
+function currentInstallSource(): { kind: 'registry' | 'other' | 'unknown'; spec: string | null } {
+  try {
+    const env = detectInstallEnv({ baseUrl: installCtx.baseUrl, modulePath: selfModulePath(), dshHome: dshHome(), hasCli: cliOnPath() })
+    if (!env.profileDir) return { kind: 'unknown', spec: null }
+    const pkg = JSON.parse(readFileSync(join(env.profileDir, 'package.json'), 'utf8')) as { dependencies?: Record<string, unknown> }
+    const raw = pkg && pkg.dependencies ? pkg.dependencies[PLUGIN_PACKAGE_NAME] : undefined
+    return { kind: classifyInstallSource(raw), spec: raw === undefined || raw === null ? null : String(raw) }
+  } catch (e) {
+    return { kind: 'unknown', spec: null }
+  }
+}
+
 export class TeamflowService extends TypertRemoteService {
   static inject = ['agents', 'subagents', 'typert', 'tools', 'llm']
 
@@ -780,6 +820,11 @@ export class TeamflowService extends TypertRemoteService {
     // 走 ctx.inject 而非 static inject——服务缺失（最小 profile）时插件仍加载，计量回退事件扫描。
     ctx.inject(['sessionProjections'], (projectionCtx) => {
       setSessionProjections(projectionCtx.get('sessionProjections'))
+    })
+    // 可选能力：宿主的插件管理服务（ADR-0012 D2「真一键」）。缺失 → 降级成「只给可复制的命令」，
+    // 不报错、不阻塞（`plugin-inventory` 也是这么判空的）。
+    ctx.inject(['pluginManager'], (mgrCtx) => {
+      pluginManagerRef = mgrCtx.get('pluginManager') || null
     })
     // 宿主显式语言（只读）：@deepseek-ai/dsh-client-locale 的 host face 注册 'locale' 命名空间；
     // 服务缺失/未注册 → undefined → 解析链降级（AC-10 不报错不阻塞）。
@@ -825,6 +870,94 @@ export class TeamflowService extends TypertRemoteService {
 
   ping() {
     return { ok: true }
+  }
+
+  /**
+   * 版本探测（ADR-0012）。工作台提示条按需拉一次；宿主插件页槽位复用同一份实现。
+   * `force=true` 忽略 24h 缓存——**只为 A/B 与端到端验证**（不 force 时第二次调用必然吃缓存，
+   * 「探测到底跑没跑」就验不出来）。
+   *
+   * ⚠️ 返回**永不抛**，失败也在对象里显式带 `error`（探测功能不得成为故障源，但也不能静默）。
+   */
+  async updateStatus(force?: boolean) {
+    try {
+      const status = await checkForUpdate({ force: force === true })
+      // 升级命令**按本机环境生成**，不写死 `--profile web`：源码运行（`dsh` 不在 PATH）、
+      // profile 名不同，都会让写死的命令在别人机器上跑不通。复用与流水线**同一套**探测
+      // （`detectInstallEnv` → `installCommand`）。
+      //
+      // ⚠️ 用 `installCommand`（**裸命令**）而不是 `installRecipe`（**给模型读的说明书**）：
+      // recipe 带 markdown 反引号与括注，直接拿去当「复制按钮的内容」会把反引号和说明一起
+      // 复制走（用户 2026-10-12 实测）。命令本体在 `installCommand` 里单点定义，recipe 复用它。
+      //
+      // `sourceKind` 让 UI 自己决定**要不要给一键**（非 registry 装法只能给命令）：
+      // 判据放在 host，UI 不做字符串判断（否则两处各判一次、迟早漂移）。
+      const src = currentInstallSource()
+      let command: string | null = null
+      if (status.outdated && status.latest) {
+        const env = detectInstallEnv({ baseUrl: installCtx.baseUrl, modulePath: selfModulePath(), dshHome: dshHome(), hasCli: cliOnPath() })
+        command = installCommand(env, `${PLUGIN_PACKAGE_NAME}@${status.latest}`)
+      }
+      return { ...status, command, sourceKind: src.kind, sourceSpec: src.spec }
+    } catch (e) {
+      // checkForUpdate 声明不抛；这里兜底是为了「宿主侧任何意外都不得冒到 client」。
+      return { enabled: true, current: '', latest: null, outdated: false, skipped: null, checkedAt: null, command: null, sourceKind: 'unknown', sourceSpec: null, error: `unexpected: ${(e as Error)?.message || 'unknown'}` }
+    }
+  }
+
+  /** 「跳过此版本」——跳过的**是具体版本号**，不是永久静默：更新的版本出现时会重新提示。
+   *  写盘失败要说出来（返回 `ok:false`），不静默吞掉。 */
+  skipUpdateVersion(version?: string) {
+    try {
+      const ok = skipVersion(updateCacheFile(), version)
+      return { ok, skipped: ok ? String(version ?? '') : null, error: ok ? null : 'invalid-version-or-write-failed' }
+    } catch (e) {
+      return { ok: false, skipped: null, error: (e as Error)?.message || 'write-failed' }
+    }
+  }
+
+  /**
+   * 真一键升级（ADR-0012 D2）。**只做一件事**：把「升级本插件」交给宿主的
+   * `pluginManager.installBundle()` —— 它自带备份/回滚、profile 写锁、registry 回退、兼容预检、
+   * install-script 审批、取消。**自己 spawn pnpm 是错的**：这些保障会全部漏掉。
+   *
+   * ⚠️ 知情责任在这一侧：该服务路径**绕过 `plugin_manager` 工具层的审批门槛**（审批写在
+   * `tools.ts`，不在服务里）⇒ 调用方（UI）必须先把「将在此 profile 执行 pnpm 安装、改动依赖」
+   * 摊给用户，本方法**不做静默升级**。活跃 run 存在时直接拒绝（门禁是纯函数 `upgradeGate`）。
+   *
+   * 结果一律用**宿主自己的权威结论**（`application` / `error.code` / `pendingBuilds`），
+   * 不自己解 pnpm 的 exitCode —— 那正是「代理判据」失效的经典形态。
+   */
+  async upgradeSelf(version?: string) {
+    const src = currentInstallSource()
+    const gate = upgradeGate({ hasManager: typeof pluginManagerRef?.installBundle === 'function', activeRuns: activeRunCount(), version, sourceKind: src.kind })
+    if (gate.ok !== true) {
+      return {
+        ok: false, needsRestart: false, spec: null, installedVersion: null,
+        activeRuns: gate.activeRuns, pendingBuilds: [], failedAt: null, error: gate.error,
+      }
+    }
+    try {
+      const result = await pluginManagerRef.installBundle(gate.spec)
+      const application = result && result.application
+      const ok = application === 'applied' || application === 'restart-required'
+      const err = result && result.error
+      return {
+        ok,
+        // `applied` 也要重启：新代码在磁盘上，当前进程里加载的仍是旧的。
+        needsRestart: ok,
+        spec: gate.spec,
+        // 宿主报告的**实际落盘版本**——可能与请求的不同（pnpm 的 minimumReleaseAge 会把刚发布的挡在观察期外）。
+        installedVersion: result && typeof result.version === 'string' ? result.version : null,
+        activeRuns: 0,
+        // 非空＝pnpm 拦下了安装脚本、等用户批准。这是**可行动的下一步**，不是失败。
+        pendingBuilds: Array.isArray(result && result.pendingBuilds) ? result.pendingBuilds : [],
+        failedAt: result && result.failedAt ? String(result.failedAt) : null,
+        error: ok ? null : `${(err && err.code) || application || 'install-failed'}${err && err.diagnostic ? `: ${err.diagnostic}` : ''}`,
+      }
+    } catch (e) {
+      return { ok: false, needsRestart: false, spec: gate.spec, installedVersion: null, activeRuns: 0, pendingBuilds: [], failedAt: null, error: `install-threw: ${(e as Error)?.message || 'unknown'}` }
+    }
   }
 
   /** 客户端语言上报（浏览器当前语言含系统探测结果）→ 写入运行期语言源；返回解析后的环境语言。 */

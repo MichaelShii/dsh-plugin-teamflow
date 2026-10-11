@@ -117,6 +117,28 @@ if (seen.sessions.size === 0) {
   else bad("没有任何 sessions.* 引用却仍 inject 'sessions'", dead.join(', '))
 }
 
+/* ── 宿主插件页槽位贡献（ADR-0012 D1-①）──
+   锁的是**「参数 → 实际使用」整条链**，不只锁调用点：光「注册了槽位名」不够——
+   宿主会用**任意插件的详情页**来调我们的贡献，所以守卫必须同时判 subject 形态与本包包名；
+   而守卫定义了却不被渲染组件调用，就等于「注册了但会渲染到别的插件页上」。 */
+const allClient = sources.map(([, src]) => stripComments(src)).join('\n')
+for (const slotName of ['plugins.detail.badge', 'plugins.detail.actions']) {
+  if (allClient.includes(`ctx.slots.inject('${slotName}'`)) ok(`注册了宿主插件页槽位 ${slotName}`)
+  else bad(`未注册 ${slotName}`, 'ADR-0012 D1-① 的落点缺失')
+}
+const guardDefs = (allClient.match(/function subjectIsOurs\b/g) || []).length
+const guardUses = (allClient.match(/subjectIsOurs\(/g) || []).length
+if (guardDefs === 1 && guardUses - guardDefs >= 2) ok('槽位守卫存在且被≥2 处渲染点调用', `定义 ${guardDefs} / 调用 ${guardUses - guardDefs}`)
+else bad('槽位守卫缺失或没被渲染组件用上', `定义 ${guardDefs} / 调用 ${guardUses - guardDefs} —— 定义而不调用＝注册了却会渲染到别的插件页上`)
+const guardBody = (allClient.match(/function subjectIsOurs[\s\S]{0,200}/) || [''])[0]
+if (guardBody.includes("kind === 'bundle'") && /name === PLUGIN_PKG/.test(guardBody)) ok('守卫同时判 subject 形态与本包包名')
+else bad('守卫判据不完整', "少了 kind === 'bundle' 或 name === PLUGIN_PKG —— 前者防串到 row/item 形态，后者防串到别的插件")
+// 包名常量必须与 host 侧同值（两处各写一份，对不上就永远不匹配）
+const clientPkg = /const PLUGIN_PKG = '([^']+)'/.exec(allClient)
+const hostPkg = /export const PLUGIN_PACKAGE_NAME = '([^']+)'/.exec(readFileSync(join(rootDir, 'host/constants.ts'), 'utf8'))
+if (clientPkg && hostPkg && clientPkg[1] === hostPkg[1]) ok('client 与 host 的包名常量一致', clientPkg[1])
+else bad('client 与 host 的包名常量不一致', `${clientPkg && clientPkg[1]} vs ${hostPkg && hostPkg[1]}`)
+
 console.log(
   failed === 0
     ? `\nclient-host-api: 全部通过（${files.length} 个客户端源文件 / sessions 用到 ${seen.sessions.size} 个成员 / uiWorkspace ${seen.uiWorkspace.size} 个）`

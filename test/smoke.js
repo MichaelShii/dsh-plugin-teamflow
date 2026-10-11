@@ -19,7 +19,7 @@ const ok = (cond, msg) => {
 const assert = (cond, msg) => { if (!cond) { throw new Error(`assert failed: ${msg}`) } }
 
 console.log('── 1) descriptors 校验（typert validateInvocation 规则）──')
-assert(Array.isArray(TEAMFLOW_DESCRIPTORS) && TEAMFLOW_DESCRIPTORS.length === 23, '应有 23 个 Remote 描述符')
+assert(Array.isArray(TEAMFLOW_DESCRIPTORS) && TEAMFLOW_DESCRIPTORS.length === 26, '应有 26 个 Remote 描述符')
 const endpoints = new Set()
 const ids = new Set()
 for (const d of TEAMFLOW_DESCRIPTORS) {
@@ -137,7 +137,7 @@ console.log('── 3) host 模块结构 ──')
 // v0.2.5：core 已按职责分子目录（stages/ agent/ workspace/ domain/，pipeline/triage/locale/report 留根）；
 // 这里写**相对 core 的路径**（含子目录），与 smoke 的「真实文件 ⊆ 清单」门禁同一坐标系。
 const CORE_FILES = [
-  'pipeline', 'triage', 'clarify-log', 'confirm', 'locale', 'report', // core 根：编排门面 + 分诊决策 + 澄清埋点 + PRD 确认单 + 语言/汇报横切
+  'pipeline', 'triage', 'clarify-log', 'confirm', 'locale', 'report', 'update-check', // core 根：编排门面 + 分诊决策 + 澄清埋点 + PRD 确认单 + 语言/汇报横切 + 版本探测
   'stages/dev', 'stages/qa', 'stages/acceptance', // stages/：流水线各阶段的实现
   'agent/context', 'agent/runner', 'agent/guard', 'agent/metering', // agent/：子代理生命周期
   'workspace/sanity', 'workspace/runlogs', 'workspace/acl-preflight', 'workspace/products', 'workspace/browser-probe', // workspace/
@@ -163,7 +163,7 @@ ok(/ownerSession: j\.ownerSession \|\| null/.test(hostSrc), 'host：run 快照/�
 ok(/class TeamflowService extends TypertRemoteService/.test(hostSrc), 'TeamflowService extends TypertRemoteService')
 ok(/static inject = \['agents', 'subagents', 'typert', 'tools', 'llm'\]/.test(hostSrc), 'static inject 完整（tokenMeter 死注入已清理）')
 ok(/ctx\.typert\.register\(\{[\s\S]*invocations: TEAMFLOW_DESCRIPTORS/.test(hostSrc), 'typert.register 注册 strict descriptors')
-for (const m of ['ping', 'setLocale', 'list', 'snapshot', 'start', 'cancel', 'backlog', 'backlogUpdate', 'assign', 'pause', 'resumeSession', 'listTeams', 'selectTeam', 'getActiveTeam', 'clearTeam', 'resume', 'stageDetail', 'itemDetail', 'products', 'productView', 'productRunDetail', 'productStageDetail', 'productItemDetail']) {
+for (const m of ['ping', 'setLocale', 'list', 'snapshot', 'start', 'cancel', 'backlog', 'backlogUpdate', 'assign', 'pause', 'resumeSession', 'listTeams', 'selectTeam', 'getActiveTeam', 'clearTeam', 'resume', 'stageDetail', 'itemDetail', 'products', 'productView', 'productRunDetail', 'productStageDetail', 'productItemDetail', 'updateStatus', 'skipUpdateVersion', 'upgradeSelf']) {
   ok(new RegExp(`\\n  (?:async )?${m}\\(`).test(hostSrc), `Remote 方法 ${m}()`)
 }
 ok(/export default TeamflowService/.test(hostSrc), '默认导出 TeamflowService')
