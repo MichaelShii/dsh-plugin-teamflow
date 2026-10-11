@@ -122,23 +122,25 @@ If behaviour looks wrong after a dsh upgrade, check two things first: ① the se
 
 ## Install (for users)
 
+**Install from the in-app "Plugins" page** — web and desktop share the **same page**: sidebar →
+Plugins → "**Add plugin**" (or "More → Install third-party plugin") → enter an **npm package name**
+(`dsh-plugin-teamflow`), a **GitHub repo URL** or a **local directory path**.
+
+> ⚠️ **Install once per end**: the desktop app (dsh 0.2.0+) runs from a separate `desktop` profile
+> (`~/.dsh/profiles/desktop`) with its own `node_modules` — install it on one end only and **the other
+> end will not show the plugin** (nothing is broken). The page itself is the same on both; the only
+> difference is **which profile it lands in**.
+
+The command line is an **equivalent alternative** (handy for scripting / provisioned machines; the CLI
+refuses `--profile desktop` since that profile is Electron-managed):
+
 ```bash
-# Install from npm (after publish) — into the web profile
+# Install from npm — into the web profile
 dsh plugin --profile web add dsh-plugin-teamflow
 
-# Or local directory install (during development)
+# Local source directory (during development)
 dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 ```
-
-> ⚠️ **The desktop app (dsh 0.2.0+) needs its own install**: it runs from a separate `desktop`
-> profile (`~/.dsh/profiles/desktop`) with its own `node_modules` — install it only into `web` and
-> **the desktop app will not show the plugin** (nothing is broken). The CLI also **refuses**
-> `--profile desktop` (`managed exclusively by the Electron application`) ⇒ **manage the desktop
-> copy from the "Plugins" page inside the desktop app**.
->
-> ℹ️ **Both ends have a built-in "Plugins" page** (sidebar → Plugins): web and desktop share the
-> **same page**, where you can see the version, enable/disable and uninstall. The only difference is
-> **which profile it lands in** — install once per end (or run the command once per end).
 
 After install, **restart** `dsh --profile web` (or restart the desktop app) for the host `teamflow-host` to take effect:
 - The model side gains 12 `teamflow_*` tools: `start / triage / status / backlog / claim / update / assign / cancel / resume / pause / resume_session / merge`;
@@ -161,13 +163,18 @@ for desktop (the CLI does not accept `--profile desktop`).
 
 **Registry installs** (installed from `npm`) can upgrade with **one click**: click "Upgrade to x.y.z" on the banner → confirm → **restart** `dsh --profile web` (or restart the desktop app). Local / git / tarball installs get **no one-click button** (one click would silently swap the dependency to the registry version) — only a copyable command.
 
-Command-line upgrade (the equivalent manual path):
+> ℹ️ **Why this beats uninstall + reinstall**: the host "Plugins" page offers "Update" for **official
+> plugins only**; for third-party plugins (this one included) its own wording is "uninstall first, then
+> install the new version". The badge and the upgrade button this plugin contributes to that page fill
+> exactly that gap: no uninstall, dependencies updated in place by the host service.
+
+Command-line upgrade (equivalent alternative, handy for scripting):
 
 ```bash
 # web profile
 dsh plugin --profile web add dsh-plugin-teamflow@latest
 
-# For the desktop app, use the in-app plugin management page (the CLI refuses --profile desktop)
+# For the desktop app, use the in-app "Plugins" page (the CLI refuses --profile desktop)
 ```
 
 Don't want a specific version nagging you? The banner has "Skip this version" — it skips that **exact version**; a newer one will still notify you.
