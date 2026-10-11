@@ -1,4 +1,4 @@
-<!-- 通稿 · 中文版 · 锚定 **v0.2.0**（2026-09-23）· 投放平台待定（GitHub Discussion / 站外中文社区均可，正文不假设平台）
+<!-- 通稿 · 中文版 · 锚定 **v0.2.0**（2026-09-23）· 实际投放：`deepseek-ai/deepseek-harness` Discussions [#7539](https://github.com/deepseek-ai/deepseek-harness/discussions/7539)（2026-09-22 19:20 UTC，`Show Your Plugins!` 分类；订正于 2026-10-11——原记为「投放平台待定」）
      **本版默认发英文稿**（`show-your-plugin-v0.2.0.en.md`），本文件是正文首行跳转的目标。
      建议标题（发帖时用）：
        ▶ 主选 dsh-plugin-teamflow v0.2.0：把「一句话需求」跑成可验收交付

@@ -88,7 +88,7 @@
 
 - 🔜 **护栏复读检测迁出弃用读取器（唯一剩余处）**：提醒通道已改官方 `Agent.inject`、挂死检测已改官方 `subagentTiming` 投影（v0.1.7）；只剩**复读检测**仍读事件（需要流式文本内容）。官方替代是**订阅 `'session/event'` post-commit 投递**（`packages/core/session/src/index.ts:62-72`，agent-scoped 过滤）——把 15s 轮询 + 历史扫描换成增量推送。**动手前先定等价判据**（判据漂移直接影响误杀率：参考 tf-mte906e9 退化误判、json-parse r1 挂死误杀两次实锤）。
 
-- 🔜 **AGENTS.md §5 余量很浅**：`test/instruction-budget.test.js` 实测 §5 **5,907 B / 上限 6,144 B（余量 237 B）**、全文 **20,297 B / 22 KiB**。门禁读的是**工作树原样字节**，Windows 下 `core.autocrlf` 交付 CRLF（同一份内容为 LF 时是 5,881 / 20,177 B，差 ~26 / ~120 B），余量随 checkout 波动。下一条不变量锚点加入前**必须先压缩**（把某行的论证再迁 `docs/anchors/`），否则门禁直接红。
+- 🔜 **AGENTS.md 预算余量已近见底（2026-10-12 复测，比原记录紧得多）**：`test/instruction-budget.test.js` 实测 §5 **6,119 B / 上限 6,144 B（余量仅 25 B）**、全文 **22,210 B / 22,528 B（余 318 B）**（原记录 5,907 / 20,297 已过期；本日仅给 §2 添 1 条 ADR 指针就吃掉约 100 B）。门禁读的是**工作树原样字节**，Windows 下 `core.autocrlf` 交付 CRLF（同一份内容为 LF 时约少 120 B），余量随 checkout 波动。⇒ **下一条 §5 锚点加入前必须先压缩**（把某行论证再迁 `docs/anchors/`），否则门禁直接红；§2 的 ADR 清单也在同一份预算里，继续追加需一并考虑。
 
 - **`STAGE_TOKEN_BUDGET=60k` 硬编码** → 可升级为 service Config（熔断阈值可调）。
 
@@ -105,6 +105,18 @@
 - **客户端渲染组件分叉**：`client/shared.tsx` 只统一了主题/词表/格式化，`TeamFlowView`/`PipelinePanel`（会话内）与 `panel.tsx` 的 `RunList`/`BacklogGroups`/`RunDetailPane`（全局 + 右栏）仍是两套渲染实现——收敛成一个组件族（数据源差异用 adapter 表达：sessionId 寻址 vs 产品线寻址），否则后续每加一个字段都要改两处。
 
 - **工作台「列出子代理」改用 `ctx.subagents.listChildren`**（官方 API，覆盖 one-shot + continuable，带 `activity`）；注意它**无 `createdAt`/`runId`/`outcome`**——run 顺序与归属仍以 journal 为准。
+
+### 升级与分发
+
+- 🔜 **升级提示 ＋ 一键升级（ADR-0012；2026-10-12 定档）**：落点＝**宿主插件页槽位**（`plugins.detail.badge`/`.actions`，社区插件本来拿不到这个位置）＋ **TeamFlow 工作台**；动作＝**真一键**（调 `ctx.pluginManager.installBundle(spec)`——**服务层不调 `inspect`**，可原地升级，且自带备份/回滚/profile 写锁/registry 回退/兼容预检/install-script 审批，**不自己 spawn pnpm**）。根因是**发现**与**操作成本**，不是可达性（实测：两源同为 0.2.7、`dsh plugin … add` 参数逐字直通 pnpm；⚠️ `minimumReleaseAge` **是启用的**（24h 窗口，10-12 修正），但它咬的是**范围/`latest` 解析**，我们用的**精确版本 spec** 实测能装上）。实现三条硬要求：① 按钮/确认文案必须明说「将在此 profile 执行 pnpm 安装、改动依赖」——该服务路径**绕过 `plugin_manager` 工具层的审批门槛**，知情责任在我方；② **有活跃 run 时禁用或推迟**（避免抢 profile 锁、打断阶段）；③ 升完提示**需重启**才加载新代码。⚠️ **本功能对存量用户第一次触达无效**（老版本没有它）⇒ **必须配一次性、与版本无关的外部触达**（通稿 / README / issue 模板写明升级命令），这是唯一存量杠杆。未决 4 条已于 10-12 全部定档（见 ADR-0012 §已定档）。**切片 1（探测底座 ＋ 工作台提示条）与切片 3（真一键）已实现**（`host/core/update-check.ts` ＋ `test/update-check.test.js` ＋ 工作台提示条；门禁 `upgradeGate` 为纯函数、有单测；client 侧真一键做**两步确认**不直装）。
+
+- ✅ **切片 2 已实现并在真机验证 —— 订正：我一度误判为「宿主不支持」**：`client/index.tsx` 用 `ctx.slots.inject('plugins.detail.badge'|'plugins.detail.actions', …)` 注册「有新版本 x.y.z」标签与「升级到 x.y.z」按钮，只对 `subject.kind==='bundle' && subject.pkg.name==='dsh-plugin-teamflow'` 渲染（`subjectIsOurs`）。**误判原因**：我只 grep 了 `~/.dsh/profiles/node_modules`，而桌面版**从源码仓的构建产物**（`packages/client/ui-plugin-manager/lib/client.js`）加载该页面 ⇒ **把「profile 里查不到」当成了「宿主没有」**。**判据已修正**并写进 `MEMORY-playbook` §D：问「宿主有没有这个能力」还要查**正在跑的构建产物**与**用户界面本身**。门禁：`test/client-host-api.test.js` 锁「注册名 → 守卫判据 → 渲染点调用 → 两处包名常量一致」**整条链**（变异证明：去掉包名判据 ⇒ 恰好 1 条红）。真机证据：用户在插件列表页看到该标签与按钮，点击后升级成功。
+
+- ✅ **真一键的「非 registry 来源」判据已补（10-12 同日闭环）**：`upgradeSelf` 用 registry spec ⇒ 对 `file:`/git/tarball 安装会把依赖**静默换源**（真机把 desktop 的本地 `file:` 装成了线上 0.2.7）。已加：host 侧 `classifyInstallSource()`（纯函数，`file:`/`link:`/`workspace:`/`portal:`/`git*:`/`github:`/本地路径/tarball 直链/scp 形态 → `other`；版本范围与 `latest`/`npm:` 别名 → `registry`；认不出 → `unknown`）＋ `upgradeGate()` 新增 `not-registry-install`（**非 `registry` 一律拒，含 `unknown`**，且排在 `run-in-progress` **之前**——永久性原因压过临时性）；UI 侧 `canOneClick()` 提前不显示按钮、改显示说明。**变异证明**：去掉该维 ⇒ 恰好 4 条红（原有的 run-in-progress 等仍绿）。**真机端到端实测**：desktop 的真实 spec `file:E:/…` → `other` → 门禁 `not-registry-install` ⇒ 一键被拦下 ✓。
+
+
+
+- 🔜 **上游议题（dsh 侧，**只能上报、不能提 PR**——宿主不接受外部 PR）**：宿主 `updateAvailable()` 只认官方目录的 `installTarget`（`packages/boot/plugin-manager/src/index.ts:300-303` 由 `officialBundleInstallTarget` 产出）⇒ **社区插件永远拿不到「可更新」**，文案还把第三方导向「卸载再装」。建议以 **issue 上报**（给 `updateAvailable()` 增 registry latest 比对分支 ＋ 给社区插件一条原地升级动作）。**前置**：先定供应链策略（是否自动安装最新版、与 `minimumReleaseAge` 的关系）。⚠️ **不得当成会落地的依赖**——本插件自己的三条落点（探测 / 工作台提示 / 调 `installBundle`）**都不需要宿主改码**。
 
 ### 工程与工具链
 

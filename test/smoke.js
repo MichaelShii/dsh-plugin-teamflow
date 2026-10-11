@@ -19,7 +19,7 @@ const ok = (cond, msg) => {
 const assert = (cond, msg) => { if (!cond) { throw new Error(`assert failed: ${msg}`) } }
 
 console.log('── 1) descriptors 校验（typert validateInvocation 规则）──')
-assert(Array.isArray(TEAMFLOW_DESCRIPTORS) && TEAMFLOW_DESCRIPTORS.length === 23, '应有 23 个 Remote 描述符')
+assert(Array.isArray(TEAMFLOW_DESCRIPTORS) && TEAMFLOW_DESCRIPTORS.length === 26, '应有 26 个 Remote 描述符')
 const endpoints = new Set()
 const ids = new Set()
 for (const d of TEAMFLOW_DESCRIPTORS) {
@@ -137,7 +137,7 @@ console.log('── 3) host 模块结构 ──')
 // v0.2.5：core 已按职责分子目录（stages/ agent/ workspace/ domain/，pipeline/triage/locale/report 留根）；
 // 这里写**相对 core 的路径**（含子目录），与 smoke 的「真实文件 ⊆ 清单」门禁同一坐标系。
 const CORE_FILES = [
-  'pipeline', 'triage', 'clarify-log', 'confirm', 'locale', 'report', // core 根：编排门面 + 分诊决策 + 澄清埋点 + PRD 确认单 + 语言/汇报横切
+  'pipeline', 'triage', 'clarify-log', 'confirm', 'locale', 'report', 'update-check', // core 根：编排门面 + 分诊决策 + 澄清埋点 + PRD 确认单 + 语言/汇报横切 + 版本探测
   'stages/dev', 'stages/qa', 'stages/acceptance', // stages/：流水线各阶段的实现
   'agent/context', 'agent/runner', 'agent/guard', 'agent/metering', // agent/：子代理生命周期
   'workspace/sanity', 'workspace/runlogs', 'workspace/acl-preflight', 'workspace/products', 'workspace/browser-probe', // workspace/
@@ -163,7 +163,7 @@ ok(/ownerSession: j\.ownerSession \|\| null/.test(hostSrc), 'host：run 快照/�
 ok(/class TeamflowService extends TypertRemoteService/.test(hostSrc), 'TeamflowService extends TypertRemoteService')
 ok(/static inject = \['agents', 'subagents', 'typert', 'tools', 'llm'\]/.test(hostSrc), 'static inject 完整（tokenMeter 死注入已清理）')
 ok(/ctx\.typert\.register\(\{[\s\S]*invocations: TEAMFLOW_DESCRIPTORS/.test(hostSrc), 'typert.register 注册 strict descriptors')
-for (const m of ['ping', 'setLocale', 'list', 'snapshot', 'start', 'cancel', 'backlog', 'backlogUpdate', 'assign', 'pause', 'resumeSession', 'listTeams', 'selectTeam', 'getActiveTeam', 'clearTeam', 'resume', 'stageDetail', 'itemDetail', 'products', 'productView', 'productRunDetail', 'productStageDetail', 'productItemDetail']) {
+for (const m of ['ping', 'setLocale', 'list', 'snapshot', 'start', 'cancel', 'backlog', 'backlogUpdate', 'assign', 'pause', 'resumeSession', 'listTeams', 'selectTeam', 'getActiveTeam', 'clearTeam', 'resume', 'stageDetail', 'itemDetail', 'products', 'productView', 'productRunDetail', 'productStageDetail', 'productItemDetail', 'updateStatus', 'skipUpdateVersion', 'upgradeSelf']) {
   ok(new RegExp(`\\n  (?:async )?${m}\\(`).test(hostSrc), `Remote 方法 ${m}()`)
 }
 ok(/export default TeamflowService/.test(hostSrc), '默认导出 TeamflowService')
@@ -515,7 +515,7 @@ ok(/!verdict\.ok && text && stop === 'completed'/.test(runnerSrc), 'runner：**�
 ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
-ok(/"version": "0\.2\.7"/.test(pkgSrc), 'package.json：版本 0.2.7（release-v0.2.7 开发线）')
+ok(/"version": "0\.2\.8"/.test(pkgSrc), 'package.json：版本 0.2.8（release-v0.2.8 开发线）')
 // 安装期钩子白名单：只有 prepare 可以在消费者安装时**不**运行。
 // 实锤（2026-10-03 用户实锤）：v0.2.5 的 `postinstall: lefthook install` 在**消费者从 registry 安装**时也会跑，
 // 而 lefthook 是 devDependency（tarball 里不存在）⇒ `npm error 'lefthook' 不是内部或外部命令` ⇒ **整个安装失败**。

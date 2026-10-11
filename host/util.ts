@@ -181,6 +181,26 @@ export function isAbsolutePath(p: unknown): boolean {
   return s.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(s) || s.startsWith('\\\\')
 }
 
+/**
+ * **用户可直接复制粘贴的裸命令**（无 markdown 反引号、无散文说明、无括注）。
+ *
+ * ⚠️ 必须与 `installRecipe` **分开**：后者是**给模型读的说明书**，天然带反引号与括注
+ * （`\`dsh plugin …\``（在插件目录执行；dsh 在 PATH 上））。直接拿它去填「复制按钮的内容」
+ * 会把反引号和说明文字一起复制走 —— 用户粘到终端里就是废命令（2026-10-12 真机实测）。
+ *
+ * 可泛化的纪律：**一个字符串若有两个消费者（模型读 / 用户复制），它就有两份契约，不能复用**
+ * `installRecipe` 是「说明书」，本函数是「命令」；两者共用本函数的命令本体，就不会各自漂移。
+ *
+ * @returns 探测失败（不知道往哪个 profile 装）→ `null`：**宁可没有按钮可点，也不给一条错的命令**。
+ */
+export function installCommand(env: InstallEnv, pkgSpec: string): string | null {
+  if (!env.ok) return null
+  if (env.cliOnPath) return `dsh plugin --profile ${env.profile} add "${pkgSpec}"`
+  // dsh 不在 PATH（源码运行 / `pnpm dsh`）⇒ 没有「一条命令搞定」的形态，退到 profile 目录里手工装。
+  // `cd` 进绝对目录是必要的：命令会在任意 cwd 下被用户粘贴。
+  return `cd "${env.profileDir}" && pnpm add "${pkgSpec}"`
+}
+
 /** 安装入口文案：**以探测结果为准**，不写死任何 profile 名/路径；探测失败 → 明确要求"问用户"，不猜。 */
 export function installRecipe(env: InstallEnv, pkgSpec: string, pkgName: string, locale: HostLocale = 'zh'): string {
   if (!env.ok) {
@@ -189,9 +209,10 @@ export function installRecipe(env: InstallEnv, pkgSpec: string, pkgName: string,
       : '未能探测到 profile 目录（DSH_HOME / profile 名不可得）——**问用户**他的 profile 在哪，**不要猜**。'
   }
   if (env.cliOnPath) {
+    // ⚠️ 命令本体来自 `installCommand`（单一来源）：这里只负责给它套上「说明书的衣服」。
     return locale === 'en'
-      ? `\`dsh plugin --profile ${env.profile} add "${pkgSpec}"\` (run from the plugin directory; dsh is on PATH)`
-      : `\`dsh plugin --profile ${env.profile} add "${pkgSpec}"\`（在插件目录执行；dsh 在 PATH 上）`
+      ? `\`${installCommand(env, pkgSpec)}\` (run from the plugin directory; dsh is on PATH)`
+      : `\`${installCommand(env, pkgSpec)}\`（在插件目录执行；dsh 在 PATH 上）`
   }
   return locale === 'en'
     ? `dsh is NOT on PATH (source-run / \`pnpm dsh\`) → equivalent manual steps IN the profile dir \`${env.profileDir}\`: 1) \`pnpm add "${pkgSpec}"\`; 2) the package joins \`dsh.profile.bundles\` automatically once its package.json declares \`dsh.bundle.patch\` (add the name manually otherwise); 3) restart the host and confirm it loads. Package name \`${pkgName}\`.`

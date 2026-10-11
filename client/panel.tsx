@@ -13,6 +13,7 @@
  */
 import React from 'react'
 import { T, h, MONO, SANS, flexRow, chip, FoldableText, CancelButton, stColor, stText, fmtTime, fmtDur, fmtTokens, totalTokens, hitRate, phaseIconOf, byRoleLine, stageUsageLine, runStatusText, kindTitle, stageLabelOf, stageStatusText, t } from './shared.js'
+import { useUpdateStatus, UpgradeButton, canOneClick, UpdateHint } from './update-ui.js'
 
 /* ── 右栏 run tab 的类型标识（host 生成地址，client 只解析） ────────── */
 export const RUN_TAB_ID = 'dsh-plugin-teamflow/run'
@@ -566,6 +567,12 @@ export function GlobalPanel(props) {
     try { return useSessions ? useSessions((s) => s.current) : undefined } catch (e) { return undefined }
   })()
   const [state, setState] = React.useState({ products: [], current: null, view: null, err: null, busy: false })
+  /* 检查更新（ADR-0012）：`useUpdateStatus` 挂载自动探一次（吃 24h 缓存）；
+     `recheck()` 才是**手动强制重查**——必须 force，否则点两次都只是重读同一份缓存。 */
+  const [upd, , recheck] = useUpdateStatus(remote)
+  const [checking, setChecking] = React.useState(false)
+  /** 手动查过没有：决定要不要显示「已是最新」这类结论（自动探测不报，避免常驻噪音）。 */
+  const [checked, setChecked] = React.useState(false)
   const [detail, setDetail] = React.useState(null)        // 单一事实源：{ kind:'item'|'run', data, run? } —— 同一时刻只可能有一个详情
   const [hint, setHint] = React.useState(null)            // 面板内可见提示（不再只进 console）
   const [runsExpanded, setRunsExpanded] = React.useState(false)  // run 列表：默认折叠到 RUN_PREVIEW
@@ -778,7 +785,30 @@ export function GlobalPanel(props) {
             if (layout && layout.selectPanel) layout.selectPanel(null)
           } catch (e) { /* ignore */ }
         },
-      }, t('panel.backToChat')))),
+      }, t('panel.backToChat')),
+      /* 检查更新（ADR-0012）：这是**唯一的手动入口**——别处都是挂载时自动探一次、且只吃 24h 缓存。
+         刻意与工作台 / 宿主插件页共用同一份 `useUpdateStatus` + `UpgradeButton`，不在面板里另做一套。 */
+      h('button', {
+        style: panelBtn,
+        disabled: checking,
+        title: t('panel.checkUpdateTip'),
+        onClick: () => { setChecking(true); recheck().finally(() => { setChecking(false); setChecked(true) }) },
+      }, checking ? t('panel.checking') : t('panel.checkUpdate')),
+      /* 结论行：**有新版本**时不再另写整句——工具条横向空间紧张，整句会把它撑成一段话
+         （用户 10-12 反馈「有点突兀」）。registry 装法直接给按钮；非 registry 给**感叹号 + 版本号**，
+         全文进 `title` 悬浮可读（见 `UpdateHint`）。「已是最新 / 查不到」只在**手动查过之后**显示，
+         避免常驻噪音；功能被关掉时 `outdated` 恒 false ⇒ 什么都不说。 */
+      canOneClick(upd)
+        ? h(UpgradeButton, { api: remote, latest: upd.latest })
+        : upd && upd.outdated
+          ? h(UpdateHint, { label: `⚠ ${String(upd.latest)}`, command: upd.command })
+          : checked && upd
+            ? h('span', { style: { fontSize: 11, color: upd.error ? T.warn : T.text2 } },
+              upd.error
+                ? (upd.error === 'registry-unreachable' ? t('update.unavailable') : t('update.failed', { reason: String(upd.error) }))
+                : t('panel.upToDate', { version: String(upd.current) }))
+            : null)),
+
   state.err ? h('div', { style: { padding: '6px 14px', fontSize: 11, color: T.error, borderBottom: `1px solid ${T.border}` } }, state.err) : null,
   hint ? h('div', { style: { ...flexRow, justifyContent: 'space-between', gap: 8, padding: '6px 14px', fontSize: 11, color: T.warn, borderBottom: `1px solid ${T.border}`, background: `color-mix(in srgb, ${T.warn} 8%, transparent)` } },
     h('span', null, hint),

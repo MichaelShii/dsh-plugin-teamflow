@@ -17,6 +17,7 @@ import { TEAMFLOW_REMOTE_CONTRIBUTION } from '../descriptors.js'
 import { T, phaseNameOf, phaseIconOf, phaseKeyOf, COLUMNS, h, MONO, SANS, flexRow, chip, FoldableText, CancelButton, fmtDur, fmtTokens, totalTokens, usageDetail, stageUsageLine, byRoleLine, totalUsage, stText, stColor, runStatusText, kindTitle, roleChip, stageLabelOf, stageStatusText, t, setTranslator, localeTag } from './shared.js'
 import { NS, zh, en } from './locales.js'
 import { GlobalPanel, TeamflowPanelIcon, RunDetailTab, runTabDefinition, RUN_TAB_ID } from './panel.js'
+import { useUpdateStatus, UpgradeButton, canOneClick, UpdateHint, NO_WRAP } from './update-ui.js'
 import { fitScale, zoomBy as applyZoomFactor, pinchView, pointerDist, pickViewMode, LIST_BREAKPOINT } from './viewport.js'
 
 // uiWorkspace：跳会话唯一入口（0.1.7-alpha.1 起 `uiWorkspace.openSession(target)` 取代已移除的 `sessions.openSubagent` / `sessions.open`）
@@ -1043,6 +1044,45 @@ function unwrap(res: RpcEnvelope | undefined | null, what?: string): any {
 
 /** teamflow 服务实例的调用面（$mount 后由 ctx.get 取得，方法返回 RPC 信封）。
  *  各方法带 sessionId：host 按该会话所属 workspace（项目）过滤，不同 workspace 数据互不可见。 */
+/** 「升级」类小按钮的样式（模块级：`chipBtn` 定义在 TeamFlowView 内部，这里用不了）。 */
+/* 「有新版本 / 升级」这套 UI 已抽到 `update-ui.tsx` —— 工作台、全局面板、宿主插件页三处共用一份。 */
+
+/** 本插件在 registry 上的包名（与 host 侧 `PLUGIN_PACKAGE_NAME` 同值）。 */
+const PLUGIN_PKG = 'dsh-plugin-teamflow'
+
+/* 版本探测 hook 也已抽到 `update-ui.tsx`（三处共用；手动「检查更新」走它的强制重查）。 */
+
+/**
+ * 宿主插件页详情页的 subject 是不是**我们**（ADR-0012 D1-①）。
+ * 纯函数：宿主会拿**任意**插件的详情页来调我们的贡献，必须自己判、判错就会串台到别的插件页上。
+ */
+function subjectIsOurs(subject: any): boolean {
+  return !!subject && subject.kind === 'bundle' && !!subject.pkg && subject.pkg.name === PLUGIN_PKG
+}
+
+/** 宿主插件页 · 标题旁的「有新版本」标签。只对本包渲染，其余 subject 一律返回 null。 */
+function PluginsUpdateBadge(props: { subject?: unknown; remote?: unknown }) {
+  const ours = subjectIsOurs(props && props.subject)
+  const [st] = useUpdateStatus(ours ? props.remote : null)
+  if (!ours || !st || !st.outdated) return null
+  return h('span', {
+    'data-teamflow-update-badge': '',
+    style: { fontSize: 11, padding: '1px 8px', borderRadius: 999, border: `1px solid ${T.brand}`, color: T.brand, fontFamily: MONO },
+  }, t('update.title', { version: String(st.latest) }))
+}
+
+/** 宿主插件页 · 头部动作：复用工作台那个**两步确认**的 UpgradeButton（不在这里另做一套直装）。
+ *  非 registry 装法不给按钮，改给一个感叹号（全文进 tooltip）——头部是工具条，铺整句会撑开。
+ *  旁边的 `PluginsUpdateBadge` 已经写了「有新版本 x.y.z」，故这里只给纯图标。 */
+function PluginsUpdateAction(props: { subject?: unknown; remote?: unknown }) {
+  const ours = subjectIsOurs(props && props.subject)
+  const [st] = useUpdateStatus(ours ? props.remote : null)
+  if (!ours || !st || !st.outdated) return null
+  return canOneClick(st)
+    ? h(UpgradeButton, { api: (props.remote || null) as TeamflowRemote | null, latest: st.latest })
+    : h(UpdateHint, { command: st.command })
+}
+
 interface TeamflowRemote {
   list(sessionId?: string | null): Promise<RpcEnvelope>
   snapshot(runId?: string | null, sessionId?: string | null): Promise<RpcEnvelope>
@@ -1060,6 +1100,12 @@ interface TeamflowRemote {
   cancel(runId: string): Promise<RpcEnvelope>
   stageDetail(runId: string, seq: number, sessionId?: string | null): Promise<RpcEnvelope>
   itemDetail(kind: string, id: string, sessionId?: string | null): Promise<RpcEnvelope>
+  /** 版本探测（ADR-0012）：**只读且永不抛**，失败也在返回值里显式带 `error`。 */
+  updateStatus(force?: boolean): Promise<RpcEnvelope>
+  /** 跳过**这一版**（不是永久静默）：更新的版本出现时会重新提示。 */
+  skipUpdateVersion(version?: string): Promise<RpcEnvelope>
+  /** 真一键升级（ADR-0012 D2）：转调宿主的 `pluginManager.installBundle`，**不做静默升级**。 */
+  upgradeSelf(version?: string): Promise<RpcEnvelope>
 }
 
 interface TeamFlowViewProps {
@@ -1082,6 +1128,10 @@ function TeamFlowView(props: TeamFlowViewProps) {
   const [runId, setRunId] = React.useState(null)
   const [tab, setTab] = React.useState('pipeline')
   const [busy, setBusy] = React.useState(false)
+  /** 版本探测（ADR-0012）：`null` ＝ 还没查 / 查不到 —— 两种情况都不显示提示条。走与插件页共用的 hook。 */
+  const [upd, setUpd] = useUpdateStatus(api)
+  /** 复制按钮的瞬时反馈：`null` 未点 / `'ok'` 已复制 / `'fail'` 复制失败（要有可见降级）。 */
+  const [copyState, setCopyState] = React.useState<string | null>(null)
 
   const refresh = React.useCallback(async () => {
     if (!api) { setState((s) => ({ ...s, err: t('common.remoteNotReady') })); return }
@@ -1104,6 +1154,17 @@ function TeamFlowView(props: TeamFlowViewProps) {
     const t = setInterval(refresh, 2000)
     return () => clearInterval(t)
   }, [refresh])
+
+  /** 复制升级命令。**失败必须可见**（并把命令留在条里让用户手抄）——点了没反应最糟。 */
+  const copyCommand = (cmd: string) => {
+    const text = String(cmd || '')
+    const nav = typeof navigator === 'undefined' ? null : navigator
+    if (nav && nav.clipboard && typeof nav.clipboard.writeText === 'function') {
+      nav.clipboard.writeText(text).then(() => setCopyState('ok')).catch(() => setCopyState('fail'))
+      return
+    }
+    setCopyState('fail')
+  }
 
   const { runs, active, backlog, err, workspace } = state
   const total = totalUsage(active && active.stages)
@@ -1281,6 +1342,40 @@ function TeamFlowView(props: TeamFlowViewProps) {
         : null,
     ),
 
+    /* 升级提示条（ADR-0012 D1-②）：**只在真有新版、且用户没跳过该版**时出现。
+       条内三个动作：复制命令（按本机环境生成）、**真一键**（`UpgradeButton`，内部两步确认
+       ＋ run 中拦截，见 D2）、跳过这一版（跳过的是**具体版本号**）。 */
+    upd && upd.outdated
+      ? h('div', { 'data-teamflow-update-bar': '', style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', padding: '6px 10px', borderRadius: 8, background: T.layer2, border: `1px solid ${T.border}` } },
+        h('span', { style: { fontSize: 12 } }, t('update.title', { version: String(upd.latest) })),
+        h('span', { style: { fontSize: 11.5, color: T.text2 } }, t('update.currentHint', { current: String(upd.current) })),
+        upd.command
+          ? h('code', { style: { fontSize: 11.5, color: T.text2, background: T.layer1, padding: '2px 6px', borderRadius: 6, maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: MONO } }, String(upd.command))
+          : h('span', { style: { fontSize: 11.5, color: T.warn } }, t('update.envUnknown')),
+        upd.command
+          ? h('button', { style: { ...chipBtn(false), ...NO_WRAP }, onClick: () => copyCommand(String(upd.command)) }, copyState === 'ok' ? t('update.copied') : t('update.copy'))
+          : null,
+        copyState === 'fail' ? h('span', { style: { fontSize: 11.5, color: T.warn } }, t('update.copyFailed')) : null,
+        /* 真一键（ADR-0012 D2）：组件内部做成「确认两步」，不直装；且**只对 registry 装法**开放
+           （非 registry 一键会静默换源 ⇒ 只留命令）。这里旁边**已有**「有新版本 x.y.z」与命令本身，
+           故 `UpdateHint` 用默认的**纯感叹号**且**不传 command**（否则同一串命令在一行里出现两次）；
+           它的悬浮层只负责解释「为什么没有一键」。面板头部 / 插件页**没有**命令可看，那两处必须传。 */
+        canOneClick(upd)
+          ? h(UpgradeButton, { api, latest: upd.latest })
+          : h(UpdateHint, { command: null }),
+        h('button', {
+          style: { ...chipBtn(false), ...NO_WRAP },
+          onClick: () => {
+            setCopyState(null)
+            // 先本地隐藏（点了就该立刻消失），再落盘——写盘失败下次还会提示，不会「静默永久消失」。
+            setUpd({ ...upd, outdated: false })
+            Promise.resolve(api && typeof api.skipUpdateVersion === 'function' ? api.skipUpdateVersion(String(upd.latest)) : null).catch(() => { /* 下次再提示即可 */ })
+          },
+        }, t('update.skip')),
+        h('span', { style: { fontSize: 11.5, color: T.text2 } }, t('update.restart')),
+      )
+      : null,
+
     /* 内容区：占满剩余高度并自行滚动——宿主 `.viewArea` 是 flex:1/min-height:0 且不滚动，
        根容器不约束高度就会顶出可视区（外层多出一条页面滚动条，2026-09-11 用户实测） */
     h('div', { style: { flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' } },
@@ -1371,6 +1466,21 @@ export async function apply(ctx) {
       openArtifact,
     }),
   }, GlobalPanel))
+  // 宿主插件页槽位贡献（ADR-0012 D1-①）：这是用户找「更新」的**默认位置**。
+  // 只按名字注册、由自己判 subject 是不是本包（宿主会用**任意**插件的详情页来调这两个贡献）；
+  // 槽位在某个宿主版本里不存在时 `inject` 会安静等待，不报错、不拖慢加载。
+  ctx.slots.inject('plugins.detail.badge', () => ctx.slots.register({
+    name: 'plugins.detail.badge',
+    id: 'teamflow-update',
+    locale: NS,
+    inject: () => ({ remote: teamflow }),
+  }, PluginsUpdateBadge))
+  ctx.slots.inject('plugins.detail.actions', () => ctx.slots.register({
+    name: 'plugins.detail.actions',
+    id: 'teamflow-update',
+    locale: NS,
+    inject: () => ({ remote: teamflow }),
+  }, PluginsUpdateAction))
   // 注册右栏 run 详情 tab 类型（类型进 sidebarRightTabs；正文进 keyed seat sidebar.right.pane.tab）
   try {
     const tabs = ctx.get('sidebarRightTabs')

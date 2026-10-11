@@ -122,18 +122,22 @@ dsh-plugin-teamflow/
 
 ## 安装（对使用者）
 
+**推荐在应用内的「插件」页安装** —— web 与桌面版是**同一个页面**：左侧边栏「插件」→ 右上「**添加插件**」
+（或「更多 → 安装第三方插件」）→ 输入 **npm 包名**（`dsh-plugin-teamflow`）、**GitHub 仓库地址**或**本地目录路径**。
+
+> ⚠️ **两端各装一次**：桌面版（dsh 0.2.0 起）用独立的 `desktop` profile（`~/.dsh/profiles/desktop`），
+> 与 `web` 各自一份 node_modules —— 只装在一端，另一端**看不到本插件**（不是插件坏了）。
+> 页面本身两端通用，差别只在**装到哪个 profile**。
+
+命令行是**等价替代**（便于脚本化 / 批量环境；桌面版 CLI 不接受 `--profile desktop`）：
+
 ```bash
-# 从 npm 安装（发布后）—— 装到 web profile
+# 从 npm 安装 —— 装到 web profile
 dsh plugin --profile web add dsh-plugin-teamflow
 
-# 或本地目录安装（开发时）
+# 本地源码目录（开发时）
 dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 ```
-
-> ⚠️ **桌面版（dsh 0.2.0 起）要单独装一次**：它用独立的 `desktop` profile（`~/.dsh/profiles/desktop`），
-> 与 `web` 各自一份 node_modules —— 只装在 `web` 上，桌面版里**看不到本插件**（不是插件坏了）。
-> 且 CLI **明确拒绝** `--profile desktop`（`managed exclusively by the Electron application`）
-> ⇒ **桌面版请用应用内的插件管理界面安装**。
 
 安装后**重启** `dsh --profile web`（桌面版则重启桌面应用），宿主行 `teamflow-host` 生效：
 - 模型侧出现 12 个 `teamflow_*` 工具：`start / triage / status / backlog / claim / update / assign / cancel / resume / pause / resume_session / merge`；
@@ -141,6 +145,34 @@ dsh plugin --profile web add file:./plugins/dsh-plugin-teamflow
 - backlog 写入 `$DSH_HOME/teamflow/<product>/backlog/*.json`。
 
 > 注意：`@deepseek-ai/*` 为宿主私有包，运行需 DeepSeek Harness（dsh）宿主环境；本包不发布也无法独立运行。
+
+## 升级（对使用者）
+
+**0.2.8 起，插件会自己告诉你有新版本**（无需盯着发布页）：
+
+- 打开**团队工作台**时，顶部出现「有新版本 x.y.z」提示条；
+- 左侧边栏**全局面板头部有「检查更新」按钮**（手动查，绕过缓存）；
+- **「插件」页**里本插件旁会出现新版本徽标（web 与桌面版同一个页面）。
+
+三处都在**两端**可见（web 走浏览器、桌面版走应用），但**升级动作各归各的 profile**：web 用下面的命令，
+桌面版在应用内的「插件」页操作（CLI 不接受 `--profile desktop`）。
+
+**registry 安装**（`npm` 装的）可直接**一键升级**：点提示条上的「升级到 x.y.z」→ 确认 → 升完**重启** `dsh --profile web`（桌面版重启桌面应用）。本地 / git / tarball 安装**不会给一键**（一键会把依赖悄悄换成线上版本），只给可复制的命令。
+
+> ℹ️ **为什么值得用这个而不是卸载重装**：宿主「插件」页的「更新」只给**官方插件**，第三方插件（含本插件）
+> 在宿主的口径里是「请先卸载再安装新版」（见宿主插件页提示）。本插件在页面上贡献的徽标与「升级」按钮
+> 就是补这个缺口：不用卸载，依赖由宿主服务原地更新。
+
+命令行升级（等价替代，便于脚本化）：
+
+```bash
+# web profile
+dsh plugin --profile web add dsh-plugin-teamflow@latest
+
+# 桌面版请在应用内「插件」页操作（CLI 拒绝 --profile desktop）
+```
+
+不想被提示某一版？提示条上有「跳过这一版」——跳过的是**具体版本号**，更新的版本出现时仍会提示。
 
 ## 快速上手
 

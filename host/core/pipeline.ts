@@ -29,12 +29,14 @@ import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { spawnSync } from 'node:child_process'
 
-/** 插件自身模块文件路径（用于反推当前 profile 目录；`import.meta.url` 在 ESM 产物里可用）。 */
-function selfModulePath(): string {
+/** 插件自身模块文件路径（用于反推当前 profile 目录；`import.meta.url` 在 ESM 产物里可用）。
+ *  ⚠️ 导出是给 `host/index.ts` 的版本探测复用（`updateStatus` 要按本机环境生成升级命令）——
+ *  两条路径必须**共用同一套探测**，否则「提示里给的命令」和「流水线给的命令」会漂移。 */
+export function selfModulePath(): string {
   try { return fileURLToPath(import.meta.url) } catch (e) { return '' }
 }
 /** `dsh` 是否在 PATH（CLI 入口可用性）。探测失败一律按"不在"处理（走等价手动步骤，更保守）。 */
-function cliOnPath(): boolean {
+export function cliOnPath(): boolean {
   try {
     const r = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['dsh'], { stdio: 'ignore', windowsHide: true, timeout: 4000 })
     return r.status === 0
