@@ -1,4 +1,4 @@
-<!-- Announcement · English version · anchored to **v0.2.0** (2026-09-23) · venue TBD (GitHub Discussion or elsewhere; the body assumes no particular platform)
+<!-- Announcement · English version · anchored to **v0.2.0** (2026-09-23) · posted to `deepseek-ai/deepseek-harness` Discussions [#7540](https://github.com/deepseek-ai/deepseek-harness/discussions/7540) (2026-09-22 19:22 UTC, "Show Your Plugins!" category; corrected 2026-10-11 — previously recorded as "venue TBD")
      **This version posts in ENGLISH by default**; the Chinese version (`show-your-plugin-v0.2.0.zh.md`) is the switcher target, linked on the first line of the body.
      Suggested titles:
        ▶ primary dsh-plugin-teamflow v0.2.0 — from one sentence of requirements to an accepted delivery (multi-agent pipeline for DeepSeek Harness)

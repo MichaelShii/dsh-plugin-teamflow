@@ -7,7 +7,9 @@
        · 备用 [插件] TeamFlow v0.2.7 —— PRD 确认单 + 交付物不再混入机器契约
      本版是**短稿**：v0.2.0 那份 230 行的通稿仍在 `show-your-plugin-v0.2.0.zh.md`，产品全貌看它；
      本文只讲**这一版改了什么、为什么值得升**。历史通稿（v0.1.8）见 `github-discussion-show-your-plugin.md`（已冻结）。
-     **上一版投放记录**：v0.1.8 通稿发于 `deepseek-ai/deepseek-harness` Discussions #6405；v0.2.0 通稿迄今未投放。
+     **上一版投放记录**：v0.1.8 通稿发于 `deepseek-ai/deepseek-harness` Discussions [#6405](https://github.com/deepseek-ai/deepseek-harness/discussions/6405)（2026-09-12）；v0.2.0 通稿发于同仓库 Discussions 中文 [#7539](https://github.com/deepseek-ai/deepseek-harness/discussions/7539) / 英文 [#7540](https://github.com/deepseek-ai/deepseek-harness/discussions/7540)（2026-09-22，均在 `Show Your Plugins!` 分类）。
+     ⚠️ **订正（2026-10-11）**：本行原文误记「v0.2.0 通稿迄今未投放」——实为 2026-09-22 已投放（#7539 / #7540）。误因：查投放记录时只取了该仓库**最新 50 帖**的时间窗，未用全量检索；v0.2.0 已落到窗口之外，于是把「查不到」当成了「没发过」。⇒ 查外部投放记录一律走**全量 search**，不要用 `first:N` 的时间窗。
+     **本版投放记录**：英文 [#9446](https://github.com/deepseek-ai/deepseek-harness/discussions/9446) / 中文 [#9447](https://github.com/deepseek-ai/deepseek-harness/discussions/9447)（2026-10-11，`Show Your Plugins!`）。
      引用的一切数字都可在仓库内逐字核对（来源见各条括注）。
      ➜ 发布后本文件同样停止更新；再发通稿请另建文件并写当时的锚定版本。 -->
 

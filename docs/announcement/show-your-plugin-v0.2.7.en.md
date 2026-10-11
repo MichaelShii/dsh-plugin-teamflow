@@ -8,7 +8,9 @@
      This is the **short** announcement: the 230-line v0.2.0 write-up still lives in `show-your-plugin-v0.2.0.zh.md`
      / `.en.md` for the full product picture; this file only covers **what changed and why it's worth upgrading**.
      Historical v0.1.8 announcement: `github-discussion-show-your-plugin.md` (frozen).
-     **Posting history**: v0.1.8 ran in `deepseek-ai/deepseek-harness` Discussions #6405; v0.2.0 has not been posted.
+     **Posting history**: v0.1.8 ran in `deepseek-ai/deepseek-harness` Discussions [#6405](https://github.com/deepseek-ai/deepseek-harness/discussions/6405) (2026-09-12); v0.2.0 ran in the same repo's Discussions — ZH [#7539](https://github.com/deepseek-ai/deepseek-harness/discussions/7539) / EN [#7540](https://github.com/deepseek-ai/deepseek-harness/discussions/7540) (2026-09-22, both in "Show Your Plugins!").
+     CORRECTION (2026-10-11): this line previously said "v0.2.0 has not been posted", which was wrong — it went out on 2026-09-22 (#7539 / #7540). Cause: the posting-record query used a `first: 50` newest-first window instead of a full search, so the v0.2.0 posts fell outside it and "not found" was mistaken for "never posted". Always use a full-text search when checking external posting records.
+     **This version**: EN [#9446](https://github.com/deepseek-ai/deepseek-harness/discussions/9446) / ZH [#9447](https://github.com/deepseek-ai/deepseek-harness/discussions/9447) (2026-10-11, "Show Your Plugins!").
      Every number quoted here can be verified word-for-word in the repository (sources noted inline).
      ➜ Like its predecessors, this file stops being updated once posted; a new announcement gets a new file with
        the version anchoring of its time. -->
