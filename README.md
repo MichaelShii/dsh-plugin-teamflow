@@ -109,9 +109,21 @@ dsh-plugin-teamflow/
 
 ### 版本锚定（dsh 宿主兼容性）
 
-基线 **dsh v0.2.0-rc.2**（预览版），**下限 v0.1.7-alpha.1**（v3 宿主的 `source.kind` 是封闭词表、不收 `plugin:*`，故不可回退到 0.1.5-rc.2）。
+基线 **dsh v0.2.1-alpha.4**（预览版），**下限 v0.2.1-alpha.2**。
 
-**`engines.dsh` 声明为并集区间** `">=0.1.7-alpha.1 <0.3.0 || >=0.2.0-rc.1 <0.3.0"`：预发布只匹配同 tuple 区间，**简单放宽上界会让 `0.2.0-rc.x` 判 fail**（semver 7.7.4 实测）。宿主**不校验**该字段，它只表达对正式版的兼容声明；判断发布线以 `next` 为准（`latest` 滞后）。
+> ⚠️ **订正（2026-10-15，issue #20）—— 下限由 v0.1.7-alpha.1 抬到 v0.2.1-alpha.2，不再向下兼容。**
+> 宿主在 alpha.2 把扁平入口 `subagents.start(name, request)` **整体删除**（提交 `3d852a1cea`，首个含它的
+> tag 即 `dsh-v0.2.1-alpha.2`；官方迁移指南 `docs/upgrade-guide/v0.2.1-alpha.1/subagent-activations/`），
+> 唯一入口改为 `startActivation(spec)`，且**回执不再携带活 Agent 句柄**（`localAgent`）。旧宿主上的症状是
+> 「起得来、第一个阶段就 `TypeError`」——所以从本版起要求 dsh ≥ 0.2.1-alpha.2。
+
+**`engines.dsh` 声明为单区间** `">=0.2.1-alpha.2 <0.3.0"`。此前用并集 `">=0.1.7-alpha.1 <0.3.0 || >=0.2.0-rc.1 <0.3.0"`，原因是「预发布只匹配同 tuple 区间」——旧下限的 tuple（0.1.7）与 `0.2.0-rc.x` 不同，单区间会把 rc 判 fail。抬到 `0.2.1-alpha.2` 后下限与当前宿主同 tuple，**单区间即可**（semver 7.8.5 实测：`alpha.1`=false / `alpha.2~alpha.4`=true / `0.2.0-rc.2`=false / `0.2.1`=true）。
+
+> ⚠️ **订正（2026-10-15，同上）：本 README 此前写「宿主**不校验** `engines.dsh`」是错的。**
+> 宿主 `@deepseek-ai/dsh-app-boot` 装载 profile 时会校验它（`packages/boot/app-boot/src/profile.ts`
+> 的 `evaluatePluginCompatibility`）：不满足的 bundle 被**跳过**并记入 `skippedBundles`（原因随诊断输出），
+> 也可用 `dsh plugin allow-version` 按「精确插件版本 × 精确宿主版本」豁免。**这个字段现在是真正的门禁**，
+> 不再只是兼容声明 —— 旧宿主上装本版插件会被宿主挡在装载阶段并说明原因，而不是跑起来才炸。
 
 **0.2.0 逐项核对：未发现破坏**（tsc 对着已装的 0.2.0-rc.2 编译 0 错；实际 import 的 4 个宿主包导出 0 缺失；`inject` 语义、manifest schema、patch 的 `insert:` 均未变；新增的可选 `external` 本插件用不上）。⚠ 这是**静态**核对，运行时仍以重启实测为准。
 
