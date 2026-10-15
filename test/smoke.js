@@ -396,7 +396,7 @@ ok(/t\('stage\.evidenceTitle'\)/.test(clientSrc) && /phaseKeyOf\(st\.phase\) ===
 ok(/export function blockShape/.test(utilSrc), 'util：响应块构成纯函数（诊断用：text/reasoning 带长度、重复块压成 xN）')
 ok(/const shape = blockShape\(result && result\.output\)/.test(runnerSrc) && /\? t\(locale, 'diag\.emptyTurn', \{ stop: stop \|\| 'unknown', shape \}\)/.test(runnerSrc), 'runner：空收尾诊断带上响应块构成（一眼区分「只有 reasoning」与宿主中断 aborted / 预算截断 max-tokens）')
 ok(/let emptyTurnDoc/.test(runnerSrc) && /if \(emptyTurnDoc\) \{[\s\S]{0,400}diag\.emptyTurnDelivered/.test(runnerSrc) && /stageText = emptyTurnDoc\.text/.test(runnerSrc), 'runner：空收尾 + 任务夹产物已合格 → 按文件判交付不再重跑（A 档止损；返回值用文件内容顶替空回复，state 合并走宽容语义）')
-ok(/export function emptyTurnDocVerdict/.test(utilSrc) && /emptyTurnDocVerdict\(stop, text, verdict\.min, stageDocText\(journal, phase\)\)/.test(runnerSrc), 'runner/util：空收尾兜底判定抽纯函数（runner 链宿主私有 peer 不可 import，行为级测试走 util——cancel.test.js 头注释纪律）')
+ok(/export function emptyTurnDocVerdict/.test(utilSrc) && /emptyTurnDocVerdict\(stop, text, verdict\.min, stageDocText\(journal, phase, stage\.artifactBaseline\)\)/.test(runnerSrc), 'runner/util：空收尾兜底判定抽纯函数（runner 链宿主私有 peer 不可 import，行为级测试走 util——cancel.test.js 头注释纪律）')
 ok(/empty-turn\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：empty-turn 行为级套件已登记 test/prepublishOnly 双链')
 // v0.2.5：编排行为级套件（stub 子代理驱动真实 executePipeline）同样必须进双链——登记了才等于真跑
 ok(/orchestration\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：编排套件登记双链')
@@ -529,7 +529,7 @@ ok(/export function effectiveFreshBudget/.test(meteringSrc) && /calls >= UNCACHE
 ok(/effectiveFreshBudget\(usageAcc, FRESH_TOKEN_BUDGET\)/.test(runnerSrc) && /diag\.breakerUncached/.test(runnerSrc) && /diag\.breakerUncached/.test(hostSrc), 'runner/locales：无缓存时的熔断**带依据留痕**（命中率/调用数/放宽后预算），与有缓存路径分开措辞')
 // doc 类阶段的产物兜底（回复过短但文件已落盘 → 判交付；实锤 4894 字节 PRD.md 被「回复 284 字符」误杀）
 ok(/export const DOC_STAGE_FILES/.test(utilSrc) && /export function stageDocText/.test(utilSrc) && /'QA-REPORT\.md'/.test(utilSrc) && /'ACCEPTANCE\.md'/.test(utilSrc), 'util：doc 阶段产物文件名表 + stageDocText（产物是任务夹文件的阶段才入表）')
-ok(/stageDocText\(journal, phase\)/.test(runnerSrc) && /doc\.length >= verdict\.min/.test(runnerSrc) && /verdict\.ok \|\| docFallback/.test(runnerSrc), 'runner：回复不合格时回读任务夹产物（文件达下限即判交付），留痕 warn')
+ok(/stageDocText\(journal, phase, stage\.artifactBaseline\)/.test(runnerSrc) && /doc\.length >= verdict\.min/.test(runnerSrc) && /verdict\.ok \|\| docFallback/.test(runnerSrc), 'runner：回复不合格时回读任务夹产物（文件达下限即判交付），留痕 warn')
 ok(/!verdict\.ok && text && stop === 'completed'/.test(runnerSrc), 'runner：**兜底不豁免非空回复**（pipeline 要用回复合并 state 块——空回复仍是未交付）')
 ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
@@ -1152,6 +1152,39 @@ ok(promptsSrc.split('DESIGN.md — the COMPLETE design is there').length - 1 ===
 // 尾部装着「优先级 / 依赖与风险 / 验收总则」，截断了永久不可补救 ⇒ 补路径（2026-10-02）。
 ok(promptsSrc.split('PRD.md — the COMPLETE PRD is there').length - 1 === 3, 'prompts：PRD.md 完整文件路径指引覆盖 design + tech + architect 三处（原本只有 dev / qaFix 有）')
 ok(promptsSrc.split('QA-REPORT.md — the COMPLETE report is there').length - 1 === 1, 'prompts：QA 报告完整文件路径指引覆盖 qaFix（修缺陷最需要完整报告与历轮复验结论）')
+
+// ── 6) 产物新鲜度（2026-10-16 实锤 tf-mv9o5fkk-orjou4）：上游越界写的旧产物不得被下游当成本阶段产物 ──
+console.log('── 6) 产物新鲜度：阶段开始时拍基线，下游读产物一律过新鲜度 ──')
+const qaSrc = readFileSync(join(here, '../host/core/stages/qa.ts'), 'utf8')
+const accSrc = readFileSync(join(here, '../host/core/stages/acceptance.ts'), 'utf8')
+const utilSrcFresh = readFileSync(join(here, '../host/util.ts'), 'utf8')
+// 锁**整条语句**（`false &&` 前缀下只锁函数名会假绿，见 MEMORY-playbook §G 第 9 次同型），且锁**顺序**：
+// 基线必须在子代理启动之前拍（`captureArtifactBaseline` 出现在 `startActivation` 之前）。
+const capIdx = runnerSrc.indexOf('captureArtifactBaseline(journal, phase, stage)')
+const startIdx = runnerSrc.indexOf('.startActivation!({')
+ok(capIdx > 0 && startIdx > 0 && capIdx < startIdx,
+  `runner：产物基线在子代理启动**之前**拍（capture@${capIdx} < startActivation@${startIdx}）`)
+ok((runnerSrc.match(/stageDocText\(journal, phase, stage\.artifactBaseline\)/g) || []).length === 2,
+  'runner：两处产物兜底都按基线判新鲜度（doc 兜底 + 空收尾兜底）')
+// qa：两处读 QA 报告 —— 续跑复用那处**刻意不判**（文件本就来自早先运行），跑完那处**必须判**
+ok((qaSrc.match(/(?<!fresh)artifactText\(journal, 'QA-REPORT\.md'\)/g) || []).length === 1 &&
+  (qaSrc.match(/freshArtifactText\(journal, 'QA-REPORT\.md', qaR\.stage && qaR\.stage\.artifactBaseline\)/g) || []).length === 1 &&
+  qaSrc.indexOf('freshArtifactText(journal') > qaSrc.indexOf("withRetry(journal, parent, label, 'qa'"),
+  'qa：跑完读 QA-REPORT.md 走新鲜度（续跑复用那处不受影响，仍走 artifactText）')
+ok(!/artifactText\(/.test(accSrc) &&
+  (accSrc.match(/freshArtifactText\(journal, 'ACCEPTANCE\.md', accR\.stage && accR\.stage\.artifactBaseline\)/g) || []).length === 2,
+  'acceptance：两处读 ACCEPTANCE.md（normal + known-issues）全部走新鲜度，artifactText 已不再被引用')
+ok(/export function isToolArgFailure/.test(utilSrcFresh) && /must differ/.test(utilSrcFresh),
+  'util：参数类失败判据（isToolArgFailure，含实锤原文 must differ）')
+// ⚠️ 只锁调用点会漏掉「函数被掏空」：新鲜度**判据本体**也要锁整条语句（M11 实测：掏空此句时调用点锁仍绿）
+ok(/if \(artifactIsStale\(journal, name, baseline\)\) continue/.test(utilSrcFresh),
+  'util：stageDocText 内部真的跳过陈旧候选（整条语句，防「调用点还在、判定被掏空」）')
+ok(/if \(artifactIsStale\(journal, fileName, baseline\)\) return null/.test(utilSrcFresh),
+  'util：freshArtifactText 内部真的把陈旧产物当缺失（整条语句）')
+ok(/if \(isToolArgFailure\(text\)\) \{ noteSelfHealSkip\('arg', text\); continue \}/.test(guardSrc),
+  'guard：参数类失败不计入环境指纹（第三类豁免，整条守卫语句）')
+ok(/'guard\.selfHealArg'/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')),
+  'locales：selfHealArg 文案（zh/en 同形由 locale 测试守）')
 
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

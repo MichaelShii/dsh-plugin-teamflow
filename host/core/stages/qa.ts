@@ -9,7 +9,7 @@
 import { advanceTask, storeFor, parseDefectRows, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, hasOpenBlockingBugs } from '../domain/backlog.ts'
 import { withRetry, resolveChildRoute } from '../agent/runner.ts'
 import { qaPrompt, qaFixPrompt } from '../../prompts/index.ts'
-import { snippet, clip, artifactText, qaRoundEntry as buildQaRoundEntry, scanDeliverableFiles, assessQaVerificationEvidence, fsRootOf, DELIVERABLE_FILE_LIMIT } from '../../util.ts'
+import { snippet, clip, artifactText, freshArtifactText, qaRoundEntry as buildQaRoundEntry, scanDeliverableFiles, assessQaVerificationEvidence, fsRootOf, DELIVERABLE_FILE_LIMIT } from '../../util.ts'
 import { QA_REWORK_LIMIT, phaseKeyOf, FIX_GATE_PATTERN } from '../../constants.ts'
 import { persistJournal } from '../../../store.ts'
 import { currentModelSupportsVision } from '../agent/context.ts'
@@ -155,7 +155,10 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
       // 单轨契约：文件即产物——QA-REPORT.md 是缺陷表/补测清单/结论的唯一事实来源；
       // state 块仍在回复尾部（host 机器元数据，不进文件）
       mergeStageState('qa', qaR.text, stateBlockRelPath(journal.id, 'qa'))
-      qa = artifactText(journal, 'QA-REPORT.md')
+      // ⚠️ **新鲜度**（2026-10-16）：只有本阶段写过的 QA-REPORT.md 才算数 —— 上游（实测：scaffold 架构师）
+      // 越界写下的那份**不算本阶段产物**，否则「QA 结论」会变成上游自己的自我评估。
+      // 陈旧 ⇒ 当缺失 ⇒ 走下面的硬失败（正是本次要治的假交付）。
+      qa = freshArtifactText(journal, 'QA-REPORT.md', qaR.stage && qaR.stage.artifactBaseline)
       if (!qa) {
         // 硬失败而非回退解析回复：回复仅摘要无缺陷表，回退=「QA 未发现缺陷」静默假交付（本次要治的病）
         journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.qaNoFile', { file: `${journal.runDocs ? journal.runDocs + '/' : ''}QA-REPORT.md` }) })

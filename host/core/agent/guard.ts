@@ -33,7 +33,7 @@
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { GUARD_ENV_PROGRESS_GRACE_MS, GUARD_NO_TOOL_MS, GUARD_POLL_MS, GUARD_REPEAT_LIMIT, GUARD_SILENCE_MS, GUARD_TOOL_FAIL_ABORT, GUARD_TOOL_FAIL_WARN, GUARD_WINDOW_SIZE } from '../../constants.ts'
-import { clip, isFsSelfHealFailure, isToolErrorResult, isToolScopeFailure, toolFailureAction, toolFailureSignature, toolResultText } from '../../util.ts'
+import { clip, isFsSelfHealFailure, isToolArgFailure, isToolErrorResult, isToolScopeFailure, toolFailureAction, toolFailureSignature, toolResultText } from '../../util.ts'
 import { t, type HostLocale } from '../../locales.ts'
 import { runtime } from './context.ts'
 import { runLocaleOf } from '../locale.ts'
@@ -201,7 +201,7 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
   let lastSuccessAt = 0
   let envProgressWarned = false
   // 可自愈失败的已提醒类别（'fs' 文件门禁 / 'tool' 工具不适用）——按类去重，不刷屏
-  const selfHealWarned = new Set<'fs' | 'tool'>()
+  const selfHealWarned = new Set<'fs' | 'tool' | 'arg'>()
 
   function warnOnce(key: string, set: Set<string>, message: string, hint?: string) {
     if (set.has(key)) return
@@ -405,12 +405,13 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
   /** 可自愈失败只记一次（按类去重）：**绝不**进环境指纹、不写 `stage.envUnavailable`。
    *  文件门禁类另附一次针对性补救提醒 —— 该错误的修复动作明确（先 read 再写），模型却常直接重试，
    *  而通用 ENV GUARD 提醒只叫它停手（issue #15 实测形态：提醒反而把「差一步自愈」变成放弃）。 */
-  function noteSelfHealSkip(kind: 'fs' | 'tool', text: unknown) {
+  function noteSelfHealSkip(kind: 'fs' | 'tool' | 'arg', text: unknown) {
     if (selfHealWarned.has(kind)) return
     selfHealWarned.add(kind)
     const detail = clip(String(text).replace(/\s+/g, ' ').trim(), 160)
     try {
-      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, kind === 'fs' ? 'guard.selfHealFs' : 'guard.selfHealTool', { detail }) })
+      const key = kind === 'fs' ? 'guard.selfHealFs' : kind === 'tool' ? 'guard.selfHealTool' : 'guard.selfHealArg'
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, key, { detail }) })
     } catch (e) { /* ignore */ }
     if (kind === 'fs') injectReminder(run, `[ENV GUARD · reminder] ${t(locale, 'guard.selfHealHint', { detail })}`, locale)
   }
@@ -442,6 +443,8 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
       // 与「工作区坏了」语义相反。两类各记一次（去重），文件门禁类另附一次补救提醒。
       if (isFsSelfHealFailure(text)) { noteSelfHealSkip('fs', text); continue }
       if (isToolScopeFailure(text)) { noteSelfHealSkip('tool', text); continue }
+      // 参数类失败（模型自己把参数传错，换个参数即可）同样不进环境指纹（见 util.isToolArgFailure 注释）。
+      if (isToolArgFailure(text)) { noteSelfHealSkip('arg', text); continue }
       const callId = (e.data as { message?: { toolCallId?: unknown } } | null)?.message?.toolCallId
       const tool = (typeof callId === 'string' && callNames.get(callId)) || 'command'
       const sig = toolFailureSignature(tool, text)

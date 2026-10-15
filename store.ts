@@ -53,6 +53,11 @@ export interface JournalStage {
    *  可能与 run 起始默认不同（见 runner.resolveChildRoute）。回答「是不是模型的锅」靠它。 */
   provider?: string | null
   model?: string | null
+  /** **产物新鲜度基线**（2026-10-16 新增）：阶段开始前该阶段候选产物的指纹（`size:mtimeMs`，缺失为 null）。
+   *  只有指纹**变了**才认「本阶段写了它」—— 防上游阶段越界写下游产物后，下游凭旧文件被判「已交付」
+   *  （实锤 run tf-mv9o5fkk-orjou4：架构师子代理写了 QA-REPORT.md / ACCEPTANCE.md）。
+   *  判定与消费见 `util.artifactFingerprint` / `artifactIsStale` / `freshArtifactText` / `stageDocText`。 */
+  artifactBaseline?: Record<string, string | null> | null
 }
 
 /** 运行日志（journal）——运行时对象与磁盘可持久化形态的公共形状。 */
@@ -314,6 +319,8 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
       guardReason: s.guardReason || null,
       guardOutcome: s.guardOutcome || null,
       envUnavailable: s.envUnavailable || null,
+      // 产物新鲜度基线（2026-10-16）：有内容才写，避免给存量 stage 平添 null 噪声
+      artifactBaseline: (s.artifactBaseline && Object.keys(s.artifactBaseline).length) ? { ...s.artifactBaseline } : null,
       output: clip(s.output || s.summary || '', STAGE_OUTPUT_CLIP),
       verifyEvidence: s.verifyEvidence ? clip(s.verifyEvidence, 8000) : null,
     })),

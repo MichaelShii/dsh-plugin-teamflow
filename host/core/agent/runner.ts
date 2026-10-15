@@ -5,7 +5,7 @@
 import { runtime, providerName, trackInFlight, untrackInFlight, liveChildAgentOf } from './context.ts'
 import { accumulateSessionUsage, freshTokensOf, effectiveFreshBudget } from './metering.ts'
 import { startStageGuard } from './guard.ts'
-import { clip, extractText, blockShape, emptyTurnDocVerdict, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs, stageDocText } from '../../util.ts'
+import { clip, extractText, blockShape, captureArtifactBaseline, emptyTurnDocVerdict, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs, stageDocText } from '../../util.ts'
 import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../../constants.ts'
 import { t, type HostLocale } from '../../locales.ts'
 import { runLocaleOf } from '../locale.ts'
@@ -137,6 +137,10 @@ export async function runAgent(
     usage: null, handoff: null, output: null,
   }
   journal.stages.push(stage)
+  // **产物基线**（2026-10-16，必须在子代理启动前、任何 await 前拍）：只有指纹变了的候选产物才认作
+  // 「本阶段写的」。防的是上游阶段越界写下游产物后，下游凭旧文件被判「已交付」（实锤 tf-mv9o5fkk-orjou4）。
+  // 只填缺失项 ⇒ 重试/续跑沿用首次基线（语义 = 「本阶段是否写过」，不是「本次尝试是否写过」）。
+  captureArtifactBaseline(journal, phase, stage)
   journal.agentsStarted += 1
   let run = null
   let cancelGuard: (() => void) | null = null
@@ -214,7 +218,7 @@ export async function runAgent(
     // 前提仍是**回复非空**：pipeline 要用回复合并 state 块；空回复另走下方 emptyTurnDoc 兜底（A 档）。
     let docFallback: { name: string; length: number } | null = null
     if (!verdict.ok && text && stop === 'completed') {
-      const doc = stageDocText(journal, phase)
+      const doc = stageDocText(journal, phase, stage.artifactBaseline)
       if (doc && doc.length >= verdict.min) docFallback = { name: doc.name, length: doc.length }
     }
     // **空收尾的文件兜底**（2026-09-27，A 档止损）：`completed` + 0 字符 = 推理模型空收尾（DeepSeek 实测：
@@ -227,7 +231,7 @@ export async function runAgent(
     // 则 mergeStageState 自然跳过（宽容语义），不破坏下游。
     let emptyTurnDoc: { name: string; text: string; length: number } | null = null
     if (!text && stop === 'completed') {
-      emptyTurnDoc = emptyTurnDocVerdict(stop, text, verdict.min, stageDocText(journal, phase))
+      emptyTurnDoc = emptyTurnDocVerdict(stop, text, verdict.min, stageDocText(journal, phase, stage.artifactBaseline))
     }
     if (journal.cancelled) {
       stage.status = 'cancelled'; stage.outcome = 'cancelled'

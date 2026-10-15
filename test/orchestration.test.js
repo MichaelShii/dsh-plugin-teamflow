@@ -127,7 +127,7 @@ const TRIAGE_EXPLORE = JSON.stringify({
 /** 构造一次 run：stub 子代理 + 隔离的 $DSH_HOME / 工作区。 */
 async function runScenario(
   name,
-  { options, resume = null, emptyNext = false, failLabel = null, artifacts = null, cancelAfter = 0, triage = null, extraFiles = 0, presetSupplement = null, prdOutput = null, stateViaFile = false, techOutput = null, techDoc = null, blueprintViaFile = false, blueprintRaw = null },
+  { options, resume = null, emptyNext = false, failLabel = null, artifacts = null, cancelAfter = 0, triage = null, extraFiles = 0, presetSupplement = null, prdOutput = null, stateViaFile = false, techOutput = null, techDoc = null, blueprintViaFile = false, blueprintRaw = null, extraArtifacts = null },
 ) {
   const rootTmp = mkdtempSync(join(tmpdir(), `tf-orch-${name}-`))
   process.env.DSH_HOME = `${rootTmp}/home`
@@ -211,6 +211,13 @@ async function runScenario(
       } catch (e) { blueprintFileErr = String((e && e.message) || e) }
     }
     if (techDoc != null && isTech) putArtifact('TECHNICAL.md', techDoc)
+    // 上游越界：某个阶段写下**别人**的产物（模拟实测里架构师写了 QA-REPORT.md / ACCEPTANCE.md）
+    if (extraArtifacts) {
+      for (const [kw, files] of Object.entries(extraArtifacts)) {
+        if (!label.includes(kw)) continue
+        for (const [fileName, content] of Object.entries(files)) putArtifact(fileName, content)
+      }
+    }
     if (techOutput && isTech) text = techOutput
     else if (blueprintViaFile && isTech) text = LONG
     doEmpty = false
@@ -248,6 +255,10 @@ async function runScenario(
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, fileName), text, 'utf8')
   }
+  // **上游越界预置产物**（2026-10-16 实锤 tf-mv9o5fkk-orjou4）：模拟「上游阶段先把下游产物写了」。
+  // ⚠️ 必须在**子代理运行中**落盘（此时 `journal.runDocs` 已被 pipeline 建好）——在 executePipeline 之前
+  // 写是**空操作**（runDocs 还不存在），那样的测试没有牙（2026-10-15 实测：M9 变异下仍全绿）。
+  // 键 = label 子串（如 '技术方案'），值 = { 文件名: 内容 }。用来验下游不会拿上游留下的旧文件交差。
   const parent = {
     session: { id: 'sid-orch', header: { cwd: work }, append() {} },
     status: 'idle', followup() {}, inject() {}, options: {},
@@ -1099,6 +1110,30 @@ console.log('\n[O] 活子代理取法与宿主能力预检（纯行为，可单�
   ok(runtime.hasStartActivation() === false, 'hasStartActivation：旧宿主（有 list、无 startActivation）→ false —— issue #20 的原始故障形态')
   setRuntime({}, { list: () => ['spawn'], startActivation: async () => ({}) })
   ok(runtime.hasStartActivation() === true, 'hasStartActivation：alpha.2+ 宿主 → true')
+}
+
+/* ── (k) 上游越界写下游产物 ⇒ 下游不得拿旧文件交差（2026-10-16 实锤 tf-mv9o5fkk-orjou4） ── */
+// 实锤：架构师阶段（prompt 明写禁止）写了 QA-REPORT.md / ACCEPTANCE.md，而下游「文件即产物」只查
+// 「在不在、够不够长」⇒ 若 QA/验收自己没写，host 会把上游那份当成本轮产物（QA 结论 = 上游自我评估）。
+// 对照组只差**一个维度**：QA 阶段的子代理有没有自己写那份文件。
+console.log('\n[P] 产物新鲜度：上游留下的旧产物不算本阶段产物')
+{
+  const upstreamQa = '# QA-REPORT（上游越界写的旧文件）\n' + '旧内容'.repeat(300)
+  const upstream = { '技术方案': { 'QA-REPORT.md': upstreamQa } }
+  // ① 上游写了、QA 自己没写 ⇒ 必须当缺失 ⇒ 硬失败（不得凭旧文件判「已交付」）
+  const bad = await runScenario('stale-qa', { options: QA_OPTS, extraArtifacts: upstream })
+  ok(bad.status === 'failed', `上游旧产物 + QA 自己没写 ⇒ run failed（实测 ${bad.status}）`)
+  ok(/QA/.test(String(bad.error)), `失败点仍是 QA（实测 ${String(bad.error).slice(0, 44)}）——若接受了旧文件，QA 会通过、失败点会后移到验收`)
+  // 行为级证明基线真的落在 stage 上（M9 变异实测：掏掉 captureArtifactBaseline 后本条变红）
+  const withBase = bad.journal.stages.filter((s) => s.artifactBaseline && Object.keys(s.artifactBaseline).length)
+  ok(withBase.length > 0 && Object.keys(withBase[0].artifactBaseline).length > 0,
+    `阶段在 journal.stages 上留下产物基线（实测 ${withBase.length}/${bad.journal.stages.length} 段，键=${JSON.stringify(Object.keys((withBase[0] || {}).artifactBaseline || {}))}）`)
+  // ② 同场景，只多一件事：QA 阶段的子代理自己写了 ⇒ 正常通过（证明 ① 的失败来自「旧产物不算数」）
+  const good = await runScenario('fresh-qa', {
+    options: QA_OPTS, extraArtifacts: upstream,
+    artifacts: { qa: ['# QA-REPORT（本轮）\n' + '本轮内容'.repeat(300)] },
+  })
+  ok(!/QA/.test(String(good.error)), `QA 自己写了（覆盖旧文件）⇒ 不再判 QA 缺失（实测 err=${String(good.error).slice(0, 44)}）`)
 }
 
 if (failed) {
