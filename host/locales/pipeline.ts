@@ -185,6 +185,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'run.aclPreflightFailed': '流水线在启动前被 ACL 预检拦下（未消耗任何模型调用）：工作区沙箱写授权不可用——{err}。请在普通终端执行：{fix}，然后续跑本流水线即可（预检已把问题挡在任何子代理之前，无需再排查）',
     'run.workspaceBusyHint': '工作区 {ws} 已有流水线 {id} 运行中——请等待完成、取消（teamflow_cancel）或先处理中断（teamflow_resume）',
     'run.noProvider': '没有可用的子代理提供者（subagents 注册表为空）',
+    'run.hostTooOld': '本机 dsh 版本过旧：它没有 `subagents.startActivation`（dsh 0.2.1-alpha.2 起才有，旧版 `subagents.start` 已被宿主删除）。请先升级 dsh 再重试；升级前本插件无法启动流水线（package.json 的 engines.dsh 已声明所需版本，宿主会在装载 profile 时提示）。',
     'run.agentNotFound': '找不到会话对应的 Agent：{sid}',
 
     /* ── 阶段失败错误（stageFailError） ─────────────────────── */
@@ -630,6 +631,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'run.aclPreflightFailed': 'Pipeline stopped by the ACL preflight before any stage ran (no model calls consumed): workspace sandbox write authorization unavailable — {err}. Run in a regular terminal: {fix}, then resume this pipeline (the preflight caught the problem before any subagent started; no manual investigation needed)',
     'run.workspaceBusyHint': 'Workspace {ws} already has pipeline {id} running — wait for it, cancel it (teamflow_cancel), or handle the interruption first (teamflow_resume)',
     'run.noProvider': 'No subagent provider available (the subagents registry is empty)',
+    'run.hostTooOld': 'This dsh version is too old: it has no `subagents.startActivation` (introduced in dsh 0.2.1-alpha.2; the old `subagents.start` was removed by the host). Upgrade dsh and retry — the pipeline cannot start until then (package.json `engines.dsh` declares the required range, and the host reports it while loading the profile).',
     'run.agentNotFound': 'No Agent found for the session: {sid}',
 
     /* ── 阶段失败错误 ──────────────────────────────────────── */

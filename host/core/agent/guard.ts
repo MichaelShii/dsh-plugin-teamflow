@@ -37,7 +37,7 @@ import { clip, isFsSelfHealFailure, isToolErrorResult, isToolScopeFailure, toolF
 import { t, type HostLocale } from '../../locales.ts'
 import { runtime } from './context.ts'
 import { runLocaleOf } from '../locale.ts'
-import type { Journal, SubagentRunLike } from '../../types.ts'
+import type { Journal, LocalChildAgentLike, SubagentRunLike } from '../../types.ts'
 import type { JournalStage } from '../../../store.ts'
 
 /** 进展工具（复读状态判定）：变更类写操作 + 脚本执行。
@@ -61,14 +61,18 @@ const PROGRESS_TOOLS = /^(edit|write|create|apply_patch|patch|remove|delete|rm|m
  * `unknown tool`，并让它与 `isFsSelfHealFailure` 一样可写行为断言）。 */
 
 /** Agent 活动守卫（2026-09-06 实锤 r1）：QA 子代理正常干活却被判「10 分钟无事件」——
- * 事件视图可能失明（session.events 缓存快照不增长）。若 agent 仍非 idle（phase 在跑）
+ * 事件视图可能失明（session.events 缓存快照不增长）。若 agent 仍非 idle（`status` 在跑）
  * 且本会话动过手（lastMutationAt>0）→ 不是挂死，跳过本次判定（不中止）。
- * 纯启动静默挂死（未动手）不受影响——照常 B 触发。 */
-function isAgentBusy(run: { localAgent?: unknown } | null | undefined): boolean {
+ * 纯启动静默挂死（未动手）不受影响——照常 B 触发。
+ *
+ * ⚠️ **2026-10-15 实锤（issue #20 顺带查出）：本判据此前一直是死的。** 旧实现读 ``localAgent`` 的
+ * ``phase.kind``，而宿主 `Agent` 只有 `status: 'idle' | 'running'`——那个字段从 alpha.1 到 alpha.4
+ * （`packages/core/agent/src/runtime-types.ts`）**从未存在**，`git log -S'readonly phase'` 在该包零命中
+ * ⇒ 每次 try/catch 静默返回 false，「agent 还在忙就别判挂死」这层保护从未生效。改为读 `status`。 */
+function isAgentBusy(run: SubagentRunLike | null | undefined): boolean {
   try {
-    const agent = run && (run as { localAgent?: { phase?: { kind?: string } } }).localAgent
-    const kind = agent && agent.phase && agent.phase.kind
-    return !!kind && kind !== 'idle'
+    const agent: LocalChildAgentLike | undefined = run ? run.localAgent : undefined
+    return !!agent && typeof agent.status === 'string' && agent.status !== 'idle'
   } catch (e) { return false }
 }
 

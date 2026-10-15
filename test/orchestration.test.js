@@ -146,11 +146,21 @@ async function runScenario(
   let qaRound = 0
   let stateFileErr = '' // `stateViaFile` 的桩自检（块/路径没取到 ⇒ 断言会点名，而不是静默退化成回落）
   let blueprintFileErr = '' // `blueprintViaFile` 的桩自检（同上，针对蓝图独立文件通道）
-  const stubStart = async (_provider, init) => {
-    const label = String((init && init.label) || '')
+  const stubStart = async (spec) => {
+    // 宿主 alpha.2+ 的 `subagents.startActivation(spec)`：provider/label/signal/delivery 在顶层，
+    // prompt/parent/agentOptions 在 `spec.request` 里（alpha.1 的扁平 `(name, init)` 已被宿主删除）。
+    const init = spec && spec.request
+    const label = String((spec && spec.label) || '')
     // 捕获阶段 prompt（锁「同一 run 内 state 刷新」用：后续阶段的 state slice 必须带上 PRD 写下的东西）
     const promptText = String(((init && init.prompt && init.prompt[0] && init.prompt[0].text) || ''))
-    children.push({ id: `c-${children.length + 1}`, label, prompt: promptText })
+    // 保真记录宿主 API 入参形状（issue #20）：`delivery` 漏传 ⇒ 宿主按 'parent' 处理，会给主会话塞完成通知；
+    // `provider` 空 ⇒ 宿主 expectProvider 直接抛。两者都必须在**行为级**被锁住，不能只靠源码正则。
+    children.push({
+      id: `c-${children.length + 1}`, label, prompt: promptText,
+      provider: spec && spec.provider, delivery: spec && spec.delivery,
+      // `request.parent` 是宿主校验「活的父 Agent」的入参（`manager.assertAdmitting`）；顶层 signal 是发布前取消通道。
+      requestParent: init && init.parent, topSignal: spec && spec.signal,
+    })
     // 按 label 判定阶段并落产物文件（QA 每轮一份报告 → 用轮次索引取语料）
     if (artifacts) {
       if (/^QA (测试|复验)/.test(label) && artifacts.qa && artifacts.qa.length) {
@@ -204,14 +214,22 @@ async function runScenario(
     if (techOutput && isTech) text = techOutput
     else if (blueprintViaFile && isTech) text = LONG
     doEmpty = false
+    const childId = `c-${children.length}`
+    children[children.length - 1].childId = childId
     return {
-      id: `c-${children.length}`,
-      localAgent: { session: null },
+      childId,
       result: (async () => ({ stopReason: 'completed', output: [{ type: 'text', text }] }))(),
       dispose: async () => {},
     }
   }
-  setRuntime({}, { start: stubStart })
+  // agents 注册表：记录宿主返回的 childId 是否被查过。alpha.2 起回执**不再带活 Agent 句柄**
+  // （`startActivation` 只给 childId/result/dispose），唯一取法是注册表 —— 这条链路一断就**静默退化**
+  // （护栏/计量读到 undefined 后各自走「读不到」的降级分支，不报错），所以必须在这里留可见证据。
+  const agentLookups = []
+  setRuntime(
+    { get: (sid) => { agentLookups.push(String(sid)); return undefined } },
+    { list: () => ['spawn'], startActivation: stubStart },
+  )
 
   const journal = {
     id: `tf-orch-${name}`, name: 'teamflow-pipeline', status: 'running',
@@ -246,6 +264,16 @@ async function runScenario(
     logs: journal.logs.map((l) => `${l.level}: ${l.message}`),
     warnLogs: logOf('warn'), childLabels: children.map((c) => c.label),
     childCount: children.length, blueprint: journal.blueprint,
+    // 宿主 API 入参保真（issue #20）：每个阶段子代理的 startActivation spec 形状
+    childSpecs: children.map((c) => ({
+      provider: c.provider, delivery: c.delivery,
+      hasRequestParent: !!c.requestParent, hasTopSignal: !!c.topSignal,
+    })),
+    // 宿主返回的 childId 列表 + agents 注册表实际被查过的 id（证明 localAgent 走注册表）
+    childIds: children.map((c) => c.childId),
+    // 只取**阶段**子代理的 childId（分诊走 triage.ts 的独立通道，不经 runAgent/guard/metering）
+    stageChildIds: journal.stages.map((s) => s.childId).filter(Boolean),
+    agentLookups,
     humanIntervention: !!journal.humanIntervention,
     stateFileErr,
     blueprintFileErr,
@@ -890,11 +918,14 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
     status: 'idle', followup() {}, inject() {}, options: {},
   }
   setRuntime({ get: (sid) => (sid === 'sid-redo' ? fakeParent : undefined) }, {
-    start: async (_p, init) => {
-      const label = String((init && init.label) || '')
+    // 真实宿主一定有 provider 注册表（providerName 靠 list 取），漏了它 provider 会传成 null（宿主直接抛）
+    list: () => ['spawn'],
+    startActivation: async (spec) => {
+      const init = spec && spec.request
+      const label = String((spec && spec.label) || '')
       seen.push({ label, prompt: String((init && init.prompt && init.prompt[0] && init.prompt[0].text) || '') })
       return {
-        id: `c-${seen.length}`, localAgent: { session: null },
+        childId: `c-${seen.length}`,
         result: (async () => ({ stopReason: 'completed', output: [{ type: 'text', text: '' }] }))(),
         dispose: async () => {},
       }
@@ -1026,6 +1057,48 @@ console.log('\n[25] 蓝图判据：内容为空的块不算成功 —— 要么�
   const k = await runScenario('bp-archived-ok', { options: FULL_OPTS, blueprintViaFile: true })
   ok(k.blueprint && (k.blueprint.tasks || []).length > 0, '成功路径仍照常解析')
   ok(k.logs.some((l) => /蓝图已落档到/.test(l)), '**成功解析也落档**（常态路径不能漏）')
+}
+
+/* ── (i) 宿主 API 入参形状（issue #20）：startActivation spec 必须带 provider/delivery/request.parent ── */
+// 源码锁只能证明「调用了 startActivation」，证明不了「传对了 spec」：
+//   · 漏 `delivery` ⇒ 宿主按 'parent' 处理，给主会话投递阶段完成通知（插件看起来照常跑，主线程被污染）
+//   · 漏 `request.parent` ⇒ 宿主 `assertAdmitting` 直接抛 UNAUTHORIZED，全部阶段失败
+//   · `provider` 空 ⇒ 宿主 `expectProvider('')` 抛
+// 三者都必须在**真跑一遍流水线**时被观测到（stub 保真记录 spec 形状）。
+console.log('\n[N] 宿主 subagent API 入参形状（startActivation）')
+{
+  const r = await runScenario('spec-shape', { options: QA_OPTS })
+  ok(r.childSpecs.length > 0, `起了子代理（实测 ${r.childSpecs.length} 个）`)
+  ok(r.childSpecs.every((s) => s.delivery === 'caller'), '每个阶段都传 delivery=caller（parent=向主会话塞完成通知）')
+  ok(r.childSpecs.every((s) => s.provider === 'spawn'), '每个阶段都有非空 provider（空值 ⇒ 宿主 expectProvider 抛）')
+  ok(r.childSpecs.every((s) => s.hasRequestParent), '每个阶段都传 request.parent（宿主 assertAdmitting 校验「活的父 Agent」）')
+  ok(r.childSpecs.every((s) => s.hasTopSignal), '每个阶段都传顶层 signal（宿主发布前取消通道；嵌套 request.signal 是发布后通道）')
+  ok(r.stageChildIds.length > 0 && r.stageChildIds.every((id) => r.agentLookups.includes(id)),
+    `每个**阶段**子代理的 childId 都被 agents 注册表查过（实测 stages=${r.stageChildIds} lookups=${r.agentLookups}）——localAgent 的取法真的在跑，不是只在源码里（分诊不走 runAgent，故不在本断言范围）`)
+}
+
+/* ── (j) liveChildAgentOf / hasStartActivation 的边界（issue #20 的取句柄与预检两条判据） ── */
+console.log('\n[O] 活子代理取法与宿主能力预检（纯行为，可单测）')
+{
+  const lookups = []
+  setRuntime({ get: (sid) => { lookups.push(String(sid)); return sid === 'live' ? { session: null, status: 'running' } : undefined } }, {})
+  const live = runtime.liveChildAgentOf('live')
+  ok(!!live && live.status === 'running', '注册表里有的 childId → 返回活 Agent（护栏/计量据此工作）')
+  ok(runtime.liveChildAgentOf('missing') === undefined, '注册表里没有 → undefined（外部/远程 provider 的同义降级路径）')
+  const before = lookups.length
+  ok(runtime.liveChildAgentOf(undefined) === undefined && runtime.liveChildAgentOf(123) === undefined && runtime.liveChildAgentOf('') === undefined,
+    '非字符串/空 childId → undefined 且**不查注册表**（不把参数错误当成注册表查询）')
+  ok(lookups.length === before, '上面三次非法入参没有产生注册表查询')
+  // 注册表本身缺失/抛错也不得成为新的失败点（读句柄失败只能降级，不能中止阶段）
+  setRuntime({ get: () => { throw new Error('boom') } }, {})
+  ok(runtime.liveChildAgentOf('x') === undefined, '注册表 get 抛错 → undefined（不向外抛，阶段照常跑）')
+  setRuntime({}, {})
+  ok(runtime.liveChildAgentOf('x') === undefined, 'agents 服务缺失 → undefined')
+  ok(runtime.hasStartActivation() === false, 'hasStartActivation：无 subagents 服务 → false（起跑预检据此显性失败）')
+  setRuntime({}, { list: () => ['spawn'] })
+  ok(runtime.hasStartActivation() === false, 'hasStartActivation：旧宿主（有 list、无 startActivation）→ false —— issue #20 的原始故障形态')
+  setRuntime({}, { list: () => ['spawn'], startActivation: async () => ({}) })
+  ok(runtime.hasStartActivation() === true, 'hasStartActivation：alpha.2+ 宿主 → true')
 }
 
 if (failed) {

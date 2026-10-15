@@ -6,6 +6,7 @@
  */
 import { slugPath, persistJournal, loadJournalById } from '../../../store.ts'
 import type { JournalRecord } from '../../../store.ts'
+import type { LocalChildAgentLike } from '../../types.ts'
 import { t } from '../../locales.ts'
 import { runLocaleOf } from '../locale.ts'
 import { RUNS_MEMORY_KEEP } from '../../constants.ts'
@@ -186,6 +187,41 @@ export function providerName(): string | null {
   const names = subagents.list()
   if (names.indexOf('spawn') !== -1) return 'spawn'
   return names.length > 0 ? names[0] : null
+}
+
+/**
+ * 宿主能力探测：`subagents.startActivation` 是否存在（2026-10-15 / issue #20）。
+ *
+ * alpha.1 的 `subagents.start(name, request)` 在 alpha.2 被**整体删除**（提交 `3d852a1cea`），旧插件
+ * 在新宿主上的真实故障链是「分诊静默降级 → 第一个阶段 `TypeError: start is not a function`」——
+ * 报错点与根因隔了一层。这里把「宿主 API 不匹配」变成**起跑即显性失败**。
+ *
+ * 主门禁仍是 `package.json` 的 `engines.dsh`（宿主 `app-boot` 在装载 profile bundle 时校验，
+ * 不满足则把插件列入 `skippedBundles` 并给出明确原因）——本函数是那之后的第二道：
+ * `dsh plugin allow-version` 豁免、`file:` 直装、开发态副本都能绕过 `engines` 校验。
+ */
+export function hasStartActivation(): boolean {
+  const subagents = runtime.subagents as { startActivation?: unknown } | undefined
+  return !!subagents && typeof subagents.startActivation === 'function'
+}
+
+/**
+ * **活子代理 Agent 的唯一取法**（2026-10-15 / issue #20）：alpha.2 起 `startActivation` 不再回传
+ * `localAgent` 句柄（`SubagentActivation` 只有 `childId`/`messageId`/`result`/`dispose`），
+ * 改由 `agents` 注册表按 childId 取——宿主 `manager.startLocal` 走的就是 `agents.create()`，
+ * 所以 `startActivation` 返回时该子 Agent 已注册（`packages/subagent/subagent/src/manager.ts`）。
+ *
+ * 兜底一律返回 undefined（与旧 `localAgent` 在远程 provider 下为 undefined 同义）：消费方
+ * （护栏/计量）本就把「读不到」当降级路径，不能让取句柄本身成为新的失败点。
+ */
+export function liveChildAgentOf(childId: unknown): LocalChildAgentLike | undefined {
+  if (typeof childId !== 'string' || !childId) return undefined
+  const agents = runtime.agents as { get?: (id: string) => unknown } | undefined
+  if (!agents || typeof agents.get !== 'function') return undefined
+  try {
+    const agent = agents.get(childId) as LocalChildAgentLike | null | undefined
+    return agent && typeof agent === 'object' ? agent : undefined
+  } catch (e) { return undefined }
 }
 
 /** LlmModelInfo 鸭子形状（DSH llm.resolveModelInfo 返回；含 inputModalities）。 */

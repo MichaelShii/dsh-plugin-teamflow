@@ -4,7 +4,7 @@
  * 【档位阶段集】按 mode（full/medium/lite/tech/patch）经 STAGE_POLICY（constants.ts）
  * 展开实际执行阶段集（resolveStages），再与团队阶段取交集——见 ADR-0004。
  */
-import { runtime, runs, inFlight, activeProducts, providerName, workspaceScopeOf, installCtx, pruneRuns } from './agent/context.ts'
+import { runtime, runs, inFlight, activeProducts, providerName, hasStartActivation, workspaceScopeOf, installCtx, pruneRuns } from './agent/context.ts'
 import { initPipelineBacklog, storeFor, noteTaskStageUsage, hasOpenBlockingBugs } from './domain/backlog.ts'
 import { withRetry, resolveChildRoute } from './agent/runner.ts'
 import { runDevPhase, buildDevTaskDefs } from './stages/dev.ts'
@@ -1276,8 +1276,12 @@ export function summarizeTimeline(timeline) {
 
 /** 启动流水线：预检 + 建 journal + 异步 executePipeline（按发起会话的工作区绑 scope）。 */
 export function startPipeline(agent: unknown, requirement: string, options: PipelineOptions, signal: unknown): string {
-  const provider = providerName()
   const locale = ambientLocale()
+  // **宿主 API 预检（2026-10-15 / issue #20）**：放在 provider 检查之前——「API 不匹配」比「注册表为空」
+  // 更根本，且旧宿主上两个条件同时不满足（alpha.1 有 list 但没有 startActivation）。不这样做的话，
+  // 故障会在第一个阶段以 `TypeError: startActivation is not a function` 出现，与根因隔一层。
+  if (!hasStartActivation()) throw new Error(t(locale, 'run.hostTooOld'))
+  const provider = providerName()
   if (!provider) throw new Error(t(locale, 'run.noProvider'))
   const ws = workspaceScopeOf(agent)
   const productKey = ws.projectKey

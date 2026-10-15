@@ -274,7 +274,7 @@ ok(/ONCE_DISCIPLINE/.test(hostSrc) && /ONE-SHOT WRITE/.test(hostSrc), 'prompt：
 // 7) 子代理模型路由修复：主线程切换模型后子代理不沿用废弃 provider
 ok(/resolveChildRoute/.test(hostSrc) && /requestHeader\(\)/.test(hostSrc), 'runner：子代理路由解析（requestHeader 最近生效路由）')
 ok(/agentDefaultModel/.test(hostSrc) && /currentSelection/.test(hostSrc), 'runner：回退全局默认模型当前选择（切换即更新）')
-ok(/agentOptions/.test(hostSrc) && /subagents\.start/.test(hostSrc), 'runner：显式传 agentOptions 给子代理（不再依赖过期快照）')
+ok(/agentOptions/.test(hostSrc) && /startActivation/.test(hostSrc), 'runner：显式传 agentOptions 给子代理（不再依赖过期快照）')
 
 console.log('── 3f) 档位阶段集差异执行（ADR-0004 落地）──')
 ok(/resolveStages/.test(constantsSrc) && /STAGE_POLICY/.test(constantsSrc), 'constants：档位→阶段集策略表 + 纯函数 resolveStages')
@@ -315,6 +315,25 @@ ok(/repairBlueprintJson/.test(utilSrc), 'util：蓝图 JSON 提前闭合抢救�
 ok(/const fromFile = extractBlueprint\(raw\)/.test(pipelineSrc) && /bdUsable\(fromFile\)/.test(pipelineSrc), 'pipeline：蓝图提取回退任务夹 TECHNICAL.md，且回退结果**过实质校验**才采用（模型写进文档而非回复输出时 M2 拆卡不退化，实锤 r13 单任务整体开发）')
 ok(/token 观测/.test(guardSrc) && /重复 read|验证脚本重复执行/.test(hostSrc) && /observeToolCalls/.test(guardSrc), 'guard：token 观测信号（重复读/验证循环只记 warning 不中止）')
 ok(/蓝图块解析失败/.test(hostSrc) && /devAssign: \(mainTask && mainTask\.devAssign\) \|\| null/.test(backlogSrc), 'pipeline/backlog：蓝图解析失败告警 + 子卡继承 devAssign')
+
+console.log('── 3h-2) 宿主 subagent API 迁移（issue #20：alpha.2 已删除 subagents.start）──')
+// 宿主 alpha.2 起扁平入口 `start(name, request)` 被整体删除（提交 3d852a1cea，首个含它的 tag =
+// dsh-v0.2.1-alpha.2），唯一入口是 `startActivation(spec)`。两类锁：
+//   ① **调用形态**（源码锁）——锚点用 `\.start\(providerName\(` 而不是裸名 `subagents.start`：
+//      注释里出现裸名是合法的（说明性文字），锁裸名会**假绿**；锁「旧调用的实际写法」才有牙。
+//   ② **入参语义**（行为级）——`delivery`/`provider`/`request.parent` 落在
+//      test/orchestration.test.js 的 `childSpecs`（漏 delivery ⇒ 宿主会给主会话塞完成通知，源码看不出来）。
+const callerCall = /startActivation!?\(\{\s*\n\s*provider: providerName\(\) as string,[\s\S]{0,900}?delivery: 'caller'/
+ok(!/\.start\(providerName\(/.test(hostSrc), 'host-pool：旧 `start(providerName(...))` 调用整体清零（漏一处 = 该阶段 TypeError，issue #20 的原始故障形态）')
+ok(callerCall.test(runnerSrc), 'runner：startActivation 调用带 delivery=caller（parent=向主会话投递阶段完成通知，非本插件语义）')
+ok(callerCall.test(triageSrc), 'triage：startActivation 调用带 delivery=caller（分诊结果由本函数自己解析）')
+ok(/get localAgent\(\) \{ return liveChildAgentOf\(/.test(runnerSrc), 'runner：句柄的 localAgent 由 agents 注册表按 childId 解析（alpha.2 回执不再回传活 Agent）')
+ok(/export function liveChildAgentOf/.test(contextSrc) && /runtime\.agents/.test(contextSrc), 'context：liveChildAgentOf 的取法是 agents 注册表（宿主 manager.startLocal 走 agents.create）')
+ok(/agent\.status !== 'idle'/.test(guardSrc) && !/\.phase\b/.test(guardSrc), 'guard：isAgentBusy 改读 Agent.status（旧实现读从未存在的字段 ⇒ 每次静默 false 的死判据）')
+// ⚠️ 锁**整条守卫语句**（不只是函数名与顺序）：变异「给条件加 `false &&` 前缀」下，只锁
+// `hasStartActivation()` 是否存在 + 顺序的写法会**假绿**（实测 M4）—— 条件后的半句原样还在。
+ok(/if \(!hasStartActivation\(\)\) throw new Error\(t\(locale, 'run\.hostTooOld'\)\)/.test(pipelineSrc) && pipelineSrc.indexOf('hasStartActivation()') < pipelineSrc.indexOf("'run.noProvider'"), 'pipeline：宿主 API 预检先于 provider 预检且**真的在拦**（API 不匹配起跑即显性失败，不再拖到第一阶段 TypeError）')
+ok(/'run\.hostTooOld'/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')), 'locales：hostTooOld 文案（zh/en 同形由 locale 测试守）')
 
 console.log('── 3j) 会话事件 source 走 v4 producer-owned 命名空间（producer-owned source kind 校验）──')
 // 宿主 session-format-v4 的 assertV4MessageSources 拒绝 kind==='plugin' 的退役 wrapper：
@@ -527,10 +546,13 @@ ok(/"version": "0\.2\.8"/.test(pkgSrc), 'package.json：版本 0.2.8（release-v
   ok(bad.length === 0, `package.json：消费者安装期钩子（${consumerTime.join('/')}）必须为空 —— 它们在 tarball 里跑，而 devDependencies 不在（实得：${bad.join(',') || '无'}）`)
   ok(pkgJson.scripts?.prepare === 'lefthook install', 'package.json：git hook 走 prepare（本地/pack/publish 才跑）')
 }
-// ⚠ engines.dsh 的上界**不能简单放宽**：semver 的「预发布只匹配同 tuple 区间」规则下，
-// `>=0.1.7-alpha.1 <0.3.0` 对 `0.2.0-rc.2` 判 **fail**（semver 7.7.4 实测）——
-// 必须写成并集才能同时覆盖 0.1.7 系与 0.2.0 系。语义矩阵见 README「版本锚定」小节。
-ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.1\.7-alpha\.1 <0\.3\.0 \|\| >=0\.2\.0-rc\.1 <0\.3\.0"/.test(pkgSrc), 'package.json：声明 dsh.manifestVersion 与 engines.dsh 兼容窗口（下限 = v4 宿主 0.1.7-alpha.1；上界为并集区间，简单放宽会让 0.2.0-rc.x 判 fail）')
+// ⚠ engines.dsh 的区间语义（semver 7.8.5 实测）：默认（无 includePrerelease）下预发布版本只能匹配
+// **同 tuple** 的比较器 —— 这正是旧区间必须写成并集的原因（下限 0.1.7-alpha.1 的 tuple 与 0.2.0-rc.x
+// 不同 ⇒ `>=0.1.7-alpha.1 <0.3.0` 对 `0.2.0-rc.x` 判 fail）。语义矩阵见 README「版本锚定」小节。
+// 2026-10-15（issue #20）：下限整体抬到 `0.2.1-alpha.2`（宿主删除 `subagents.start` 的首个版本），
+// 与当前宿主同一 tuple ⇒ 单区间即可，不再需要并集。实测（default 与 includePrerelease 结果一致）：
+//   alpha.1=false / alpha.2~alpha.4=true / 0.2.0-rc.2=false / 0.1.7-alpha.1=false / 0.2.1=true
+ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.2\.1-alpha\.2 <0\.3\.0"/.test(pkgSrc), 'package.json：engines.dsh 下限 = 0.2.1-alpha.2（宿主删除 subagents.start 的首个版本；更旧的宿主上本插件会被 host 列为 skippedBundles 并说明原因）')
 // 手工枚举的清单必须配门禁（同型教训：journal 字段 / execOptions / loadState / triageRecordOf）。
 // deploy.mjs FILES 与上面的 CORE_FILES 都是手写清单，领域化拆分后两者都漂移过——实测 FILES 漏了
 // guard/products/runlogs/state/teams 五个（profile 副本里那份源码因此永久陈旧），CORE_FILES 漏了 sanity。

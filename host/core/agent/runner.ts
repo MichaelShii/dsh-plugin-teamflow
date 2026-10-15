@@ -2,7 +2,7 @@
  * dsh-plugin-teamflow core — 子代理执行器（并发池 / 单阶段运行 / 重试与熔断）。
  * 依赖：util/constants/types + core(context/metering)。
  */
-import { runtime, providerName, trackInFlight, untrackInFlight } from './context.ts'
+import { runtime, providerName, trackInFlight, untrackInFlight, liveChildAgentOf } from './context.ts'
 import { accumulateSessionUsage, freshTokensOf, effectiveFreshBudget } from './metering.ts'
 import { startStageGuard } from './guard.ts'
 import { clip, extractText, blockShape, emptyTurnDocVerdict, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs, stageDocText } from '../../util.ts'
@@ -10,7 +10,7 @@ import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../../constants.ts'
 import { t, type HostLocale } from '../../locales.ts'
 import { runLocaleOf } from '../locale.ts'
 import { stripStateBlock } from '../domain/state.ts'
-import type { Journal, ParentAgentLike, UsageBuckets } from '../../types.ts'
+import type { Journal, ParentAgentLike, SubagentStarters, UsageBuckets } from '../../types.ts'
 import type { JournalStage } from '../../../store.ts'
 
 /**
@@ -163,13 +163,34 @@ export async function runAgent(
       // 静默失败可见化（2026-09-11 实锤：efforts 对象数组被当字符串过滤 → 恒判不支持却无任何痕迹）
       journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.effortSkip', { label, skip: eff.skip }) })
     }
-    run = await runtime.subagents.start(providerName(), {
+    // **宿主 API 迁移（2026-10-15 / issue #20）**：alpha.2 起 `subagents.start(name, request)` 被整体删除，
+    // 唯一入口是 `startActivation(spec)`。官方迁移指南（`docs/upgrade-guide/v0.2.1-alpha.1/subagent-activations/`）
+    // 对「必须等待结果的宿主代码」指定两条：① 用 `delivery: 'caller'`；② 发布后 `signal` 不再控制取消，
+    // 保留回执用 `dispose()` 取消该次 activation。
+    // `delivery: 'caller'` 是本插件的**必须**选择（不是优化）：`'parent'` 会向父会话投递完成通知，
+    // 而父会话就是主线程——流水线的阶段完成由本插件自己汇报，不能让宿主再插一条。
+    const sig = normalizeSignal(signal)
+    const activation = await (runtime.subagents as SubagentStarters).startActivation!({
+      provider: providerName() as string,
       label,
-      prompt: [{ type: 'text', text: prompt }],
-      parent,
-      ...(agentOptions ? { agentOptions } : {}),
-      signal: normalizeSignal(signal),
+      request: {
+        prompt: [{ type: 'text', text: prompt }],
+        parent,
+        ...(agentOptions ? { agentOptions } : {}),
+        signal: sig,
+      },
+      signal: sig,
+      delivery: 'caller',
     })
+    run = {
+      id: activation.childId,
+      result: activation.result,
+      dispose: () => activation.dispose(),
+      // 活 Agent 从 `agents` 注册表按 childId 取（alpha.2 起回执不再带句柄，见 context.liveChildAgentOf）。
+      // 用 getter 而非一次性取值：护栏/计量在**整个阶段**反复读它，lazy 才能覆盖「注册表晚于回执可用」
+      // 与「dispose 后取不到」两种时序，且两者本来就走降级路径。
+      get localAgent() { return liveChildAgentOf(activation.childId) },
+    }
     stage.childId = run.id
     trackInFlight(journal.id, stage, run)
     try {
