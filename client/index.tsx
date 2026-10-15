@@ -188,7 +188,20 @@ function StageDetailDrawer({ det, onClose, sessionId, uiWorkspace }) {
   const hasChild = !!(!crossSession && cur && cur.childId && uiWorkspace && typeof uiWorkspace.openSession === 'function')
   const openChild = () => {
     if (crossSession || !hasChild) return
-    try { uiWorkspace.openSession({ parentSessionId: (ownerSession || sessionId), childSessionId: cur.childId, mode: 'one-shot' }) } catch (e) { /* 会话跳转失败忽略 */ }
+    // ⚠️ `mode` 必须写 `'unknown'`（2026-10-15 实机修复，run tf-mv9o5fkk-orjou4）。
+    // 宿主 `SubagentAddress`（`packages/subagent/subagent/src/control-types.ts:77`）的原话是
+    // 「Durable parent/child browsing address; **unknown mode is resolved when child history is read**」——
+    // 即 `'unknown'` 是**跳转浏览**的既定输入，宿主读到子会话后用其 identity 投影解析真实形态
+    // （`api/session-controller/src/client/sessions/session.ts` 的 buildSnapshot：
+    //  `address.mode === 'unknown' && identity != null ? {...address, mode: identity.mode} : address`）。
+    // 我们此前抄宿主 ui-workflow-run 的例子写死 `'one-shot'`，而本插件的阶段子代理**在宿主 alpha.2 起
+    // 一律记为 `continuable`**（`manager.startLocal` 统一写该值，我们只是从不续跑它）
+    // ⇒ 地址声明与实际不符 ⇒ 宿主 history 校验拒绝：
+    // `subagent/unauthorized: subagent mode does not match the supplied address`（前端显示「历史加载失败」）。
+    // 也别改成 `'continuable'`：那是把宿主的当前实现当契约，下次再统一形态又会静默失配。
+    // 注意 `mode` 虽在类型上可选，但**缺省不安全**——校验是 `address.mode !== 'unknown' && identity.mode !== address.mode`，
+    // 不传即 undefined ⇒ 必然不等 ⇒ 直接拒。
+    try { uiWorkspace.openSession({ parentSessionId: (ownerSession || sessionId), childSessionId: cur.childId, mode: 'unknown' }) } catch (e) { /* 会话跳转失败忽略 */ }
   }
   const outText = cur && cur.output ? cur.output
     : cur && cur.summary ? t('stage.summaryFallback', { summary: cur.summary })
@@ -1116,9 +1129,10 @@ interface TeamFlowViewProps {
   /** 通用右侧栏打开（run 详情 tab 等）；返回 false 表示右侧栏不可用，调用方自行降级。 */
   openResource?: (address: string, label: string) => boolean
   /** 跳会话唯一入口：宿主 0.1.7-alpha.1 起用 `uiWorkspace.openSession(target)` 取代已移除的 `sessions.openSubagent` / `sessions.open`。
-   *  target 可以是会话 id，也可以是持久子代理地址 `{ parentSessionId, childSessionId, mode }` —— 一次真跳转。 */
+   *  target 可以是会话 id，也可以是持久子代理地址 `{ parentSessionId, childSessionId, mode }` —— 一次真跳转。
+   *  ⚠️ `mode` 传 `'unknown'`（跳过形态校验、由宿主读子会话时解析真实形态）；**不要写死具体形态**，见 `openChild` 处的实测记录。 */
   uiWorkspace?: {
-    openSession?: (target: string | { parentSessionId: string; childSessionId: string; mode?: 'one-shot' | 'continuable' | 'unknown' }) => void
+    openSession?: (target: string | { parentSessionId: string; childSessionId: string; mode: 'one-shot' | 'continuable' | 'unknown' }) => void
   } | null
 }
 
