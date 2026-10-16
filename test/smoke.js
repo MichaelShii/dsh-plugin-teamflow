@@ -274,7 +274,7 @@ ok(/ONCE_DISCIPLINE/.test(hostSrc) && /ONE-SHOT WRITE/.test(hostSrc), 'prompt：
 // 7) 子代理模型路由修复：主线程切换模型后子代理不沿用废弃 provider
 ok(/resolveChildRoute/.test(hostSrc) && /requestHeader\(\)/.test(hostSrc), 'runner：子代理路由解析（requestHeader 最近生效路由）')
 ok(/agentDefaultModel/.test(hostSrc) && /currentSelection/.test(hostSrc), 'runner：回退全局默认模型当前选择（切换即更新）')
-ok(/agentOptions/.test(hostSrc) && /subagents\.start/.test(hostSrc), 'runner：显式传 agentOptions 给子代理（不再依赖过期快照）')
+ok(/agentOptions/.test(hostSrc) && /startActivation/.test(hostSrc), 'runner：显式传 agentOptions 给子代理（不再依赖过期快照）')
 
 console.log('── 3f) 档位阶段集差异执行（ADR-0004 落地）──')
 ok(/resolveStages/.test(constantsSrc) && /STAGE_POLICY/.test(constantsSrc), 'constants：档位→阶段集策略表 + 纯函数 resolveStages')
@@ -315,6 +315,32 @@ ok(/repairBlueprintJson/.test(utilSrc), 'util：蓝图 JSON 提前闭合抢救�
 ok(/const fromFile = extractBlueprint\(raw\)/.test(pipelineSrc) && /bdUsable\(fromFile\)/.test(pipelineSrc), 'pipeline：蓝图提取回退任务夹 TECHNICAL.md，且回退结果**过实质校验**才采用（模型写进文档而非回复输出时 M2 拆卡不退化，实锤 r13 单任务整体开发）')
 ok(/token 观测/.test(guardSrc) && /重复 read|验证脚本重复执行/.test(hostSrc) && /observeToolCalls/.test(guardSrc), 'guard：token 观测信号（重复读/验证循环只记 warning 不中止）')
 ok(/蓝图块解析失败/.test(hostSrc) && /devAssign: \(mainTask && mainTask\.devAssign\) \|\| null/.test(backlogSrc), 'pipeline/backlog：蓝图解析失败告警 + 子卡继承 devAssign')
+
+console.log('── 3h-2) 宿主 subagent API 迁移（issue #20：alpha.2 已删除 subagents.start）──')
+// 宿主 alpha.2 起扁平入口 `start(name, request)` 被整体删除（提交 3d852a1cea，首个含它的 tag =
+// dsh-v0.2.1-alpha.2），唯一入口是 `startActivation(spec)`。两类锁：
+//   ① **调用形态**（源码锁）——锚点用 `\.start\(providerName\(` 而不是裸名 `subagents.start`：
+//      注释里出现裸名是合法的（说明性文字），锁裸名会**假绿**；锁「旧调用的实际写法」才有牙。
+//   ② **入参语义**（行为级）——`delivery`/`provider`/`request.parent` 落在
+//      test/orchestration.test.js 的 `childSpecs`（漏 delivery ⇒ 宿主会给主会话塞完成通知，源码看不出来）。
+const callerCall = /startActivation!?\(\{\s*\n\s*provider: providerName\(\) as string,[\s\S]{0,900}?delivery: 'caller'/
+ok(!/\.start\(providerName\(/.test(hostSrc), 'host-pool：旧 `start(providerName(...))` 调用整体清零（漏一处 = 该阶段 TypeError，issue #20 的原始故障形态）')
+ok(callerCall.test(runnerSrc), 'runner：startActivation 调用带 delivery=caller（parent=向主会话投递阶段完成通知，非本插件语义）')
+ok(callerCall.test(triageSrc), 'triage：startActivation 调用带 delivery=caller（分诊结果由本函数自己解析）')
+// ⚠️ 取句柄**必须在窗口内**（2026-10-16 实锤：曾用 lazy getter ⇒ 21/21 阶段 usage 全空而 run 报 completed）：
+// 宿主对本地子级在 idle 时就 close（从 agents 注册表注销），而 result 是「handle cleanup 之后」才 settle。
+ok(/const liveChild = liveChildAgentOf\(activation\.childId\)/.test(runnerSrc) && /localAgent: liveChild/.test(runnerSrc),
+  'runner：活句柄在启动后**立刻**取并塞进句柄对象（不得 lazy——结算前子级已从注册表注销）')
+ok(runnerSrc.indexOf('const liveChild = liveChildAgentOf') < runnerSrc.indexOf('const result = await run.result'),
+  'runner：取句柄发生在 await run.result **之前**（顺序即判据）')
+ok(/if \(!stage\.usage\) noteUsageMissing\(journal, run, locale\)/.test(runnerSrc),
+  'runner：计量为空必须留可见诊断（整条语句——静默的 null 正是它漏过 4 小时的原因）')
+ok(/export function liveChildAgentOf/.test(contextSrc) && /runtime\.agents/.test(contextSrc), 'context：liveChildAgentOf 的取法是 agents 注册表（宿主 manager.startLocal 走 agents.create）')
+ok(/agent\.status !== 'idle'/.test(guardSrc) && !/\.phase\b/.test(guardSrc), 'guard：isAgentBusy 改读 Agent.status（旧实现读从未存在的字段 ⇒ 每次静默 false 的死判据）')
+// ⚠️ 锁**整条守卫语句**（不只是函数名与顺序）：变异「给条件加 `false &&` 前缀」下，只锁
+// `hasStartActivation()` 是否存在 + 顺序的写法会**假绿**（实测 M4）—— 条件后的半句原样还在。
+ok(/if \(!hasStartActivation\(\)\) throw new Error\(t\(locale, 'run\.hostTooOld'\)\)/.test(pipelineSrc) && pipelineSrc.indexOf('hasStartActivation()') < pipelineSrc.indexOf("'run.noProvider'"), 'pipeline：宿主 API 预检先于 provider 预检且**真的在拦**（API 不匹配起跑即显性失败，不再拖到第一阶段 TypeError）')
+ok(/'run\.hostTooOld'/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')), 'locales：hostTooOld 文案（zh/en 同形由 locale 测试守）')
 
 console.log('── 3j) 会话事件 source 走 v4 producer-owned 命名空间（producer-owned source kind 校验）──')
 // 宿主 session-format-v4 的 assertV4MessageSources 拒绝 kind==='plugin' 的退役 wrapper：
@@ -377,7 +403,7 @@ ok(/t\('stage\.evidenceTitle'\)/.test(clientSrc) && /phaseKeyOf\(st\.phase\) ===
 ok(/export function blockShape/.test(utilSrc), 'util：响应块构成纯函数（诊断用：text/reasoning 带长度、重复块压成 xN）')
 ok(/const shape = blockShape\(result && result\.output\)/.test(runnerSrc) && /\? t\(locale, 'diag\.emptyTurn', \{ stop: stop \|\| 'unknown', shape \}\)/.test(runnerSrc), 'runner：空收尾诊断带上响应块构成（一眼区分「只有 reasoning」与宿主中断 aborted / 预算截断 max-tokens）')
 ok(/let emptyTurnDoc/.test(runnerSrc) && /if \(emptyTurnDoc\) \{[\s\S]{0,400}diag\.emptyTurnDelivered/.test(runnerSrc) && /stageText = emptyTurnDoc\.text/.test(runnerSrc), 'runner：空收尾 + 任务夹产物已合格 → 按文件判交付不再重跑（A 档止损；返回值用文件内容顶替空回复，state 合并走宽容语义）')
-ok(/export function emptyTurnDocVerdict/.test(utilSrc) && /emptyTurnDocVerdict\(stop, text, verdict\.min, stageDocText\(journal, phase\)\)/.test(runnerSrc), 'runner/util：空收尾兜底判定抽纯函数（runner 链宿主私有 peer 不可 import，行为级测试走 util——cancel.test.js 头注释纪律）')
+ok(/export function emptyTurnDocVerdict/.test(utilSrc) && /emptyTurnDocVerdict\(stop, text, verdict\.min, stageDocText\(journal, phase, stage\.artifactBaseline\)\)/.test(runnerSrc), 'runner/util：空收尾兜底判定抽纯函数（runner 链宿主私有 peer 不可 import，行为级测试走 util——cancel.test.js 头注释纪律）')
 ok(/empty-turn\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：empty-turn 行为级套件已登记 test/prepublishOnly 双链')
 // v0.2.5：编排行为级套件（stub 子代理驱动真实 executePipeline）同样必须进双链——登记了才等于真跑
 ok(/orchestration\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：编排套件登记双链')
@@ -510,12 +536,12 @@ ok(/export function effectiveFreshBudget/.test(meteringSrc) && /calls >= UNCACHE
 ok(/effectiveFreshBudget\(usageAcc, FRESH_TOKEN_BUDGET\)/.test(runnerSrc) && /diag\.breakerUncached/.test(runnerSrc) && /diag\.breakerUncached/.test(hostSrc), 'runner/locales：无缓存时的熔断**带依据留痕**（命中率/调用数/放宽后预算），与有缓存路径分开措辞')
 // doc 类阶段的产物兜底（回复过短但文件已落盘 → 判交付；实锤 4894 字节 PRD.md 被「回复 284 字符」误杀）
 ok(/export const DOC_STAGE_FILES/.test(utilSrc) && /export function stageDocText/.test(utilSrc) && /'QA-REPORT\.md'/.test(utilSrc) && /'ACCEPTANCE\.md'/.test(utilSrc), 'util：doc 阶段产物文件名表 + stageDocText（产物是任务夹文件的阶段才入表）')
-ok(/stageDocText\(journal, phase\)/.test(runnerSrc) && /doc\.length >= verdict\.min/.test(runnerSrc) && /verdict\.ok \|\| docFallback/.test(runnerSrc), 'runner：回复不合格时回读任务夹产物（文件达下限即判交付），留痕 warn')
+ok(/stageDocText\(journal, phase, stage\.artifactBaseline\)/.test(runnerSrc) && /doc\.length >= verdict\.min/.test(runnerSrc) && /verdict\.ok \|\| docFallback/.test(runnerSrc), 'runner：回复不合格时回读任务夹产物（文件达下限即判交付），留痕 warn')
 ok(/!verdict\.ok && text && stop === 'completed'/.test(runnerSrc), 'runner：**兜底不豁免非空回复**（pipeline 要用回复合并 state 块——空回复仍是未交付）')
 ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
-ok(/"version": "0\.2\.8"/.test(pkgSrc), 'package.json：版本 0.2.8（release-v0.2.8 开发线）')
+ok(/"version": "0\.2\.9"/.test(pkgSrc), 'package.json：版本 0.2.9（release-v0.2.9 开发线）')
 // 安装期钩子白名单：只有 prepare 可以在消费者安装时**不**运行。
 // 实锤（2026-10-03 用户实锤）：v0.2.5 的 `postinstall: lefthook install` 在**消费者从 registry 安装**时也会跑，
 // 而 lefthook 是 devDependency（tarball 里不存在）⇒ `npm error 'lefthook' 不是内部或外部命令` ⇒ **整个安装失败**。
@@ -527,10 +553,13 @@ ok(/"version": "0\.2\.8"/.test(pkgSrc), 'package.json：版本 0.2.8（release-v
   ok(bad.length === 0, `package.json：消费者安装期钩子（${consumerTime.join('/')}）必须为空 —— 它们在 tarball 里跑，而 devDependencies 不在（实得：${bad.join(',') || '无'}）`)
   ok(pkgJson.scripts?.prepare === 'lefthook install', 'package.json：git hook 走 prepare（本地/pack/publish 才跑）')
 }
-// ⚠ engines.dsh 的上界**不能简单放宽**：semver 的「预发布只匹配同 tuple 区间」规则下，
-// `>=0.1.7-alpha.1 <0.3.0` 对 `0.2.0-rc.2` 判 **fail**（semver 7.7.4 实测）——
-// 必须写成并集才能同时覆盖 0.1.7 系与 0.2.0 系。语义矩阵见 README「版本锚定」小节。
-ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.1\.7-alpha\.1 <0\.3\.0 \|\| >=0\.2\.0-rc\.1 <0\.3\.0"/.test(pkgSrc), 'package.json：声明 dsh.manifestVersion 与 engines.dsh 兼容窗口（下限 = v4 宿主 0.1.7-alpha.1；上界为并集区间，简单放宽会让 0.2.0-rc.x 判 fail）')
+// ⚠ engines.dsh 的区间语义（semver 7.8.5 实测）：默认（无 includePrerelease）下预发布版本只能匹配
+// **同 tuple** 的比较器 —— 这正是旧区间必须写成并集的原因（下限 0.1.7-alpha.1 的 tuple 与 0.2.0-rc.x
+// 不同 ⇒ `>=0.1.7-alpha.1 <0.3.0` 对 `0.2.0-rc.x` 判 fail）。语义矩阵见 README「版本锚定」小节。
+// 2026-10-15（issue #20）：下限整体抬到 `0.2.1-alpha.2`（宿主删除 `subagents.start` 的首个版本），
+// 与当前宿主同一 tuple ⇒ 单区间即可，不再需要并集。实测（default 与 includePrerelease 结果一致）：
+//   alpha.1=false / alpha.2~alpha.4=true / 0.2.0-rc.2=false / 0.1.7-alpha.1=false / 0.2.1=true
+ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.2\.1-alpha\.2 <0\.3\.0"/.test(pkgSrc), 'package.json：engines.dsh 下限 = 0.2.1-alpha.2（宿主删除 subagents.start 的首个版本；更旧的宿主上本插件会被 host 列为 skippedBundles 并说明原因）')
 // 手工枚举的清单必须配门禁（同型教训：journal 字段 / execOptions / loadState / triageRecordOf）。
 // deploy.mjs FILES 与上面的 CORE_FILES 都是手写清单，领域化拆分后两者都漂移过——实测 FILES 漏了
 // guard/products/runlogs/state/teams 五个（profile 副本里那份源码因此永久陈旧），CORE_FILES 漏了 sanity。
@@ -612,6 +641,9 @@ console.log('── 3u) 2026-09-15 停线缺陷修复（tf-mu2ioilr-95l4th：幻
 ok(/function defectHeaderCols/.test(backlogSrc) && /严重级\|严重度\|等级\|级别\|severity/.test(backlogSrc), 'backlog：parseDefects 按表头认表（严重级列必须由表头声明，列位置由表头决定）')
 ok(/if \(cols === null\) \{ cols = defectHeaderCols\(cells\); continue \}/.test(backlogSrc) && /if \(!cols\) continue/.test(backlogSrc), 'backlog：无严重级表头的表格整表跳过（复验对照表不再被登记为缺陷——停线回归核心）')
 ok(!/const sev = \(cells\[1\]/.test(backlogSrc), 'backlog：已删除「第 2 格即严重级」的位置式判定（旧写法 = 每轮复验重生一个 P2）')
+ok(/const DEFECT_STATUS_COL = \/状态|复验结论/i.test(backlogSrc) && /const DEFECT_RESOLVED_VALUE = /.test(backlogSrc) &&
+  /if \(statusKey && DEFECT_RESOLVED_VALUE\.test\(columns\[statusKey\]\)\) continue/.test(backlogSrc),
+  'backlog：复验表带状态列时**已闭环行跳过**（修 2026-10-17 假停线变体 2——只锁常量不够，锁整条跳过语句）')
 ok(/const mergeEligible = journal\.status === 'completed' && !journal\.humanIntervention && acceptanceDone/.test(reportSrc), 'report：合回邀请需「已完成 + 无人工介入 + 验收阶段真的 done」（未验收不得邀请合回）')
 ok(/report\.needsHumanNoAcceptance/.test(reportSrc) && /const needsHumanNotice = journal\.humanIntervention && !acceptanceDone/.test(reportSrc), 'report：验收未跑 + 需人工介入时显式提示「不要据此合回 main」')
 ok(/RETRY_SUFFIX_LOCAL/.test(utilSrc) && /attempt \\d\+/.test(utilSrc), 'taskKey 归一正则覆盖词典实际产出「(attempt N)」（R3-2，无 taskKey 的 label 兜底路径）')
@@ -886,7 +918,7 @@ ok(/'report\.confirmSheet': '[^']*立即开始写代码/.test(hostSrc), 'locales
 // ⇒ 只锁赋值的写法**假绿**。这是本日第三次同型（M6/M7/M8）—— 源码锁必须覆盖「条件 → 赋值」整条语句。
 ok(/if \(Array\.isArray\(block\.extra\.openQuestions\)\) state\.openQuestions = normalizeOpenQuestions\(block\.extra\.openQuestions\)/.test(hostSrc), 'state：mergeStateBlock 消费 extra.openQuestions（此前只要求、不落盘；条件与赋值必须同锁）')
 ok(/export function normalizeOpenQuestions/.test(hostSrc), 'state：openQuestions 容错归一是纯函数（模型形状不稳定 ⇒ 不抛、不污染 state）')
-ok(/openQuestions: state\.openQuestions/.test(hostSrc), 'pipeline：确认单接结构化 openQuestions（与 assumptions 语义不同，两段都呈现）')
+ok(/openQuestions: prdSnap \? prdSnap\.openQuestions : null/.test(hostSrc), 'pipeline：确认单接结构化 openQuestions（取自**本轮快照**，与 assumptions 语义不同，两段都呈现）')
 ok(/CONFIRM_QUESTIONS_MAX/.test(hostSrc) && /confirm\.questions/.test(hostSrc), 'confirm：待拍板项有独立上限与渲染段（不静默截断）')
 
 // ADR-0011 C 方案（2026-10-07）：AC **结构化优先 / 正文兜底 / 来源自曝**。
@@ -1130,6 +1162,100 @@ ok(promptsSrc.split('DESIGN.md — the COMPLETE design is there').length - 1 ===
 // 尾部装着「优先级 / 依赖与风险 / 验收总则」，截断了永久不可补救 ⇒ 补路径（2026-10-02）。
 ok(promptsSrc.split('PRD.md — the COMPLETE PRD is there').length - 1 === 3, 'prompts：PRD.md 完整文件路径指引覆盖 design + tech + architect 三处（原本只有 dev / qaFix 有）')
 ok(promptsSrc.split('QA-REPORT.md — the COMPLETE report is there').length - 1 === 1, 'prompts：QA 报告完整文件路径指引覆盖 qaFix（修缺陷最需要完整报告与历轮复验结论）')
+
+// ── 6) 产物新鲜度（2026-10-16 实锤 tf-mv9o5fkk-orjou4）：上游越界写的旧产物不得被下游当成本阶段产物 ──
+console.log('── 6) 产物新鲜度：阶段开始时拍基线，下游读产物一律过新鲜度 ──')
+const qaSrc = readFileSync(join(here, '../host/core/stages/qa.ts'), 'utf8')
+const accSrc = readFileSync(join(here, '../host/core/stages/acceptance.ts'), 'utf8')
+const utilSrcFresh = readFileSync(join(here, '../host/util.ts'), 'utf8')
+// 锁**整条语句**（`false &&` 前缀下只锁函数名会假绿，见 MEMORY-playbook §G 第 9 次同型），且锁**顺序**：
+// 基线必须在子代理启动之前拍（`captureArtifactBaseline` 出现在 `startActivation` 之前）。
+const capIdx = runnerSrc.indexOf('captureArtifactBaseline(journal, phase, stage)')
+const startIdx = runnerSrc.indexOf('.startActivation!({')
+ok(capIdx > 0 && startIdx > 0 && capIdx < startIdx,
+  `runner：产物基线在子代理启动**之前**拍（capture@${capIdx} < startActivation@${startIdx}）`)
+ok((runnerSrc.match(/stageDocText\(journal, phase, stage\.artifactBaseline\)/g) || []).length === 2,
+  'runner：两处产物兜底都按基线判新鲜度（doc 兜底 + 空收尾兜底）')
+// qa：两处读 QA 报告 —— 续跑复用那处**刻意不判**（文件本就来自早先运行），跑完那处**必须判**
+ok((qaSrc.match(/(?<!fresh)artifactText\(journal, 'QA-REPORT\.md'\)/g) || []).length === 1 &&
+  (qaSrc.match(/freshArtifactText\(journal, 'QA-REPORT\.md', qaR\.stage && qaR\.stage\.artifactBaseline\)/g) || []).length === 1 &&
+  qaSrc.indexOf('freshArtifactText(journal') > qaSrc.indexOf("withRetry(journal, parent, label, 'qa'"),
+  'qa：跑完读 QA-REPORT.md 走新鲜度（续跑复用那处不受影响，仍走 artifactText）')
+ok(!/artifactText\(/.test(accSrc) &&
+  (accSrc.match(/freshArtifactText\(journal, 'ACCEPTANCE\.md', accR\.stage && accR\.stage\.artifactBaseline\)/g) || []).length === 2,
+  'acceptance：两处读 ACCEPTANCE.md（normal + known-issues）全部走新鲜度，artifactText 已不再被引用')
+ok(/export function isToolArgFailure/.test(utilSrcFresh) && /must differ/.test(utilSrcFresh),
+  'util：参数类失败判据（isToolArgFailure，含实锤原文 must differ）')
+// 宿主通用参数校验前缀（实锤 tf-mvb3lm0b-bbgoyv：web_search.queries 传成字符串被误判 env-unavailable）——
+// 必须锁进正则本体，否则下次谁把这条前缀删了，非 fs 工具的类型错又会硬停（行为断言在 empty-turn §5）
+ok(/const TOOL_ARG_FAILURE = \/invalid arguments:\|/.test(utilSrcFresh),
+  'util：参数类失败判据覆盖宿主通用参数校验前缀 invalid arguments:（非 fs 工具的类型错）')
+// ⚠️ 只锁调用点会漏掉「函数被掏空」：新鲜度**判据本体**也要锁整条语句（M11 实测：掏空此句时调用点锁仍绿）
+ok(/if \(artifactIsStale\(journal, name, baseline\)\) continue/.test(utilSrcFresh),
+  'util：stageDocText 内部真的跳过陈旧候选（整条语句，防「调用点还在、判定被掏空」）')
+ok(/if \(artifactIsStale\(journal, fileName, baseline\)\) return null/.test(utilSrcFresh),
+  'util：freshArtifactText 内部真的把陈旧产物当缺失（整条语句）')
+ok(/if \(isToolArgFailure\(text\)\) \{ noteSelfHealSkip\('arg', text\); continue \}/.test(guardSrc),
+  'guard：参数类失败不计入环境指纹（第三类豁免，整条守卫语句）')
+ok(/'guard\.selfHealArg'/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')),
+  'locales：selfHealArg 文案（zh/en 同形由 locale 测试守）')
+
+// ── 7) 语言上报：客户端有界重试 ＋ 宿主兜底留痕（2026-10-16 实锤：中文环境整轮产物全英文）──
+console.log('── 7) 语言上报链路：失败不得静默 + 重试必须有界 + 兜底必须留痕 ──')
+const pushSrc = readFileSync(join(here, '../client/locale-push.ts'), 'utf8')
+ok(/import \{ createLocalePusher \} from '\.\/locale-push\.js'/.test(clientSrc),
+  'client：上报走独立纯模块（行为由 locale 测试逐条断言：成功即停/失败重排/有界/重置/dispose）')
+ok(/const localePusher = createLocalePusher\(\{[\s\S]{0,300}?push: \(loc\) => teamflow\.setLocale\(loc\),[\s\S]{0,140}?cancel: \(handle\) => clearTimeout\(/.test(clientSrc),
+  'client：上报器接上真实 RPC 与真定时器（整条语句，不只锁函数名）')
+ok(/return \(\) => \{ off\(\); localePusher\.dispose\(\) \}/.test(clientSrc),
+  'client：卸载时 dispose（清待发定时器 —— 不泄漏）')
+// 世代/存活判据必须覆盖**两处**：只在「排期」判 ⇒ dispose 后已排的定时器照样会发（locale 测试 ⑧ 实测）
+ok((pushSrc.match(/gen !== generation/g) || []).length >= 2 &&
+  /if \(!alive \|\| gen !== generation\) return[\s\S]{0,120}?attempt\(locale, gen\)/.test(pushSrc),
+  'locale-push：触发时再判一次存活/世代（防「dispose 后补发」与「切语言旧轮回调」）')
+ok((pushSrc.match(/shouldRetryLocalePush\(attempts, maxAttempts\)/g) || []).length >= 1 &&
+  /export function shouldRetryLocalePush/.test(pushSrc),
+  'locale-push：有界重试判据在位（无界 = 定时器泄漏）')
+ok(/catch \(e\) \{ retry\(\) \}/.test(pushSrc),
+  'locale-push：推送抛错真的走重试（不再 `catch {}` 静默吞 —— 这正是宿主永久停在 en 兜底的原因）')
+const coreLocaleSrc = readFileSync(join(here, '../host/core/locale.ts'), 'utf8')
+ok(/export function localeSource\(\): 'client' \| 'host' \| 'fallback'/.test(coreLocaleSrc),
+  'core/locale：localeSource 三态（fallback = 两侧都没拿到）')
+ok(/if \(!resume && localeSource\(\) === 'fallback'\) \{[\s\S]{0,140}?t\(locale, 'log\.localeFallback'/.test(pipelineSrc),
+  'pipeline：新 run 语言取自兜底时留痕（锁「条件 → 效果」整条链，不只锁条件）')
+
+// ── 8) 缺陷卡「为什么还停在待认领」可见原因（2026-10-16 诊断：open 分两类原因界面不可分）──
+console.log('── 8) 缺陷卡停留原因：P3 观察项 vs 未闭环真缺陷，UI 必须能区分 ──')
+ok(/import \{ bugOpenReasonKey \} from '\.\/bug-open-reason\.js'/.test(panelSrc),
+  'panel：从独立纯模块取「停留原因」（与渲染分离，逻辑可单测）')
+ok(/const reason = kind === 'bug' \? bugOpenReasonKey\(item, reqMap && reqMap\.get\(item\.reqId\)\) : null/.test(panelSrc),
+  'panel：卡片按 bug + reqId 派生停留原因（非 P3 未闭环需关联来源需求）')
+ok(/const reqMap = new Map\(\(backlog\.requirements \|\| \[\]\)\.map\(\(r\) => \[r\.id, r\]\)\)/.test(panelSrc),
+  'panel：BacklogGroups 建 reqId→req 映射（缺陷卡据此区分 needs-human 根因）')
+ok(/const bugReason = det\.kind === 'bug'\s*\? bugOpenReasonKey\(det, backlog && \(backlog\.requirements \|\| \[\]\)\.find/.test(panelSrc),
+  'panel：详情面板同样派生停留原因（backlog 透传）')
+// 文案落地：两个词典都含四个 key（缺失 = 渲染出 key 名）
+for (const k of ['panel.bugOpenP3', 'panel.bugOpenNeedsHuman', 'panel.bugOpenUnclosed', 'panel.bugOpenReasonLabel']) {
+  ok(new RegExp(`'${k}':`).test(localesSrc), `locales：含文案键 ${k}（zh/en 同形，locale 不变量测试守奇偶）`)
+}
+
+// ── 9) PRD 确认单按 run 快照（修「汇报层串了模版」实锤 tf-mvaubzdz-5w606x）──
+console.log('── 9) 确认单/闸门只认本轮 PRD 快照，不读累积 state ──')
+ok(/if \(phaseKey === 'prd'\) journal\.prdSnapshot = prdSnapshotFromBlock\(block\)/.test(pipelineSrc),
+  'pipeline：PRD 阶段合并 state 时捕获本轮快照（整条语句）')
+ok(/const prdSnap = journal\.prdSnapshot/.test(pipelineSrc),
+  'pipeline：闸门/确认单取本轮快照')
+ok(/const openQuestions = \(prdSnap && prdSnap\.openQuestions\) \|\| \[\]/.test(pipelineSrc),
+  'pipeline：taste 闸门取本轮快照（不读累积 state.openQuestions）')
+ok(/summary: prdSnap \? prdSnap\.summary : null,[\s\S]{0,90}?acIndex: prdSnap \? prdSnap\.acIndex : null,/.test(pipelineSrc),
+  'pipeline：确认单目标/AC 取本轮快照（不读 state.product.summary / state.acIndex）')
+ok(/j\.prdSnapshot = null/.test(pipelineSrc),
+  'pipeline：回退重跑 PRD 时作废旧快照（新 PRD 没产出 = 空，不是旧残留）')
+const confirmSrc9 = readFileSync(join(here, '../host/core/confirm.ts'), 'utf8')
+ok(/export function prdSnapshotFromBlock\(block: unknown\): PrdSnapshot/.test(confirmSrc9),
+  'confirm：导出纯提取器 prdSnapshotFromBlock（逻辑由 confirm-run-snapshot 测试断言）')
+ok(/import \{ buildConfirmSheet, renderConfirmSheet, confirmHook, prdSnapshotFromBlock/.test(pipelineSrc),
+  'pipeline：从 confirm 导入提取器（接线未悬空）')
 
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

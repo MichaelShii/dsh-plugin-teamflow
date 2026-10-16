@@ -165,6 +165,16 @@
       ]
     },
     {
+      "id": "qa-reverify-status-column-skip",
+      "file": "qa-reverify-status-column.md",
+      "parser": "parseDefects",
+      "note": "2026-10-17 停线回归变体 2（tf-mvb3lm0b-bbgoyv）：「缺陷复验结论」表**照用了标准严重级表头**+新增状态列 ⇒ 只认严重级列时已修复的 P1 被登记成本轮阻断 ⇒ 每轮复验都超限停线。判据补「状态/结论列」：标为已闭环（D-1 已修复 / D-2 已关闭）的行跳过；残余（D-3）/待修复（D-4）照常计入。",
+      "expect": [
+        { "id": "D-3", "severity": "P3", "module": "core.Y" },
+        { "id": "D-4", "severity": "P2", "module": "模块Z" }
+      ]
+    },
+    {
       "id": "host-research-present",
       "file": "prd-host-research-openclaw.md",
       "parser": "extractHostResearchSection",

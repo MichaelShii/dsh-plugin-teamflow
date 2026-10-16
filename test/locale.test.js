@@ -22,9 +22,10 @@ import {
 } from '../host/locales.ts'
 import { PHASE_KEY_OF } from '../host/constants.ts'
 import {
-  ambientLocale, clientLocale, hostPreference, localeForMissingSnapshot, newRunLocale, noteClientLocale, runCtxLocale, runLocaleOf, setSettingsPort,
+  ambientLocale, clientLocale, hostPreference, localeForMissingSnapshot, localeSource, newRunLocale, noteClientLocale, runCtxLocale, runLocaleOf, setSettingsPort,
 } from '../host/core/locale.ts'
 import { zh as clientZh, en as clientEn } from '../client/locales.ts'
+import { LOCALE_PUSH_MAX_ATTEMPTS, LOCALE_PUSH_RETRY_MS, createLocalePusher, shouldRetryLocalePush } from '../client/locale-push.ts'
 import { serializeJournal } from '../store.ts'
 import { stateSliceFor } from '../host/core/domain/state.ts'
 import { teamNameOf, teamDescOf } from '../host/core/domain/teams.ts'
@@ -128,6 +129,103 @@ eq(localeForMissingSnapshot(false), 'en', 'QA-1：新 run 补写 = 环境语言 
 noteClientLocale(null)
 eq(localeForMissingSnapshot(true), 'zh', 'QA-1：headless（无推送）resume 仍 = zh')
 eq(runLocaleOf({}), localeForMissingSnapshot(true), 'QA-1：补写口径与 runLocaleOf 缺省一致（同一实现内不自相矛盾）')
+
+console.log('── 5b) 语言来源诊断（localeSource）＋客户端上报重试策略（2026-10-16 实锤）──')
+// 来源三态：`fallback` 就是「两侧都没拿到」——中文环境整轮产物全英文的实测形态；
+// pipeline 起跑据此写一条 warn（此前这条链全静默，所以没人发现）。
+setSettingsPort(null); noteClientLocale(null)
+eq(localeSource(), 'fallback', '两侧皆空 → fallback（可见留痕的判据）')
+noteClientLocale('zh')
+eq(localeSource(), 'client', '客户端推送在 → client')
+noteClientLocale(null); setSettingsPort(() => 'en')
+eq(localeSource(), 'host', '仅宿主显式设置 → host')
+setSettingsPort(() => { throw new Error('boom') })
+eq(localeSource(), 'fallback', 'settings 端口抛异常 → fallback（不向上抛）')
+setSettingsPort(null); noteClientLocale('fr')
+eq(localeSource(), 'fallback', '非法推送（被清空）→ 仍 fallback')
+setSettingsPort(null); noteClientLocale(null)
+// 重试策略：**必须有界**（无界重试 = 定时器泄漏；一次失败即永久 en 的旧行为 = 静默降级）
+ok(Number.isFinite(LOCALE_PUSH_RETRY_MS) && LOCALE_PUSH_RETRY_MS > 0, `重试间隔是有限正数（${LOCALE_PUSH_RETRY_MS}ms）`)
+ok(Number.isInteger(LOCALE_PUSH_MAX_ATTEMPTS) && LOCALE_PUSH_MAX_ATTEMPTS > 1 && LOCALE_PUSH_MAX_ATTEMPTS <= 20,
+  `重试上限有界（${LOCALE_PUSH_MAX_ATTEMPTS} 次）`)
+for (const n of [1, 2, LOCALE_PUSH_MAX_ATTEMPTS - 1]) ok(shouldRetryLocalePush(n), `第 ${n} 次失败 → 继续重试`)
+ok(!shouldRetryLocalePush(LOCALE_PUSH_MAX_ATTEMPTS), `达上限（第 ${LOCALE_PUSH_MAX_ATTEMPTS} 次）→ 停止（有界）`)
+for (const v of [0, -1, undefined, null, 'x', NaN]) ok(!shouldRetryLocalePush(v), `非法/零值 ${JSON.stringify(v)} → 不重试`)
+ok(/export function localeSource/.test(readFileSync(join(here, '../host/core/locale.ts'), 'utf8')), 'core/locale.ts 导出 localeSource（pipeline 留痕的取值点）')
+
+/* 上报器**行为**断言（注入假 scheduler：手动推进时间，不碰真定时器）：
+   每一条都对应一次真实事故形态——「只推一次就放弃」「失败静默」「无界重试」都在这组里被杀掉。 */
+console.log('── 5c) 语言上报器行为（成功即停 / 失败重排 / 有界 / 语言变化重置 / dispose 清理）──')
+const makePusher = (push, opts = {}) => {
+  const queued = []
+  const cancelled = []
+  const pusher = createLocalePusher({
+    push,
+    schedule: (run, ms) => { const h = { run, ms }; queued.push(h); return h },
+    cancel: (h) => { cancelled.push(h) },
+    retryMs: 10,
+    maxAttempts: 3,
+    ...opts,
+  })
+  return { pusher, queued, cancelled, fire: () => { const h = queued.shift(); if (h) h.run() } }
+}
+{
+  // ① 成功即停：返回 { ok: true } ⇒ 不再排任何重试
+  let n = 0
+  const a = makePusher(() => { n++; return { ok: true } })
+  a.pusher.send('zh')
+  eq(n, 1, '成功：只发 1 次'); eq(a.queued.length, 0, '成功：不排重试（成功即停）')
+  // ② ok:false 视为失败 ⇒ 重排，推进后成功即停
+  n = 0
+  const b = makePusher(() => ({ ok: ++n >= 3 }))
+  b.pusher.send('zh')
+  eq(n, 1, 'ok:false ⇒ 按失败处理'); eq(b.queued.length, 1, '失败 ⇒ 排了重试')
+  b.fire(); eq(n, 2, '推进一次重试')
+  b.fire(); eq(n, 3, '第 3 次成功')
+  eq(b.queued.length, 0, '成功后再无重试（这才是「一次没落地就永久 en」的反面）')
+  // ③ 抛错 ⇒ 走同一条重试路径（旧代码在这里 catch 掉、什么都不做）
+  n = 0
+  const c = makePusher(() => { n++; if (n < 2) throw new Error('RPC not ready') ; return { ok: true } })
+  c.pusher.send('zh'); c.fire()
+  eq(n, 2, '抛错（RPC 未就绪）⇒ 重试后成功')
+  // ④ promise reject ⇒ 也算失败
+  n = 0
+  const d = makePusher(() => { n++; return n < 2 ? Promise.reject(new Error('boom')) : Promise.resolve() })
+  d.pusher.send('zh')
+  eq(n, 1, 'promise 形态：先发一次')
+  await Promise.resolve(); await Promise.resolve()
+  eq(d.queued.length, 1, 'promise reject ⇒ 排重试')
+  d.fire(); eq(n, 2, '重试后 resolve')
+  // ⑤ 一直失败 ⇒ **有界**停止（上限 3）
+  n = 0
+  const e2 = makePusher(() => { n++; throw new Error('always') })
+  e2.pusher.send('zh')
+  for (let i = 0; i < 6; i++) e2.fire()
+  eq(n, 3, `一直失败 → 到上限即停（实测 ${n} 次，上限 3）`)
+  eq(e2.queued.length, 0, '到上限后不再排（无界重试 = 定时器泄漏）')
+  // ⑥ 非法语言不发
+  n = 0
+  const f2 = makePusher(() => { n++; return { ok: true } })
+  for (const bad of [undefined, null, '', 42]) f2.pusher.send(bad)
+  eq(n, 0, '非法/空语言 ⇒ 一次都不发')
+  // ⑦ 语言变化重置：新一轮从第 1 次重新计（且作废上一轮的回调）
+  n = 0
+  const g = makePusher(() => { n++; throw new Error('x') })
+  g.pusher.send('zh'); g.pusher.send('en') // 切语言
+  eq(g.cancelled.length >= 1, true, '切语言清掉上一轮待发定时器')
+  for (let i = 0; i < 6; i++) g.fire()
+  eq(n, 4, `切语言后重新计到上限（实测 ${n} = 1(zh) + 3(en 上限)）`)
+  // ⑧ dispose ⇒ 清定时器且后续回调失效
+  n = 0
+  const h2 = makePusher(() => { n++; throw new Error('x') })
+  h2.pusher.send('zh')
+  const before = h2.queued.length
+  ok(before >= 1, `dispose 前确有待发重试（实测 ${before}）`) // 防空断言：0===0 会让下一条假绿
+  h2.pusher.dispose()
+  eq(h2.cancelled.length, before, 'dispose 清掉待发定时器')
+  h2.fire(); h2.pusher.send('zh')
+  eq(n, 1, 'dispose 后既不再回调也不接受新的 send（触发时复判存活 —— 只在排期判会漏）')
+}
 
 console.log('── 6) journal.locale 往返（AC-2：快照落盘 + resume 不重解析）──')
 const snap = serializeJournal({ id: 'tf-x', name: 'teamflow-pipeline', status: 'running', locale: 'en', stages: [], logs: [] })

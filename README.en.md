@@ -109,9 +109,29 @@ The whole repo is TS/TSX: **the host must be built** (Node's type stripping does
 
 ### Version anchor (dsh host compatibility)
 
-Baseline **dsh v0.2.0-rc.2** (preview); **floor v0.1.7-alpha.1** — a v3 host validates `source.kind` against a closed vocabulary without `plugin:*`, so there is no fallback to 0.1.5-rc.2.
+Baseline **dsh v0.2.1-alpha.4** (preview); **floor v0.2.1-alpha.2**.
 
-`engines.dsh` is declared as a **union** range, `">=0.1.7-alpha.1 <0.3.0 || >=0.2.0-rc.1 <0.3.0"`: a prerelease only matches a range carrying a prerelease on the same tuple, so **simply widening the upper bound still fails for `0.2.0-rc.x`** (measured with semver 7.7.4). The host **never validates** this field — it only states compatibility against stable releases; judge the release line by `next` (`latest` lags behind it).
+> ⚠️ **Correction (2026-10-15, issue #20) — the floor moved from v0.1.7-alpha.1 to v0.2.1-alpha.2; we no longer support older hosts.**
+> In alpha.2 the host **removed** the flat entry point `subagents.start(name, request)` outright (commit
+> `3d852a1cea`; the first tag containing it is `dsh-v0.2.1-alpha.2`; official migration guide at
+> `docs/upgrade-guide/v0.2.1-alpha.1/subagent-activations/`). The single entry point is now
+> `startActivation(spec)`, and its receipt **no longer carries the live Agent handle** (`localAgent`).
+> On an older host the symptom is "it starts, then throws `TypeError` in the very first stage" — hence
+> dsh ≥ 0.2.1-alpha.2 from this version on.
+
+`engines.dsh` is now declared as a **single** range, `">=0.2.1-alpha.2 <0.3.0"`. The previous **union** range
+`">=0.1.7-alpha.1 <0.3.0 || >=0.2.0-rc.1 <0.3.0"` existed because a prerelease only matches a range carrying a
+prerelease on the same tuple: the old floor (tuple 0.1.7) did not share a tuple with `0.2.0-rc.x`, so a single
+range failed for rc. With the floor at `0.2.1-alpha.2`, floor and host share a tuple, so a single range works
+(measured with semver 7.8.5: `alpha.1`=false / `alpha.2~alpha.4`=true / `0.2.0-rc.2`=false / `0.2.1`=true).
+
+> ⚠️ **Correction (2026-10-15, same as above): this README previously claimed the host "never validates" `engines.dsh`. That was wrong.**
+> `@deepseek-ai/dsh-app-boot` validates it while loading the profile
+> (`evaluatePluginCompatibility` in `packages/boot/app-boot/src/profile.ts`): a bundle that does not satisfy the
+> range is **skipped** and reported under `skippedBundles` (the reason goes out with the diagnostics), and
+> `dsh plugin allow-version` can exempt an exact plugin version on an exact host version. **The field is a real
+> gate now**, not just a compatibility statement — on an older host this plugin version is stopped at load time
+> with an explanation instead of crashing later.
 
 **0.2.0 audit: no breakage found** — `tsc` compiles against the installed 0.2.0-rc.2 with 0 errors, the four host packages we import have no missing exports, and `inject` semantics, the manifest schema and the patch `insert:` row are all unchanged (the new optional `external` is not needed). ⚠ This is a **static** audit; runtime still needs a host restart.
 

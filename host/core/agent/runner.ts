@@ -2,15 +2,15 @@
  * dsh-plugin-teamflow core — 子代理执行器（并发池 / 单阶段运行 / 重试与熔断）。
  * 依赖：util/constants/types + core(context/metering)。
  */
-import { runtime, providerName, trackInFlight, untrackInFlight } from './context.ts'
+import { runtime, providerName, trackInFlight, untrackInFlight, liveChildAgentOf } from './context.ts'
 import { accumulateSessionUsage, freshTokensOf, effectiveFreshBudget } from './metering.ts'
 import { startStageGuard } from './guard.ts'
-import { clip, extractText, blockShape, emptyTurnDocVerdict, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs, stageDocText } from '../../util.ts'
+import { clip, extractText, blockShape, captureArtifactBaseline, emptyTurnDocVerdict, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs, stageDocText } from '../../util.ts'
 import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../../constants.ts'
 import { t, type HostLocale } from '../../locales.ts'
 import { runLocaleOf } from '../locale.ts'
 import { stripStateBlock } from '../domain/state.ts'
-import type { Journal, ParentAgentLike, UsageBuckets } from '../../types.ts'
+import type { Journal, ParentAgentLike, SubagentRunLike, SubagentStarters, UsageBuckets } from '../../types.ts'
 import type { JournalStage } from '../../../store.ts'
 
 /**
@@ -118,6 +118,40 @@ export function resolveChildRoute(parent: ParentAgentLike): { provider?: string;
   return out
 }
 
+/**
+ * 计量为空时的**可见化**（2026-10-16 实锤 run tf-mv9o5fkk-orjou4）。
+ *
+ * `accumulateSessionUsage` 返回 null 本身是**设计上的降级路径**（投影未挂载/子会话确实无 usage），
+ * 但它同时也是真故障的**唯一症状** —— 曾经静默：21/21 阶段 usage 全空、run 照样报 completed、
+ * 4 小时无人察觉（根因 = 活句柄取晚了，见 runAgent 里那段注释）。
+ * 故每个 run 记一条 warn，把链路逐级讲清（活句柄 → session → 投影 → 事件数），
+ * 下次再断能一眼定位是哪一环。§「空值必须可见」。
+ */
+const usageDiagLogged = new WeakSet<object>()
+function noteUsageMissing(journal: Journal, run: SubagentRunLike | null, locale: HostLocale): void {
+  try {
+    if (!journal || typeof journal !== 'object') return
+    if (usageDiagLogged.has(journal)) return
+    usageDiagLogged.add(journal)
+    const agent = run ? run.localAgent : undefined
+    const session = agent ? (agent as { session?: { snapshotEvents?: () => unknown[] } }).session : undefined
+    let events = 'n/a'
+    try {
+      if (session && typeof session.snapshotEvents === 'function') events = String((session.snapshotEvents() || []).length)
+    } catch (e) { events = 'err' }
+    const projections = runtime.sessionProjections as { stateOf?: unknown } | undefined
+    journal.logs.push({
+      t: Date.now(), level: 'warn',
+      message: t(locale, 'diag.usageMissing', {
+        handle: run && run.localAgent ? 'yes' : 'no',
+        session: session ? 'yes' : 'no',
+        projections: projections && typeof projections.stateOf === 'function' ? 'yes' : 'no',
+        events,
+      }),
+    })
+  } catch (e) { /* 诊断本身绝不打断阶段 */ }
+}
+
 /** 运行单个阶段子代理：执行 + 产出实质校验 + token 双口径计量 + stage 状态流转。
  *  `taskIds`：本阶段承载的**开发任务身份**（host 生成的 `dt-N`；合并任务时是数组）。
  *  与 `taskKey`（人读标题）分家——判定只认 id，title 只作展示（见 pipeline.buildDevTaskDefs 注释）。 */
@@ -137,6 +171,10 @@ export async function runAgent(
     usage: null, handoff: null, output: null,
   }
   journal.stages.push(stage)
+  // **产物基线**（2026-10-16，必须在子代理启动前、任何 await 前拍）：只有指纹变了的候选产物才认作
+  // 「本阶段写的」。防的是上游阶段越界写下游产物后，下游凭旧文件被判「已交付」（实锤 tf-mv9o5fkk-orjou4）。
+  // 只填缺失项 ⇒ 重试/续跑沿用首次基线（语义 = 「本阶段是否写过」，不是「本次尝试是否写过」）。
+  captureArtifactBaseline(journal, phase, stage)
   journal.agentsStarted += 1
   let run = null
   let cancelGuard: (() => void) | null = null
@@ -163,13 +201,39 @@ export async function runAgent(
       // 静默失败可见化（2026-09-11 实锤：efforts 对象数组被当字符串过滤 → 恒判不支持却无任何痕迹）
       journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'diag.effortSkip', { label, skip: eff.skip }) })
     }
-    run = await runtime.subagents.start(providerName(), {
+    // **宿主 API 迁移（2026-10-15 / issue #20）**：alpha.2 起 `subagents.start(name, request)` 被整体删除，
+    // 唯一入口是 `startActivation(spec)`。官方迁移指南（`docs/upgrade-guide/v0.2.1-alpha.1/subagent-activations/`）
+    // 对「必须等待结果的宿主代码」指定两条：① 用 `delivery: 'caller'`；② 发布后 `signal` 不再控制取消，
+    // 保留回执用 `dispose()` 取消该次 activation。
+    // `delivery: 'caller'` 是本插件的**必须**选择（不是优化）：`'parent'` 会向父会话投递完成通知，
+    // 而父会话就是主线程——流水线的阶段完成由本插件自己汇报，不能让宿主再插一条。
+    const sig = normalizeSignal(signal)
+    const activation = await (runtime.subagents as SubagentStarters).startActivation!({
+      provider: providerName() as string,
       label,
-      prompt: [{ type: 'text', text: prompt }],
-      parent,
-      ...(agentOptions ? { agentOptions } : {}),
-      signal: normalizeSignal(signal),
+      request: {
+        prompt: [{ type: 'text', text: prompt }],
+        parent,
+        ...(agentOptions ? { agentOptions } : {}),
+        signal: sig,
+      },
+      signal: sig,
+      delivery: 'caller',
     })
+    // 🔴 **活 Agent 必须在这一刻取**（2026-10-16 实测 tf-mv9o5fkk-orjou4：21/21 阶段 usage 全空）：
+    // 宿主对本地子级在 **idle 时就 close(activation)**（`manager.watchLocalSettlement` → `finishDisposal`
+    // → `handle.dispose()` ⇒ 从 `agents` 注册表注销），而 `activation.result` 是「**handle cleanup 之后**」
+    // 才 settle（subagent README：result "deliver … after handle cleanup, capacity release, and settlement
+    // notifications"）⇒ 等到 finally 再按 childId 查注册表**必然拿不到**。
+    // 早取到的这个对象在注销后依然可用（我们只读 `.session` / `.status` / `.inject`），
+    // 与 alpha.1 时代「回执直接带活 Agent」的语义对齐。
+    const liveChild = liveChildAgentOf(activation.childId)
+    run = {
+      id: activation.childId,
+      result: activation.result,
+      dispose: () => activation.dispose(),
+      localAgent: liveChild,
+    }
     stage.childId = run.id
     trackInFlight(journal.id, stage, run)
     try {
@@ -193,7 +257,7 @@ export async function runAgent(
     // 前提仍是**回复非空**：pipeline 要用回复合并 state 块；空回复另走下方 emptyTurnDoc 兜底（A 档）。
     let docFallback: { name: string; length: number } | null = null
     if (!verdict.ok && text && stop === 'completed') {
-      const doc = stageDocText(journal, phase)
+      const doc = stageDocText(journal, phase, stage.artifactBaseline)
       if (doc && doc.length >= verdict.min) docFallback = { name: doc.name, length: doc.length }
     }
     // **空收尾的文件兜底**（2026-09-27，A 档止损）：`completed` + 0 字符 = 推理模型空收尾（DeepSeek 实测：
@@ -206,7 +270,7 @@ export async function runAgent(
     // 则 mergeStageState 自然跳过（宽容语义），不破坏下游。
     let emptyTurnDoc: { name: string; text: string; length: number } | null = null
     if (!text && stop === 'completed') {
-      emptyTurnDoc = emptyTurnDocVerdict(stop, text, verdict.min, stageDocText(journal, phase))
+      emptyTurnDoc = emptyTurnDocVerdict(stop, text, verdict.min, stageDocText(journal, phase, stage.artifactBaseline))
     }
     if (journal.cancelled) {
       stage.status = 'cancelled'; stage.outcome = 'cancelled'
@@ -303,6 +367,7 @@ export async function runAgent(
   } finally {
     if (cancelGuard) cancelGuard()
     stage.usage = accumulateSessionUsage(run)
+    if (!stage.usage) noteUsageMissing(journal, run, locale)
     stage.handoff = stageText ? handoffBrief(stageText) : null
     stage.endedAt = Date.now()
     untrackInFlight(journal.id, stage) // 只注销自己这一路（并发 dev 同 run 多路在飞，见 context.inFlight）

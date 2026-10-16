@@ -16,6 +16,7 @@
  */
 import { clip, extractAcIndexFromText } from '../util.ts'
 import { t, type HostLocale } from '../locales.ts'
+import { normalizeOpenQuestions } from './domain/state.ts'
 
 /** AC 上限（确认单 ≤40 行的硬预算；超出只列前 N 条并点名还有几条）。 */
 export const CONFIRM_AC_MAX = 12
@@ -37,6 +38,55 @@ export interface ConfirmQuestion {
    * （见文件头注释），多一条类型依赖就多一份运行时耦合风险。
    */
   kind?: 'fact' | 'taste'
+}
+
+/** **本轮 PRD 的结构化输出快照**（按 run；修「汇报层串了模版」实锤 tf-mvaubzdz-5w606x，2026-10-16）。 */
+export interface PrdSnapshot {
+  /** 目标一句话（本轮 PRD 的 `extra.summary`；本轮没给 = null）。 */
+  summary: string | null
+  /** 验收条件（本轮 PRD 的 `extra.acIndex`；本轮没给 = null，由确认单再走正文兜底抽取）。 */
+  acIndex: Record<string, string> | null
+  /** 结构化待澄清项（本轮 PRD 的 `extra.openQuestions`；本轮没给 = null）。 */
+  openQuestions: ConfirmQuestion[] | null
+}
+
+/**
+ * 从 PRD 阶段产出的 state 块里**抽取本轮 PRD 的结构化输出**（按 run 快照）。
+ *
+ * **为什么必须按 run**：`state.json` 是**按项目累积、跨 run** 的（见 `domain/state.ts` 文件头），
+ * 且 `mergeStateBlock` 是**条件式覆盖** —— `acIndex` 按键累加、`summary` 仅非空时覆盖、
+ * `openQuestions` 写成整组替换但「缺键则保持原值」。⇒ 本轮 PRD 未回写这些 `extra` 键时
+ * （`extra` 兑现率实测偏低，且 `tech` 档的「技术变更单」本就不产出 PRD 式 AC），确认单会拿到
+ * **上一轮 run 的**目标/AC/待澄清项。实锤 `tf-mvaubzdz-5w606x`：r5（四柱节气精度）的确认单显示了
+ * r4（64 卦 Wiki）的目标与 12 条 AC，而**同一份汇报的「假设」段却是对的** —— 因为「假设」读的是
+ * **run 级**的 `journal.assumptions`。这份分裂正是定位根因的钥匙。
+ *
+ * 返回的三个字段各自可为 `null`（= 本轮 PRD 确实没给），**刻意不回落累积 state**：
+ * 宁可在确认单上诚实显示「本轮没抓到」（`confirm.noSummary` / `confirm.acMissing`），
+ * 也不要拿上一轮的内容冒充「本轮 PRD」（那会让用户在错误范围上批准，见 MEMORY §7「空值必须可见」）。
+ *
+ * 纯函数：入参是已解析好的 state 块，便于行为测试（不读文件、不认文本格式）。
+ */
+export function prdSnapshotFromBlock(block: unknown): PrdSnapshot {
+  const b = (block && typeof block === 'object' && !Array.isArray(block)) ? (block as Record<string, unknown>) : null
+  const rawExtra = b ? b.extra : null
+  const extra = (rawExtra && typeof rawExtra === 'object' && !Array.isArray(rawExtra)) ? (rawExtra as Record<string, unknown>) : null
+
+  const summary = extra && typeof extra.summary === 'string' && extra.summary.trim() ? extra.summary.trim() : null
+
+  const rawAc = extra ? extra.acIndex : null
+  let acIndex: Record<string, string> | null = null
+  if (rawAc && typeof rawAc === 'object' && !Array.isArray(rawAc)) {
+    const entries = Object.entries(rawAc as Record<string, unknown>)
+      .filter(([, v]) => String(v == null ? '' : v).trim())
+      .map(([k, v]) => [k, String(v)] as [string, string])
+    acIndex = entries.length ? Object.fromEntries(entries) : null
+  }
+
+  const rawQ = extra ? extra.openQuestions : null
+  const openQuestions = Array.isArray(rawQ) ? normalizeOpenQuestions(rawQ) : null
+
+  return { summary, acIndex, openQuestions }
 }
 
 export interface ConfirmSheet {

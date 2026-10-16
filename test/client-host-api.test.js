@@ -139,6 +139,31 @@ const hostPkg = /export const PLUGIN_PACKAGE_NAME = '([^']+)'/.exec(readFileSync
 if (clientPkg && hostPkg && clientPkg[1] === hostPkg[1]) ok('client 与 host 的包名常量一致', clientPkg[1])
 else bad('client 与 host 的包名常量不一致', `${clientPkg && clientPkg[1]} vs ${hostPkg && hostPkg[1]}`)
 
+/* ── 子代理地址的 mode 必须是 'unknown'（2026-10-15 实机修复 tf-mv9o5fkk-orjou4）──
+   实锤：阶段详情「🎬 跳转子代理会话」点了报「历史加载失败：subagent mode does not match the supplied address
+   （subagent/unauthorized）」。根因是我们抄宿主 ui-workflow-run 的例子写死 `mode: 'one-shot'`，而
+   本插件的阶段子代理**在宿主 alpha.2 起一律记为 `continuable`**（`manager.startLocal` 统一写该值；
+   实测 run tf-mv9o5fkk-orjou4 的子会话 descriptor：`{"mode":"continuable","provider":"spawn"}`）。宿主
+   `history.validateAddress` 的判据是 `address.mode !== 'unknown' && identity.mode !== address.mode`
+   ⇒ 声明与实际不符即拒。宿主自己的类型注释写明 `'unknown'` 是**跳转浏览**的既定输入
+   （"unknown mode is resolved when child history is read"，control-types.ts:77），
+   读回时由 identity 投影解析真实形态 ⇒ 这才是唯一与宿主版本解耦的写法。
+   锁的是**调用里的对象字面量**（不是整份源码）：类型声明行本身含 `'one-shot' | 'continuable'`，
+   扫全文会假绿。 */
+const openCalls = [...allClient.matchAll(/openSession\(\{([\s\S]{0,400}?)\}\)/g)].map((m) => m[1])
+if (openCalls.length === 0) bad('未找到 openSession({…}) 子代理地址调用', '跳子代理会话的入口应传持久地址对象')
+else {
+  const wrong = openCalls.filter((a) => !/mode: 'unknown'/.test(a) || /mode: '(one-shot|continuable)'/.test(a))
+  if (wrong.length === 0) ok(`子代理地址一律 mode:'unknown'（${openCalls.length} 处）`, '宿主读回时按 identity 解析真实形态')
+  else bad('子代理地址写死了具体 mode 或缺 mode', `实测宿主会拒：subagent mode does not match the supplied address —— ${JSON.stringify(wrong.map((a) => a.trim()))}`)
+}
+// 类型面同源：`mode` 必须**显式必填**——校验是 `address.mode !== 'unknown' && …`，不传即 undefined ⇒ 必被拒
+{
+  const decl = /openSession\?: \(target: string \| \{[^}]*\}\)/.exec(allClient)
+  if (decl && /\bmode: 'one-shot'/.test(decl[0])) ok('openSession 入参类型的 mode 为必填', '缺省不安全：undefined 会直接落到宿主校验的否定分支')
+  else bad('openSession 入参类型把 mode 写成可选', `不传 mode 会被宿主拒（undefined !== 'unknown'）—— 实得 ${decl ? decl[0] : '未找到声明'}`)
+}
+
 console.log(
   failed === 0
     ? `\nclient-host-api: 全部通过（${files.length} 个客户端源文件 / sessions 用到 ${seen.sessions.size} 个成员 / uiWorkspace ${seen.uiWorkspace.size} 个）`

@@ -107,6 +107,16 @@ const QA_TABLE = (id, sev) => [
 const QA_CLEAN = QA_TABLE('D9', 'P3')
 /** P1 → 阻断，触发「打回开发修复 → 复验」闭环 */
 const QA_BLOCKING = QA_TABLE('D1', 'P1')
+/** 复验轮的「缺陷复验结论」表：**照用标准严重级表头 + 新增状态列**。标为已修复的行**不是本轮缺陷**。
+ *  实锤 tf-mvb3lm0b-bbgoyv：只认「严重级列 = 缺陷表」时，这里会让已修复的 P1 每轮复验都重生
+ *  → 「每轮都有阻断」→ 假性超限停线（交付其实干净）。 */
+const QA_REVERIFY_FIXED = [
+  '# QA 报告（复验）', '',
+  '| 缺陷 ID | 严重度 | 模块 | 状态 | 描述 | 复现 | 期望 | 实际 | 检测命令 |',
+  '|---|---|---|---|---|---|---|---|---|',
+  '| D1 | P1 | 模块A | 已修复（实测确认） | 描述文本 | r | e | a | node -e "1" |',
+  '',
+].join('\n')
 const ACC = {
   pass: '# 验收报告\n\n## 验收结论：✅ 通过\n',
   rework: '# 验收报告\n\n## 验收结论：❌ 不通过\n',
@@ -127,7 +137,7 @@ const TRIAGE_EXPLORE = JSON.stringify({
 /** 构造一次 run：stub 子代理 + 隔离的 $DSH_HOME / 工作区。 */
 async function runScenario(
   name,
-  { options, resume = null, emptyNext = false, failLabel = null, artifacts = null, cancelAfter = 0, triage = null, extraFiles = 0, presetSupplement = null, prdOutput = null, stateViaFile = false, techOutput = null, techDoc = null, blueprintViaFile = false, blueprintRaw = null },
+  { options, resume = null, emptyNext = false, failLabel = null, artifacts = null, cancelAfter = 0, triage = null, extraFiles = 0, presetSupplement = null, prdOutput = null, stateViaFile = false, techOutput = null, techDoc = null, blueprintViaFile = false, blueprintRaw = null, extraArtifacts = null },
 ) {
   const rootTmp = mkdtempSync(join(tmpdir(), `tf-orch-${name}-`))
   process.env.DSH_HOME = `${rootTmp}/home`
@@ -142,15 +152,34 @@ async function runScenario(
   }
 
   const children = []
+  // **宿主语义复刻**（2026-10-16 实锤 tf-mv9o5fkk-orjou4）：本地子级在 **idle 时就被 close**（从 agents
+  // 注册表注销），而 `activation.result` 是「handle cleanup **之后**」才 settle ⇒ 只有「启动后立刻取」这个
+  // 窗口能拿到活句柄。夹具必须复刻这一点，否则「取晚了」的回归在测试里永远绿（21/21 阶段 usage 全空而
+  // run 报 completed 就是这么漏过去的）。usage 事件同时给计量用。
+  const liveChildren = new Set()
+  const usageEvents = () => [
+    { type: 'assistant/message', data: { turn: 1, step: 1, usage: { inputTokens: 100, outputTokens: 10 } } },
+    { type: 'assistant/message', data: { turn: 1, step: 2, usage: { inputTokens: 50, outputTokens: 5, cacheReadTokens: 900 } } },
+  ]
   let doEmpty = emptyNext
   let qaRound = 0
   let stateFileErr = '' // `stateViaFile` 的桩自检（块/路径没取到 ⇒ 断言会点名，而不是静默退化成回落）
   let blueprintFileErr = '' // `blueprintViaFile` 的桩自检（同上，针对蓝图独立文件通道）
-  const stubStart = async (_provider, init) => {
-    const label = String((init && init.label) || '')
+  const stubStart = async (spec) => {
+    // 宿主 alpha.2+ 的 `subagents.startActivation(spec)`：provider/label/signal/delivery 在顶层，
+    // prompt/parent/agentOptions 在 `spec.request` 里（alpha.1 的扁平 `(name, init)` 已被宿主删除）。
+    const init = spec && spec.request
+    const label = String((spec && spec.label) || '')
     // 捕获阶段 prompt（锁「同一 run 内 state 刷新」用：后续阶段的 state slice 必须带上 PRD 写下的东西）
     const promptText = String(((init && init.prompt && init.prompt[0] && init.prompt[0].text) || ''))
-    children.push({ id: `c-${children.length + 1}`, label, prompt: promptText })
+    // 保真记录宿主 API 入参形状（issue #20）：`delivery` 漏传 ⇒ 宿主按 'parent' 处理，会给主会话塞完成通知；
+    // `provider` 空 ⇒ 宿主 expectProvider 直接抛。两者都必须在**行为级**被锁住，不能只靠源码正则。
+    children.push({
+      id: `c-${children.length + 1}`, label, prompt: promptText,
+      provider: spec && spec.provider, delivery: spec && spec.delivery,
+      // `request.parent` 是宿主校验「活的父 Agent」的入参（`manager.assertAdmitting`）；顶层 signal 是发布前取消通道。
+      requestParent: init && init.parent, topSignal: spec && spec.signal,
+    })
     // 按 label 判定阶段并落产物文件（QA 每轮一份报告 → 用轮次索引取语料）
     if (artifacts) {
       if (/^QA (测试|复验)/.test(label) && artifacts.qa && artifacts.qa.length) {
@@ -201,17 +230,41 @@ async function runScenario(
       } catch (e) { blueprintFileErr = String((e && e.message) || e) }
     }
     if (techDoc != null && isTech) putArtifact('TECHNICAL.md', techDoc)
+    // 上游越界：某个阶段写下**别人**的产物（模拟实测里架构师写了 QA-REPORT.md / ACCEPTANCE.md）
+    if (extraArtifacts) {
+      for (const [kw, files] of Object.entries(extraArtifacts)) {
+        if (!label.includes(kw)) continue
+        for (const [fileName, content] of Object.entries(files)) putArtifact(fileName, content)
+      }
+    }
     if (techOutput && isTech) text = techOutput
     else if (blueprintViaFile && isTech) text = LONG
     doEmpty = false
+    const childId = `c-${children.length}`
+    children[children.length - 1].childId = childId
+    liveChildren.add(childId) // 此窗口内 `agents.get(childId)` 可解析（复刻宿主注册表）
     return {
-      id: `c-${children.length}`,
-      localAgent: { session: null },
-      result: (async () => ({ stopReason: 'completed', output: [{ type: 'text', text }] }))(),
-      dispose: async () => {},
+      childId,
+      result: (async () => {
+        await new Promise((r) => setTimeout(r, 1))
+        // ⚠️ 宿主语义：result **在 handle cleanup 之后**才 settle ⇒ 期间子级已从注册表注销
+        liveChildren.delete(childId)
+        return { stopReason: 'completed', output: [{ type: 'text', text }] }
+      })(),
+      dispose: async () => { liveChildren.delete(childId) },
     }
   }
-  setRuntime({}, { start: stubStart })
+  const agentLookups = []
+  setRuntime(
+    {
+      get: (sid) => {
+        agentLookups.push(String(sid))
+        if (!liveChildren.has(String(sid))) return undefined // 已清理 ⇒ 查不到（lazy 取法必然失败）
+        return { status: 'running', session: { snapshotEvents: () => usageEvents() } }
+      },
+    },
+    { list: () => ['spawn'], startActivation: stubStart },
+  )
 
   const journal = {
     id: `tf-orch-${name}`, name: 'teamflow-pipeline', status: 'running',
@@ -230,6 +283,10 @@ async function runScenario(
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, fileName), text, 'utf8')
   }
+  // **上游越界预置产物**（2026-10-16 实锤 tf-mv9o5fkk-orjou4）：模拟「上游阶段先把下游产物写了」。
+  // ⚠️ 必须在**子代理运行中**落盘（此时 `journal.runDocs` 已被 pipeline 建好）——在 executePipeline 之前
+  // 写是**空操作**（runDocs 还不存在），那样的测试没有牙（2026-10-15 实测：M9 变异下仍全绿）。
+  // 键 = label 子串（如 '技术方案'），值 = { 文件名: 内容 }。用来验下游不会拿上游留下的旧文件交差。
   const parent = {
     session: { id: 'sid-orch', header: { cwd: work }, append() {} },
     status: 'idle', followup() {}, inject() {}, options: {},
@@ -246,6 +303,16 @@ async function runScenario(
     logs: journal.logs.map((l) => `${l.level}: ${l.message}`),
     warnLogs: logOf('warn'), childLabels: children.map((c) => c.label),
     childCount: children.length, blueprint: journal.blueprint,
+    // 宿主 API 入参保真（issue #20）：每个阶段子代理的 startActivation spec 形状
+    childSpecs: children.map((c) => ({
+      provider: c.provider, delivery: c.delivery,
+      hasRequestParent: !!c.requestParent, hasTopSignal: !!c.topSignal,
+    })),
+    // 宿主返回的 childId 列表 + agents 注册表实际被查过的 id（证明 localAgent 走注册表）
+    childIds: children.map((c) => c.childId),
+    // 只取**阶段**子代理的 childId（分诊走 triage.ts 的独立通道，不经 runAgent/guard/metering）
+    stageChildIds: journal.stages.map((s) => s.childId).filter(Boolean),
+    agentLookups,
     humanIntervention: !!journal.humanIntervention,
     stateFileErr,
     blueprintFileErr,
@@ -404,6 +471,18 @@ console.log('\n[10] QA 打回闭环③：缺陷不收敛 → 超 QA_REWORK_LIMIT
   ok(has(r.childLabels, '最终验收'), 'QA 不干净也**不整段跳过验收**——改走已知问题只读模式')
   // 模型自己的结论不被 host 采用：即使报告写「✅ 通过」，也不能因此变成干净交付
   ok(r.humanIntervention && r.status === 'completed', '已知问题模式：仍 completed，但保留需人工标记')
+}
+
+/* ── ⑩b 复验表标「已修复」→ 已闭环行不计阻断（不再「自我实现的停线」）── */
+console.log('\n[10b] 复验表带状态列且标已修复 → 已闭环行不计阻断（tf-mvb3lm0b-bbgoyv 实锤）')
+{
+  const r = await runScenario('qa-reverify-fixed', {
+    options: QA_OPTS, artifacts: { qa: [QA_BLOCKING, QA_REVERIFY_FIXED], acceptance: ACC.pass },
+  })
+  const fixRounds = r.childLabels.filter((l) => /QA 缺陷修复/.test(String(l))).length
+  ok(!r.humanIntervention, '复验表标已修复 ⇒ 不算阻断 ⇒ 不转人工（修复前的假阳性就在这里）')
+  ok(fixRounds === 1, `只应打回 1 轮修复（已闭环行不得再触发第 2 轮），实测 ${fixRounds}`)
+  ok(r.status === 'completed' && !r.journal.knownIssuesAcceptance, '收敛 → 走正常验收（非 known-issues 模式）')
 }
 
 /* ── ⑪⑫⑬ 验收结论四档：rework / reject / 无结论行 ── */
@@ -890,11 +969,14 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
     status: 'idle', followup() {}, inject() {}, options: {},
   }
   setRuntime({ get: (sid) => (sid === 'sid-redo' ? fakeParent : undefined) }, {
-    start: async (_p, init) => {
-      const label = String((init && init.label) || '')
+    // 真实宿主一定有 provider 注册表（providerName 靠 list 取），漏了它 provider 会传成 null（宿主直接抛）
+    list: () => ['spawn'],
+    startActivation: async (spec) => {
+      const init = spec && spec.request
+      const label = String((spec && spec.label) || '')
       seen.push({ label, prompt: String((init && init.prompt && init.prompt[0] && init.prompt[0].text) || '') })
       return {
-        id: `c-${seen.length}`, localAgent: { session: null },
+        childId: `c-${seen.length}`,
         result: (async () => ({ stopReason: 'completed', output: [{ type: 'text', text: '' }] }))(),
         dispose: async () => {},
       }
@@ -1026,6 +1108,76 @@ console.log('\n[25] 蓝图判据：内容为空的块不算成功 —— 要么�
   const k = await runScenario('bp-archived-ok', { options: FULL_OPTS, blueprintViaFile: true })
   ok(k.blueprint && (k.blueprint.tasks || []).length > 0, '成功路径仍照常解析')
   ok(k.logs.some((l) => /蓝图已落档到/.test(l)), '**成功解析也落档**（常态路径不能漏）')
+}
+
+/* ── (i) 宿主 API 入参形状（issue #20）：startActivation spec 必须带 provider/delivery/request.parent ── */
+// 源码锁只能证明「调用了 startActivation」，证明不了「传对了 spec」：
+//   · 漏 `delivery` ⇒ 宿主按 'parent' 处理，给主会话投递阶段完成通知（插件看起来照常跑，主线程被污染）
+//   · 漏 `request.parent` ⇒ 宿主 `assertAdmitting` 直接抛 UNAUTHORIZED，全部阶段失败
+//   · `provider` 空 ⇒ 宿主 `expectProvider('')` 抛
+// 三者都必须在**真跑一遍流水线**时被观测到（stub 保真记录 spec 形状）。
+console.log('\n[N] 宿主 subagent API 入参形状（startActivation）')
+{
+  const r = await runScenario('spec-shape', { options: QA_OPTS })
+  ok(r.childSpecs.length > 0, `起了子代理（实测 ${r.childSpecs.length} 个）`)
+  ok(r.childSpecs.every((s) => s.delivery === 'caller'), '每个阶段都传 delivery=caller（parent=向主会话塞完成通知）')
+  ok(r.childSpecs.every((s) => s.provider === 'spawn'), '每个阶段都有非空 provider（空值 ⇒ 宿主 expectProvider 抛）')
+  ok(r.childSpecs.every((s) => s.hasRequestParent), '每个阶段都传 request.parent（宿主 assertAdmitting 校验「活的父 Agent」）')
+  ok(r.childSpecs.every((s) => s.hasTopSignal), '每个阶段都传顶层 signal（宿主发布前取消通道；嵌套 request.signal 是发布后通道）')
+  ok(r.stageChildIds.length > 0 && r.stageChildIds.every((id) => r.agentLookups.includes(id)),
+    `每个**阶段**子代理的 childId 都被 agents 注册表查过（实测 stages=${r.stageChildIds} lookups=${r.agentLookups}）——localAgent 的取法真的在跑，不是只在源码里（分诊不走 runAgent，故不在本断言范围）`)
+  // 计量：只有「启动后立刻取活句柄」才拿得到 token（夹具复刻了「result settle 前已清理」的宿主语义）
+  const withUsage = (r.journal.stages || []).filter((s) => s.usage && (s.usage.input || s.usage.calls))
+  ok(withUsage.length > 0,
+    `阶段记录了 token 用量（实测 ${withUsage.length}/${(r.journal.stages || []).length} 段；样本=${JSON.stringify((withUsage[0] || {}).usage)}）——取晚了就全空（21/21 阶段的实测形态）`)
+}
+
+/* ── (j) liveChildAgentOf / hasStartActivation 的边界（issue #20 的取句柄与预检两条判据） ── */
+console.log('\n[O] 活子代理取法与宿主能力预检（纯行为，可单测）')
+{
+  const lookups = []
+  setRuntime({ get: (sid) => { lookups.push(String(sid)); return sid === 'live' ? { session: null, status: 'running' } : undefined } }, {})
+  const live = runtime.liveChildAgentOf('live')
+  ok(!!live && live.status === 'running', '注册表里有的 childId → 返回活 Agent（护栏/计量据此工作）')
+  ok(runtime.liveChildAgentOf('missing') === undefined, '注册表里没有 → undefined（外部/远程 provider 的同义降级路径）')
+  const before = lookups.length
+  ok(runtime.liveChildAgentOf(undefined) === undefined && runtime.liveChildAgentOf(123) === undefined && runtime.liveChildAgentOf('') === undefined,
+    '非字符串/空 childId → undefined 且**不查注册表**（不把参数错误当成注册表查询）')
+  ok(lookups.length === before, '上面三次非法入参没有产生注册表查询')
+  // 注册表本身缺失/抛错也不得成为新的失败点（读句柄失败只能降级，不能中止阶段）
+  setRuntime({ get: () => { throw new Error('boom') } }, {})
+  ok(runtime.liveChildAgentOf('x') === undefined, '注册表 get 抛错 → undefined（不向外抛，阶段照常跑）')
+  setRuntime({}, {})
+  ok(runtime.liveChildAgentOf('x') === undefined, 'agents 服务缺失 → undefined')
+  ok(runtime.hasStartActivation() === false, 'hasStartActivation：无 subagents 服务 → false（起跑预检据此显性失败）')
+  setRuntime({}, { list: () => ['spawn'] })
+  ok(runtime.hasStartActivation() === false, 'hasStartActivation：旧宿主（有 list、无 startActivation）→ false —— issue #20 的原始故障形态')
+  setRuntime({}, { list: () => ['spawn'], startActivation: async () => ({}) })
+  ok(runtime.hasStartActivation() === true, 'hasStartActivation：alpha.2+ 宿主 → true')
+}
+
+/* ── (k) 上游越界写下游产物 ⇒ 下游不得拿旧文件交差（2026-10-16 实锤 tf-mv9o5fkk-orjou4） ── */
+// 实锤：架构师阶段（prompt 明写禁止）写了 QA-REPORT.md / ACCEPTANCE.md，而下游「文件即产物」只查
+// 「在不在、够不够长」⇒ 若 QA/验收自己没写，host 会把上游那份当成本轮产物（QA 结论 = 上游自我评估）。
+// 对照组只差**一个维度**：QA 阶段的子代理有没有自己写那份文件。
+console.log('\n[P] 产物新鲜度：上游留下的旧产物不算本阶段产物')
+{
+  const upstreamQa = '# QA-REPORT（上游越界写的旧文件）\n' + '旧内容'.repeat(300)
+  const upstream = { '技术方案': { 'QA-REPORT.md': upstreamQa } }
+  // ① 上游写了、QA 自己没写 ⇒ 必须当缺失 ⇒ 硬失败（不得凭旧文件判「已交付」）
+  const bad = await runScenario('stale-qa', { options: QA_OPTS, extraArtifacts: upstream })
+  ok(bad.status === 'failed', `上游旧产物 + QA 自己没写 ⇒ run failed（实测 ${bad.status}）`)
+  ok(/QA/.test(String(bad.error)), `失败点仍是 QA（实测 ${String(bad.error).slice(0, 44)}）——若接受了旧文件，QA 会通过、失败点会后移到验收`)
+  // 行为级证明基线真的落在 stage 上（M9 变异实测：掏掉 captureArtifactBaseline 后本条变红）
+  const withBase = bad.journal.stages.filter((s) => s.artifactBaseline && Object.keys(s.artifactBaseline).length)
+  ok(withBase.length > 0 && Object.keys(withBase[0].artifactBaseline).length > 0,
+    `阶段在 journal.stages 上留下产物基线（实测 ${withBase.length}/${bad.journal.stages.length} 段，键=${JSON.stringify(Object.keys((withBase[0] || {}).artifactBaseline || {}))}）`)
+  // ② 同场景，只多一件事：QA 阶段的子代理自己写了 ⇒ 正常通过（证明 ① 的失败来自「旧产物不算数」）
+  const good = await runScenario('fresh-qa', {
+    options: QA_OPTS, extraArtifacts: upstream,
+    artifacts: { qa: ['# QA-REPORT（本轮）\n' + '本轮内容'.repeat(300)] },
+  })
+  ok(!/QA/.test(String(good.error)), `QA 自己写了（覆盖旧文件）⇒ 不再判 QA 缺失（实测 err=${String(good.error).slice(0, 44)}）`)
 }
 
 if (failed) {

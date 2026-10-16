@@ -134,14 +134,50 @@ export interface ResumeContext {
    *  澄清轮是「用户答了我问的问题」，而这次是「用户要求改这些地方」（见 `pipeline.ts` 的 prdInput 拼装）。 */
   redo?: boolean
 }
+/** 运行中的本地子代理活 Agent 的鸭子类型（`runtime.agents` 注册表返回）。
+ *  `status` 是宿主唯一的生命周期态（`'idle' | 'running'`，见 `packages/core/agent/src/runtime-types.ts`）。
+ *  ⚠️ 这里**没有** `phase` —— 宿主从未提供该字段，护栏曾按 `localAgent.phase.kind` 判忙，恒 false 静默失效（2026-10-15 修正）。 */
+export interface LocalChildAgentLike {
+  session?: unknown
+  status?: string
+  /** 观测→执行闭环：token 护栏注入轻提醒（不打断，下一轮 step 可见）。 */
+  inject?: (m: unknown) => void
+}
+
 /** 子代理运行句柄的鸭子类型（避免强依赖内部类型）。 */
 export interface SubagentRunLike {
   id: string
   result: Promise<unknown>
   dispose(): Promise<void> | void
-  localAgent?: { session?: unknown }
-  /** 观测→执行闭环：token 护栏注入轻提醒（不打断，下一轮 step 可见）。 */
-  inject?: (m: unknown) => void
+  /** 本地子级（进程内）的活 Agent；外部/远程 provider 为 undefined（这个「本地 vs 远程」对照就是它叫
+   *  localAgent 而不是 agent 的原因）。**alpha.2 起不再由 `start()` 回执返回** —— 改由 `agents`
+   *  注册表按 childId 解析（见 `context.liveChildAgentOf`）。 */
+  localAgent?: LocalChildAgentLike
+}
+
+/** `subagents.startActivation` 的入参/出参鸭子类型。
+ *  ⚠️ **宿主 API 迁移锚点（2026-10-15 / issue #20）**：alpha.1 的 `subagents.start(name, request)`
+ *  在 alpha.2 被整体删除（提交 `3d852a1cea`，首个含它的 tag = `dsh-v0.2.1-alpha.2`），取而代之的是
+ *  单一入口 `startActivation(spec)`：`provider`/`label`/`signal`/`delivery` 提到 spec 顶层，`label` 变必填，
+ *  且**不再回传 `localAgent`**。官方迁移指南：`docs/upgrade-guide/v0.2.1-alpha.1/subagent-activations/`。 */
+export interface SubagentActivationLike {
+  childId: string
+  /** Accepted inbox message id（本地子级必有；本插件不用——等待的是 `result`）。 */
+  messageId?: string
+  result: Promise<{ output?: unknown; stopReason?: string }>
+  dispose(): Promise<void> | void
+}
+
+export interface SubagentStarters {
+  startActivation?: (spec: {
+    provider: string
+    label: string
+    request: { prompt: unknown; parent: unknown; agentOptions?: unknown; signal: unknown }
+    signal: unknown
+    /** `'caller'`＝只把结果交给调用方，**不向父会话投递完成通知**。本插件自己编排流水线，
+     *  必须用 `'caller'`：`'parent'` 会把每个阶段的完成通知塞进主会话（污染主线程且非本插件语义）。 */
+    delivery: 'parent' | 'caller'
+  }) => Promise<SubagentActivationLike>
 }
 /** 父 Agent 句柄的鸭子类型（deliverCompletion / runAgent 共用）。 */
 export interface ParentAgentLike {

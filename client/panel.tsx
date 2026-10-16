@@ -13,6 +13,7 @@
  */
 import React from 'react'
 import { T, h, MONO, SANS, flexRow, chip, FoldableText, CancelButton, stColor, stText, fmtTime, fmtDur, fmtTokens, totalTokens, hitRate, phaseIconOf, byRoleLine, stageUsageLine, runStatusText, kindTitle, stageLabelOf, stageStatusText, t } from './shared.js'
+import { bugOpenReasonKey } from './bug-open-reason.js'
 import { useUpdateStatus, UpgradeButton, canOneClick, UpdateHint } from './update-ui.js'
 
 /* ── 右栏 run tab 的类型标识（host 生成地址，client 只解析） ────────── */
@@ -187,8 +188,9 @@ function RunList({ runs, activeRunId, onOpenRun, onInlineRun, onCancel }) {
 }
 
 /* ── backlog 分组 ───────────────────────────────────────────────── */
-function BacklogCard({ kind, item, onOpen }) {
+function BacklogCard({ kind, item, onOpen, reqMap }) {
   const color = stColor(item.status)
+  const reason = kind === 'bug' ? bugOpenReasonKey(item, reqMap && reqMap.get(item.reqId)) : null
   return h('div', {
     onClick: () => onOpen(kind, item.id),
     style: {
@@ -212,6 +214,7 @@ function BacklogCard({ kind, item, onOpen }) {
     item.acceptBy ? h('span', null, t('panel.verdict', { v: item.acceptBy })) : null,
     item.retries ? h('span', { style: { color: T.warn } }, t('board.retries', { n: item.retries })) : null,
     item.humanIntervention ? h('span', { style: { color: T.error } }, t('status.needs-human')) : null),
+  reason ? h('div', { style: { fontSize: 10, color: reason.tone === 'warn' ? T.warn : T.text2, marginTop: 3, lineHeight: 1.4 } }, t(reason.key)) : null,
   )
 }
 
@@ -238,6 +241,8 @@ function BacklogGroups({ backlog, onOpen, productKey }) {
   React.useEffect(() => { setShowDone({}); setFilters({}) }, [productKey])
   if (!backlog) return null
   const groups = [['req', backlog.requirements || []], ['task', (backlog.tasks || []).filter((t) => t.type !== 'subtask')], ['bug', backlog.bugs || []]]
+  // 缺陷「为什么还 open」需关联来源需求（needs-human 收尾 ⇒ 未闭环真缺陷）；建映射避免逐卡现查
+  const reqMap = new Map((backlog.requirements || []).map((r) => [r.id, r]))
   const total = groups.reduce((a, [, arr]) => a + arr.length, 0)
   if (!total) return muted(t('panelBoard.empty'), { padding: '2px 2px 8px' })
   return h('div', null,
@@ -280,14 +285,17 @@ function BacklogGroups({ backlog, onOpen, productKey }) {
               : null),
         visible.length
           ? h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(228px, 1fr))', gap: 6 } },
-            visible.map((it) => h(BacklogCard, { key: it.id, kind, item: it, onOpen })))
+            visible.map((it) => h(BacklogCard, { key: it.id, kind, item: it, onOpen, reqMap })))
           : muted(t('panelBoard.emptyFiltered'), { fontSize: 10.5 }))
     }))
 }
 
 /* ── 条目详情（面板内联；右侧栏留给 run 详情与产物） ─────────────── */
-function ItemDetailPane({ det, openArtifact, onClose }) {
+function ItemDetailPane({ det, openArtifact, onClose, backlog }) {
   if (!det) return null
+  const bugReason = det.kind === 'bug'
+    ? bugOpenReasonKey(det, backlog && (backlog.requirements || []).find((r) => r.id === det.reqId))
+    : null
   const row = (k, v) => (v === null || v === undefined || v === '' ? null
     : h('div', { style: { ...flexRow, gap: 6, fontSize: 11 } },
       h('span', { style: { color: T.text2, flex: '0 0 auto' } }, k), h('span', { style: { color: T.text, minWidth: 0, wordBreak: 'break-word' } }, String(v))))
@@ -301,9 +309,10 @@ function ItemDetailPane({ det, openArtifact, onClose }) {
     h('div', { style: { fontSize: 13, fontWeight: 600, color: T.text, lineHeight: 1.45 } }, det.title),
     /* 缺陷卡：先给缺陷自身的内容（复现/期望/实际）——用户实锤「点开只看得到关联 run 的原始需求」 */
     det.kind === 'bug' ? h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, padding: '8px 10px', borderRadius: 8, background: T.layer2, border: `1px solid ${T.border}` } },
-      h('div', { style: { ...flexRow, gap: 6 } },
+      h('div', { style: { ...flexRow, gap: 6, flexWrap: 'wrap' } },
         h('span', { style: { fontSize: 11, fontWeight: 700, color: T.text } }, t('panelItem.defectSection')),
-        det.severity ? chip(String(det.severity), String(det.severity) === 'P0' ? T.error : String(det.severity) === 'P1' ? T.warn : T.text2) : null),
+        det.severity ? chip(String(det.severity), String(det.severity) === 'P0' ? T.error : String(det.severity) === 'P1' ? T.warn : T.text2) : null,
+        bugReason ? h('span', { style: { fontSize: 10.5, color: bugReason.tone === 'warn' ? T.warn : T.text2 } }, t(bugReason.key)) : null),
       row(t('panelItem.row.defectId'), det.defectId), row(t('panelItem.row.module'), det.module),
       row(t('panelItem.row.reproduce'), det.reproduce), row(t('panelItem.row.expected'), det.expected),
       row(t('panelItem.row.actual'), det.actual), row(t('panelItem.row.defectCheck'), det.defectCheck),
@@ -882,7 +891,7 @@ export function GlobalPanel(props) {
         },
       },
       detail && detail.kind === 'item'
-        ? h(ItemDetailPane, { det: detail.data, openArtifact: openArtifactInPanel, onClose: closeDetail })
+        ? h(ItemDetailPane, { det: detail.data, openArtifact: openArtifactInPanel, onClose: closeDetail, backlog: view.backlog })
         : h('div', null,
           h('div', { style: { ...flexRow, justifyContent: 'space-between', padding: '10px 12px 0' } },
             h('span', { style: { fontSize: 11.5, fontWeight: 700, color: T.text } }, t('panel.runDetail')),

@@ -498,13 +498,89 @@ export function artifactText(
   journal: { workspacePath?: string | null; runDocs?: string | null } | null | undefined,
   fileName: string,
 ): string | null {
-  const path = journal && journal.workspacePath && journal.runDocs ? `${journal.workspacePath}/${journal.runDocs}/${fileName}` : null
+  const path = artifactPathOf(journal, fileName)
   if (!path) return null
   try {
     if (!existsSync(path)) return null
     const t = readFileSync(path, 'utf8').trim()
     return t ? t : null
   } catch (e) { return null }
+}
+
+/** 任务夹内某个产物的绝对路径（`artifactText` / `artifactFingerprint` 共用）。 */
+function artifactPathOf(
+  journal: { workspacePath?: string | null; runDocs?: string | null } | null | undefined,
+  fileName: string,
+): string | null {
+  return journal && journal.workspacePath && journal.runDocs ? `${journal.workspacePath}/${journal.runDocs}/${fileName}` : null
+}
+
+/* ── 产物**新鲜度**判据（2026-10-16 实锤 run tf-mv9o5fkk-orjou4）──────────────────────────────
+ * 由来：架构阶段的子代理越界写了 `QA-REPORT.md` / `ACCEPTANCE.md`（它的 prompt 明写禁止，
+ * `prompts/index.ts` 的 architectPrompt 段），而下游「文件即产物」的读取**只看文件在不在、够不够长**。
+ * 后果：QA/验收阶段的正常契约就是「回复 ≤12 行摘要」⇒ 一定走文件读取 ⇒ 若该阶段自己没写，
+ * host 会把**上一个阶段留下的旧文件**当成本轮产物（QA 甚至会把架构师的自我评估当 QA 结论）。
+ * 判据必须客观且与模型自律无关（见 MEMORY §2）：**阶段开始时记录候选产物的指纹，只有指纹变了才认**。
+ *
+ * 为何用 `size:mtimeMs` 而不是内容哈希：每次真实写入都必然改变其一（同毫秒同大小同时重写不可能发生
+ * ——阶段粒度按分钟计），而省掉一次全文读取与哈希。取整 mtimeMs 规避浮点尾数。 */
+export function artifactFingerprint(
+  journal: { workspacePath?: string | null; runDocs?: string | null } | null | undefined,
+  fileName: string,
+): string | null {
+  const path = artifactPathOf(journal, fileName)
+  if (!path) return null
+  try {
+    if (!existsSync(path)) return null
+    const st = statSync(path)
+    return `${st.size}:${Math.round(st.mtimeMs)}`
+  } catch (e) { return null }
+}
+
+/**
+ * 阶段开始前拍一次产物基线，写进 stage（`store.JournalStage.artifactBaseline`）。
+ * **只填缺失项**：重试（同一阶段多次尝试）与续跑（新进程复用同一条 stage）都沿用**首次**基线 ⇒
+ * 语义是「本阶段是否写过它」，而不是「本次尝试是否写过」—— 前者才是我们要防的越界污染。
+ * 必须在子代理启动**之前**调用（runner 在建 stage 后、任何 await 前）。
+ */
+export function captureArtifactBaseline(
+  journal: { workspacePath?: string | null; runDocs?: string | null } | null | undefined,
+  phase: string,
+  stage: { artifactBaseline?: Record<string, string | null> | null } | null | undefined,
+): void {
+  const names = DOC_STAGE_FILES[phase]
+  if (!stage || !names || !names.length) return
+  const base = (stage.artifactBaseline && typeof stage.artifactBaseline === 'object') ? stage.artifactBaseline : {}
+  let filled = false
+  for (const name of names) {
+    if (Object.prototype.hasOwnProperty.call(base, name)) continue
+    base[name] = artifactFingerprint(journal, name)
+    filled = true
+  }
+  if (filled) stage.artifactBaseline = base
+}
+
+/** 相对基线**没变** ⇒ 不是本阶段写的 ⇒ 不可信。
+ *  基线缺失该键（或未提供基线）= **不可判** ⇒ 返回 false（不做新鲜度判定）—— 键由 `captureArtifactBaseline`
+ *  用同一张 `DOC_STAGE_FILES` 表填，正常不会缺；「续跑复用旧产物」路径**刻意不传基线**（那个文件本就来自早先的运行）。 */
+export function artifactIsStale(
+  journal: { workspacePath?: string | null; runDocs?: string | null } | null | undefined,
+  fileName: string,
+  baseline: Record<string, string | null> | null | undefined,
+): boolean {
+  if (!baseline || typeof baseline !== 'object') return false
+  if (!Object.prototype.hasOwnProperty.call(baseline, fileName)) return false
+  return baseline[fileName] === artifactFingerprint(journal, fileName)
+}
+
+/** 读「**本阶段写过的**」产物：陈旧（指纹未变）→ 当缺失返回 null。`baseline` 省略 = 不判新鲜度。 */
+export function freshArtifactText(
+  journal: { workspacePath?: string | null; runDocs?: string | null } | null | undefined,
+  fileName: string,
+  baseline: Record<string, string | null> | null | undefined,
+): string | null {
+  if (artifactIsStale(journal, fileName, baseline)) return null
+  return artifactText(journal, fileName)
 }
 
 /** 交付枚举上限。**命中即截断，且截断必须显式上报**（见 scanDeliverableFiles）。 */
@@ -643,15 +719,20 @@ export function assessQaVerificationEvidence(
 /**
  * doc 类阶段的产物兜底：按 `DOC_STAGE_FILES` 取**最长**的一个候选文件（同一阶段可能有多种产物形态，
  * 如 tech 档 PRD 写 `TECH-CHANGE.md`）；无候选/文件缺失/未达下限 → null（绝不抛）。
+ *
+ * `baseline`（可选）：本阶段的产物基线（`stage.artifactBaseline`）。给了就**跳过指纹未变的候选**——
+ * 即「上游写过的旧产物不算本阶段产物」（2026-10-16 实锤，见 `artifactFingerprint` 的注释）。
  */
 export function stageDocText(
   journal: { workspacePath?: string | null; runDocs?: string | null } | null | undefined,
   phase: string,
+  baseline?: Record<string, string | null> | null,
 ): { name: string; text: string; length: number } | null {
   const names = DOC_STAGE_FILES[phase]
   if (!names || !names.length) return null
   let best: { name: string; text: string; length: number } | null = null
   for (const name of names) {
+    if (artifactIsStale(journal, name, baseline)) continue
     const text = artifactText(journal, name)
     if (!text) continue
     const length = text.trim().length
@@ -917,6 +998,33 @@ const TOOL_SCOPE_LIMIT = /is not a member of an active Agent Team|exceeds maxDep
 /** 是否属于「工具在这一层不适用」（换个工具即可继续）—— 据此**不计入**环境不可用指纹。 */
 export function isToolScopeFailure(text: unknown): boolean {
   return TOOL_SCOPE_LIMIT.test(String(text || ''))
+}
+
+/* ── 「参数类失败：模型自己把参数传错了」类（2026-10-16 实锤 run tf-mv9o5fkk-orjou4）────────────
+ * 与上面两类同族：**换个参数就能继续**，与「工作区坏了（重试/绕道都没用）」不是一回事。
+ * 实锤代价：scaffold 子代理连调 `edit` 三次都传了**相同的 old/new**，命中「同一工具同一错误 ×3」→
+ * 被判 `env-unavailable` 硬停（不重试、要求人工修工作区、引导 resume）；人工 resume 后**同一阶段一次就过**
+ * （126 次调用、0 失败）⇒ 工作区自始正常，这是纯粹的分类误判，白等 30 分钟。
+ *
+ * 文案来源（只认**参数解析层**的原文，不猜其它层）——宿主 `@deepseek-ai/dsh-tool-fs`：
+ *   `packages/fs/tool-fs/src/edit.ts:48-50`  → `file_path must be a non-empty string` /
+ *                                            `old_string must be a non-empty string` /
+ *                                            `old_string and new_string must differ`
+ *   `packages/fs/tool-fs/src/read.ts:44,56` → `<name> must be a positive integer` / `file_path must be ...`
+ *   `packages/fs/tool-fs/src/index.ts:62`   → `tool-fs: <name> must be a positive integer`
+ *   **宿主通用参数校验层（任意工具、任意 schema 类型错）→ 前缀 `invalid arguments:`**，形如
+ *     `invalid arguments: "queries" must be an array`。实锤 tf-mvb3lm0b-bbgoyv（2026-10-16）：tech 子代理
+ *     反复把 `web_search.queries` 传成字符串（应为数组），宿主在 parse 层拒；这条**没被上面三条覆盖** ⇒
+ *     计进环境指纹 ⇒ 第 3 次误判 `env-unavailable` 硬停、不重试，run 直接 failed。⇒ **按前缀整体豁免，
+ *     不逐个列举类型**（`must be an array|string|number|object|…` 列不全，下次又会漏一个新的）。
+ *     该前缀 = 调用在 parse 层就被拒，与上面三条同性质，绝不等价于文件系统/权限/沙箱故障。
+ * 判据边界：这些都是 **parse*Args 层**的参数校验（调用前就抛），不是文件系统/权限/沙箱的失败；
+ * 宿主换文案时这里同步（与 FS_SELF_HEAL_TEXT 同款纪律）。 */
+const TOOL_ARG_FAILURE = /invalid arguments:|must be a non-empty string|must differ\b|must be a positive integer/i
+
+/** 是否属于「模型参数传错」（换个参数即可继续）—— 据此**不计入**环境不可用指纹。 */
+export function isToolArgFailure(text: unknown): boolean {
+  return TOOL_ARG_FAILURE.test(String(text || ''))
 }
 
 /** 失败指纹：工具名 + 归一化错误前 160 字符。同一指纹反复出现 = 同一个坏环境（而非模型措辞波动）。 */

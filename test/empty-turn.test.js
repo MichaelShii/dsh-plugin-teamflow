@@ -13,10 +13,10 @@
  *
  * 本文件自带 $DSH_HOME 风格临时目录（stageDocText 走真实文件系统，绝不碰真实 home）。
  */
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { emptyTurnDocVerdict, stageDocText, DOC_STAGE_FILES } from '../host/util.ts'
+import { emptyTurnDocVerdict, stageDocText, DOC_STAGE_FILES, artifactFingerprint, artifactIsStale, freshArtifactText, captureArtifactBaseline, isToolArgFailure } from '../host/util.ts'
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -60,6 +60,76 @@ console.log('── 3) 覆盖面：DOC_STAGE_FILES 覆盖全部 doc 类阶段 �
 for (const phase of ['prd', 'design', 'tech', 'qa', 'acceptance']) {
   ok(Array.isArray(DOC_STAGE_FILES[phase]) && DOC_STAGE_FILES[phase].length > 0, `phase=${phase} 有产物候选（A 档覆盖面）`)
 }
+
+/* ── 4) 产物新鲜度：只认「本阶段写过的」产物（2026-10-16 实锤 run tf-mv9o5fkk-orjou4） ──
+   场景：架构阶段（prompt 明写禁止）越界写了 QA-REPORT.md / ACCEPTANCE.md。下游「文件即产物」
+   只查「在不在、够不够长」⇒ QA 自己没写时会拿上游那份当结论（假交付）。判据 = 阶段开始时的指纹基线。 */
+console.log('── 4) 产物新鲜度：指纹基线（上游越界写的旧产物不算本阶段产物）──')
+{
+  const j = { workspacePath: ws, runDocs }
+  const qaPath = join(docDir, 'QA-REPORT.md') // 第 2) 节已落盘 = 模拟「上游先写了」
+  const stage = {}
+  captureArtifactBaseline(j, 'qa', stage)
+  ok(!!stage.artifactBaseline && typeof stage.artifactBaseline['QA-REPORT.md'] === 'string',
+    '基线记下候选产物指纹（absent 时也能记字符串）')
+  ok(artifactFingerprint(j, 'NO-SUCH.md') === null, '文件不存在 → 指纹 null（不抛）')
+  eq(freshArtifactText(j, 'QA-REPORT.md', stage.artifactBaseline), null, '指纹未变 ⇒ 当缺失（上游写的不算本阶段产物）')
+  eq(stageDocText(j, 'qa', stage.artifactBaseline), null, 'stageDocText 同样跳过陈旧候选（A 档兜底不再拿旧文件）')
+
+  // 本阶段真的写了（同内容同大小、仅 mtime 前进 —— 显式推 mtime 既证语义也规避同毫秒写入的测试抖动）
+  const now = Date.now() / 1000
+  utimesSync(qaPath, now + 5, now + 5)
+  eq(artifactIsStale(j, 'QA-REPORT.md', stage.artifactBaseline), false, '指纹变了（同大小、仅 mtime）⇒ 认作本阶段产物')
+  ok(!!freshArtifactText(j, 'QA-REPORT.md', stage.artifactBaseline), 'freshArtifactText 读到本阶段版本')
+  ok(!!stageDocText(j, 'qa', stage.artifactBaseline), 'stageDocText 重新认得它')
+
+  // 只填缺失项：重试/续跑沿用**首次**基线（语义 = 「本阶段写过」而非「本次尝试写过」）
+  const t2 = {}
+  captureArtifactBaseline(j, 'qa', t2)
+  const first = t2.artifactBaseline['QA-REPORT.md']
+  utimesSync(qaPath, now + 9, now + 9)
+  captureArtifactBaseline(j, 'qa', t2)
+  eq(t2.artifactBaseline['QA-REPORT.md'], first, '第二次 capture 不覆盖（重试沿用首次基线）')
+
+  // 不可判的两种输入一律 fail-open（不判新鲜度）：存量调用与「续跑复用旧产物」路径刻意不传基线
+  eq(artifactIsStale(j, 'QA-REPORT.md', undefined), false, '无基线 ⇒ 不判（续跑复用旧产物路径）')
+  ok(!!freshArtifactText(j, 'QA-REPORT.md', { 'PRD.md': 'x' }), '基线缺该键 ⇒ 不判（返回文件，不误杀）')
+
+  // 阶段开始时不存在（基线 null）→ 本阶段从无到有 = 新鲜；一直不存在 = 指纹相同（都 null）= 不可信
+  const acc = {}
+  captureArtifactBaseline(j, 'acceptance', acc)
+  eq(acc.artifactBaseline['ACCEPTANCE.md'], null, '阶段开始时 ACCEPTANCE.md 不存在 ⇒ 基线 null')
+  eq(artifactIsStale(j, 'ACCEPTANCE.md', acc.artifactBaseline), true, '仍不存在 ⇒ 指纹相同（都 null）⇒ 判不可信')
+  writeFileSync(join(docDir, 'ACCEPTANCE.md'), '验收结论：accepted\n' + '正文'.repeat(300))
+  ok(!!freshArtifactText(j, 'ACCEPTANCE.md', acc.artifactBaseline), '从无到有 ⇒ 认作本阶段产物')
+}
+
+/* ── 5) 环境不可用指纹的第三类豁免：参数类失败（模型自己传错参数）──
+   实锤 tf-mv9o5fkk-orjou4：`edit` 连传 3 次相同 old/new → 被判 env-unavailable 硬停；人工 resume 后
+   同一阶段一次就过 ⇒ 工作区自始正常。判据必须能区分「参数错」与「环境坏」。 */
+console.log('── 5) isToolArgFailure：参数类失败不计入环境指纹 ──')
+for (const t of [
+  'old_string and new_string must differ', // 宿主 packages/fs/tool-fs/src/edit.ts:50（实锤 tf-mv9o5fkk-orjou4）
+  'old_string must be a non-empty string',
+  'file_path must be a non-empty string',
+  'tool-fs: limit must be a positive integer',
+  'offset must be a positive integer',
+  // 宿主通用参数校验层前缀（实锤 tf-mvb3lm0b-bbgoyv：web_search.queries 传成字符串）
+  'Error: invalid arguments: "queries" must be an array',
+  'invalid arguments: "queries" must be an array',
+  'invalid arguments: "max_results" must be a number',
+]) ok(isToolArgFailure(t), `识别参数类：${t}`)
+for (const t of [
+  'ENOENT: no such file or directory, open ...',
+  'EACCES: permission denied',
+  'spawn pnpm ENOENT',
+  'command not found: mvn',
+  'fs: cannot write outside the workspace root',
+  'The operation timed out after 60000ms',
+  // 反例：含「must be」但不属参数解析层（不得被前缀之外的宽松匹配吞掉）
+  'SetNamedSecurityInfoW failed (Win32 5): ACL provision failed',
+  'tool result too large: must be truncated by caller',
+]) ok(!isToolArgFailure(t), `不吞环境类：${t}`)
 
 rmSync(home, { recursive: true, force: true })
 ok(!existsSync(home), '临时目录已清理')

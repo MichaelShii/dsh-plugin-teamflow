@@ -53,6 +53,11 @@ export interface JournalStage {
    *  可能与 run 起始默认不同（见 runner.resolveChildRoute）。回答「是不是模型的锅」靠它。 */
   provider?: string | null
   model?: string | null
+  /** **产物新鲜度基线**（2026-10-16 新增）：阶段开始前该阶段候选产物的指纹（`size:mtimeMs`，缺失为 null）。
+   *  只有指纹**变了**才认「本阶段写了它」—— 防上游阶段越界写下游产物后，下游凭旧文件被判「已交付」
+   *  （实锤 run tf-mv9o5fkk-orjou4：架构师子代理写了 QA-REPORT.md / ACCEPTANCE.md）。
+   *  判定与消费见 `util.artifactFingerprint` / `artifactIsStale` / `freshArtifactText` / `stageDocText`。 */
+  artifactBaseline?: Record<string, string | null> | null
 }
 
 /** 运行日志（journal）——运行时对象与磁盘可持久化形态的公共形状。 */
@@ -137,6 +142,19 @@ export interface JournalRecord {
    *  主线程要靠它把「批准什么」讲给用户；丢了就只能让用户去重读 PRD.md。
    *  形状见 `host/core/confirm.ts` 的 `ConfirmSheet`。 */
   confirmSheet?: unknown | null
+  /** **本轮 PRD 的结构化输出快照**（2026-10-16，修「汇报层串了模版」实锤 tf-mvaubzdz-5w606x）。
+   *  确认单的「目标 / AC / 待拍板」与 taste 闸门此前读 `state.json`，而 `state.json` 是
+   *  **按项目累积、跨 run** 的（见 `host/core/domain/state.ts` 文件头），合并又是**条件式覆盖**
+   *  （`acIndex` 按键累加 / `summary` 仅非空覆盖 / `openQuestions` 缺键保持原值）⇒ 本轮 PRD
+   *  未回写这些 `extra` 键时，确认单会显示**上一轮 run 的**目标/AC/待澄清项（r5 的确认单显示了
+   *  r4 的 64 卦 Wiki 目标与 12 条 AC，只有「假设」段是对的 —— 它读 run 级 `journal.assumptions`）。
+   *  这三项是**按 run** 的快照（PRD 阶段合并 state 时捕获；缺 = 本轮 PRD 确实没给），
+   *  确认单与闸门只认它、不认累积 state。形状见 `host/core/confirm.ts` 的 `PrdSnapshot`。 */
+  prdSnapshot?: {
+    summary: string | null
+    acIndex: Record<string, string> | null
+    openQuestions: Array<{ q: string; why: string; changes: string; default: string; kind?: 'fact' | 'taste'; kindMissing?: boolean }> | null
+  } | null
   result?: unknown
   [key: string]: unknown
 }
@@ -285,6 +303,9 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     requirementSupplement: journal.requirementSupplement || null,
     // PRD 确认单（ADR-0011 ①）：暂停后重启也要能把「批准什么」讲给用户（见上方 JournalRecord 注释）
     confirmSheet: journal.confirmSheet || null,
+    // 本轮 PRD 的结构化输出快照（2026-10-16 修「汇报层串了模版」）：**必须落盘**，
+    // 否则 resume/重跑时确认单与闸门又退回读累积 state（结构门禁 journal.test.js 当场抓到漏写）
+    prdSnapshot: journal.prdSnapshot || null,
     /** 外部供应商故障标记（限流/无额度/上游故障/超时）：run 落可续跑中断态时置位，汇报据此讲清「非交付缺陷」。 */
     externalFailure: journal.externalFailure === true,
     interrupted: journal.interrupted === true,
@@ -314,6 +335,8 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
       guardReason: s.guardReason || null,
       guardOutcome: s.guardOutcome || null,
       envUnavailable: s.envUnavailable || null,
+      // 产物新鲜度基线（2026-10-16）：有内容才写，避免给存量 stage 平添 null 噪声
+      artifactBaseline: (s.artifactBaseline && Object.keys(s.artifactBaseline).length) ? { ...s.artifactBaseline } : null,
       output: clip(s.output || s.summary || '', STAGE_OUTPUT_CLIP),
       verifyEvidence: s.verifyEvidence ? clip(s.verifyEvidence, 8000) : null,
     })),

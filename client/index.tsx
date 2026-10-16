@@ -19,6 +19,7 @@ import { NS, zh, en } from './locales.js'
 import { GlobalPanel, TeamflowPanelIcon, RunDetailTab, runTabDefinition, RUN_TAB_ID } from './panel.js'
 import { useUpdateStatus, UpgradeButton, canOneClick, UpdateHint, NO_WRAP } from './update-ui.js'
 import { fitScale, zoomBy as applyZoomFactor, pinchView, pointerDist, pickViewMode, LIST_BREAKPOINT } from './viewport.js'
+import { createLocalePusher } from './locale-push.js'
 
 // uiWorkspace：跳会话唯一入口（0.1.7-alpha.1 起 `uiWorkspace.openSession(target)` 取代已移除的 `sessions.openSubagent` / `sessions.open`）
 export const inject = ['remote', 'slots', 'uiWorkspace', 'locale']
@@ -188,7 +189,20 @@ function StageDetailDrawer({ det, onClose, sessionId, uiWorkspace }) {
   const hasChild = !!(!crossSession && cur && cur.childId && uiWorkspace && typeof uiWorkspace.openSession === 'function')
   const openChild = () => {
     if (crossSession || !hasChild) return
-    try { uiWorkspace.openSession({ parentSessionId: (ownerSession || sessionId), childSessionId: cur.childId, mode: 'one-shot' }) } catch (e) { /* 会话跳转失败忽略 */ }
+    // ⚠️ `mode` 必须写 `'unknown'`（2026-10-15 实机修复，run tf-mv9o5fkk-orjou4）。
+    // 宿主 `SubagentAddress`（`packages/subagent/subagent/src/control-types.ts:77`）的原话是
+    // 「Durable parent/child browsing address; **unknown mode is resolved when child history is read**」——
+    // 即 `'unknown'` 是**跳转浏览**的既定输入，宿主读到子会话后用其 identity 投影解析真实形态
+    // （`api/session-controller/src/client/sessions/session.ts` 的 buildSnapshot：
+    //  `address.mode === 'unknown' && identity != null ? {...address, mode: identity.mode} : address`）。
+    // 我们此前抄宿主 ui-workflow-run 的例子写死 `'one-shot'`，而本插件的阶段子代理**在宿主 alpha.2 起
+    // 一律记为 `continuable`**（`manager.startLocal` 统一写该值，我们只是从不续跑它）
+    // ⇒ 地址声明与实际不符 ⇒ 宿主 history 校验拒绝：
+    // `subagent/unauthorized: subagent mode does not match the supplied address`（前端显示「历史加载失败」）。
+    // 也别改成 `'continuable'`：那是把宿主的当前实现当契约，下次再统一形态又会静默失配。
+    // 注意 `mode` 虽在类型上可选，但**缺省不安全**——校验是 `address.mode !== 'unknown' && identity.mode !== address.mode`，
+    // 不传即 undefined ⇒ 必然不等 ⇒ 直接拒。
+    try { uiWorkspace.openSession({ parentSessionId: (ownerSession || sessionId), childSessionId: cur.childId, mode: 'unknown' }) } catch (e) { /* 会话跳转失败忽略 */ }
   }
   const outText = cur && cur.output ? cur.output
     : cur && cur.summary ? t('stage.summaryFallback', { summary: cur.summary })
@@ -1116,9 +1130,10 @@ interface TeamFlowViewProps {
   /** 通用右侧栏打开（run 详情 tab 等）；返回 false 表示右侧栏不可用，调用方自行降级。 */
   openResource?: (address: string, label: string) => boolean
   /** 跳会话唯一入口：宿主 0.1.7-alpha.1 起用 `uiWorkspace.openSession(target)` 取代已移除的 `sessions.openSubagent` / `sessions.open`。
-   *  target 可以是会话 id，也可以是持久子代理地址 `{ parentSessionId, childSessionId, mode }` —— 一次真跳转。 */
+   *  target 可以是会话 id，也可以是持久子代理地址 `{ parentSessionId, childSessionId, mode }` —— 一次真跳转。
+   *  ⚠️ `mode` 传 `'unknown'`（跳过形态校验、由宿主读子会话时解析真实形态）；**不要写死具体形态**，见 `openChild` 处的实测记录。 */
   uiWorkspace?: {
-    openSession?: (target: string | { parentSessionId: string; childSessionId: string; mode?: 'one-shot' | 'continuable' | 'unknown' }) => void
+    openSession?: (target: string | { parentSessionId: string; childSessionId: string; mode: 'one-shot' | 'continuable' | 'unknown' }) => void
   } | null
 }
 
@@ -1413,19 +1428,21 @@ export async function apply(ctx) {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'teamflow: dictionaries')
   ctx.effect(() => ctx.locale.subscribe(() => setTranslator(t, () => ctx.locale.getSnapshot().active)), 'teamflow: translator sync')
   setTranslator(t, () => ctx.locale.getSnapshot().active)
-  /* host 侧语言上报（host 无浏览器语言通道）：初始上报一次 + 宿主语言变化时推送。
-   * 只走既有 Remote 面（teamflow/setLocale），不自建浏览器存储/语言探测；
-   * 失败静默（老宿主无该方法 / RPC 未就绪 / 连接断开都不影响客户端渲染与流水线）。 */
-  const pushLocaleToHost = (active?: string): void => {
-    try {
-      if (typeof active !== 'string' || !active) return
-      const p = teamflow.setLocale(active)
-      if (p && typeof p.catch === 'function') p.catch(() => {})
-    } catch (e) { /* 推送失败静默：host 走兜底链 */ }
-  }
+  /* host 侧语言上报（host 无浏览器语言通道）：初始上报 + 宿主语言变化时推送，**失败有界重试**。
+   * 只走既有 Remote 面（teamflow/setLocale），不自建浏览器存储/语言探测。
+   * ⚠️ 2026-10-16 实锤：原先「只推一次 + catch 静默」⇒ 宿主重启后若挂载时 RPC 未就绪，
+   * 宿主**永久**停在 en 兜底（中文环境下整轮产物与日志英文，且与客户端词典中英混排）。
+   * 重试语义（成功即停 / 失败重排 / 有界 / dispose 清理）在 `client/locale-push.ts`，
+   * locale 测试逐条有行为断言。 */
+  const localePusher = createLocalePusher({
+    push: (loc) => teamflow.setLocale(loc),
+    schedule: (run, ms) => setTimeout(run, ms),
+    cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  })
   ctx.effect(() => {
-    pushLocaleToHost(ctx.locale.getSnapshot().active)
-    return ctx.locale.subscribe(() => pushLocaleToHost(ctx.locale.getSnapshot().active))
+    localePusher.send(ctx.locale.getSnapshot().active)
+    const off = ctx.locale.subscribe(() => localePusher.send(ctx.locale.getSnapshot().active))
+    return () => { off(); localePusher.dispose() }
   }, 'teamflow: host locale push')
   // 右侧栏打开（产物预览 / run 详情共用）：地址（dsh-resource://…）由 host 生成，这里只交给右侧栏。
   // 服务名 sidebarRight（@deepseek-ai/dsh-client-ui-sidebar-right 提供）；未挂载/未认领地址时返回 false

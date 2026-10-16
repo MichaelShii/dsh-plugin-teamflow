@@ -4,8 +4,8 @@
  * - suggestMode：正则预筛（给模型参考信号 + 模型不可用时的兜底）。
  * - runTriage：**模型驱动分诊**——spawn 分诊分析师子代理思考一轮，产出结构化裁决（mode/性质/UI/复杂度/理由）。
  */
-import type { PipelineMode, PipelineOptions } from '../types.ts'
-import { extractText } from '../util.ts'
+import type { PipelineMode, PipelineOptions, SubagentActivationLike, SubagentStarters } from '../types.ts'
+import { extractText, normalizeSignal } from '../util.ts'
 import { runtime, providerName } from './agent/context.ts'
 import { TRIAGE_PROMPT } from '../prompts/index.ts'
 import { t, type HostLocale } from '../locales.ts'
@@ -640,24 +640,32 @@ export async function runTriage(
   signal?: unknown,
   locale: HostLocale = 'zh',
 ): Promise<TriageVerdict> {
-  type Started = { result: Promise<{ output?: unknown; stopReason?: string }>; dispose?: () => Promise<void> | void }
-  type Starters = { start?: (provider: string, init: unknown) => Promise<Started> }
-  const subagents = runtime.subagents as Starters | undefined
-  if (!subagents || typeof subagents.start !== 'function') return fallbackVerdict(requirement, opts, locale, 'subagents service unavailable')
+  // **宿主 API 迁移（2026-10-15 / issue #20）**：`subagents.start(name, request)` 在 alpha.2 被删，
+  // 改走唯一入口 `startActivation(spec)`；`delivery: 'caller'`（分诊结果由本函数自己解析，不要父会话完成通知）。
+  // 探测失败仍旧回落 `fallbackVerdict`（分诊不可用**绝不能拦启动**，见 test/triage-gate.test.js）——
+  // 但「宿主 API 不匹配」不比「注册表为空」，它在起跑预检里显性失败（`pipeline.startPipeline` 的 hasStartActivation）。
+  const subagents = runtime.subagents as SubagentStarters | undefined
+  if (!subagents || typeof subagents.startActivation !== 'function') return fallbackVerdict(requirement, opts, locale, 'subagents service unavailable')
   const pre = suggestMode(requirement, opts, locale)
   let lastReason = ''
   for (let attempt = 1; attempt <= 2; attempt++) {
-    let run: { result: Promise<{ output?: unknown; stopReason?: string }>; dispose?: () => Promise<void> | void } | null = null
+    let run: SubagentActivationLike | null = null
     let timeoutTimer: ReturnType<typeof setTimeout> | null = null
     try {
       const hint = attempt > 1
         ? 'Your previous reply contained only a preface (e.g. "Let me output the JSON.") with NO JSON object — that is a failed reply. Reply now with the JSON object ITSELF as the first and only content, starting with {.'
         : ''
-      run = await subagents.start(providerName() as string, {
+      const sig = normalizeSignal(signal)
+      run = await subagents.startActivation({
+        provider: providerName() as string,
         label: t(locale, 'triage.label'),
-        prompt: [{ type: 'text', text: TRIAGE_PROMPT(requirement, opts, pre, hint, locale) }],
-        parent,
-        signal,
+        request: {
+          prompt: [{ type: 'text', text: TRIAGE_PROMPT(requirement, opts, pre, hint, locale) }],
+          parent,
+          signal: sig,
+        },
+        signal: sig,
+        delivery: 'caller',
       })
       const result = await Promise.race([
         run.result,

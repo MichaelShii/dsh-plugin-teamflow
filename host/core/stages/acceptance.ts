@@ -9,7 +9,7 @@
 import { advanceTask, storeFor, verifyReqBugs, noteTaskStageUsage, noteTaskAssign } from '../domain/backlog.ts'
 import { withRetry, resolveChildRoute } from '../agent/runner.ts'
 import { acceptancePrompt } from '../../prompts/index.ts'
-import { snippet, parseAcceptanceVerdict, artifactText } from '../../util.ts'
+import { snippet, parseAcceptanceVerdict, freshArtifactText } from '../../util.ts'
 import { phaseKeyOf } from '../../constants.ts'
 import { persistJournal } from '../../../store.ts'
 import { currentModelSupportsVision } from '../agent/context.ts'
@@ -59,7 +59,7 @@ export async function runAcceptancePhase(ctx: PipelineCtx): Promise<void> {
     if (accR && accR.text) {
       try {
         mergeStageState('acceptance', accR.text, stateBlockRelPath(journal.id, 'acceptance'))
-        const acceptance = artifactText(journal, 'ACCEPTANCE.md')
+        const acceptance = freshArtifactText(journal, 'ACCEPTANCE.md', accR.stage && accR.stage.artifactBaseline)
         if (acceptance) {
           timeline.acceptance = acceptance
           noteTaskStageUsage(journal) // 验收角色的真实 usage 照常累计（口径不变）
@@ -90,7 +90,9 @@ export async function runAcceptancePhase(ctx: PipelineCtx): Promise<void> {
     if (!accR.text) { advanceTask(journal, 'needs-human', null, t(locale, 'event.acceptFail'), { by: 'pm' }); throw stageFailError('acceptance', accR) }
     // 单轨契约：文件即产物——ACCEPTANCE.md 是结论行/核对表唯一事实来源；state 块仍在回复尾部
     mergeStageState('acceptance', accR.text, stateBlockRelPath(journal.id, 'acceptance'))
-    const acceptance = artifactText(journal, 'ACCEPTANCE.md')
+    // ⚠️ **新鲜度**（2026-10-16）：只有本阶段写过的 ACCEPTANCE.md 才算数 —— 上游越界写下的那份不算，
+    // 否则「验收结论」会来自上游自己（实测 tf-mv9o5fkk-orjou4：架构师写了 ACCEPTANCE.md）。陈旧 ⇒ 当缺失 ⇒ 硬失败。
+    const acceptance = freshArtifactText(journal, 'ACCEPTANCE.md', accR.stage && accR.stage.artifactBaseline)
     if (!acceptance) {
       // 硬失败而非回退解析回复：回复仅摘要无结论行，回退=保守 accepted 误放行（无结论行默认过）
       journal.logs.push({ t: Date.now(), level: 'error', message: t(locale, 'log.accNoFile', { file: `${journal.runDocs ? journal.runDocs + '/' : ''}ACCEPTANCE.md` }) })

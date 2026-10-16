@@ -65,6 +65,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'qa.skippedValue': '（独立 QA 跳过：当前档位由开发自测兜底）',
     'dev.qaFixStage': '开发（QA 打回修复）',
     'log.enterStage': '进入阶段：{phase}',
+    // 语言来源留痕（2026-10-16 实锤）：两侧都没拿到时整轮产物按兜底语言生成，而这条链原先全静默。
+    'log.localeFallback': '语言未从客户端上报或宿主设置取得 → 本轮按兜底「{locale}」生成全部产物与日志。若这不是你的界面语言：切一次界面语言（或重载页面）再重跑；客户端上报失败会被静默兜底，这条是唯一可见痕迹',
     'log.triage': '自动分诊：{kind} → {mode}（source={source}）',
     'log.triageFallbackReason': '分诊退化兜底原因：{msg}（分诊子代理失败/超时——若为超时，考虑模型思考时长与 TRIAGE_TIMEOUT_MS）',
     'log.triageFail': '自动分诊失败，按默认完整流程：{msg}',
@@ -185,6 +187,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'run.aclPreflightFailed': '流水线在启动前被 ACL 预检拦下（未消耗任何模型调用）：工作区沙箱写授权不可用——{err}。请在普通终端执行：{fix}，然后续跑本流水线即可（预检已把问题挡在任何子代理之前，无需再排查）',
     'run.workspaceBusyHint': '工作区 {ws} 已有流水线 {id} 运行中——请等待完成、取消（teamflow_cancel）或先处理中断（teamflow_resume）',
     'run.noProvider': '没有可用的子代理提供者（subagents 注册表为空）',
+    'run.hostTooOld': '本机 dsh 版本过旧：它没有 `subagents.startActivation`（dsh 0.2.1-alpha.2 起才有，旧版 `subagents.start` 已被宿主删除）。请先升级 dsh 再重试；升级前本插件无法启动流水线（package.json 的 engines.dsh 已声明所需版本，宿主会在装载 profile 时提示）。',
     'run.agentNotFound': '找不到会话对应的 Agent：{sid}',
 
     /* ── 阶段失败错误（stageFailError） ─────────────────────── */
@@ -200,6 +203,9 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
 
     /* ── 护栏与重试诊断（runner） ──────────────────────────── */
     'diag.effort': '{label} 推理强度：{effort}（机械阶段降档）',
+    // 计量为空必须可见（2026-10-16）：null 既是设计的降级路径，也是「取活句柄失败」这类真故障的唯一症状，
+    // 曾静默 21/21 阶段（run 仍报 completed）。链路逐级列出，下次一眼定位。
+    'diag.usageMissing': '计量为空（本阶段 token 未记录）—— 活句柄={handle} / session={session} / 投影服务={projections} / 会话事件数={events}；四项里第一处 no 即断链所在',
     'diag.effortRetry': '{label} 推理强度：{effort}（重试回升）',
     'diag.effortSkip': '{label} 推理强度未降档：{skip}——保持宿主默认',
     'diag.noEfforts': '路由 {provider}/{model} 未声明 reasoning.efforts（或探测不可用）',
@@ -265,6 +271,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'guard.fsContention': '文件竞争冲突（不计入环境不可用）：{detail}',
     'guard.selfHealFs': '文件防护门禁失败（未读或版本过期，**可自愈**，不计入环境不可用）：{detail}',
     'guard.selfHealTool': '工具在这一层不适用（换个工具即可继续，不计入环境不可用）：{detail}',
+    'guard.selfHealArg': '模型把工具参数传错了（换个参数即可继续，不计入环境不可用）：{detail}',
     'guard.selfHealHint': '写/改文件被防护门禁拒绝（原文：{detail}）。这是**会话级**读前置要求：在本会话里先对目标文件调用一次 read，再重写即可——不要重复同样的调用、不要换路径绕过（父级或其它会话读过的文件不算数）。',
     'guard.envProgress': '{label} 工具 {tool} 已 {n} 次以同一错误失败，但会话仍在推进（近期有成功调用）→ 不判环境不可用，继续：{detail}',
     'guard.reasonToolFail': '环境不可用（{tool} 连续 {n} 次以同一错误失败：{detail}）',
@@ -513,6 +520,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'qa.skippedValue': '(separate QA skipped: this mode is covered by developer self-test)',
     'dev.qaFixStage': 'Dev (QA rework fix)',
     'log.enterStage': 'Entering stage: {phase}',
+    'log.localeFallback': 'No client locale report and no host locale setting were available, so this run generates every artifact and log line in the fallback locale "{locale}". If that is not your UI language: switch the UI language once (or reload the page), then re-run.',
     'log.triage': 'Auto triage: {kind} → {mode} (source={source})',
     'log.triageFallbackReason': 'Triage fell back because: {msg} (triage subagent failed/timed out — if a timeout, consider model thinking time vs TRIAGE_TIMEOUT_MS)',
     'log.triageFail': 'Auto triage failed, falling back to the default full flow: {msg}',
@@ -630,6 +638,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'run.aclPreflightFailed': 'Pipeline stopped by the ACL preflight before any stage ran (no model calls consumed): workspace sandbox write authorization unavailable — {err}. Run in a regular terminal: {fix}, then resume this pipeline (the preflight caught the problem before any subagent started; no manual investigation needed)',
     'run.workspaceBusyHint': 'Workspace {ws} already has pipeline {id} running — wait for it, cancel it (teamflow_cancel), or handle the interruption first (teamflow_resume)',
     'run.noProvider': 'No subagent provider available (the subagents registry is empty)',
+    'run.hostTooOld': 'This dsh version is too old: it has no `subagents.startActivation` (introduced in dsh 0.2.1-alpha.2; the old `subagents.start` was removed by the host). Upgrade dsh and retry — the pipeline cannot start until then (package.json `engines.dsh` declares the required range, and the host reports it while loading the profile).',
     'run.agentNotFound': 'No Agent found for the session: {sid}',
 
     /* ── 阶段失败错误 ──────────────────────────────────────── */
@@ -645,6 +654,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
 
     /* ── 护栏与重试诊断 ────────────────────────────────────── */
     'diag.effort': '{label} reasoning effort: {effort} (mechanical stage downgrade)',
+    'diag.usageMissing': 'usage is empty (this stage recorded no tokens) — live handle={handle} / session={session} / projection service={projections} / session events={events}; the first "no" is the broken link',
     'diag.effortRetry': '{label} reasoning effort: {effort} (raised back on retry)',
     'diag.effortSkip': '{label} reasoning effort not downgraded: {skip} — keeping the host default',
     'diag.noEfforts': 'route {provider}/{model} does not declare reasoning.efforts (or probing is unavailable)',
@@ -706,6 +716,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'guard.fsContention': 'file contention (not counted as env-unavailable): {detail}',
     'guard.selfHealFs': 'guarded-mutation gate rejected the write/edit (unread or stale, **self-healing**, not counted as env-unavailable): {detail}',
     'guard.selfHealTool': 'tool not applicable at this layer (switch tools and continue; not counted as env-unavailable): {detail}',
+    'guard.selfHealArg': 'the model passed invalid tool arguments (fix the arguments and continue; not counted as env-unavailable): {detail}',
     'guard.selfHealHint': 'A write/edit was rejected by the guarded-mutation policy (raw: {detail}). The read-before-write requirement is **per-session**: call `read` on the target file in YOUR OWN session, then rewrite it — do not repeat the same call, do not work around it with another path (files read by the parent or another session do not count).',
     'guard.envProgress': '{label} tool {tool} failed {n} times with the same error, but the session is still making progress (a recent call succeeded) → not judged env-unavailable, continuing: {detail}',
     'guard.reasonToolFail': 'environment unavailable ({tool} failed {n} times with the same error: {detail})',
