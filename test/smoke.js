@@ -641,6 +641,9 @@ console.log('── 3u) 2026-09-15 停线缺陷修复（tf-mu2ioilr-95l4th：幻
 ok(/function defectHeaderCols/.test(backlogSrc) && /严重级\|严重度\|等级\|级别\|severity/.test(backlogSrc), 'backlog：parseDefects 按表头认表（严重级列必须由表头声明，列位置由表头决定）')
 ok(/if \(cols === null\) \{ cols = defectHeaderCols\(cells\); continue \}/.test(backlogSrc) && /if \(!cols\) continue/.test(backlogSrc), 'backlog：无严重级表头的表格整表跳过（复验对照表不再被登记为缺陷——停线回归核心）')
 ok(!/const sev = \(cells\[1\]/.test(backlogSrc), 'backlog：已删除「第 2 格即严重级」的位置式判定（旧写法 = 每轮复验重生一个 P2）')
+ok(/const DEFECT_STATUS_COL = \/状态|复验结论/i.test(backlogSrc) && /const DEFECT_RESOLVED_VALUE = /.test(backlogSrc) &&
+  /if \(statusKey && DEFECT_RESOLVED_VALUE\.test\(columns\[statusKey\]\)\) continue/.test(backlogSrc),
+  'backlog：复验表带状态列时**已闭环行跳过**（修 2026-10-17 假停线变体 2——只锁常量不够，锁整条跳过语句）')
 ok(/const mergeEligible = journal\.status === 'completed' && !journal\.humanIntervention && acceptanceDone/.test(reportSrc), 'report：合回邀请需「已完成 + 无人工介入 + 验收阶段真的 done」（未验收不得邀请合回）')
 ok(/report\.needsHumanNoAcceptance/.test(reportSrc) && /const needsHumanNotice = journal\.humanIntervention && !acceptanceDone/.test(reportSrc), 'report：验收未跑 + 需人工介入时显式提示「不要据此合回 main」')
 ok(/RETRY_SUFFIX_LOCAL/.test(utilSrc) && /attempt \\d\+/.test(utilSrc), 'taskKey 归一正则覆盖词典实际产出「(attempt N)」（R3-2，无 taskKey 的 label 兜底路径）')

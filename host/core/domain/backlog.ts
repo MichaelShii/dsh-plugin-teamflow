@@ -171,6 +171,23 @@ function splitTableRow(raw: string): string[] {
 }
 
 /**
+ * 「复验结论」列名族：与「严重级」列**同表出现**时，其值若明确标为已闭环 ⇒ 该行**不是本轮缺陷**。
+ *
+ * 为什么需要它（2026-10-17 实锤 tf-mvb3lm0b-bbgoyv，第二次撞同一个失效）：
+ * 上面的「严重级列必须由表头声明」是 2026-09-15（tf-mu2ioilr-95l4th）为区分复验表加的，当时复验表
+ * 用的表头是 `round-N 级`（不匹配严重级 ⇒ 整表跳过）。但 r6 的 QA 在**复验报告**里写了一张
+ * 「缺陷复验结论」表，表头**照用了标准 `严重级`**、且新增一列 `状态`＝「已修复（实测确认）」——
+ * 于是两条**已修复**的 P1 被记成本轮阻断缺陷，三轮「未收敛」⇒ 误判需人工裁定（交付其实干净）。
+ * ⇒ 「严重级列」这个信号本身不够可靠；**再把「状态/结论列」纳入判据**，任一信号说已闭环即跳过。
+ */
+const DEFECT_STATUS_COL = /状态|复验结论|结论|处置|处置结果|结果|status|result|resolution|verdict/i
+/**
+ * 「已闭环」值族——**只认明确标为已闭环的**；含「未/待/残/仍」等一律视为仍未闭环 ⇒ 照常计入。
+ * 边界示例：`已修复（实测确认）`→跳过；`残余（非阻断）`→不跳过；`未修复`/`待修复`→不跳过。
+ */
+const DEFECT_RESOLVED_VALUE = /已修复|已关闭|已解决|已闭环|已收敛|已通过|^通过\b|\bfixed\b|\bclosed\b|\bresolved\b|\bverified\b|\bpassed\b/i
+
+/**
  * 由表头行判断这是不是缺陷表，并给出各列位置与表头名。
  * **严重级列必须由表头显式声明**——这是与「复验对照表」区分的唯一可靠信号。
  * @returns 列映射（含表头名数组）；非缺陷表返回 null。
@@ -236,6 +253,10 @@ export function parseDefectRows(qaText: string): DefectRow[] {
     if (id.indexOf('OBS') === 0) continue
     const columns: Record<string, string> = {}
     cols.headers.forEach((hd, i) => { if (hd && cells[i] !== undefined) columns[hd] = cellText(cells[i]) })
+    // 「复验结论」行不是**本轮缺陷** ⇒ 跳过（见 DEFECT_STATUS_COL 的实锤论证）：
+    // 唯一信号曾是「严重级列」，但复验表照用该表头时会误登记已修复缺陷 ⇒ 再把状态列纳入判据。
+    const statusKey = Object.keys(columns).find((hd) => DEFECT_STATUS_COL.test(hd))
+    if (statusKey && DEFECT_RESOLVED_VALUE.test(columns[statusKey])) continue
     const pick = (re: RegExp): string => {
       const k = Object.keys(columns).find((hd) => re.test(hd))
       return k ? columns[k] : ''

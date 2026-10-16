@@ -107,6 +107,16 @@ const QA_TABLE = (id, sev) => [
 const QA_CLEAN = QA_TABLE('D9', 'P3')
 /** P1 → 阻断，触发「打回开发修复 → 复验」闭环 */
 const QA_BLOCKING = QA_TABLE('D1', 'P1')
+/** 复验轮的「缺陷复验结论」表：**照用标准严重级表头 + 新增状态列**。标为已修复的行**不是本轮缺陷**。
+ *  实锤 tf-mvb3lm0b-bbgoyv：只认「严重级列 = 缺陷表」时，这里会让已修复的 P1 每轮复验都重生
+ *  → 「每轮都有阻断」→ 假性超限停线（交付其实干净）。 */
+const QA_REVERIFY_FIXED = [
+  '# QA 报告（复验）', '',
+  '| 缺陷 ID | 严重度 | 模块 | 状态 | 描述 | 复现 | 期望 | 实际 | 检测命令 |',
+  '|---|---|---|---|---|---|---|---|---|',
+  '| D1 | P1 | 模块A | 已修复（实测确认） | 描述文本 | r | e | a | node -e "1" |',
+  '',
+].join('\n')
 const ACC = {
   pass: '# 验收报告\n\n## 验收结论：✅ 通过\n',
   rework: '# 验收报告\n\n## 验收结论：❌ 不通过\n',
@@ -461,6 +471,18 @@ console.log('\n[10] QA 打回闭环③：缺陷不收敛 → 超 QA_REWORK_LIMIT
   ok(has(r.childLabels, '最终验收'), 'QA 不干净也**不整段跳过验收**——改走已知问题只读模式')
   // 模型自己的结论不被 host 采用：即使报告写「✅ 通过」，也不能因此变成干净交付
   ok(r.humanIntervention && r.status === 'completed', '已知问题模式：仍 completed，但保留需人工标记')
+}
+
+/* ── ⑩b 复验表标「已修复」→ 已闭环行不计阻断（不再「自我实现的停线」）── */
+console.log('\n[10b] 复验表带状态列且标已修复 → 已闭环行不计阻断（tf-mvb3lm0b-bbgoyv 实锤）')
+{
+  const r = await runScenario('qa-reverify-fixed', {
+    options: QA_OPTS, artifacts: { qa: [QA_BLOCKING, QA_REVERIFY_FIXED], acceptance: ACC.pass },
+  })
+  const fixRounds = r.childLabels.filter((l) => /QA 缺陷修复/.test(String(l))).length
+  ok(!r.humanIntervention, '复验表标已修复 ⇒ 不算阻断 ⇒ 不转人工（修复前的假阳性就在这里）')
+  ok(fixRounds === 1, `只应打回 1 轮修复（已闭环行不得再触发第 2 轮），实测 ${fixRounds}`)
+  ok(r.status === 'completed' && !r.journal.knownIssuesAcceptance, '收敛 → 走正常验收（非 known-issues 模式）')
 }
 
 /* ── ⑪⑫⑬ 验收结论四档：rework / reject / 无结论行 ── */
