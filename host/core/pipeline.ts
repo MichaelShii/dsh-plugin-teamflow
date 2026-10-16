@@ -46,7 +46,7 @@ import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddPlan,
 import type { GitResult } from './workspace/sanity.ts'
 import { archiveRunLogs, sweepWorkspaceLogs } from './workspace/runlogs.ts'
 import { preflightWorkspaceAcl } from './workspace/acl-preflight.ts'
-import { buildConfirmSheet, renderConfirmSheet, confirmHook, type ConfirmSheet } from './confirm.ts'
+import { buildConfirmSheet, renderConfirmSheet, confirmHook, prdSnapshotFromBlock, type ConfirmSheet } from './confirm.ts'
 import { parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
 import { ambientLocale, localeForMissingSnapshot, localeSource, runLocaleOf } from './locale.ts'
 import { noteClarifyAnswered, noteClarifyProceeded } from './clarify-log.ts'
@@ -825,6 +825,10 @@ export async function executePipeline(
       // `__runCtx` 是**运行期字段、`loadState` 不搬运**（`state.test.js` 有豁免断言）⇒
       // 不显式带回的话，runDocs / locale / craft / artifactContracts / blueprint 会整片消失。
       if (rc !== undefined) state.__runCtx = rc
+      // **本轮 PRD 的结构化输出快照**（2026-10-16，修「汇报层串了模版」）：确认单与 taste 闸门
+      // 只认它、不认累积 `state.json`（后者跨 run 累积 ⇒ 本轮 PRD 没回写这些 `extra` 键时，
+      // 确认单会显示上一轮 run 的目标/AC/待澄清项）。见 `prdSnapshotFromBlock` 的论证。
+      if (phaseKey === 'prd') journal.prdSnapshot = prdSnapshotFromBlock(block)
     }
     // 验证证据块存证（dev/qaFix 契约；policy 级——缺失记 warn 不中断）。
     // 按 withRetry 返回的 stage 引用直写——并发 dev 下绝不错位（reverse().find
@@ -926,7 +930,11 @@ export async function executePipeline(
     // 为什么旧的显式开关**必须消失**：`needConfirm` 是公开工具参数，而「用户不该感知这个变量」——
     // 真实用户不知道它、工具描述里也没有任何「何时该设它」的触发条件 ⇒ 实践中没人设它 ⇒
     // 就算白名单 bug 修好了，功能依然是死的（2026-10-08 用户实锤）。
-    const openQuestions = state.openQuestions || []
+    // 输入一律取 **本轮 PRD 的快照**（`journal.prdSnapshot`），**不读累积 `state.openQuestions`**：
+    // state 跨 run 累积且条件式覆盖 ⇒ 本轮 PRD 没回写时，闸门/确认单会拿上一轮的待澄清项当本轮的
+    // （实锤 tf-mvaubzdz-5w606x：r5 按 r4 的 8 项旧待拍板暂停）。快照为空 = 本轮 PRD 确实没给（不暂停）。
+    const prdSnap = journal.prdSnapshot
+    const openQuestions = (prdSnap && prdSnap.openQuestions) || []
     const tasteCount = openQuestions.filter((q) => q && q.kind === 'taste').length
     // **契约未兑现必须可见**（§7③）：模型没给 `kind` ⇒ 归一成 `fact`（不暂停，见 `normalizeOpenQuestions`
     // 的「不得有阻断权」论证），但这件事要留痕 + 发 warn，否则又是一次「静默空转、长期没人发现」。
@@ -941,18 +949,23 @@ export async function executePipeline(
     // 为什么排除 `patch`：patch = 单 agent 直改（STAGE_POLICY），它的 PRD 是「单点确认」机械阶段，
     // 不为它加一道人工闸门（ADR-0011 策略档矩阵：`patch` 恒 off）。
     if (shouldConfirm && options.mode !== 'patch' && !resume) {
+      // ⚠️ 目标/AC/待澄清项一律取**本轮快照**（不读 `state.product.summary` / `state.acIndex` /
+      // `state.openQuestions`）—— 它们是**项目级、跨 run 累积**的，本轮 PRD 没回写时会串上一轮
+      // （实锤 tf-mvaubzdz-5w606x：r5 的确认单显示了 r4 的目标与 12 条 AC）。快照缺 = 本轮没给 ⇒
+      // 交给确认单诚实显示「没抓到」（`confirm.noSummary` / `confirm.acMissing`），不拿旧内容冒充本轮。
       const sheet = buildConfirmSheet({
-        summary: state.product ? state.product.summary : null,
-        acIndex: state.acIndex,
+        summary: prdSnap ? prdSnap.summary : null,
+        acIndex: prdSnap ? prdSnap.acIndex : null,
         // PRD 正文：`extra.acIndex` 缺失时由确认单兜底抽取（ADR-0011 B/C；实测 extra 兑现率 ~20%）。
         // ⚠️ **必须是 PRD 文件、不是 `prd`（stage.output）**：真实 run 的 stage.output 是**交接摘要**
         // （中位 2.5k 字符，AC 常被压成 `（AC-1）、…` / `| Accept | AC-1…AC-8 |`）——
         // 同一抽取器两个源上的命中率实测 **PRD.md 19/21（90%）vs stage.output 21/87（24%）**。
         // 与 `notePrdAssumptions` 同源（`PRD.md`，tech 档回落 `TECH-CHANGE.md`）；都读不到才退回 stage.output。
+        // 这个源**天然是按 run 的**（活文档落在本轮任务夹），所以兜底抽取不会串上一轮。
         prdText: artifactText(journal, 'PRD.md') || artifactText(journal, 'TECH-CHANGE.md') || prd,
         // 结构化待澄清项优先于文本抽取：PRD state 块的 openQuestions 带「为什么问 / 缺省怎么办」，
         // 用户能直接挑默认值（`journal.assumptions` 只是 PRD 段落里抄下来的行）。
-        openQuestions: state.openQuestions,
+        openQuestions: prdSnap ? prdSnap.openQuestions : null,
         assumptions: journal.assumptions,
         runDocs: journal.runDocs,
       })
@@ -1468,6 +1481,10 @@ export function resumeRun(
       j.confirmSheet = null
       // 文本兜底（`journal.assumptions`）同理清空。
       j.assumptions = null
+      // 本轮 PRD 快照一并作废（旧结构块描述的是将被替换的那份 PRD）。新 PRD 跑完时
+      // `mergeStageState('prd')` 会重新写；若新 PRD 没产出，闸门/确认单看到的是**空**（诚实），
+      // 而不是旧 PRD 的残留。
+      j.prdSnapshot = null
       // ⚠️ 结构化 `state.openQuestions` 也要清：新 PRD 若没给 `openQuestions`（`extra` 契约实测 ~20% 不达），
       // `mergeStateBlock` 是**条件式替换** ⇒ 旧主观项会残留 ⇒ 按**过期项**再次暂停，用户看到同一份旧确认单。
       try {

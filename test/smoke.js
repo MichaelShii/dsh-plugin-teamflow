@@ -915,7 +915,7 @@ ok(/'report\.confirmSheet': '[^']*立即开始写代码/.test(hostSrc), 'locales
 // ⇒ 只锁赋值的写法**假绿**。这是本日第三次同型（M6/M7/M8）—— 源码锁必须覆盖「条件 → 赋值」整条语句。
 ok(/if \(Array\.isArray\(block\.extra\.openQuestions\)\) state\.openQuestions = normalizeOpenQuestions\(block\.extra\.openQuestions\)/.test(hostSrc), 'state：mergeStateBlock 消费 extra.openQuestions（此前只要求、不落盘；条件与赋值必须同锁）')
 ok(/export function normalizeOpenQuestions/.test(hostSrc), 'state：openQuestions 容错归一是纯函数（模型形状不稳定 ⇒ 不抛、不污染 state）')
-ok(/openQuestions: state\.openQuestions/.test(hostSrc), 'pipeline：确认单接结构化 openQuestions（与 assumptions 语义不同，两段都呈现）')
+ok(/openQuestions: prdSnap \? prdSnap\.openQuestions : null/.test(hostSrc), 'pipeline：确认单接结构化 openQuestions（取自**本轮快照**，与 assumptions 语义不同，两段都呈现）')
 ok(/CONFIRM_QUESTIONS_MAX/.test(hostSrc) && /confirm\.questions/.test(hostSrc), 'confirm：待拍板项有独立上限与渲染段（不静默截断）')
 
 // ADR-0011 C 方案（2026-10-07）：AC **结构化优先 / 正文兜底 / 来源自曝**。
@@ -1231,6 +1231,24 @@ ok(/const bugReason = det\.kind === 'bug'\s*\? bugOpenReasonKey\(det, backlog &&
 for (const k of ['panel.bugOpenP3', 'panel.bugOpenNeedsHuman', 'panel.bugOpenUnclosed', 'panel.bugOpenReasonLabel']) {
   ok(new RegExp(`'${k}':`).test(localesSrc), `locales：含文案键 ${k}（zh/en 同形，locale 不变量测试守奇偶）`)
 }
+
+// ── 9) PRD 确认单按 run 快照（修「汇报层串了模版」实锤 tf-mvaubzdz-5w606x）──
+console.log('── 9) 确认单/闸门只认本轮 PRD 快照，不读累积 state ──')
+ok(/if \(phaseKey === 'prd'\) journal\.prdSnapshot = prdSnapshotFromBlock\(block\)/.test(pipelineSrc),
+  'pipeline：PRD 阶段合并 state 时捕获本轮快照（整条语句）')
+ok(/const prdSnap = journal\.prdSnapshot/.test(pipelineSrc),
+  'pipeline：闸门/确认单取本轮快照')
+ok(/const openQuestions = \(prdSnap && prdSnap\.openQuestions\) \|\| \[\]/.test(pipelineSrc),
+  'pipeline：taste 闸门取本轮快照（不读累积 state.openQuestions）')
+ok(/summary: prdSnap \? prdSnap\.summary : null,[\s\S]{0,90}?acIndex: prdSnap \? prdSnap\.acIndex : null,/.test(pipelineSrc),
+  'pipeline：确认单目标/AC 取本轮快照（不读 state.product.summary / state.acIndex）')
+ok(/j\.prdSnapshot = null/.test(pipelineSrc),
+  'pipeline：回退重跑 PRD 时作废旧快照（新 PRD 没产出 = 空，不是旧残留）')
+const confirmSrc9 = readFileSync(join(here, '../host/core/confirm.ts'), 'utf8')
+ok(/export function prdSnapshotFromBlock\(block: unknown\): PrdSnapshot/.test(confirmSrc9),
+  'confirm：导出纯提取器 prdSnapshotFromBlock（逻辑由 confirm-run-snapshot 测试断言）')
+ok(/import \{ buildConfirmSheet, renderConfirmSheet, confirmHook, prdSnapshotFromBlock/.test(pipelineSrc),
+  'pipeline：从 confirm 导入提取器（接线未悬空）')
 
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)
