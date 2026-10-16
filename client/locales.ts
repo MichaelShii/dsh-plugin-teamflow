@@ -315,6 +315,11 @@ export const zh = {
   'panelItem.subtasks': '子卡 · {n}',
   'panelItem.bugs': '关联缺陷 · {n}',
   'panelItem.events': '流转时间线 · 最近 {n} 条',
+  /* 缺陷「为什么还停在待认领」的可见原因（同源 §7 空值必须可见） */
+  'panel.bugOpenReasonLabel': '停留原因',
+  'panel.bugOpenP3': 'P3 观察项 · 不自动关闭',
+  'panel.bugOpenNeedsHuman': '未闭环 · 来源需求以需人工裁定收尾',
+  'panel.bugOpenUnclosed': '未闭环 · 待修复 / 复验',
 
   /* ── run 详情（右栏 tab / 面板内联共用） ───────────────── */
   'detail.runMissing': '未找到该 run（可能已被清理，或地址已过期）。',
@@ -641,6 +646,10 @@ export const en: Record<keyof typeof zh, string> = {
   'panelItem.subtasks': 'Subtasks · {n}',
   'panelItem.bugs': 'Linked defects · {n}',
   'panelItem.events': 'Transition timeline · last {n}',
+  'panel.bugOpenReasonLabel': 'Stays because',
+  'panel.bugOpenP3': 'P3 observation · never auto-closed',
+  'panel.bugOpenNeedsHuman': 'Unclosed · source requirement needs human ruling',
+  'panel.bugOpenUnclosed': 'Unclosed · awaiting fix / reverify',
 
   'detail.runMissing': 'Run not found (it may have been cleaned up, or the address is stale).',
   'detail.subagents': 'Subagents {n}',

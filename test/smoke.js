@@ -1217,5 +1217,20 @@ ok(/export function localeSource\(\): 'client' \| 'host' \| 'fallback'/.test(cor
 ok(/if \(!resume && localeSource\(\) === 'fallback'\) \{[\s\S]{0,140}?t\(locale, 'log\.localeFallback'/.test(pipelineSrc),
   'pipeline：新 run 语言取自兜底时留痕（锁「条件 → 效果」整条链，不只锁条件）')
 
+// ── 8) 缺陷卡「为什么还停在待认领」可见原因（2026-10-16 诊断：open 分两类原因界面不可分）──
+console.log('── 8) 缺陷卡停留原因：P3 观察项 vs 未闭环真缺陷，UI 必须能区分 ──')
+ok(/import \{ bugOpenReasonKey \} from '\.\/bug-open-reason\.js'/.test(panelSrc),
+  'panel：从独立纯模块取「停留原因」（与渲染分离，逻辑可单测）')
+ok(/const reason = kind === 'bug' \? bugOpenReasonKey\(item, reqMap && reqMap\.get\(item\.reqId\)\) : null/.test(panelSrc),
+  'panel：卡片按 bug + reqId 派生停留原因（非 P3 未闭环需关联来源需求）')
+ok(/const reqMap = new Map\(\(backlog\.requirements \|\| \[\]\)\.map\(\(r\) => \[r\.id, r\]\)\)/.test(panelSrc),
+  'panel：BacklogGroups 建 reqId→req 映射（缺陷卡据此区分 needs-human 根因）')
+ok(/const bugReason = det\.kind === 'bug'\s*\? bugOpenReasonKey\(det, backlog && \(backlog\.requirements \|\| \[\]\)\.find/.test(panelSrc),
+  'panel：详情面板同样派生停留原因（backlog 透传）')
+// 文案落地：两个词典都含四个 key（缺失 = 渲染出 key 名）
+for (const k of ['panel.bugOpenP3', 'panel.bugOpenNeedsHuman', 'panel.bugOpenUnclosed', 'panel.bugOpenReasonLabel']) {
+  ok(new RegExp(`'${k}':`).test(localesSrc), `locales：含文案键 ${k}（zh/en 同形，locale 不变量测试守奇偶）`)
+}
+
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

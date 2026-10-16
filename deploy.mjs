@@ -69,6 +69,7 @@ const FILES = [
   'client/locales.ts',
   'client/viewport.ts',
   'client/locale-push.ts', // 语言上报重试策略（纯模块：中文环境整轮英文的修复，2026-10-16）
+  'client/bug-open-reason.ts', // 缺陷卡「为什么还停在待认领」可见原因（纯模块，2026-10-16）
   'lib/host.mjs',
   'lib/store.mjs',
   'lib/descriptors.mjs',
