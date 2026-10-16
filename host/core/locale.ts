@@ -68,6 +68,22 @@ export function newRunLocale(): HostLocale {
 }
 
 /**
+ * 语言**来源**（诊断/留痕用）：`client` = 客户端推送；`host` = 宿主显式设置；`fallback` = 兜底。
+ *
+ * `fallback` 的含义是「两侧都没拿到」——2026-10-16 实锤的「中文环境整轮产物全英文 + 界面中英混排」
+ * 正是它：`@deepseek-ai/dsh-client-locale` 是纯客户端插件（无 host face）⇒ 宿主那条设置通路恒为空，
+ * 唯一来源是客户端推送；而推送原先只发一次、失败静默 ⇒ 宿主重启后一次没落地就**永久**停在兜底。
+ * 客户端侧已改有界重试（`client/locale-push.ts`），本函数让「仍然兜底」这件事**可见**（pipeline 起跑留痕）。
+ */
+export function localeSource(): 'client' | 'host' | 'fallback' {
+  try {
+    if (parseLocale(clientPushed)) return 'client'
+    if (hostPreference()) return 'host'
+  } catch (e) { /* 与 ambientLocale 同：解析链任一级异常都降级，绝不抛 */ }
+  return 'fallback'
+}
+
+/**
  * 读 run 的语言快照（纯读、绝不重解析；AC-2）。
  * 历史 journal（升级前无 locale 字段）按 zh 处理——那些 run 的存量文案本就是中文，
  * 用 en 去渲染会与已落盘内容割裂（resumeRun 会补写该字段，见 core/pipeline.ts）。

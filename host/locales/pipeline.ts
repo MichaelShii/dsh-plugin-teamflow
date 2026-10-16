@@ -65,6 +65,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'qa.skippedValue': '（独立 QA 跳过：当前档位由开发自测兜底）',
     'dev.qaFixStage': '开发（QA 打回修复）',
     'log.enterStage': '进入阶段：{phase}',
+    // 语言来源留痕（2026-10-16 实锤）：两侧都没拿到时整轮产物按兜底语言生成，而这条链原先全静默。
+    'log.localeFallback': '语言未从客户端上报或宿主设置取得 → 本轮按兜底「{locale}」生成全部产物与日志。若这不是你的界面语言：切一次界面语言（或重载页面）再重跑；客户端上报失败会被静默兜底，这条是唯一可见痕迹',
     'log.triage': '自动分诊：{kind} → {mode}（source={source}）',
     'log.triageFallbackReason': '分诊退化兜底原因：{msg}（分诊子代理失败/超时——若为超时，考虑模型思考时长与 TRIAGE_TIMEOUT_MS）',
     'log.triageFail': '自动分诊失败，按默认完整流程：{msg}',
@@ -518,6 +520,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'qa.skippedValue': '(separate QA skipped: this mode is covered by developer self-test)',
     'dev.qaFixStage': 'Dev (QA rework fix)',
     'log.enterStage': 'Entering stage: {phase}',
+    'log.localeFallback': 'No client locale report and no host locale setting were available, so this run generates every artifact and log line in the fallback locale "{locale}". If that is not your UI language: switch the UI language once (or reload the page), then re-run.',
     'log.triage': 'Auto triage: {kind} → {mode} (source={source})',
     'log.triageFallbackReason': 'Triage fell back because: {msg} (triage subagent failed/timed out — if a timeout, consider model thinking time vs TRIAGE_TIMEOUT_MS)',
     'log.triageFail': 'Auto triage failed, falling back to the default full flow: {msg}',

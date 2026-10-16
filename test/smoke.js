@@ -1193,5 +1193,29 @@ ok(/if \(isToolArgFailure\(text\)\) \{ noteSelfHealSkip\('arg', text\); continue
 ok(/'guard\.selfHealArg'/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')),
   'locales：selfHealArg 文案（zh/en 同形由 locale 测试守）')
 
+// ── 7) 语言上报：客户端有界重试 ＋ 宿主兜底留痕（2026-10-16 实锤：中文环境整轮产物全英文）──
+console.log('── 7) 语言上报链路：失败不得静默 + 重试必须有界 + 兜底必须留痕 ──')
+const pushSrc = readFileSync(join(here, '../client/locale-push.ts'), 'utf8')
+ok(/import \{ createLocalePusher \} from '\.\/locale-push\.js'/.test(clientSrc),
+  'client：上报走独立纯模块（行为由 locale 测试逐条断言：成功即停/失败重排/有界/重置/dispose）')
+ok(/const localePusher = createLocalePusher\(\{[\s\S]{0,300}?push: \(loc\) => teamflow\.setLocale\(loc\),[\s\S]{0,140}?cancel: \(handle\) => clearTimeout\(/.test(clientSrc),
+  'client：上报器接上真实 RPC 与真定时器（整条语句，不只锁函数名）')
+ok(/return \(\) => \{ off\(\); localePusher\.dispose\(\) \}/.test(clientSrc),
+  'client：卸载时 dispose（清待发定时器 —— 不泄漏）')
+// 世代/存活判据必须覆盖**两处**：只在「排期」判 ⇒ dispose 后已排的定时器照样会发（locale 测试 ⑧ 实测）
+ok((pushSrc.match(/gen !== generation/g) || []).length >= 2 &&
+  /if \(!alive \|\| gen !== generation\) return[\s\S]{0,120}?attempt\(locale, gen\)/.test(pushSrc),
+  'locale-push：触发时再判一次存活/世代（防「dispose 后补发」与「切语言旧轮回调」）')
+ok((pushSrc.match(/shouldRetryLocalePush\(attempts, maxAttempts\)/g) || []).length >= 1 &&
+  /export function shouldRetryLocalePush/.test(pushSrc),
+  'locale-push：有界重试判据在位（无界 = 定时器泄漏）')
+ok(/catch \(e\) \{ retry\(\) \}/.test(pushSrc),
+  'locale-push：推送抛错真的走重试（不再 `catch {}` 静默吞 —— 这正是宿主永久停在 en 兜底的原因）')
+const coreLocaleSrc = readFileSync(join(here, '../host/core/locale.ts'), 'utf8')
+ok(/export function localeSource\(\): 'client' \| 'host' \| 'fallback'/.test(coreLocaleSrc),
+  'core/locale：localeSource 三态（fallback = 两侧都没拿到）')
+ok(/if \(!resume && localeSource\(\) === 'fallback'\) \{[\s\S]{0,140}?t\(locale, 'log\.localeFallback'/.test(pipelineSrc),
+  'pipeline：新 run 语言取自兜底时留痕（锁「条件 → 效果」整条链，不只锁条件）')
+
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

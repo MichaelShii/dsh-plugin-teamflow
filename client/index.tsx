@@ -19,6 +19,7 @@ import { NS, zh, en } from './locales.js'
 import { GlobalPanel, TeamflowPanelIcon, RunDetailTab, runTabDefinition, RUN_TAB_ID } from './panel.js'
 import { useUpdateStatus, UpgradeButton, canOneClick, UpdateHint, NO_WRAP } from './update-ui.js'
 import { fitScale, zoomBy as applyZoomFactor, pinchView, pointerDist, pickViewMode, LIST_BREAKPOINT } from './viewport.js'
+import { createLocalePusher } from './locale-push.js'
 
 // uiWorkspace：跳会话唯一入口（0.1.7-alpha.1 起 `uiWorkspace.openSession(target)` 取代已移除的 `sessions.openSubagent` / `sessions.open`）
 export const inject = ['remote', 'slots', 'uiWorkspace', 'locale']
@@ -1427,19 +1428,21 @@ export async function apply(ctx) {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'teamflow: dictionaries')
   ctx.effect(() => ctx.locale.subscribe(() => setTranslator(t, () => ctx.locale.getSnapshot().active)), 'teamflow: translator sync')
   setTranslator(t, () => ctx.locale.getSnapshot().active)
-  /* host 侧语言上报（host 无浏览器语言通道）：初始上报一次 + 宿主语言变化时推送。
-   * 只走既有 Remote 面（teamflow/setLocale），不自建浏览器存储/语言探测；
-   * 失败静默（老宿主无该方法 / RPC 未就绪 / 连接断开都不影响客户端渲染与流水线）。 */
-  const pushLocaleToHost = (active?: string): void => {
-    try {
-      if (typeof active !== 'string' || !active) return
-      const p = teamflow.setLocale(active)
-      if (p && typeof p.catch === 'function') p.catch(() => {})
-    } catch (e) { /* 推送失败静默：host 走兜底链 */ }
-  }
+  /* host 侧语言上报（host 无浏览器语言通道）：初始上报 + 宿主语言变化时推送，**失败有界重试**。
+   * 只走既有 Remote 面（teamflow/setLocale），不自建浏览器存储/语言探测。
+   * ⚠️ 2026-10-16 实锤：原先「只推一次 + catch 静默」⇒ 宿主重启后若挂载时 RPC 未就绪，
+   * 宿主**永久**停在 en 兜底（中文环境下整轮产物与日志英文，且与客户端词典中英混排）。
+   * 重试语义（成功即停 / 失败重排 / 有界 / dispose 清理）在 `client/locale-push.ts`，
+   * locale 测试逐条有行为断言。 */
+  const localePusher = createLocalePusher({
+    push: (loc) => teamflow.setLocale(loc),
+    schedule: (run, ms) => setTimeout(run, ms),
+    cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+  })
   ctx.effect(() => {
-    pushLocaleToHost(ctx.locale.getSnapshot().active)
-    return ctx.locale.subscribe(() => pushLocaleToHost(ctx.locale.getSnapshot().active))
+    localePusher.send(ctx.locale.getSnapshot().active)
+    const off = ctx.locale.subscribe(() => localePusher.send(ctx.locale.getSnapshot().active))
+    return () => { off(); localePusher.dispose() }
   }, 'teamflow: host locale push')
   // 右侧栏打开（产物预览 / run 详情共用）：地址（dsh-resource://…）由 host 生成，这里只交给右侧栏。
   // 服务名 sidebarRight（@deepseek-ai/dsh-client-ui-sidebar-right 提供）；未挂载/未认领地址时返回 false

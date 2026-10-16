@@ -48,7 +48,7 @@ import { archiveRunLogs, sweepWorkspaceLogs } from './workspace/runlogs.ts'
 import { preflightWorkspaceAcl } from './workspace/acl-preflight.ts'
 import { buildConfirmSheet, renderConfirmSheet, confirmHook, type ConfirmSheet } from './confirm.ts'
 import { parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
-import { ambientLocale, localeForMissingSnapshot, runLocaleOf } from './locale.ts'
+import { ambientLocale, localeForMissingSnapshot, localeSource, runLocaleOf } from './locale.ts'
 import { noteClarifyAnswered, noteClarifyProceeded } from './clarify-log.ts'
 
 /** dev 子卡/阶段 label 的「开发 · 」前缀与重试后缀：zh 存量兼容 + en 新增（QA-2：既有解析契约只增不改）。
@@ -389,6 +389,12 @@ export async function executePipeline(
   // 不得按当前界面语言补写，QA-1）；新 run 用环境语言。
   if (!parseLocale(journal.locale)) journal.locale = localeForMissingSnapshot(!!resume)
   const locale = runLocaleOf(journal)
+  // **语言来源留痕**（2026-10-16 实锤）：两侧都没拿到时会把整轮产物与日志按兜底语言生成
+  // （实测中文环境跑出全英文 + 界面中英混排），而这条链原先**全静默**正是它没被发现的原因。
+  // 只在**新 run**（resume 走 zh 是刻意的存量口径，见 localeForMissingSnapshot）且来源为兜底时记一条。
+  if (!resume && localeSource() === 'fallback') {
+    journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.localeFallback', { locale }) })
+  }
   // **引擎留痕（2026-09-18）**：run 起始的模型路由快照（provider/model）落 journal + run.log。
   // 只在缺失时写（resume 保留首轮快照）；逐阶段的真实路由另见 `stage.provider/model`（子代理可改道）。
   if (!journal.engine) {
