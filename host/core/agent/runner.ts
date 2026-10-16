@@ -10,7 +10,7 @@ import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../../constants.ts'
 import { t, type HostLocale } from '../../locales.ts'
 import { runLocaleOf } from '../locale.ts'
 import { stripStateBlock } from '../domain/state.ts'
-import type { Journal, ParentAgentLike, SubagentStarters, UsageBuckets } from '../../types.ts'
+import type { Journal, ParentAgentLike, SubagentRunLike, SubagentStarters, UsageBuckets } from '../../types.ts'
 import type { JournalStage } from '../../../store.ts'
 
 /**
@@ -118,6 +118,40 @@ export function resolveChildRoute(parent: ParentAgentLike): { provider?: string;
   return out
 }
 
+/**
+ * 计量为空时的**可见化**（2026-10-16 实锤 run tf-mv9o5fkk-orjou4）。
+ *
+ * `accumulateSessionUsage` 返回 null 本身是**设计上的降级路径**（投影未挂载/子会话确实无 usage），
+ * 但它同时也是真故障的**唯一症状** —— 曾经静默：21/21 阶段 usage 全空、run 照样报 completed、
+ * 4 小时无人察觉（根因 = 活句柄取晚了，见 runAgent 里那段注释）。
+ * 故每个 run 记一条 warn，把链路逐级讲清（活句柄 → session → 投影 → 事件数），
+ * 下次再断能一眼定位是哪一环。§「空值必须可见」。
+ */
+const usageDiagLogged = new WeakSet<object>()
+function noteUsageMissing(journal: Journal, run: SubagentRunLike | null, locale: HostLocale): void {
+  try {
+    if (!journal || typeof journal !== 'object') return
+    if (usageDiagLogged.has(journal)) return
+    usageDiagLogged.add(journal)
+    const agent = run ? run.localAgent : undefined
+    const session = agent ? (agent as { session?: { snapshotEvents?: () => unknown[] } }).session : undefined
+    let events = 'n/a'
+    try {
+      if (session && typeof session.snapshotEvents === 'function') events = String((session.snapshotEvents() || []).length)
+    } catch (e) { events = 'err' }
+    const projections = runtime.sessionProjections as { stateOf?: unknown } | undefined
+    journal.logs.push({
+      t: Date.now(), level: 'warn',
+      message: t(locale, 'diag.usageMissing', {
+        handle: run && run.localAgent ? 'yes' : 'no',
+        session: session ? 'yes' : 'no',
+        projections: projections && typeof projections.stateOf === 'function' ? 'yes' : 'no',
+        events,
+      }),
+    })
+  } catch (e) { /* 诊断本身绝不打断阶段 */ }
+}
+
 /** 运行单个阶段子代理：执行 + 产出实质校验 + token 双口径计量 + stage 状态流转。
  *  `taskIds`：本阶段承载的**开发任务身份**（host 生成的 `dt-N`；合并任务时是数组）。
  *  与 `taskKey`（人读标题）分家——判定只认 id，title 只作展示（见 pipeline.buildDevTaskDefs 注释）。 */
@@ -186,14 +220,19 @@ export async function runAgent(
       signal: sig,
       delivery: 'caller',
     })
+    // 🔴 **活 Agent 必须在这一刻取**（2026-10-16 实测 tf-mv9o5fkk-orjou4：21/21 阶段 usage 全空）：
+    // 宿主对本地子级在 **idle 时就 close(activation)**（`manager.watchLocalSettlement` → `finishDisposal`
+    // → `handle.dispose()` ⇒ 从 `agents` 注册表注销），而 `activation.result` 是「**handle cleanup 之后**」
+    // 才 settle（subagent README：result "deliver … after handle cleanup, capacity release, and settlement
+    // notifications"）⇒ 等到 finally 再按 childId 查注册表**必然拿不到**。
+    // 早取到的这个对象在注销后依然可用（我们只读 `.session` / `.status` / `.inject`），
+    // 与 alpha.1 时代「回执直接带活 Agent」的语义对齐。
+    const liveChild = liveChildAgentOf(activation.childId)
     run = {
       id: activation.childId,
       result: activation.result,
       dispose: () => activation.dispose(),
-      // 活 Agent 从 `agents` 注册表按 childId 取（alpha.2 起回执不再带句柄，见 context.liveChildAgentOf）。
-      // 用 getter 而非一次性取值：护栏/计量在**整个阶段**反复读它，lazy 才能覆盖「注册表晚于回执可用」
-      // 与「dispose 后取不到」两种时序，且两者本来就走降级路径。
-      get localAgent() { return liveChildAgentOf(activation.childId) },
+      localAgent: liveChild,
     }
     stage.childId = run.id
     trackInFlight(journal.id, stage, run)
@@ -328,6 +367,7 @@ export async function runAgent(
   } finally {
     if (cancelGuard) cancelGuard()
     stage.usage = accumulateSessionUsage(run)
+    if (!stage.usage) noteUsageMissing(journal, run, locale)
     stage.handoff = stageText ? handoffBrief(stageText) : null
     stage.endedAt = Date.now()
     untrackInFlight(journal.id, stage) // 只注销自己这一路（并发 dev 同 run 多路在飞，见 context.inFlight）

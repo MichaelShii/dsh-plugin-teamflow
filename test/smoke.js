@@ -327,7 +327,14 @@ const callerCall = /startActivation!?\(\{\s*\n\s*provider: providerName\(\) as s
 ok(!/\.start\(providerName\(/.test(hostSrc), 'host-pool：旧 `start(providerName(...))` 调用整体清零（漏一处 = 该阶段 TypeError，issue #20 的原始故障形态）')
 ok(callerCall.test(runnerSrc), 'runner：startActivation 调用带 delivery=caller（parent=向主会话投递阶段完成通知，非本插件语义）')
 ok(callerCall.test(triageSrc), 'triage：startActivation 调用带 delivery=caller（分诊结果由本函数自己解析）')
-ok(/get localAgent\(\) \{ return liveChildAgentOf\(/.test(runnerSrc), 'runner：句柄的 localAgent 由 agents 注册表按 childId 解析（alpha.2 回执不再回传活 Agent）')
+// ⚠️ 取句柄**必须在窗口内**（2026-10-16 实锤：曾用 lazy getter ⇒ 21/21 阶段 usage 全空而 run 报 completed）：
+// 宿主对本地子级在 idle 时就 close（从 agents 注册表注销），而 result 是「handle cleanup 之后」才 settle。
+ok(/const liveChild = liveChildAgentOf\(activation\.childId\)/.test(runnerSrc) && /localAgent: liveChild/.test(runnerSrc),
+  'runner：活句柄在启动后**立刻**取并塞进句柄对象（不得 lazy——结算前子级已从注册表注销）')
+ok(runnerSrc.indexOf('const liveChild = liveChildAgentOf') < runnerSrc.indexOf('const result = await run.result'),
+  'runner：取句柄发生在 await run.result **之前**（顺序即判据）')
+ok(/if \(!stage\.usage\) noteUsageMissing\(journal, run, locale\)/.test(runnerSrc),
+  'runner：计量为空必须留可见诊断（整条语句——静默的 null 正是它漏过 4 小时的原因）')
 ok(/export function liveChildAgentOf/.test(contextSrc) && /runtime\.agents/.test(contextSrc), 'context：liveChildAgentOf 的取法是 agents 注册表（宿主 manager.startLocal 走 agents.create）')
 ok(/agent\.status !== 'idle'/.test(guardSrc) && !/\.phase\b/.test(guardSrc), 'guard：isAgentBusy 改读 Agent.status（旧实现读从未存在的字段 ⇒ 每次静默 false 的死判据）')
 // ⚠️ 锁**整条守卫语句**（不只是函数名与顺序）：变异「给条件加 `false &&` 前缀」下，只锁

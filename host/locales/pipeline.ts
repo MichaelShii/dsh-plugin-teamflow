@@ -201,6 +201,9 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
 
     /* ── 护栏与重试诊断（runner） ──────────────────────────── */
     'diag.effort': '{label} 推理强度：{effort}（机械阶段降档）',
+    // 计量为空必须可见（2026-10-16）：null 既是设计的降级路径，也是「取活句柄失败」这类真故障的唯一症状，
+    // 曾静默 21/21 阶段（run 仍报 completed）。链路逐级列出，下次一眼定位。
+    'diag.usageMissing': '计量为空（本阶段 token 未记录）—— 活句柄={handle} / session={session} / 投影服务={projections} / 会话事件数={events}；四项里第一处 no 即断链所在',
     'diag.effortRetry': '{label} 推理强度：{effort}（重试回升）',
     'diag.effortSkip': '{label} 推理强度未降档：{skip}——保持宿主默认',
     'diag.noEfforts': '路由 {provider}/{model} 未声明 reasoning.efforts（或探测不可用）',
@@ -648,6 +651,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
 
     /* ── 护栏与重试诊断 ────────────────────────────────────── */
     'diag.effort': '{label} reasoning effort: {effort} (mechanical stage downgrade)',
+    'diag.usageMissing': 'usage is empty (this stage recorded no tokens) — live handle={handle} / session={session} / projection service={projections} / session events={events}; the first "no" is the broken link',
     'diag.effortRetry': '{label} reasoning effort: {effort} (raised back on retry)',
     'diag.effortSkip': '{label} reasoning effort not downgraded: {skip} — keeping the host default',
     'diag.noEfforts': 'route {provider}/{model} does not declare reasoning.efforts (or probing is unavailable)',

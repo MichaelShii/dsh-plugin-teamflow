@@ -142,6 +142,15 @@ async function runScenario(
   }
 
   const children = []
+  // **宿主语义复刻**（2026-10-16 实锤 tf-mv9o5fkk-orjou4）：本地子级在 **idle 时就被 close**（从 agents
+  // 注册表注销），而 `activation.result` 是「handle cleanup **之后**」才 settle ⇒ 只有「启动后立刻取」这个
+  // 窗口能拿到活句柄。夹具必须复刻这一点，否则「取晚了」的回归在测试里永远绿（21/21 阶段 usage 全空而
+  // run 报 completed 就是这么漏过去的）。usage 事件同时给计量用。
+  const liveChildren = new Set()
+  const usageEvents = () => [
+    { type: 'assistant/message', data: { turn: 1, step: 1, usage: { inputTokens: 100, outputTokens: 10 } } },
+    { type: 'assistant/message', data: { turn: 1, step: 2, usage: { inputTokens: 50, outputTokens: 5, cacheReadTokens: 900 } } },
+  ]
   let doEmpty = emptyNext
   let qaRound = 0
   let stateFileErr = '' // `stateViaFile` 的桩自检（块/路径没取到 ⇒ 断言会点名，而不是静默退化成回落）
@@ -223,18 +232,27 @@ async function runScenario(
     doEmpty = false
     const childId = `c-${children.length}`
     children[children.length - 1].childId = childId
+    liveChildren.add(childId) // 此窗口内 `agents.get(childId)` 可解析（复刻宿主注册表）
     return {
       childId,
-      result: (async () => ({ stopReason: 'completed', output: [{ type: 'text', text }] }))(),
-      dispose: async () => {},
+      result: (async () => {
+        await new Promise((r) => setTimeout(r, 1))
+        // ⚠️ 宿主语义：result **在 handle cleanup 之后**才 settle ⇒ 期间子级已从注册表注销
+        liveChildren.delete(childId)
+        return { stopReason: 'completed', output: [{ type: 'text', text }] }
+      })(),
+      dispose: async () => { liveChildren.delete(childId) },
     }
   }
-  // agents 注册表：记录宿主返回的 childId 是否被查过。alpha.2 起回执**不再带活 Agent 句柄**
-  // （`startActivation` 只给 childId/result/dispose），唯一取法是注册表 —— 这条链路一断就**静默退化**
-  // （护栏/计量读到 undefined 后各自走「读不到」的降级分支，不报错），所以必须在这里留可见证据。
   const agentLookups = []
   setRuntime(
-    { get: (sid) => { agentLookups.push(String(sid)); return undefined } },
+    {
+      get: (sid) => {
+        agentLookups.push(String(sid))
+        if (!liveChildren.has(String(sid))) return undefined // 已清理 ⇒ 查不到（lazy 取法必然失败）
+        return { status: 'running', session: { snapshotEvents: () => usageEvents() } }
+      },
+    },
     { list: () => ['spawn'], startActivation: stubStart },
   )
 
@@ -1086,6 +1104,10 @@ console.log('\n[N] 宿主 subagent API 入参形状（startActivation）')
   ok(r.childSpecs.every((s) => s.hasTopSignal), '每个阶段都传顶层 signal（宿主发布前取消通道；嵌套 request.signal 是发布后通道）')
   ok(r.stageChildIds.length > 0 && r.stageChildIds.every((id) => r.agentLookups.includes(id)),
     `每个**阶段**子代理的 childId 都被 agents 注册表查过（实测 stages=${r.stageChildIds} lookups=${r.agentLookups}）——localAgent 的取法真的在跑，不是只在源码里（分诊不走 runAgent，故不在本断言范围）`)
+  // 计量：只有「启动后立刻取活句柄」才拿得到 token（夹具复刻了「result settle 前已清理」的宿主语义）
+  const withUsage = (r.journal.stages || []).filter((s) => s.usage && (s.usage.input || s.usage.calls))
+  ok(withUsage.length > 0,
+    `阶段记录了 token 用量（实测 ${withUsage.length}/${(r.journal.stages || []).length} 段；样本=${JSON.stringify((withUsage[0] || {}).usage)}）——取晚了就全空（21/21 阶段的实测形态）`)
 }
 
 /* ── (j) liveChildAgentOf / hasStartActivation 的边界（issue #20 的取句柄与预检两条判据） ── */
