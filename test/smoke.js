@@ -1183,6 +1183,10 @@ ok(!/artifactText\(/.test(accSrc) &&
   'acceptance：两处读 ACCEPTANCE.md（normal + known-issues）全部走新鲜度，artifactText 已不再被引用')
 ok(/export function isToolArgFailure/.test(utilSrcFresh) && /must differ/.test(utilSrcFresh),
   'util：参数类失败判据（isToolArgFailure，含实锤原文 must differ）')
+// 宿主通用参数校验前缀（实锤 tf-mvb3lm0b-bbgoyv：web_search.queries 传成字符串被误判 env-unavailable）——
+// 必须锁进正则本体，否则下次谁把这条前缀删了，非 fs 工具的类型错又会硬停（行为断言在 empty-turn §5）
+ok(/const TOOL_ARG_FAILURE = \/invalid arguments:\|/.test(utilSrcFresh),
+  'util：参数类失败判据覆盖宿主通用参数校验前缀 invalid arguments:（非 fs 工具的类型错）')
 // ⚠️ 只锁调用点会漏掉「函数被掏空」：新鲜度**判据本体**也要锁整条语句（M11 实测：掏空此句时调用点锁仍绿）
 ok(/if \(artifactIsStale\(journal, name, baseline\)\) continue/.test(utilSrcFresh),
   'util：stageDocText 内部真的跳过陈旧候选（整条语句，防「调用点还在、判定被掏空」）')

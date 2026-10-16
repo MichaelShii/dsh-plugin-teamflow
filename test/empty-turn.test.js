@@ -109,11 +109,15 @@ console.log('── 4) 产物新鲜度：指纹基线（上游越界写的旧产
    同一阶段一次就过 ⇒ 工作区自始正常。判据必须能区分「参数错」与「环境坏」。 */
 console.log('── 5) isToolArgFailure：参数类失败不计入环境指纹 ──')
 for (const t of [
-  'old_string and new_string must differ', // 宿主 packages/fs/tool-fs/src/edit.ts:50（本次实锤原文）
+  'old_string and new_string must differ', // 宿主 packages/fs/tool-fs/src/edit.ts:50（实锤 tf-mv9o5fkk-orjou4）
   'old_string must be a non-empty string',
   'file_path must be a non-empty string',
   'tool-fs: limit must be a positive integer',
   'offset must be a positive integer',
+  // 宿主通用参数校验层前缀（实锤 tf-mvb3lm0b-bbgoyv：web_search.queries 传成字符串）
+  'Error: invalid arguments: "queries" must be an array',
+  'invalid arguments: "queries" must be an array',
+  'invalid arguments: "max_results" must be a number',
 ]) ok(isToolArgFailure(t), `识别参数类：${t}`)
 for (const t of [
   'ENOENT: no such file or directory, open ...',
@@ -122,6 +126,9 @@ for (const t of [
   'command not found: mvn',
   'fs: cannot write outside the workspace root',
   'The operation timed out after 60000ms',
+  // 反例：含「must be」但不属参数解析层（不得被前缀之外的宽松匹配吞掉）
+  'SetNamedSecurityInfoW failed (Win32 5): ACL provision failed',
+  'tool result too large: must be truncated by caller',
 ]) ok(!isToolArgFailure(t), `不吞环境类：${t}`)
 
 rmSync(home, { recursive: true, force: true })

@@ -1012,9 +1012,15 @@ export function isToolScopeFailure(text: unknown): boolean {
  *                                            `old_string and new_string must differ`
  *   `packages/fs/tool-fs/src/read.ts:44,56` → `<name> must be a positive integer` / `file_path must be ...`
  *   `packages/fs/tool-fs/src/index.ts:62`   → `tool-fs: <name> must be a positive integer`
+ *   **宿主通用参数校验层（任意工具、任意 schema 类型错）→ 前缀 `invalid arguments:`**，形如
+ *     `invalid arguments: "queries" must be an array`。实锤 tf-mvb3lm0b-bbgoyv（2026-10-16）：tech 子代理
+ *     反复把 `web_search.queries` 传成字符串（应为数组），宿主在 parse 层拒；这条**没被上面三条覆盖** ⇒
+ *     计进环境指纹 ⇒ 第 3 次误判 `env-unavailable` 硬停、不重试，run 直接 failed。⇒ **按前缀整体豁免，
+ *     不逐个列举类型**（`must be an array|string|number|object|…` 列不全，下次又会漏一个新的）。
+ *     该前缀 = 调用在 parse 层就被拒，与上面三条同性质，绝不等价于文件系统/权限/沙箱故障。
  * 判据边界：这些都是 **parse*Args 层**的参数校验（调用前就抛），不是文件系统/权限/沙箱的失败；
  * 宿主换文案时这里同步（与 FS_SELF_HEAL_TEXT 同款纪律）。 */
-const TOOL_ARG_FAILURE = /must be a non-empty string|must differ\b|must be a positive integer/i
+const TOOL_ARG_FAILURE = /invalid arguments:|must be a non-empty string|must differ\b|must be a positive integer/i
 
 /** 是否属于「模型参数传错」（换个参数即可继续）—— 据此**不计入**环境不可用指纹。 */
 export function isToolArgFailure(text: unknown): boolean {
