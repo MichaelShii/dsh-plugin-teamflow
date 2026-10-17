@@ -980,8 +980,17 @@ ok(/failed: failedBefore/.test(hostSrc) && /未完成任务/.test(hostSrc) && !/
 ok(/function abortForConfirmSheet/.test(pipelineSrc) && /return abortForConfirmSheet\(journal, sheet, locale\)/.test(pipelineSrc), 'pipeline：PRD 确认单的暂停落点（PRD 之后、design 之前）')
 // ⚠️ 判据 2026-10-08 从「显式开关」改成「**内容驱动**」⇒ 必须锁住 `tasteCount > 0` 这半句：
 // 只锁 `mode !== 'patch' && !resume` 的话，判据被改回开关形态时源码锁会**假绿**（后半句还在）。
-ok(/confirmMode === 'always' \|\| \(confirmMode === 'auto' && tasteCount > 0\)/.test(pipelineSrc), 'pipeline：确认单触发 = **内容驱动**（有 kind=taste 主观项才停）＋ 内部强制位 always/never')
-ok(/options\.mode !== 'patch' && !resume/.test(pipelineSrc), 'pipeline：patch 档不暂停 ＋ 只在非 resume 时停一轮')
+// 2026-10-17（issue #11）：触发判据从 pipeline 内联搬到 `confirm.confirmDecision`（纯函数、可测），
+// 语义从「只做一轮 = !resume」改成「这一版 PRD 还没被批过」。这两条锁**判据的落点**与**两条硬约束**，
+// 不再锁内联表达式 —— 锁内联会把「参数挑一个」和「判据」混在一起，正是上一版写成 `!resume` 的原因。
+const confirmSrcEarly = readFileSync(join(here, '../host/core/confirm.ts'), 'utf8')
+ok(/const decision = confirmDecision\(\{/.test(pipelineSrc), 'pipeline：确认单触发走纯函数 confirmDecision（判据集中一处）')
+ok(/confirmMode === 'never'\) return \{ ask: false, reason: 'off' \}/.test(confirmSrcEarly),
+  'confirm：内部强制位 never 真的关掉（含改写后的版本）')
+ok(/if \(v\.confirmMode === 'always' \|\| taste > 0\) return \{ ask: true, reason: 'taste' \}/.test(confirmSrcEarly),
+  'confirm：always 或存在 taste 主观项才停（内容驱动）')
+ok(/if \(v\.mode === 'patch'\) return \{ ask: false, reason: 'patch' \}/.test(confirmSrcEarly),
+  'confirm：patch 档不暂停（ADR-0011 档位矩阵）；不再靠 pipeline 里的 `!resume` 兜')
 // 「缺 kind 不阻断」**不等于**「静默」：必须发 warn（否则就是又一次功能静默空转，§7③）。
 // ⚠️ 必须从**判定条件**起锚，不能只锁 `log.openQuestionsUntagged` 这个标识符 ——
 // M22 实测：把条件改成 `if (false && …)` 时，只锁标识符的写法**假绿**（标识符原样还在）。
@@ -1264,8 +1273,41 @@ ok(/j\.prdSnapshot = null/.test(pipelineSrc),
 const confirmSrc9 = readFileSync(join(here, '../host/core/confirm.ts'), 'utf8')
 ok(/export function prdSnapshotFromBlock\(block: unknown\): PrdSnapshot/.test(confirmSrc9),
   'confirm：导出纯提取器 prdSnapshotFromBlock（逻辑由 confirm-run-snapshot 测试断言）')
-ok(/import \{ buildConfirmSheet, renderConfirmSheet, confirmHook, prdSnapshotFromBlock/.test(pipelineSrc),
+ok(/import \{[\s\S]{0,140}?buildConfirmSheet[\s\S]{0,140}?prdSnapshotFromBlock/.test(pipelineSrc),
   'pipeline：从 confirm 导入提取器（接线未悬空）')
+
+// ── 10) 确认单绑 PRD 版本（issue #11：redo 后不出第二张单）──
+console.log('── 10) 确认单「批准失效」：判据绑 PRD 版本，不绑轮次 ──')
+ok(/if \(!prdStage\.skipped\) journal\.prdRev = \(Number\(journal\.prdRev \|\| 0\) \|\| 0\) \+ 1/.test(pipelineSrc),
+  'pipeline：PRD 真正产出才自增版本（resume 复用 skipped 不增 —— 整条语句）')
+ok(/const decision = confirmDecision\(\{[\s\S]{0,220}?prdRev: journal\.prdRev,[\s\S]{0,120}?approvedRev: journal\.confirmApprovedRev,/.test(pipelineSrc),
+  'pipeline：确认单判定走 confirmDecision（读版本 + 已批准版本）')
+ok(/if \(decision\.ask\) \{/.test(pipelineSrc),
+  'pipeline：按 decision.ask 分支（返回值被消费，不是算完丢掉）')
+ok(!/shouldConfirm && options\.mode !== 'patch' && !resume/.test(pipelineSrc),
+  'pipeline：旧的「只做一轮 = !resume」死条件已移除（否则 redo 后确认单必不再出现）')
+ok(/if \(redoPrd && !redoAllowed\(j\.prdRev\)\) \{[\s\S]{0,200}?return \{ ok: false, error: t\(locale, 'run\.prdRevLimit'/.test(pipelineSrc),
+  'pipeline：改写次数达上限 ⇒ **显式报错**（不能静默当批准，否则用户在错版 PRD 上开工）')
+ok(/j\.confirmApprovedRev = Number\(j\.prdRev \|\| 0\) \|\| 0/.test(pipelineSrc),
+  'pipeline：resume 放行 = 批准当前版本（不记则同一版续跑会被反复打断）')
+ok(/journal\.confirmApprovedRev = Number\(journal\.prdRev \|\| 1\) \|\| 1/.test(pipelineSrc),
+  'pipeline：审批面就地批准也记版本')
+ok(/prdRev: journal\.prdRev,\n/.test(pipelineSrc) || /prdRev: journal\.prdRev,/.test(pipelineSrc),
+  'pipeline：确认单带出版本号（第 2 版要能在单子上看出来）')
+ok(/export function confirmDecision\(v: \{/.test(confirmSrc9),
+  'confirm：触发判据是纯函数（行为由 prd-rev 测试断言，不靠读源码推演）')
+ok(/export const PRD_REV_MAX = 2/.test(confirmSrc9),
+  'confirm：改写次数有硬上界（无上界 = /plan 循环）')
+ok(/export function redoAllowed\(prdRev\?: number \| null\): boolean/.test(confirmSrc9),
+  'confirm：上限判定单独可测（不埋在 pipeline 的 if 里）')
+ok(/prdRev: Math\.max\(1, Number\(v\.prdRev \|\| 1\) \|\| 1\),/.test(confirmSrc9),
+  'confirm：快照版本归一（0/负数/NaN 一律 1，不出现「第 0 版」）')
+ok(/if \(sheet\.prdRev > 1\) \{/.test(confirmSrc9),
+  'confirm：第 1 版不渲染版本行（省 token），第 2 版必须自曝')
+for (const k of ['run.prdRevLimit', 'log.confirmRevised', 'confirm.rev']) {
+  ok(new RegExp(`'${k}':`).test(hostSrc), `locales：含文案键 ${k}（zh/en 同形，locale 不变量测试守奇偶）`)
+}
+
 
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

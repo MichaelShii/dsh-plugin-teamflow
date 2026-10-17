@@ -976,6 +976,8 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
     session: { id: 'sid-redo', header: { cwd: work }, append() {}, snapshotEvents: () => sessionEvents },
     status: 'idle', followup() {}, inject() {}, options: {},
   }
+  // PRD 子代理的产出（默认空 = 让 PRD 阶段失败；需要「PRD 真成功」的用例自己换掉）。
+  let prdTextNow = ''
   setRuntime({ get: (sid) => (sid === 'sid-redo' ? fakeParent : undefined) }, {
     // 真实宿主一定有 provider 注册表（providerName 靠 list 取），漏了它 provider 会传成 null（宿主直接抛）
     list: () => ['spawn'],
@@ -983,14 +985,15 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
       const init = spec && spec.request
       const label = String((spec && spec.label) || '')
       seen.push({ label, prompt: String((init && init.prompt && init.prompt[0] && init.prompt[0].text) || ''), signal: spec && spec.signal })
+      const text = /梳理 PRD/.test(label) ? prdTextNow : ''
       return {
         childId: `c-${seen.length}`,
-        result: (async () => ({ stopReason: 'completed', output: [{ type: 'text', text: '' }] }))(),
+        result: (async () => ({ stopReason: 'completed', output: [{ type: 'text', text }] }))(),
         dispose: async () => {},
       }
     },
   })
-  const mk = (ws, id, stages) => {
+  const mk = (ws, id, stages, extra) => {
     const dir = join(home, 'teamflow', ws, 'runs')
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, `${id}.json`), JSON.stringify({
@@ -999,6 +1002,7 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
       options: { mode: 'medium', needDesign: false, needScaffold: false },
       stages, humanIntervention: true, interrupted: true, interruptedAt: Date.now() - 60000,
       confirmSheet: { summary: '旧确认单', ac: [], questions: [], assumptions: [], at: 1 },
+      ...(extra || {}),
     }), 'utf8')
   }
 
@@ -1045,7 +1049,43 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
   ok(!(after.stages || []).some((s) => String(s.output || '') === '旧 PRD'),
     `回退时旧 prd 记录已摘掉（否则同阶段两条记录，报告与断点定位都按「每阶段一条」读）（实测 ${JSON.stringify((after.stages || []).map((s) => s.status))}）`)
 
-  // ② 对照：PRD 之后**已经有阶段跑过** ⇒ 仍必须拒绝（回退会白作废它们的产物）
+  // ③ **改写后必须重出确认单**（2026-10-17，issue #11 实锤 `tf-mv5xkem-imgt7v`）：用户改主意 ⇒
+  //    redo 重跑 PRD ⇒ 上一版批准**自动失效** ⇒ 必须再让他看一次。旧实现 `!resume` 把 redo 路径
+  //    一起挡掉了 ⇒ 模型许诺 "a fresh confirm sheet will arrive"，没来，PRD 变了却没人看过就开了工。
+  //    这里的 PRD 子代理**给真产出**（默认空 ⇒ 阶段失败，测不到确认单）。
+  const PRD_OK = '## 目标\n做一个小工具。\n\n## 验收标准\n- AC-1 能跑\n\n' +
+    '本 PRD 按契约逐条对应验收条件并给出可测判据，范围与非目标均已写明。'.repeat(12) +
+    `\n\n<!-- state -->${JSON.stringify({
+      phase: 'prd', summary: '改写后的目标', memory: [],
+      extra: { acIndex: { 'AC-1': '能跑' }, summary: '改写后的目标' },
+    })}<!-- /state -->`
+  prdTextNow = PRD_OK
+  sessionEvents = [pluginNoticeEvent(Date.now() - 50000), humanEvent(Date.now() - 30000)]
+  mk('ws-rev', 'tf-rev', [{ phase: 'prd', status: 'done', output: '旧 PRD' }], { prdRev: 1, confirmApprovedRev: 1 })
+  const r3 = resumeRun('tf-rev', 'sid-redo', '形象改成手绘 SVG，不要 emoji')
+  ok(r3.ok === true && r3.resumedFrom === 'prd', `第 2 版改写被接受（实测 ok=${r3.ok} err=${String(r3.error || '').slice(0, 60)}）`)
+  let revJ = null
+  for (let i = 0; i < 150; i++) {
+    try { revJ = JSON.parse(readFileSync(join(home, 'teamflow', 'ws-rev', 'runs', 'tf-rev.json'), 'utf8')) } catch (e) { revJ = null }
+    if (revJ && revJ.confirmSheet) break
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  ok(!!(revJ && revJ.confirmSheet && Number(revJ.confirmSheet.prdRev) === 2),
+    `改写后**必须再出一张确认单**且标为第 2 版（实测 ${JSON.stringify(revJ && revJ.confirmSheet && { rev: revJ.confirmSheet.prdRev, sum: revJ.confirmSheet.summary })}）`)
+  ok(!!revJ && revJ.status === 'interrupted' && revJ.humanIntervention === true,
+    `…并且停成 interrupted 等人工批准（实测 status=${revJ && revJ.status}）`)
+  ok(!!revJ && Number(revJ.prdRev) === 2, `prdRev 递增到 2（实测 ${revJ && revJ.prdRev}）`)
+  ok(!!revJ && (revJ.stages || []).every((s) => ['prd'].includes(String(s.phase))),
+    `第 2 版确认单期间其后的阶段一个都没起（实测 ${JSON.stringify(revJ && (revJ.stages || []).map((s) => s.phase))}）`)
+  // ④ **封顶**：已到第 2 版的 run 再改 ⇒ 拒绝（没有上界就是 /plan 循环）
+  const { PRD_REV_MAX } = await import(pathToFileURL(join(base, 'host/core/confirm.ts')).href)
+  prdTextNow = ''
+  mk('ws-cap', 'tf-cap', [{ phase: 'prd', status: 'done', output: 'x' }], { prdRev: PRD_REV_MAX, confirmApprovedRev: 1 })
+  const r4 = resumeRun('tf-cap', 'sid-redo', '再改一点')
+  ok(r4.ok === false && /拒绝改写 PRD|PRD revision refused/.test(String(r4.error)),
+    `第 ${PRD_REV_MAX} 版后拒绝再改写，让用户重开 run（实测 ${String(r4.error || '').slice(0, 80)}）`)
+
+  // ④ 对照：PRD 之后**已经有阶段跑过** ⇒ 仍必须拒绝（回退会白作废它们的产物）
   mk('ws-late', 'tf-late', [{ phase: 'prd', status: 'done', output: 'x' }, { phase: 'design', status: 'done', output: 'y' }])
   const r2 = resumeRun('tf-late', 'sid-redo', '改一下')
   ok(r2.ok === false && /补录被拒绝/.test(String(r2.error)),

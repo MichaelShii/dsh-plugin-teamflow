@@ -155,6 +155,15 @@ export interface JournalRecord {
     acIndex: Record<string, string> | null
     openQuestions: Array<{ q: string; why: string; changes: string; default: string; kind?: 'fact' | 'taste'; kindMissing?: boolean }> | null
   } | null
+  /**
+   * **当前 PRD 的版本号**（2026-10-17，issue #11）：1 = 首版，每次 PRD 阶段**真正重跑**（redo）+1。
+   * 确认单的触发判据绑在它上面 ——「被批准的对象变了，批准必须自动失效」（见 `confirm.ts`
+   * 的 `confirmDecision`），取代旧的「确认单只做一轮 = `!resume`」。上限 `PRD_REV_MAX`。
+   */
+  prdRev?: number
+  /** **已被放行（批准）的 PRD 版本**：`resume` 成功即记 `prdRev`（redo 路径不记）。
+   *  `confirmApprovedRev >= prdRev` ⇒ 这一版批过了，续跑时不再重复打断。 */
+  confirmApprovedRev?: number | null
   result?: unknown
   [key: string]: unknown
 }
@@ -306,6 +315,11 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     // 本轮 PRD 的结构化输出快照（2026-10-16 修「汇报层串了模版」）：**必须落盘**，
     // 否则 resume/重跑时确认单与闸门又退回读累积 state（结构门禁 journal.test.js 当场抓到漏写）
     prdSnapshot: journal.prdSnapshot || null,
+    // PRD 版本 + 已批准版本（2026-10-17，issue #11）：确认单的「批准失效」判据**必须跨进程存活**——
+    // 暂停后重启、或 resume 判断时都要读它。漏写 ⇒ 重启后 approvedRev 归零 ⇒ 同一版 PRD 被反复打断
+    // （结构门禁 journal.test.js 会当场抓到漏写）。
+    prdRev: Number(journal.prdRev || 0) || 0,
+    confirmApprovedRev: journal.confirmApprovedRev == null ? null : (Number(journal.confirmApprovedRev) || 0),
     /** 外部供应商故障标记（限流/无额度/上游故障/超时）：run 落可续跑中断态时置位，汇报据此讲清「非交付缺陷」。 */
     externalFailure: journal.externalFailure === true,
     interrupted: journal.interrupted === true,

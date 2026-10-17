@@ -46,7 +46,10 @@ import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddPlan,
 import type { GitResult } from './workspace/sanity.ts'
 import { archiveRunLogs, sweepWorkspaceLogs } from './workspace/runlogs.ts'
 import { preflightWorkspaceAcl } from './workspace/acl-preflight.ts'
-import { buildConfirmSheet, renderConfirmSheet, confirmHook, prdSnapshotFromBlock, type ConfirmSheet } from './confirm.ts'
+import {
+  buildConfirmSheet, renderConfirmSheet, confirmHook, prdSnapshotFromBlock,
+  confirmDecision, redoAllowed, PRD_REV_MAX, type ConfirmSheet,
+} from './confirm.ts'
 import { parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
 import { ambientLocale, localeForMissingSnapshot, localeSource, runLocaleOf } from './locale.ts'
 import { noteClarifyAnswered, noteClarifyProceeded } from './clarify-log.ts'
@@ -910,6 +913,11 @@ export async function executePipeline(
     })
     if (prdStage.cancelled) return
     prd = prdStage.text
+    // **PRD 版本自增**（2026-10-17，issue #11）：只有**真正产出**了 PRD 才算一版 ——
+    // `runSimpleStage` 在 resume 复用存档产物时返回 `skipped:true`（PRD 没变，版本不动）。
+    // 为什么必须在这里而不是 `mergeStageState` 里：那条通道依赖模型写出 state 块
+    // （`extra` 兑现率实测 ~20%），没写就提前 `return` ⇒ 版本号会卡住 ⇒「改写后必须重新确认」失效。
+    if (!prdStage.skipped) journal.prdRev = (Number(journal.prdRev || 0) || 0) + 1
     // PRD 收口（2026-09-16 需求澄清闸门 Phase 1）：把「假设 / 待澄清」段读出来落 journal，
     // 让完成汇报能显式提示「本次基于以下假设启动」——今天的缺口是**假设完全不可见**
     // （实测 12/12、39/39 份 PRD 都没这一段），验收人无从知道 agent 替他决定了什么。
@@ -944,11 +952,28 @@ export async function executePipeline(
     // （`always` / `never`）。它是环境变量 `TEAMFLOW_CONFIRM`，**不进工具 schema**
     // （MEMORY §6：临时/实验开关不进公共工具契约——description 每次进主会话上下文 ≈137 tok/会话）。
     const confirmMode = options.confirmMode || 'auto'
-    const shouldConfirm = confirmMode === 'always' || (confirmMode === 'auto' && tasteCount > 0)
-    // 为什么 `!resume`：确认单只做**一轮**（轮次上限归 `interview` 档，ADR-0011 ③）。
+    // **触发判据 = 「这一版 PRD 还没被批过」× 「内容是否值得打断」**（2026-10-17 改，issue #11）。
+    // 旧写法是 `shouldConfirm && !resume` —— 把「确认单只做一轮」当成不变量，而真正可变的是
+    // **被批准的对象**：redo 重跑 PRD 走的正是 resume 路径 ⇒ 用户改完需求、PRD 变了，
+    // 确认单却不再出现 ⇒ 在**没看过新 PRD** 的情况下被推进开发（`tf-mv5xkem-imgt7v` 实锤：
+    // 模型自己都许诺 "a fresh confirm sheet will arrive"，没来；汇报文案 `report.confirmSheet`
+    // 也一直在许诺「会再出一份新确认单」—— 旧实现是**假承诺**）。
+    // 现判据见 `confirm.confirmDecision`：`approvedRev >= prdRev` ⇒ 已批过（不打断）；
+    // `prdRev > 1` ⇒ 改写后的版本**无条件**再看一次（不看 taste）；其余沿用内容驱动（有 taste 才停）。
+    const decision = confirmDecision({
+      mode: options.mode,
+      confirmMode,
+      tasteCount,
+      prdRev: journal.prdRev,
+      approvedRev: journal.confirmApprovedRev,
+    })
+    // 判据结论必须可审计（`approved`/`none` 是常态，不刷日志；`revised` 是新形态，值得留痕）。
+    if (decision.reason === 'revised') {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.confirmRevised', { rev: String(journal.prdRev || 1) }) })
+    }
     // 为什么排除 `patch`：patch = 单 agent 直改（STAGE_POLICY），它的 PRD 是「单点确认」机械阶段，
-    // 不为它加一道人工闸门（ADR-0011 策略档矩阵：`patch` 恒 off）。
-    if (shouldConfirm && options.mode !== 'patch' && !resume) {
+    // 不为它加一道人工闸门（ADR-0011 策略档矩阵：`patch` 恒 off）——该判断已在 `confirmDecision` 内。
+    if (decision.ask) {
       // ⚠️ 目标/AC/待澄清项一律取**本轮快照**（不读 `state.product.summary` / `state.acIndex` /
       // `state.openQuestions`）—— 它们是**项目级、跨 run 累积**的，本轮 PRD 没回写时会串上一轮
       // （实锤 tf-mvaubzdz-5w606x：r5 的确认单显示了 r4 的目标与 12 条 AC）。快照缺 = 本轮没给 ⇒
@@ -968,6 +993,8 @@ export async function executePipeline(
         openQuestions: prdSnap ? prdSnap.openQuestions : null,
         assumptions: journal.assumptions,
         runDocs: journal.runDocs,
+        // 第几版（>1 时单子上会多一行「这是改写后的版本 + 再改就得重开 run」）
+        prdRev: journal.prdRev,
       })
       // 审批面择路：**有登记的批准能力 ⇒ 试；否则（含抛错 / 返回空）⇒ 回落**停在 interrupted
       // 交主线程兜底（用 `ask_user_question`，已在生产验证）。
@@ -982,6 +1009,8 @@ export async function executePipeline(
         return abortForConfirmSheet(journal, sheet, locale)
       }
       journal.confirmAnswer = approved
+      // 审批面就地批准 ⇒ 这一版已放行（否则同一 run 内再走到确认单会重复打断）。
+      journal.confirmApprovedRev = Number(journal.prdRev || 1) || 1
       journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.confirmed') })
     }
 
@@ -1438,6 +1467,13 @@ export function resumeRun(
   if (supp && afterPrd && !redoPrd) {
     return { ok: false, error: t(locale, 'run.supplementTooLate', { phase: phaseLabel(locale, phaseAtEntry) }) }
   }
+  // **PRD 改写次数封顶**（2026-10-17，issue #11）：没有上界，「改一版 → 再确认 → 再改」就是
+  // `/plan` 模式的活（反复修正需求），与本产品「批量可靠交付」的定位互斥（MEMORY §1/§31）。
+  // 达到 `PRD_REV_MAX` 后拒绝改写并让用户重开 run —— 拒绝必须**显式报错**，不能静默当成「批准」
+  // （静默降级会让他以为改动生效了，然后在错误的 PRD 上开工）。
+  if (redoPrd && !redoAllowed(j.prdRev)) {
+    return { ok: false, error: t(locale, 'run.prdRevLimit', { max: String(PRD_REV_MAX), rev: String(j.prdRev || PRD_REV_MAX) }) }
+  }
   const productKey = j.workspace || j.product || 'default'
   if (activeProducts.has(productKey) && activeProducts.get(productKey) !== id) {
     return { ok: false, error: t(locale, 'run.workspaceBusy', { ws: j.workspacePath || productKey, id: activeProducts.get(productKey) }) }
@@ -1503,6 +1539,10 @@ export function resumeRun(
       // （报告与断点定位都按「每阶段一条」读）。安全前提正是 `prdOnly`：PRD 之后确实没跑过任何阶段。
       .filter((s) => !(redoPrd && phaseKeyOf(s.phase) === 'prd'))
     if (redoPrd) {
+      // **存量 run 的版本起点**（2026-10-17）：`prdRev` 是本版新加的字段，v0.3.0 之前创建的 run
+      // 落盘时没有它 ⇒ 读回来是 `undefined`/0。而 redo 的前提是「PRD 已经产出过一版」（`prdOnly`），
+      // 所以这里必须补成 1 —— 否则重跑后只是 1，`prdRev > 1` 不成立 ⇒ 第二张确认单又不出（issue #11 复发）。
+      if (!(Number(j.prdRev || 0) > 0)) j.prdRev = 1
       // 旧确认单描述的是**即将被替换**的那份 PRD ⇒ 必须清掉，否则在新 PRD 出结论前主线程会看到过期内容。
       j.confirmSheet = null
       // 文本兜底（`journal.assumptions`）同理清空。
@@ -1518,6 +1558,12 @@ export function resumeRun(
         if ((st.openQuestions || []).length) { st.openQuestions = []; saveState(productKey, st) }
       } catch (e) { /* 清不掉也不影响重跑（新 PRD 会覆盖） */ }
       j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.redoPrd', { n: String(supp || '').length }) })
+    } else {
+      // **放行 = 批准这一版 PRD**（2026-10-17，issue #11）。确认单的判据是「这一版有没有被批过」，
+      // 不带 supplement 的 resume 就是「认可当前版本」。不记的话：任何一次续跑（不必是确认单断点）
+      // 再走到确认单判断时，同一版又会被拦一次 —— 那就是用户担心的「反复修正需求」。
+      // ⚠️ redo 分支**不记**：新 PRD 还没被看过，批准必须等下一张单。
+      j.confirmApprovedRev = Number(j.prdRev || 0) || 0
     }
     // 补录的答复落 journal（PRD 会读它拼 `[CLARIFIED]`）；`answered` 埋点只在这里记一次
     // —— `executePipeline` 的同一埋点已按 `!resume` 排除续跑路径，否则会重复计一次。

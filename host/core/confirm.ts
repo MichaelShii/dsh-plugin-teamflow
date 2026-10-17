@@ -25,6 +25,60 @@ export const CONFIRM_ASSUMPTIONS_MAX = 8
 /** 结构化待澄清项上限（同上）。 */
 export const CONFIRM_QUESTIONS_MAX = 8
 
+/**
+ * **PRD 版本上限**（2026-10-17，issue #11）：一份 run 最多被改写这么多版。
+ *
+ * 为什么需要上限：确认单的批准**绑在 PRD 版本上**（见 `confirmDecision`）—— 用户改主意 ⇒ PRD 重跑 ⇒
+ * 上一版批准失效 ⇒ 必须再让用户看一次。这件事没有上界就成了「反复修正需求」，即 `/plan` 模式的活，
+ * 与本产品「批量可靠交付」的定位互斥（MEMORY §1/§31）。⇒ 第二版之后不再接受改写，让用户重开 run。
+ *
+ * 2 = 首版 + 一次改写。第 3 版请求被拒（`redoAllowed`）。
+ */
+export const PRD_REV_MAX = 2
+
+/**
+ * **确认单的触发判据（纯函数）**（2026-10-17，取代 `!resume`）。
+ *
+ * 旧判据是「只做一轮」＝ `!resume`（`pipeline.ts` 里那句注释：轮次上限归 interview 档）。
+ * 它的漏洞：**redo 重跑 PRD 走的正是 resume 路径** ⇒ PRD 已经变了，确认单却不再出现 ⇒
+ * 用户在**没看过新 PRD** 的情况下被推进开发（issue #11 实锤 `tf-mv5xkem-imgt7v`：模型自己都说
+ * "a fresh confirm sheet will arrive"，没来）。「只做一轮」把**轮次**当成了不变量，而真正可变的
+ * 是**被批准的对象**。
+ *
+ * 现在的判据：**被批准的对象变了，批准必须自动失效**。
+ *   - `approvedRev === prdRev`（且 `prdRev>0`）⇒ 这一版已经批过 ⇒ 不再打断（`reason:'approved'`）。
+ *   - `prdRev > 1` ⇒ 这是**改写后的** PRD ⇒ 无条件再看一次（`reason:'revised'`），
+ *     **不看 taste**：用户刚主动改了需求，他要确认改对了，而不是再由模型判断「这项要不要紧」。
+ *   - 其余沿用内容驱动：有 `taste` 项才停（`reason:'taste'`／`'none'`）。
+ *
+ * 天然有界：`PRD_REV_MAX` 封住改写次数，`approvedRev` 封住重复打断 ⇒ 一份 run 最多两张单。
+ */
+export function confirmDecision(v: {
+  mode?: string | null
+  confirmMode?: string | null
+  tasteCount?: number | null
+  prdRev?: number | null
+  approvedRev?: number | null
+}): { ask: boolean; reason: 'patch' | 'off' | 'approved' | 'revised' | 'taste' | 'none' } {
+  // `patch` = 单 agent 直改，它的 PRD 是「单点确认」机械阶段 ⇒ 不为它加人工闸门（ADR-0011 档位矩阵）。
+  if (v.mode === 'patch') return { ask: false, reason: 'patch' }
+  // `never` 是显式关闸（环境变量 `TEAMFLOW_CONFIRM`，调试/A-B 用）⇒ 连「改写后必须再看」也一并关掉。
+  if (v.confirmMode === 'never') return { ask: false, reason: 'off' }
+  const rev = Number(v.prdRev || 0) || 0
+  const approved = Number(v.approvedRev || 0) || 0
+  if (rev > 0 && approved >= rev) return { ask: false, reason: 'approved' }
+  if (rev > 1) return { ask: true, reason: 'revised' }
+  const taste = Number(v.tasteCount || 0) || 0
+  if (v.confirmMode === 'always' || taste > 0) return { ask: true, reason: 'taste' }
+  return { ask: false, reason: 'none' }
+}
+
+/** **还允许改写 PRD 吗**（`prdRev` 已达上限 ⇒ 拒绝 redo，让用户重开 run）。 */
+export function redoAllowed(prdRev?: number | null): boolean {
+  const rev = Number(prdRev || 0) || 0
+  return rev < PRD_REV_MAX
+}
+
 /** 一条**待用户拍板**的澄清项（来自 PRD state 块的 `extra.openQuestions`，结构化）。 */
 export interface ConfirmQuestion {
   q: string
@@ -117,6 +171,12 @@ export interface ConfirmSheet {
   questionsTotal: number
   /** 假设总行数（同上）。 */
   assumptionsTotal: number
+  /**
+   * **这张单描述的是第几版 PRD**（2026-10-17，issue #11）。1 = 首版；2 = 用户改过一次后的版本。
+   * 必须在单子上显式标出来：用户要能分清「这是我刚要求的那版」还是「第一版」——
+   * 否则第二张单看起来和第一张一模一样，改了哪儿反而更难核对。
+   */
+  prdRev: number
   at: number
 }
 
@@ -133,6 +193,8 @@ export function buildConfirmSheet(v: {
   openQuestions?: ConfirmQuestion[] | null
   assumptions?: string | null
   runDocs?: string | null
+  /** 本版 PRD 的版本号（缺省按 1）。 */
+  prdRev?: number | null
 }): ConfirmSheet {
   // AC：**结构化优先、文本兜底**（ADR-0011 C）。兜底必要性的实测依据：`extra` 兑现率 ~20%（7/34）。
   let acEntries = Object.entries(v.acIndex || {}).filter(([, text]) => String(text || '').trim())
@@ -165,6 +227,7 @@ export function buildConfirmSheet(v: {
     acTotal: acEntries.length,
     questionsTotal: questions.length,
     assumptionsTotal: assumpLines.length,
+    prdRev: Math.max(1, Number(v.prdRev || 1) || 1),
     at: Date.now(),
   }
 }
@@ -172,6 +235,11 @@ export function buildConfirmSheet(v: {
 /** 渲染成 ≤40 行的文本（交给主线程/用户批准用）。 */
 export function renderConfirmSheet(sheet: ConfirmSheet, locale: HostLocale): string {
   const lines: string[] = [t(locale, 'confirm.head', { goal: sheet.summary || t(locale, 'confirm.noSummary') })]
+  // 改写后的版本必须自曝（2026-10-17）：第二张单与第一张长得一样时，用户无从核对「我要求改的
+  // 到底改没改」；同时把封顶说清（`PRD_REV_MAX`），避免他以为可以无限改下去。
+  if (sheet.prdRev > 1) {
+    lines.push(t(locale, 'confirm.rev', { n: String(sheet.prdRev), max: String(PRD_REV_MAX) }))
+  }
   if (sheet.ac.length) {
     const list = sheet.ac.map((a) => `${a.id} ${a.text}`).join('\n')
     lines.push(t(locale, 'confirm.ac', { n: sheet.ac.length, total: sheet.acTotal, list }))
