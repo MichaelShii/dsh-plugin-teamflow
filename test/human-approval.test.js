@@ -46,7 +46,11 @@ eq(hasHumanMessageSince(sessionOf([userMsg(PAUSE - 60000), pluginNotice(PAUSE + 
 eq(hasHumanMessageSince(sessionOf([userMsg(PAUSE), pluginNotice(PAUSE + 1)]), PAUSE), false, '恰好等于暂停时刻 → false（严格晚于）')
 
 console.log('── 4. 兜底通道与脏数据 ──')
-eq(hasHumanMessageSince({ snapshotEvents: () => [userMsg(PAUSE + 1)] }, PAUSE), true, '没有 ownEvents 时用 snapshotEvents → true')
+eq(hasHumanMessageSince({ snapshotEvents: () => [userMsg(PAUSE + 1)] }, PAUSE), true, '只有 snapshotEvents（新宿主）→ true')
+eq(hasHumanMessageSince({ ownEvents: () => [userMsg(PAUSE + 1)] }, PAUSE), true, '只有 ownEvents（旧宿主）→ true（兜底仍在）')
+// `snapshotEvents` 是**完整日志**、且未标废弃（`ownEvents` 在宿主 d.ts 已 @deprecated），必须优先。
+eq(hasHumanMessageSince({ snapshotEvents: () => [userMsg(PAUSE + 1)], ownEvents: () => [] }, PAUSE), true,
+  '两者都在 → **优先 snapshotEvents**（否则 fork/重启后 ownEvents 只给子级事件，会漏掉人类消息而误挡续跑）')
 eq(hasHumanMessageSince({ ownEvents: () => [null, 123, {}, { type: 'user/message' }] }, PAUSE), false, '脏事件不炸：缺 time/source 一律不计')
 eq(hasHumanMessageSince(sessionOf([{ type: 'user/message', time: PAUSE + 1, data: {} }]), PAUSE), false, 'user/message 缺 source → 不计（宁可不认）')
 eq(hasHumanMessageSince(sessionOf([userMsg(PAUSE + 1)]), Number.NaN), true, 'sinceMs 非法 → 按 0 处理（不因参数错误静默变成 false）')

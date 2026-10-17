@@ -406,8 +406,11 @@ export function hasHumanMessageSince(session: unknown, sinceMs: number): boolean
   if (!s || typeof s !== 'object') return null
   let events: unknown = null
   try {
-    if (typeof s.ownEvents === 'function') events = s.ownEvents()
-    else if (typeof s.snapshotEvents === 'function') events = s.snapshotEvents()
+    // ⚠️ `snapshotEvents()` 优先：它返回**完整日志**且未标废弃；`ownEvents()` 在宿主 d.ts 里已
+    // `@deprecated`（= `snapshotEvents(inheritedEventCount)`，只剔掉 fork 继承前缀），new calls 被禁止。
+    // 保留它只作旧宿主（没有 snapshotEvents）的兜底。
+    if (typeof s.snapshotEvents === 'function') events = s.snapshotEvents()
+    else if (typeof s.ownEvents === 'function') events = s.ownEvents()
   } catch (e) {
     return null
   }

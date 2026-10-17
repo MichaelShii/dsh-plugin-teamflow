@@ -973,7 +973,7 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
   // `resumeRun` 要能从 runtime.agents 取到 agent（测试 [21] 那里取不到 ⇒ 只能观测到「被拒/放行」，
   // 观测不到回退是否真的发生）。这里给它一个假 agent，才能把「PRD 真的重跑了」断言出来。
   const fakeParent = {
-    session: { id: 'sid-redo', header: { cwd: work }, append() {}, ownEvents: () => sessionEvents },
+    session: { id: 'sid-redo', header: { cwd: work }, append() {}, snapshotEvents: () => sessionEvents },
     status: 'idle', followup() {}, inject() {}, options: {},
   }
   setRuntime({ get: (sid) => (sid === 'sid-redo' ? fakeParent : undefined) }, {
