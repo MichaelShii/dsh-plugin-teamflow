@@ -307,6 +307,9 @@ async function runScenario(
     childSpecs: children.map((c) => ({
       provider: c.provider, delivery: c.delivery,
       hasRequestParent: !!c.requestParent, hasTopSignal: !!c.topSignal,
+      // **真 brand 而非真值**（2026-10-17 issue #20 追评）：伪 signal 也是真值，
+      // 但宿主 Node 24 的 `AbortSignal.any([...])` 只认真 AbortSignal ⇒ 必须断 brand。
+      signalBrandOk: c.topSignal instanceof AbortSignal,
     })),
     // 宿主返回的 childId 列表 + agents 注册表实际被查过的 id（证明 localAgent 走注册表）
     childIds: children.map((c) => c.childId),
@@ -974,7 +977,7 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
     startActivation: async (spec) => {
       const init = spec && spec.request
       const label = String((spec && spec.label) || '')
-      seen.push({ label, prompt: String((init && init.prompt && init.prompt[0] && init.prompt[0].text) || '') })
+      seen.push({ label, prompt: String((init && init.prompt && init.prompt[0] && init.prompt[0].text) || ''), signal: spec && spec.signal })
       return {
         childId: `c-${seen.length}`,
         result: (async () => ({ stopReason: 'completed', output: [{ type: 'text', text: '' }] }))(),
@@ -1006,6 +1009,12 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
   }
   ok(seen.some((c) => /梳理 PRD/.test(String(c.label))),
     `PRD **真的重跑了**（不是复用旧产物）（实测子代理 ${JSON.stringify(seen.map((c) => c.label)).slice(0, 120)}）`)
+  // 续跑路径的 signal **必须真**（2026-10-17 issue #20 追评）：`resumeRun` 传 `undefined` ⇒ 必经
+  // `normalizeSignal` 兜底。旧实现兜底成鸭子对象 ⇒ Node 24 上宿主 `AbortSignal.any([...])` 抛
+  // `signals[1] is not of type AbortSignal.`，阶段 1–3ms 内启动即死（续跑 100% 不可用）。
+  // 这条断言的是 **brand** 而不是「宿主那行抛不抛」—— 后者在 Node 22 上是绿的，同一份代码换个运行时才红。
+  ok(seen.every((c) => c.signal instanceof AbortSignal),
+    `续跑链路（resumeRun→executePipeline→runAgent→startActivation）交给宿主的 signal 是真 AbortSignal（实测 ${JSON.stringify(seen.map((c) => (c.signal instanceof AbortSignal ? 'real' : String(typeof c.signal))))}）`)
   ok(seen.some((c) => /\[REVISED —/.test(String(c.prompt))),
     '补录以 **[REVISED]** 块进了 PRD prompt（与澄清轮 [CLARIFIED] 分叉；不是静默丢弃）')
   ok(!seen.some((c) => /\[CLARIFIED —/.test(String(c.prompt))),
@@ -1124,6 +1133,8 @@ console.log('\n[N] 宿主 subagent API 入参形状（startActivation）')
   ok(r.childSpecs.every((s) => s.provider === 'spawn'), '每个阶段都有非空 provider（空值 ⇒ 宿主 expectProvider 抛）')
   ok(r.childSpecs.every((s) => s.hasRequestParent), '每个阶段都传 request.parent（宿主 assertAdmitting 校验「活的父 Agent」）')
   ok(r.childSpecs.every((s) => s.hasTopSignal), '每个阶段都传顶层 signal（宿主发布前取消通道；嵌套 request.signal 是发布后通道）')
+  ok(r.childSpecs.every((s) => s.signalBrandOk),
+    '每个阶段交给宿主的 signal 都是**真 AbortSignal**（伪鸭子对象在 Node 24 的 AbortSignal.any 里抛 signals[N] is not of type AbortSignal——issue #20 追评；本断言在 Node 22 就能判死）')
   ok(r.stageChildIds.length > 0 && r.stageChildIds.every((id) => r.agentLookups.includes(id)),
     `每个**阶段**子代理的 childId 都被 agents 注册表查过（实测 stages=${r.stageChildIds} lookups=${r.agentLookups}）——localAgent 的取法真的在跑，不是只在源码里（分诊不走 runAgent，故不在本断言范围）`)
   // 计量：只有「启动后立刻取活句柄」才拿得到 token（夹具复刻了「result settle 前已清理」的宿主语义）

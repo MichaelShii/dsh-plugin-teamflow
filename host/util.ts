@@ -365,11 +365,26 @@ export function sanitizeSnapOptions(o) {
 }
 // 安全信号兜底：宿主（09-04+）在 subagents.start 内部调用 signal.throwIfAborted()——
 // 缺该方法会「启动/执行失败：options?.signal?.throwIfAborted is not a function」（实锤 r1-json-tree-view
-// 3 任务 3 轮 resume 全失败）。SAFE_SIGNAL 永不 abort（aborted 恒 false），空实现语义正确。
-export const SAFE_SIGNAL = { aborted: false, addEventListener: () => {}, removeEventListener: () => {}, throwIfAborted: () => {} }
-export function normalizeSignal(s) {
-  // 真 AbortSignal 判定：须具备 throwIfAborted（宿主硬依赖）；伪 signal 一律降级 SAFE_SIGNAL
-  return (s && typeof s === 'object' && typeof s.addEventListener === 'function' && typeof s.aborted === 'boolean' && typeof s.throwIfAborted === 'function') ? s : SAFE_SIGNAL
+// 3 任务 3 轮 resume 全失败）。
+//
+// ⚠️ **必须是真正的 AbortSignal，不能是鸭子对象**（2026-10-17 issue #20 追评实锤）：宿主会把调用方的
+// signal 原样丢进 `AbortSignal.any([token.abort.signal, callerSignal])`（api-gateway client.node.js:1694）
+// 与 `AbortSignal.any([inputs.signal, controller.signal])`（dsh-subagent lib/index.js:1688）。
+// Node 22 的 `AbortSignal.any` 只做鸭子校验（是对象且有 `aborted` 即收）⇒ 伪 signal 一路蒙混；
+// **Node 24 改走 WebIDL `sequence<AbortSignal>` 真 brand 校验** ⇒ `TypeError: signals[1] is not of type
+// AbortSignal.`，阶段在 1–3ms 内启动即死。本插件有三条入口传 `undefined`（resumeRun / api.start /
+// triage 预检）⇒ 在 Node 24 上「续跑」与「面板启动」全部不可用，只有带真 exec.signal 的
+// `teamflow_start` 幸免。语义保持不变：真 signal、永不 abort（aborted 恒 false）。
+export const SAFE_SIGNAL: AbortSignal = new AbortController().signal
+const ABORT_SIGNAL_BRAND = '[object AbortSignal]'
+/**
+ * 真 AbortSignal 判定。**只认真 brand，不认鸭子形状**——鸭子判定正是 Node 24 崩溃的放行口。
+ * 跨 realm（vm / jsdom / 独立 context）造出的**真** signal `instanceof` 会失配，用 `toString` brand 兜一层。
+ */
+export function normalizeSignal(s: unknown): AbortSignal {
+  if (s instanceof AbortSignal) return s
+  if (Object.prototype.toString.call(s) === ABORT_SIGNAL_BRAND && typeof (s as AbortSignal).throwIfAborted === 'function') return s as AbortSignal
+  return SAFE_SIGNAL
 }
 
 /**

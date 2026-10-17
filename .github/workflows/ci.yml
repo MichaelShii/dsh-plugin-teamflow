@@ -8,6 +8,14 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22.18 = `engines.node` 声明的下限；24.x = 现役 LTS。
+        # ⚠️ 矩阵**抓不住**「契约违规被宽松运行时吸收」这一类（2026-10-17 issue #20 追评：伪 AbortSignal
+        # 在 Node 24 抛 `signals[1] is not of type AbortSignal.`，而当年同一套测试在 22/24 上全绿）。
+        # 真正的门禁是 test/signal-brand.test.js 与 orchestration 里的 brand 断言；矩阵只兜「其它 Node 24 差异」。
+        node-version: [22.18, 24.x]
     steps:
       # action 一律用 v5：v4 的 action runtime 是 node20（GitHub 已弃用，会被强制切到 node24 并告警），
       # v5 起改用 node24（实测：checkout/setup-node/pnpm-action-setup 的 v4 = node20，v5 = node24）。
@@ -19,7 +27,7 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: 22.18
+          node-version: ${{ matrix.node-version }}
           cache: pnpm
 
       - name: Install (frozen lockfile)
