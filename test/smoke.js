@@ -156,6 +156,7 @@ const hostSrc = [
   ...CORE_FILES.map((f) => readFileSync(join(here, `../host/core/${f}.ts`), 'utf8')),
 ].join('\n//#region host-pool\n')
 const utilSrc = readFileSync(join(here, '../host/util.ts'), 'utf8')
+const indexSrc = readFileSync(join(here, '../host/index.ts'), 'utf8')
 // smoke 自身源码（用于断言「测试里确实写了这条回归样本」——防测试被悄悄删掉而源码仍在/或反之）
 const smokeSelf = readFileSync(join(here, 'verdict.test.js'), 'utf8')
 const constantsSrc = readFileSync(join(here, '../host/constants.ts'), 'utf8')
@@ -411,6 +412,14 @@ ok(/interface-check\.test\.js/.test(readFileSync(join(here, '../package.json'), 
 ok(/smoke-check\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：host 冒烟套件登记双链')
 ok(/viewport\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：画布视图套件登记双链')
 ok(readFileSync(join(here, '../package.json'), 'utf8').includes('test/signal-brand.test.js'), 'package.json：信号 brand 门禁套件登记双链（issue #20 追评：鸭子 signal 在 Node 24 抛 signals[N] is not of type AbortSignal）')
+ok(readFileSync(join(here, '../package.json'), 'utf8').includes('test/human-approval.test.js'), 'package.json：确认单「人工批准」判据套件登记双链')
+// 确认单人工闸门（2026-10-17 实锤 tf-mvc4jrl7-7g6hnb：模型把注入的汇报当用户指令，自己把确认单批了）
+ok(pipelineSrc.includes('hasHumanMessageSince') && pipelineSrc.includes("origin !== 'ui' && afterPrd && prdOnly"),
+  'pipeline：确认单断点带「人工批准」闸（模型工具路径必须有人类消息证据；界面入口免检）')
+ok(/resumeRun\(id, parent\.session\.id, sup, 'tool'\)/.test(indexSrc) && /resumeRun\(runId, sessionId, undefined, 'ui'\)/.test(indexSrc),
+  'index：两个 resume 入口标注来源（工具=tool / 界面=ui），闸门据此区分')
+ok(utilSrc.includes('hasHumanMessageSince') && utilSrc.includes("data.source.kind === 'user'"),
+  'util：人工消息判据只认 source.kind===\'user\'（插件注入的 plugin:* 与 time-context 一律不算——否则闸门恒开）')
 ok(/响应块构成：\{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')) && /response blocks: \{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')), 'locales：diag.emptyTurn 带块构成占位（zh/en 齐备——诊断必须自证，2026-09-26 tf-muigy5eq r12 实踩）')
 ok(/const beforeLen = journal\.stages\.length/.test(runnerSrc) && /lastStage = journal\.stages\[beforeLen\] \|\| null/.test(runnerSrc), 'runner：withRetry 按调用前长度取本次尝试 stage——并发安全（防证据/重试诊断/usage 累计串位）')
 ok(/stage: JournalStage \| null/.test(runnerSrc), 'runner：withRetry 返回携带 stage 引用')
@@ -939,7 +948,7 @@ ok(/'confirm\.acExtracted'/.test(hostSrc) && /'confirm\.acMissing'/.test(hostSrc
 ok(/t\(locale, clarifyKey\)/.test(hostSrc) && !/function clarifyStrengthForTeam\(/.test(hostSrc), 'host：澄清变体按强度**选槽位**（不再反查 run 快照 —— 那是「迟一拍」的根因）')
 // 续跑补录入口：`supplement` 从 teamflow_resume 一路传到 resumeRun；PRD 是唯一消费点
 // ⇒ 断点晚于 prd 必须**显式拒绝**（静默接受 = 静默丢弃，本仓反复踩）
-ok(/supplement\?: string \| null/.test(pipelineSrc) && /resumeRun\(id, parent\.session\.id, sup\)/.test(hostSrc), 'resume：supplement 从 teamflow_resume 一路传到 resumeRun')
+ok(/supplement\?: string \| null/.test(pipelineSrc) && /resumeRun\(id, parent\.session\.id, sup, 'tool'\)/.test(hostSrc), 'resume：supplement 从 teamflow_resume 一路传到 resumeRun（并标注 origin=tool）')
 // ⚠️ 2026-10-08：判据从「断点晚于 prd 一律拒绝」改成「**除 PRD 之后未跑过任何阶段外**一律拒绝」。
 // 锁必须覆盖**两边**：只要拒绝条件（`afterPrd && !redoPrd`）或「作废面为零」的前置（`prdOnly`）
 // 任一半被改掉，就有一种形态会静默走错（要么假承诺、要么白作废下游产物）。

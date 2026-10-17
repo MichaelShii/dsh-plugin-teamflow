@@ -388,6 +388,41 @@ export function normalizeSignal(s: unknown): AbortSignal {
 }
 
 /**
+ * 「暂停之后，会话里有没有**人类**说过话」——确认单人工闸门的判据（2026-10-17 实锤 tf-mvc4jrl7-7g6hnb）。
+ *
+ * 实锤：插件把暂停汇报作为 `user/message` 注入主会话（`source.kind = 'plugin:dsh-plugin-teamflow'`），
+ * 模型把它当用户指令 ⇒ 自己调 `teamflow_resume` 把确认单批了（08:33:36 暂停 → 08:34:02 自调，
+ * 窗口内零条人类消息）。ADR-0011 ① 要的是**人工**批准，不能靠模型自律。
+ * 宿主会话日志里人类消息带 `data.source.kind === 'user'`，注入消息带 `plugin:*` / `time-context` /
+ * `model-selection` 等 ⇒ 判据可机器判定。
+ *
+ * 三态返回（**空值必须可见**，§7 同源）：
+ * - `true`  找到晚于 `sinceMs` 的人类消息 ⇒ 人答复过
+ * - `false` 能读到会话日志、但没有任何人类消息晚于该时刻 ⇒ **没人答复**
+ * - `null`  读不到（session 缺失 / 宿主 API 变更）⇒ 调用方自行决定并留痕，**不要当成 false**
+ */
+export function hasHumanMessageSince(session: unknown, sinceMs: number): boolean | null {
+  const s = session as { ownEvents?: () => unknown; snapshotEvents?: () => unknown } | null | undefined
+  if (!s || typeof s !== 'object') return null
+  let events: unknown = null
+  try {
+    if (typeof s.ownEvents === 'function') events = s.ownEvents()
+    else if (typeof s.snapshotEvents === 'function') events = s.snapshotEvents()
+  } catch (e) {
+    return null
+  }
+  if (!Array.isArray(events)) return null
+  const since = Number.isFinite(sinceMs) ? sinceMs : 0
+  for (const ev of events) {
+    const e = ev as { type?: string; time?: number; data?: { source?: { kind?: string } } } | null
+    if (!e || e.type !== 'user/message') continue
+    if (!(Number(e.time) > since)) continue
+    if (e.data && e.data.source && e.data.source.kind === 'user') return true
+  }
+  return false
+}
+
+/**
  * 幂等合并 .gitignore 条目（纯函数，便于回归测试）。
  *
  * 场景（实锤 assetd `tf-mtwvwpxa-p3vw08`）：插件强制把命令日志/临时脚本写进 `logs/teamflow/`，

@@ -14,7 +14,7 @@ import { runAcceptancePhase } from './stages/acceptance.ts'
 export type { DevTaskDef } from './stages/dev.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
-import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv } from '../util.ts'
+import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv, hasHumanMessageSince } from '../util.ts'
 import type { Blueprint } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { RETRY_LIMIT, PHASE_ORDER, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, DEV_MAX_CONCURRENCY, DEV_DEFAULT_CONCURRENCY } from '../constants.ts'
@@ -1384,6 +1384,9 @@ export function resumeRun(
   /** 续跑时**补录的权威输入**（`teamflow_resume` 的 `supplement`；ADR-0011 待拍板 ④）。
    *  PRD 是唯一消费点（`prdInput` 拼 `[CLARIFIED]` 段）⇒ 只在断点 ≤ prd 时接受。 */
   supplement?: string | null,
+  /** 续跑**发起方**：`tool` = 模型调用（需人工批准证据），`ui` = 人在界面点按钮（本身即人工动作）。
+   *  见下方「确认单必须由人批准」那道闸。 */
+  origin: 'tool' | 'ui' = 'tool',
 ): { ok: boolean; runId?: string; resumedFrom?: string; error?: string } {
   const id = typeof runId === 'string' ? runId : null
   if (!id) return { ok: false, error: t(ambientLocale(), 'run.missingId') }
@@ -1442,6 +1445,29 @@ export function resumeRun(
   const sid = typeof sessionId === 'string' ? sessionId : null
   const agent = sid && runtime.agents ? runtime.agents.get(sid) : undefined
   if (agent === undefined) return { ok: false, error: t(locale, 'run.agentNotFound', { sid }) }
+  // **确认单必须由人批准**（2026-10-17 实锤 tf-mvc4jrl7-7g6hnb）：插件把暂停汇报作为 `user/message`
+  // 注入主会话（`source.kind='plugin:…'`），模型把它当用户指令 ⇒ 08:33:36 暂停、08:34:02 **模型自己**
+  // 调 `teamflow_resume` 把确认单批了，窗内零条人类消息 ⇒ ADR-0011 ① 的人工闸门形同失效。
+  // 判据（可机器判定，不依赖模型自律）：`origin='tool'` 且停在**确认单形态**（PRD 之后一个阶段都没跑过）
+  // 时，要求会话日志里存在**晚于暂停时刻**的 `source.kind==='user'` 消息；没有就拒绝。
+  // 界面入口（`api.resume`，origin='ui'）不受限——那次点击本身就是人的动作。
+  // ⚠️ 三态：`null`=读不到会话日志（宿主 API 变更）⇒ **不硬拒**（否则所有人续跑全挂）但必须留痕。
+  if (origin !== 'ui' && afterPrd && prdOnly) {
+    const human = hasHumanMessageSince(agent && (agent as { session?: unknown }).session, Number(j.interruptedAt || 0))
+    if (human === false) {
+      try {
+        j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.resumeNeedsHuman', { n: String(supp || '').length }) })
+        persistJournal(j)
+      } catch (e) { /* 留痕失败不改变拒绝语义 */ }
+      return { ok: false, error: t(locale, 'run.needsHumanApproval', { id }) }
+    }
+    if (human === null) {
+      try {
+        j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.resumeHumanUnverifiable') })
+        persistJournal(j)
+      } catch (e) { /* 同上 */ }
+    }
+  }
   try {
     const resumePhase = redoPrd ? 'prd' : phaseAtEntry
     const products = buildResumeProducts(j)

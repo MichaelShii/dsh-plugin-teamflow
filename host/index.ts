@@ -684,7 +684,7 @@ function registerTools(ctx) {
       if (!parent) throw new Error(t(ambientLocale(), 'err.tool.sessionAgentResume'))
       const id = args && typeof args.runId === 'string' ? args.runId : null
       const sup = args && typeof args.supplement === 'string' ? args.supplement : null
-      return resumeRun(id, parent.session.id, sup)
+      return resumeRun(id, parent.session.id, sup, 'tool')
     },
   })
   return registeredCount
@@ -1345,9 +1345,9 @@ export class TeamflowService extends TypertRemoteService {
     return { ok: true }
   }
 
-  /** 从断点续跑：跳过已完成阶段，从第一个未完成阶段重跑。 */
+  /** 从断点续跑：跳过已完成阶段，从第一个未完成阶段重跑。**来源=界面**（人工点击）⇒ 免人工批准闸。 */
   resume(runId, sessionId) {
-    return resumeRun(runId, sessionId)
+    return resumeRun(runId, sessionId, undefined, 'ui')
   }
 }
 

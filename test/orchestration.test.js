@@ -965,10 +965,15 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
   const work = join(home, 'work')
   mkdirSync(work, { recursive: true })
   const seen = []
+  // 会话日志（确认单人工批准闸门要读它）：`source.kind==='user'` 才是人说的；插件注入的汇报是
+  // `plugin:dsh-plugin-teamflow`。默认空 ⇒ 等价「暂停后没人说过话」，各用例自己按需注入。
+  let sessionEvents = []
+  const humanEvent = (t) => ({ type: 'user/message', time: t, data: { content: [{ type: 'text', text: '批准' }], source: { kind: 'user' } } })
+  const pluginNoticeEvent = (t) => ({ type: 'user/message', time: t, data: { content: [{ type: 'text', text: '【团队研发流水线汇报】…' }], source: { kind: 'plugin:dsh-plugin-teamflow', form: 'notice' } } })
   // `resumeRun` 要能从 runtime.agents 取到 agent（测试 [21] 那里取不到 ⇒ 只能观测到「被拒/放行」，
   // 观测不到回退是否真的发生）。这里给它一个假 agent，才能把「PRD 真的重跑了」断言出来。
   const fakeParent = {
-    session: { id: 'sid-redo', header: { cwd: work }, append() {} },
+    session: { id: 'sid-redo', header: { cwd: work }, append() {}, ownEvents: () => sessionEvents },
     status: 'idle', followup() {}, inject() {}, options: {},
   }
   setRuntime({ get: (sid) => (sid === 'sid-redo' ? fakeParent : undefined) }, {
@@ -992,12 +997,24 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
       id, requirement: '桌宠', status: 'interrupted', locale: 'zh',
       workspace: ws, workspacePath: work, logs: [],
       options: { mode: 'medium', needDesign: false, needScaffold: false },
-      stages, humanIntervention: true, interrupted: true, interruptedAt: Date.now(),
+      stages, humanIntervention: true, interrupted: true, interruptedAt: Date.now() - 60000,
       confirmSheet: { summary: '旧确认单', ac: [], questions: [], assumptions: [], at: 1 },
     }), 'utf8')
   }
 
+  // ⓪ **人工批准闸门**（2026-10-17 实锤 tf-mvc4jrl7-7g6hnb）：确认单断点上，会话里只有插件注入的汇报
+  // （模型把汇报当用户指令 ⇒ 自己把确认单批了）⇒ `teamflow_resume` 必须**拒绝**，且不得起任何子代理。
+  sessionEvents = [pluginNoticeEvent(Date.now() - 30000)]
+  mk('ws-auto', 'tf-auto', [{ phase: 'prd', status: 'done', output: '旧 PRD' }])
+  const seenBefore = seen.length
+  const rAuto = resumeRun('tf-auto', 'sid-redo', '模型自撰的批准文')
+  ok(rAuto.ok === false && /必须由用户本人批准|human-approval|approved by the user/.test(String(rAuto.error)),
+    `暂停后无人类消息 ⇒ 模型代批被拒（实测 ok=${rAuto.ok} err=${String(rAuto.error || '').slice(0, 70)}）`)
+  ok(seen.length === seenBefore, `被拒时**没有**起任何子代理（实测 ${seenBefore} → ${seen.length}）`)
+
   // ① 确认单形态（只有 prd done）＋ supplement ⇒ 接受，检查点回退到 prd
+  //    人类确实说过话（晚于暂停）⇒ 闸门放行。
+  sessionEvents = [pluginNoticeEvent(Date.now() - 50000), humanEvent(Date.now() - 30000)]
   mk('ws-redo', 'tf-redo', [{ phase: 'prd', status: 'done', output: '旧 PRD' }])
   const r1 = resumeRun('tf-redo', 'sid-redo', '形象改成手绘 SVG，不要 emoji')
   ok(r1.ok === true && r1.resumedFrom === 'prd',
