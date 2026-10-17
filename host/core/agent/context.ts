@@ -16,6 +16,9 @@ export const runtime: {
   agents?: any
   subagents?: any
   sessionProjections?: any
+  /** Session 查询服务（`@deepseek-ai/dsh-session-query`）：PRD 续跑改写靠它读子代理新 turn 的输出。
+   *  可选能力 —— 精简 profile 里可能没有 ⇒ 续跑自动回落为重跑（见 `core/prd-revise.ts`）。 */
+  sessionQuery?: any
   workspaceRegistry?: any
   agentDefaultModel?: any
   llm?: any
@@ -42,6 +45,15 @@ export function setRuntime(
  */
 export function setSessionProjections(projections: unknown): void {
   runtime.sessionProjections = projections
+}
+
+/**
+ * 可选能力：Session 查询服务（`ctx.get('sessionQuery')`，`dsh-session-query`）。
+ * 与 `setSessionProjections` 同款单独 setter：**不写进 static inject**——精简 profile 没有它时，
+ * 插件必须照常加载，只是「PRD 续跑改写」自动回落为重跑（`prd-revise.canReviseViaChild` 会判掉）。
+ */
+export function setSessionQuery(query: unknown): void {
+  runtime.sessionQuery = query
 }
 
 /**

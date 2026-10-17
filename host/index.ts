@@ -21,7 +21,7 @@ import { fileAddressFor } from '@deepseek-ai/dsh-util-workspace-path'
 import { phaseKeyOf, TEAMFLOW_ARTIFACT_ORDER, PLUGIN_PACKAGE_NAME } from './constants.ts'
 import { toText, clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, envFlagOn, confirmModeFromEnv, clarifyStrengthFromEnv, detectInstallEnv, installCommand } from './util.ts'
 
-import { runtime, runs, setRuntime, setSessionProjections, setInstallCtx, workspaceScopeOf, getRun, installCtx, inFlight } from './core/agent/context.ts'
+import { runtime, runs, setRuntime, setSessionProjections, setSessionQuery, setInstallCtx, workspaceScopeOf, getRun, installCtx, inFlight } from './core/agent/context.ts'
 import { backlogSummary, transitionBacklog, assignTask, storeFor } from './core/domain/backlog.ts'
 import { runsFor, runAddress, productKeyOf, runVisibleIn, runBrief, productMetaOf, listProducts } from './core/workspace/products.ts'
 import { loadTeams, findTeam, teamNameOf, teamDescOf, type TeamConfig } from './core/domain/teams.ts'
@@ -820,6 +820,11 @@ export class TeamflowService extends TypertRemoteService {
     // 走 ctx.inject 而非 static inject——服务缺失（最小 profile）时插件仍加载，计量回退事件扫描。
     ctx.inject(['sessionProjections'], (projectionCtx) => {
       setSessionProjections(projectionCtx.get('sessionProjections'))
+    })
+    // 可选能力：Session 查询（PRD 续跑改写要用它读子代理新 turn 的输出）。
+    // 同款 ctx.inject：服务缺失 ⇒ 续跑自动回落为重跑 PRD，插件照常加载。
+    ctx.inject(['sessionQuery'], (queryCtx) => {
+      setSessionQuery(queryCtx.get('sessionQuery'))
     })
     // 可选能力：宿主的插件管理服务（ADR-0012 D2「真一键」）。缺失 → 降级成「只给可复制的命令」，
     // 不报错、不阻塞（`plugin-inventory` 也是这么判空的）。

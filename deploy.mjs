@@ -51,6 +51,7 @@ const FILES = [
   'host/core/stages/acceptance.ts',
   'host/core/clarify-log.ts',
   'host/core/confirm.ts', // PRD 确认单（ADR-0011 ①）：纯函数模块，也要同步到 profile 副本
+  'host/core/prd-revise.ts', // PRD 续跑改写（continuable）：同上，纯逻辑 + 投递循环，漏同步则续跑静默失效
   'host/core/update-check.ts', // 版本探测（ADR-0012）：同上，纯逻辑模块
   'host/core/triage.ts',
   'host/core/workspace/sanity.ts',

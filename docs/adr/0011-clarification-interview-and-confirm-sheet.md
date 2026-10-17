@@ -131,6 +131,29 @@ ADR-0010 / TODO 此前写「多轮追问需要一个跨调用状态（`clarify-s
 > **同时补 B 方案：保留每版 PRD 快照。** `redo` 前把被替换的 `PRD.md` 复制成 `PRD.v{N}.md`，
 > 确认单给出路径。理由：用户反复改的真实原因通常是**看不到上一版改成了什么**，只能凭记忆重述需求、
 > 来回打转 ⇒ 对比能力比次数限制更能让他在第 1 次就改到位。
+>
+> ⚠️ **同日再补（continuable 续跑）：改写不再重跑 PRD 子代理。**
+> 阶段子代理**本来就是 continuable** —— `startActivation` 内部是
+> `provider.prepareContinuable === undefined ? manager.startExternal(spec) : manager.startLocal(spec)`，
+> 而 `spawn` provider 实现了 `prepareContinuable` ⇒ 走 `startLocal`、descriptor 记 `mode:'continuable'`。
+> 插件此前只是**从没给它发过第二条消息**。
+>
+> headless 探针实测（2026-10-17，`--patch` overlay）：子代理 settle 之后 `sendMessage(parent, childId, …)`
+> **仍被接受**（child 已 dispose，走 `coldResume` 重建）；第二轮 `turn/start`+`turn/end` 各两条、事件 19→30；
+> **第一轮给的口令在第二轮被正确复述** ⇒ 上下文确实复用。第二轮 usage：`input 180 / cacheRead 8448 / output 6`
+> ——复用上下文缓存，而不是重发整包需求。
+>
+> **取第二轮文本的正确姿势**（三版探针才踩对）：
+> ❌ `activation.result`（只 resolve 一次，恒为第一轮旧值）；
+> ❌ `sessions.get(childId)`（settle 后 agent/session 已 dispose）；
+> ✅ `sessionQuery.observeSession(childId).events` → `type==='assistant/message'` → **`data.message.content`**
+> （不是 `data.content`），usage 在 `data.usage`。
+>
+> **回落**：childId 缺失 / 宿主无 `sessionQuery` / 超时（180s）/ 拿到空文本 ⇒ 一律回落为「重跑 PRD」，
+> 并记 `log.reviseFallback`（回落必须可见，否则「为什么这次忽然又慢又贵」永远是黑盒）。
+> 续跑是**加速路径**，不是唯一路径 —— 不能因为它失败就让用户改不了 PRD。
+>
+> **快照仍然要留**：两者正交 —— 续跑省成本、减少漂移（只改用户指的地方）；快照给**人**看差异。
 
 >
 > **与 `/plan` 的边界（这条要一直守）**：确认单是**宿主把人拉过来签字**，人只做「批 / 改」二元选择，

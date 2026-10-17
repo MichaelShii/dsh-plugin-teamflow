@@ -1100,6 +1100,70 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
   ok(!!(rev3 && rev3.confirmSheet && String(rev3.confirmSheet.prevDocPath || '').endsWith('PRD.v2.md')),
     `确认单给出上一版路径（实测 ${rev3 && rev3.confirmSheet && rev3.confirmSheet.prevDocPath}）`)
 
+  // ③c **续跑改写**（2026-10-17）：journal 里有 `prdChildId` 且宿主有 sessionQuery + sendMessage
+  //     ⇒ redo **不再 spawn**，而是对**原 child** 投一条修改要求，读它这一轮的新文本。
+  //     这是「复用上下文」在编排层的唯一证据：spawn 次数不增 + 投递目标正确 + 新文本进了确认单。
+  {
+    const PRD_REVISED = '## 目标\n四格缩进的目录工具\n\n<!-- state -->'
+      + JSON.stringify({ phase: 'prd', summary: '四格缩进', memory: [], extra: { acIndex: { 'AC-1': '四格' }, summary: '四格缩进' } })
+      + '<!-- /state -->'
+    const sendSeen = []
+    const spawnSeen = []
+    setRuntime({ get: (sid) => (sid === 'sid-redo' ? fakeParent : undefined) }, {
+      list: () => ['spawn'],
+      sendMessage: async (sender, target, content) => {
+        sendSeen.push({ target: String(target), text: String((content && content[0] && content[0].text) || '') })
+        return 'mid-cont'
+      },
+      startActivation: async (spec) => {
+        spawnSeen.push(String((spec && spec.label) || ''))
+        return { childId: 'c-should-not-spawn', result: (async () => ({ stopReason: 'completed', output: [{ type: 'text', text: '' }] }))(), dispose: async () => {} }
+      },
+    })
+    const baseEvents = [
+      { type: 'user/message', data: { content: [{ type: 'text', text: '原始需求' }] } },
+      { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '旧 PRD' }] } } },
+      { type: 'turn/end', data: {} },
+    ]
+    let polls = 0
+    runtime.setSessionQuery({
+      observeSession: async () => {
+        polls++
+        if (polls <= 1) return { events: baseEvents } // 基线
+        return {
+          events: [
+            ...baseEvents,
+            { type: 'user/message', data: { content: [{ type: 'text', text: '改成四格' }] } },
+            { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: PRD_REVISED }] }, usage: { inputTokens: 12, outputTokens: 3, cacheReadTokens: 99, cacheWriteTokens: 0 } } },
+            { type: 'turn/end', data: {} },
+          ],
+        }
+      },
+    })
+    sessionEvents = [pluginNoticeEvent(Date.now() - 50000), humanEvent(Date.now() - 30000)]
+    prdTextNow = ''
+    mk('ws-cont', 'tf-cont', [{ phase: 'prd', status: 'done', output: '旧 PRD', childId: 'child-old' }], { prdRev: 1, confirmApprovedRev: 1, prdChildId: 'child-old' })
+    const r5 = resumeRun('tf-cont', 'sid-redo', '改成四格')
+    ok(r5.ok === true, `续跑改写被接受（实测 ok=${r5.ok} err=${String(r5.error || '').slice(0, 60)}）`)
+    let contJ = null
+    for (let i = 0; i < 150; i++) {
+      try { contJ = JSON.parse(readFileSync(join(home, 'teamflow', 'ws-cont', 'runs', 'tf-cont.json'), 'utf8')) } catch (e) { contJ = null }
+      if (contJ && contJ.confirmSheet) break
+      await new Promise((r) => setTimeout(r, 30))
+    }
+    ok(spawnSeen.length === 0, `**没有再 spawn PRD 子代理**（实测 ${JSON.stringify(spawnSeen)}）`)
+    ok(sendSeen.length === 1 && sendSeen[0].target === 'child-old',
+      `对**原 child** 投递了修改要求（实测 ${JSON.stringify(sendSeen.map((x) => x.target))}）`)
+    ok(sendSeen.length === 1 && sendSeen[0].text.indexOf('改成四格') >= 0, '投递内容包含用户的修改点')
+    ok(!!(contJ && contJ.confirmSheet && Number(contJ.confirmSheet.prdRev) === 2),
+      `续跑后照常出第 2 版确认单（实测 ${contJ && contJ.confirmSheet && contJ.confirmSheet.prdRev}）`)
+    ok(!!(contJ && contJ.confirmSheet && String(contJ.confirmSheet.summary || '') === '四格缩进'),
+      `确认单用的是**续跑产出的新 PRD**（state 块被解析）（实测 ${JSON.stringify(contJ && contJ.confirmSheet && contJ.confirmSheet.summary)}）`)
+    ok(!!contJ && (contJ.stages || []).some((s) => String(s.phase) === 'prd' && String(s.childId || '') === 'child-old'),
+      '续跑那一轮进了 stages（断点/汇报/用量按「每阶段一条」读）')
+    runtime.setSessionQuery(undefined)
+  }
+
   // ④ 对照：PRD 之后**已经有阶段跑过** ⇒ 仍必须拒绝（回退会白作废它们的产物）
   mk('ws-late', 'tf-late', [{ phase: 'prd', status: 'done', output: 'x' }, { phase: 'design', status: 'done', output: 'y' }])
   const r2 = resumeRun('tf-late', 'sid-redo', '改一下')

@@ -164,6 +164,12 @@ export interface JournalRecord {
   /** **已被放行（批准）的 PRD 版本**：`resume` 成功即记 `prdRev`（redo 路径不记）。
    *  `confirmApprovedRev >= prdRev` ⇒ 这一版批过了，续跑时不再重复打断。 */
   confirmApprovedRev?: number | null
+  /**
+   * **产出当前 PRD 的那个子代理 id**（2026-10-17）：`redo` 时对**同一个 child** 续跑改写，
+   * 而不是重新 spawn。阶段记录在 redo 时会被摘掉 ⇒ 必须在摘之前把 childId 存到这里，
+   * 否则续跑无从下手（会静默回落为重跑，功能等于不存在）。
+   */
+  prdChildId?: string | null
   result?: unknown
   [key: string]: unknown
 }
@@ -320,6 +326,8 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     // （结构门禁 journal.test.js 会当场抓到漏写）。
     prdRev: Number(journal.prdRev || 0) || 0,
     confirmApprovedRev: journal.confirmApprovedRev == null ? null : (Number(journal.confirmApprovedRev) || 0),
+    // 产出当前 PRD 的子代理 id（redo 续跑用；阶段记录被摘掉后它是唯一线索）
+    prdChildId: journal.prdChildId || null,
     /** 外部供应商故障标记（限流/无额度/上游故障/超时）：run 落可续跑中断态时置位，汇报据此讲清「非交付缺陷」。 */
     externalFailure: journal.externalFailure === true,
     interrupted: journal.interrupted === true,

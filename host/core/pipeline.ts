@@ -14,7 +14,7 @@ import { runAcceptancePhase } from './stages/acceptance.ts'
 export type { DevTaskDef } from './stages/dev.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
-import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv, hasHumanReplySince } from '../util.ts'
+import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv, hasHumanReplySince, normalizeSignal } from '../util.ts'
 import type { Blueprint } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { RETRY_LIMIT, PHASE_ORDER, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, DEV_MAX_CONCURRENCY, DEV_DEFAULT_CONCURRENCY } from '../constants.ts'
@@ -53,6 +53,7 @@ import {
 import { parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
 import { ambientLocale, localeForMissingSnapshot, localeSource, runLocaleOf } from './locale.ts'
 import { noteClarifyAnswered, noteClarifyProceeded } from './clarify-log.ts'
+import { canReviseViaChild, revisePrdViaChild } from './prd-revise.ts'
 
 /** dev 子卡/阶段 label 的「开发 · 」前缀与重试后缀：zh 存量兼容 + en 新增（QA-2：既有解析契约只增不改）。
  *  en 侧必须覆盖词典 `dev.taskRetry` 的实际产出 `(attempt N)`（R3-2 实锤：只写 retry \d+ 时，
@@ -907,8 +908,66 @@ export async function executePipeline(
         ? `${requirement}\n\n[REVISED — the user reviewed the previous PRD and asked for these changes; treat them as authoritative and do NOT re-ask]\n${supplement}`
         : `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-assume]\n${supplement}`
       : requirement
+    /**
+     * **PRD 续跑改写**（2026-10-17）：确认单上「要改」时，对**产出当前 PRD 的那个子代理**投一条修改要求，
+     * 让它带着自己的上下文只改需要改的部分 —— 而不是重新 spawn、从零读需求/文档再重写整份 PRD。
+     *
+     * 为什么要这样：重跑会**漂移**（用户只要求改一处，没提的部分也可能被顺手改写），而且贵。
+     * 为什么现在能做：阶段子代理**本来就是 continuable**（`startActivation` 内部按 provider 的
+     * `prepareContinuable` 分派，spawn 有该能力），插件此前只是从没给它发过第二条消息。
+     * 实测（headless 探针）：settle 后 `sendMessage` 仍被接受（coldResume），第二轮复用上下文
+     * （第一轮给的口令被正确复述），usage `input 180 / cacheRead 8448 / output 6`。
+     *
+     * **失败一律回落为重跑**（返回 null）：child 没了、宿主没这能力、超时、拿到空文本 ——
+     * 续跑是加速路径，不是唯一路径；不能因为它失败就让用户改不了 PRD。
+     */
+    const revisePrdViaChildIfPossible = async (): Promise<{ text: string; cancelled: boolean; skipped: boolean } | null> => {
+      const childId = journal.prdChildId ? String(journal.prdChildId) : ''
+      if (!resume || !resume.redo || !childId || !supplement) return null
+      if (!canReviseViaChild({ subagents: runtime.subagents, sessionQuery: runtime.sessionQuery, childId })) return null
+      const instruction = [
+        '[REVISED — the user reviewed the PRD you wrote and asked for these changes; treat them as authoritative and do NOT re-ask]',
+        supplement,
+        '',
+        'Update the PRD you already wrote: change ONLY what these notes require and keep everything else intact.',
+        'Reply with the complete updated PRD (including the state block), exactly as you did the first time.',
+      ].join('\n')
+      const label = pForm.label
+      const startedAt = Date.now()
+      journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: label }) })
+      const out = await revisePrdViaChild({
+        subagents: runtime.subagents,
+        sessionQuery: runtime.sessionQuery,
+        parent,
+        childId,
+        instruction,
+        signal: normalizeSignal(signal),
+        onWait: () => { /* 超时由返回值表达，这里不额外刷日志 */ },
+      })
+      if (!out) {
+        // 回落必须**可见**：否则「为什么这次忽然又慢又贵」永远是黑盒。
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.reviseFallback') })
+        return null
+      }
+      const shown = stripStateBlock(out.text)
+      // 阶段记录：续跑那一轮也要进 stages（断点定位/汇报/用量都按「每阶段一条」读）。
+      // 只在成功后 push —— 失败不留 running 残影。
+      const seq = (journal.stages.length ? Math.max(...journal.stages.map((s) => s.seq)) : 0) + 1
+      journal.stages.push({
+        seq, label, phase: 'prd', status: 'done', outcome: 'completed',
+        taskKey: null, taskIds: null, childId, startedAt, endedAt: Date.now(),
+        summary: clip(shown, 3000), usage: out.usage, handoff: null,
+        output: clip(shown, 50000),
+      })
+      journal.agentsStarted += 1
+      mergeStageState('prd', out.text, stateBlockRelPath(journal.id, 'prd'))
+      timeline['prd'] = shown
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.prdRevisedViaChild', { n: String(shown.length) }) })
+      return { text: shown, cancelled: false, skipped: false }
+    }
     // patch 档的「单点确认」是机械阶段（核对现状 + 给直改指令，不做架构判断）→ 降档省 token
-    const prdStage = await runSimpleStage('prd', pForm.fn(prdInput, root, journal.id, state), pForm.label, {
+    const revisedPrdStage = await revisePrdViaChildIfPossible()
+    const prdStage = revisedPrdStage || await runSimpleStage('prd', pForm.fn(prdInput, root, journal.id, state), pForm.label, {
       effort: options.mode === 'patch' ? MECHANICAL_STAGE_EFFORT : null,
     })
     if (prdStage.cancelled) return
@@ -1543,6 +1602,13 @@ export function resumeRun(
       // （报告与断点定位都按「每阶段一条」读）。安全前提正是 `prdOnly`：PRD 之后确实没跑过任何阶段。
       .filter((s) => !(redoPrd && phaseKeyOf(s.phase) === 'prd'))
     if (redoPrd) {
+      // **先记住产出当前 PRD 的子代理 id**（下面把阶段记录摘掉后就没线索了）：redo 会优先对它
+      // 「续跑改写」（上下文接着干），而不是重新 spawn 一个从零读需求的 PRD 子代理。
+      try {
+        const prdRec = (j.stages || []).filter((s) => phaseKeyOf(s.phase) === 'prd').pop()
+        const cid = prdRec && prdRec.childId ? String(prdRec.childId) : ''
+        if (cid) j.prdChildId = cid
+      } catch (e) { /* 取不到就回落为重跑（不是错误） */ }
       // **存量 run 的版本起点**（2026-10-17）：`prdRev` 是本版新加的字段，v0.3.0 之前创建的 run
       // 落盘时没有它 ⇒ 读回来是 `undefined`/0。而 redo 的前提是「PRD 已经产出过一版」（`prdOnly`），
       // 所以这里必须补成 1 —— 否则重跑后只是 1，`prdRev > 1` 不成立 ⇒ 第二张确认单又不出（issue #11 复发）。

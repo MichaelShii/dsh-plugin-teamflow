@@ -332,6 +332,9 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'run.redoPrd': '回退重跑 PRD：PRD 之后尚无任何阶段执行（PRD 确认单暂停就是这个形态）⇒ 已带上补充说明（{n} 字符）**重跑 PRD**；旧的确认单已作废，新 PRD 完成后会再出一份确认单。',
     'log.confirmAbort': 'PRD 确认单（ADR-0011）：PRD 已完成 → **已暂停等批准**（AC {ac} 条 / 假设 {as} 行）。后续阶段一个都没开始',
     'log.confirmRevised': '确认单：PRD 已被改写（第 {rev} 版）⇒ 上一版批准自动失效，重新等批准',
+    // PRD 续跑改写（2026-10-17）：在**原 PRD 子代理的上下文里**改，而不是重跑。
+    'log.prdRevisedViaChild': 'PRD 改写走**续跑**：在原 PRD 子代理的上下文里增量修改（{n} 字符，未重新读需求/文档）',
+    'log.reviseFallback': 'PRD 改写**回落为重跑**：续跑不可用（子代理已释放 / 宿主无 sessionQuery / 超时 / 拿到空文本）⇒ 重新 spawn 一个 PRD 子代理',
     'log.resumeNeedsHuman': '续跑被拒：确认单断点之后没有任何用户消息（只有插件注入的汇报）—— 人工批准闸门生效（补录 {n} 字符未采用；已要求主线程先问用户）',
     'log.resumeHumanUnverifiable': '续跑：读不到会话日志（宿主 API 不可用）⇒ 人工批准闸门本次**未生效**（放行但留痕——按设计宁可放行也不能让所有续跑全挂）',
     'report.confirmSheet': '📋 **PRD 确认单**（等批准，已停在设计/技术方案之前）：\n{sheet}\n→ 认可：**调 `teamflow_resume`（runId={id}）** —— 它会**立即开始写代码**（设计 → 技术方案 → 开发 → QA → 验收，真实改动落到工作区），**不是继续讨论**；不调就不会自动往下跑。\n→ 要改：**调 `teamflow_resume`（runId={id}，`supplement` = 要改的地方）** —— PRD 之后还没跑过任何阶段 ⇒ 会**回退重跑 PRD** 并**再出一份新确认单**（附上一版路径，可直接对比），无需另起新 run。改几次都行，改到满意再批。',
@@ -782,6 +785,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'run.redoPrd': 'PRD re-run (rewind): no stage has run after PRD yet (this is the PRD confirm-sheet pause) ⇒ re-running PRD with the supplemental input ({n} chars). The previous confirm sheet is superseded; a fresh one follows once the new PRD is done.',
     'log.confirmAbort': 'PRD confirm sheet (ADR-0011): PRD finished → **paused for approval** ({ac} AC(s) / {as} assumption line(s)). No later stage has started',
     'log.confirmRevised': 'Confirm sheet: the PRD was revised (version {rev}) ⇒ the previous approval is void and a new approval is required',
+    'log.prdRevisedViaChild': 'PRD revised via **continuation**: edited inside the original PRD child\'s context ({n} chars, no re-read of the requirement or docs)',
+    'log.reviseFallback': 'PRD revision **fell back to a fresh run**: continuation unavailable (child released / no sessionQuery / timeout / empty text) ⇒ spawning a new PRD child',
     'log.resumeNeedsHuman': 'Resume rejected: no user message exists after the confirm-sheet pause (only plugin-injected reports) — human-approval gate fired ({n} chars of supplement not applied; the main thread was told to ask the user first)',
     'log.resumeHumanUnverifiable': 'Resume: session log unreadable (host API unavailable) ⇒ human-approval gate **did not apply** this time (allowed, but recorded — by design, a missing API must not block every resume)',
     'report.confirmSheet': '📋 **PRD confirm sheet** (awaiting approval; stopped before design/tech):\n{sheet}\n→ To approve: **call `teamflow_resume` with runId={id}** — that **starts writing code immediately** (design → tech → dev → QA → acceptance; real edits land in the workspace), **not a continuation of the discussion**. Nothing runs until you do.\n→ To change something: **call `teamflow_resume` with runId={id} and `supplement` = what to change** — no stage has run after PRD yet ⇒ it **re-runs PRD** and returns a **fresh confirm sheet** (with the previous version for comparison); no need for a new run. Revise as many times as you need, then approve.',

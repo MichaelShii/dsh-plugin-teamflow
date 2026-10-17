@@ -137,7 +137,7 @@ console.log('── 3) host 模块结构 ──')
 // v0.2.5：core 已按职责分子目录（stages/ agent/ workspace/ domain/，pipeline/triage/locale/report 留根）；
 // 这里写**相对 core 的路径**（含子目录），与 smoke 的「真实文件 ⊆ 清单」门禁同一坐标系。
 const CORE_FILES = [
-  'pipeline', 'triage', 'clarify-log', 'confirm', 'locale', 'report', 'update-check', // core 根：编排门面 + 分诊决策 + 澄清埋点 + PRD 确认单 + 语言/汇报横切 + 版本探测
+  'pipeline', 'triage', 'clarify-log', 'confirm', 'prd-revise', 'locale', 'report', 'update-check', // core 根：编排门面 + 分诊决策 + 澄清埋点 + PRD 确认单 + PRD 续跑改写 + 语言/汇报横切 + 版本探测
   'stages/dev', 'stages/qa', 'stages/acceptance', // stages/：流水线各阶段的实现
   'agent/context', 'agent/runner', 'agent/guard', 'agent/metering', // agent/：子代理生命周期
   'workspace/sanity', 'workspace/runlogs', 'workspace/acl-preflight', 'workspace/products', 'workspace/browser-probe', // workspace/
@@ -1318,6 +1318,40 @@ for (const k of ['log.confirmRevised', 'confirm.rev', 'confirm.prev', 'confirm.r
 }
 ok(/'run\.prdRevLimit':/.test(hostSrc) === false,
   'locales：硬上限的拒绝文案已移除（留着说明还有人在阻断改写）')
+
+// ── 11) PRD 续跑改写（continuable）：在原子代理上下文里增量改，失败必回落 ──
+console.log('── 11) PRD 改写走续跑（continuable），失败回落重跑 ──')
+{
+  const reviseSrc = readFileSync(join(here, '../host/core/prd-revise.ts'), 'utf8')
+  const ctxSrc = readFileSync(join(here, '../host/core/agent/context.ts'), 'utf8')
+  ok(/if \(!resume \|\| !resume\.redo \|\| !childId \|\| !supplement\) return null/.test(pipelineSrc),
+    'pipeline：只在「redo 改写」且拿到 childId/supplement 时才尝试续跑')
+  ok(/const revisedPrdStage = await revisePrdViaChildIfPossible\(\)/.test(pipelineSrc),
+    'pipeline：PRD 段先试续跑')
+  ok(/const prdStage = revisedPrdStage \|\| await runSimpleStage\('prd'/.test(pipelineSrc),
+    'pipeline：续跑不可用 ⇒ **回落重跑**（`||` 链，不是二选一分支）')
+  ok(/mergeStageState\('prd', out\.text, stateBlockRelPath\(journal\.id, 'prd'\)\)/.test(pipelineSrc),
+    'pipeline：续跑产出的文本仍过 state 块解析（否则确认单没内容）')
+  ok(/journal\.stages\.push\(\{[\s\S]{0,220}?phase: 'prd', status: 'done'/.test(pipelineSrc),
+    'pipeline：续跑那一轮也进 stages（断点/汇报/用量按「每阶段一条」读）')
+  ok(/const prdRec = \(j\.stages \|\| \[\]\)\.filter\(\(s\) => phaseKeyOf\(s\.phase\) === 'prd'\)\.pop\(\)/.test(pipelineSrc),
+    'pipeline：redo 摘阶段记录**之前**先存下产出 PRD 的 childId')
+  ok(/prdChildId: journal\.prdChildId \|\| null/.test(storeSrc), 'store：prdChildId 落盘（否则重启后续跑无从下手）')
+  ok(/export function setSessionQuery/.test(ctxSrc), 'context：sessionQuery 走单独 setter（可选能力，不进 static inject）')
+  ok(/ctx\.inject\(\['sessionQuery'\]/.test(hostSrc), 'host：按可选能力注入 sessionQuery（缺失时插件照常加载）')
+  ok(reviseSrc.includes('(d.message as Record<string, unknown>).content') && reviseSrc.includes('export function assistantTextOf'),
+    'prd-revise：取文本优先 `data.message.content`（实机踩过 data.content 取空）')
+  ok(/const turned = tail\.some\(\(e\) => !!e && \(e as \{ type\?: unknown \}\)\.type === 'turn\/end'\)/.test(reviseSrc),
+    'prd-revise：结束判据是 `turn/end`（否则会把第一轮旧文本当结果）')
+  ok(/if \(!text \|\| !text\.trim\(\)\) return null/.test(reviseSrc),
+    'prd-revise：拿到空文本 ⇒ null（**绝不返回空串**，否则 PRD 被写空）')
+  ok(/if \(!before\) return null/.test(reviseSrc),
+    'prd-revise：读不到基线事件就不投递（无法区分新旧文本）')
+  for (const k of ['log.prdRevisedViaChild', 'log.reviseFallback']) {
+    ok(new RegExp(`'${k}':`).test(hostSrc), `locales：含文案键 ${k}（续跑/回落都必须可见）`)
+  }
+}
+
 
 
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
