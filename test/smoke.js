@@ -1069,7 +1069,14 @@ ok(/args\.preAction === 'stash' \|\| args\.preAction === 'commit' \|\| args\.pre
   const pipeCode = pipelineSrc.split('\n').filter((l) => { const s = l.trim(); return !s.startsWith('*') && !s.startsWith('/*') && !s.startsWith('//') }).join('\n')
   ok(!/ensureCommonNoiseIgnores/.test(pipeCode), 'pipeline：**不得**回退为写用户 .gitignore 的噪音排除（ensureCommonNoiseIgnores 已从代码删除）')
   ok(!/mergeGitignore\([^)]*'\.pnpm-store'/.test(pipeCode) && !/mergeGitignore\([^)]*node_modules/.test(pipeCode), 'pipeline：噪音项**不得**经由 mergeGitignore 落进用户 .gitignore（只允许 logs/teamflow 那条自有日志规则）')
-  ok((pipeCode.match(/writeFileSync\(/g) || []).length <= 2, 'pipeline：写文件处收敛（仅 .gitignore 自有日志规则 + 任务夹/产物写入，不得新增"替用户写文件"的点）')
+  // 2026-10-17（issue #11 B 方案）：新增**一处**「任务夹内的 PRD 版本快照」写入（`${docs}/PRD.v{N}.md`）。
+  // 它不是「替用户写文件」—— 路径固定在 runDocs 里、文件名以 `PRD.v` 开头，所以按**路径白名单**放行：
+  // 白名单内恰好 1 处 + 白名单外仍 ≤2。⚠️ 别改成「总数 ≤3」——那等于给任意新增写入开门。
+  const SNAP_WRITE = 'writeFileSync(`${docs}/PRD.v'
+  const snapWrites = pipeCode.split(SNAP_WRITE).length - 1
+  const allWrites = pipeCode.split('writeFileSync(').length - 1
+  ok(snapWrites === 1, `pipeline：PRD 版本快照写入点恰好 1 处（路径模板固定，实测 ${snapWrites}）`)
+  ok(allWrites - snapWrites <= 2, `pipeline：写文件处收敛（除任务夹内 PRD 快照外，其余 ≤2；实测 ${allWrites - snapWrites}）`)
   const sanitySrc = readFileSync(join(here, '../host/core/workspace/sanity.ts'), 'utf8')
   ok(/export const BASELINE_NOISE_EXCLUDES[^=]*=\s*\[/.test(sanitySrc), 'sanity：BASELINE_NOISE_EXCLUDES 常量（排除清单数据化，一处可改）')
   ok(/check-ignore/.test(sanitySrc), 'sanity：用 `git check-ignore` 判"是否已被忽略"（以目标仓库为根；自读 .gitignore 会读成宿主 cwd → 两个方向同时错，2026-09-18 实测）')
@@ -1286,27 +1293,31 @@ ok(/if \(decision\.ask\) \{/.test(pipelineSrc),
   'pipeline：按 decision.ask 分支（返回值被消费，不是算完丢掉）')
 ok(!/shouldConfirm && options\.mode !== 'patch' && !resume/.test(pipelineSrc),
   'pipeline：旧的「只做一轮 = !resume」死条件已移除（否则 redo 后确认单必不再出现）')
-ok(/if \(redoPrd && !redoAllowed\(j\.prdRev\)\) \{[\s\S]{0,200}?return \{ ok: false, error: t\(locale, 'run\.prdRevLimit'/.test(pipelineSrc),
-  'pipeline：改写次数达上限 ⇒ **显式报错**（不能静默当批准，否则用户在错版 PRD 上开工）')
+ok(/if \(redoPrd && !redoAllowed\(j\.prdRev\)\)/.test(pipelineSrc) === false,
+  'pipeline：**不再有改写次数硬上限**（第一版 `PRD_REV_MAX=2` 被用户否掉：prdOnly 下作废面为零，上限只会逼人重开 run）')
 ok(/j\.confirmApprovedRev = Number\(j\.prdRev \|\| 0\) \|\| 0/.test(pipelineSrc),
   'pipeline：resume 放行 = 批准当前版本（不记则同一版续跑会被反复打断）')
 ok(/journal\.confirmApprovedRev = Number\(journal\.prdRev \|\| 1\) \|\| 1/.test(pipelineSrc),
   'pipeline：审批面就地批准也记版本')
 ok(/prdRev: journal\.prdRev,\n/.test(pipelineSrc) || /prdRev: journal\.prdRev,/.test(pipelineSrc),
   'pipeline：确认单带出版本号（第 2 版要能在单子上看出来）')
+ok(/writeFileSync\(`\$\{docs\}\/PRD\.v\$\{Number\(j\.prdRev\) \|\| 1\}\.md`, readFileSync\(src\)\)/.test(pipelineSrc),
+  'pipeline：redo 前把被替换的 PRD 留成 `PRD.v{N}.md`（整条语句；没有它就没法对比）')
+ok(/const prevDocPath = prevAbs && existsSync\(prevAbs\) \? prevAbs : ''/.test(pipelineSrc),
+  'pipeline：上一版路径只在文件确实存在时给（不给死链）')
 ok(/export function confirmDecision\(v: \{/.test(confirmSrc9),
   'confirm：触发判据是纯函数（行为由 prd-rev 测试断言，不靠读源码推演）')
-ok(/export const PRD_REV_MAX = 2/.test(confirmSrc9),
-  'confirm：改写次数有硬上界（无上界 = /plan 循环）')
-ok(/export function redoAllowed\(prdRev\?: number \| null\): boolean/.test(confirmSrc9),
-  'confirm：上限判定单独可测（不埋在 pipeline 的 if 里）')
-ok(/prdRev: Math\.max\(1, Number\(v\.prdRev \|\| 1\) \|\| 1\),/.test(confirmSrc9),
-  'confirm：快照版本归一（0/负数/NaN 一律 1，不出现「第 0 版」）')
+ok(/export const PRD_REV_HINT = 3/.test(confirmSrc9),
+  'confirm：只留「改了很多次」的**提示**阈值（不阻断）')
 ok(/if \(sheet\.prdRev > 1\) \{/.test(confirmSrc9),
   'confirm：第 1 版不渲染版本行（省 token），第 2 版必须自曝')
-for (const k of ['run.prdRevLimit', 'log.confirmRevised', 'confirm.rev']) {
+ok(/if \(sheet\.prdRev >= PRD_REV_HINT\) lines\.push\(t\(locale, 'confirm\.revMany'/.test(confirmSrc9),
+  'confirm：到提示阈值多一行成本提示（仍允许继续改）')
+for (const k of ['log.confirmRevised', 'confirm.rev', 'confirm.prev', 'confirm.revMany']) {
   ok(new RegExp(`'${k}':`).test(hostSrc), `locales：含文案键 ${k}（zh/en 同形，locale 不变量测试守奇偶）`)
 }
+ok(/'run\.prdRevLimit':/.test(hostSrc) === false,
+  'locales：硬上限的拒绝文案已移除（留着说明还有人在阻断改写）')
 
 
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)

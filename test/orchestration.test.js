@@ -1077,13 +1077,28 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
   ok(!!revJ && Number(revJ.prdRev) === 2, `prdRev 递增到 2（实测 ${revJ && revJ.prdRev}）`)
   ok(!!revJ && (revJ.stages || []).every((s) => ['prd'].includes(String(s.phase))),
     `第 2 版确认单期间其后的阶段一个都没起（实测 ${JSON.stringify(revJ && (revJ.stages || []).map((s) => s.phase))}）`)
-  // ④ **封顶**：已到第 2 版的 run 再改 ⇒ 拒绝（没有上界就是 /plan 循环）
-  const { PRD_REV_MAX } = await import(pathToFileURL(join(base, 'host/core/confirm.ts')).href)
-  prdTextNow = ''
-  mk('ws-cap', 'tf-cap', [{ phase: 'prd', status: 'done', output: 'x' }], { prdRev: PRD_REV_MAX, confirmApprovedRev: 1 })
-  const r4 = resumeRun('tf-cap', 'sid-redo', '再改一点')
-  ok(r4.ok === false && /拒绝改写 PRD|PRD revision refused/.test(String(r4.error)),
-    `第 ${PRD_REV_MAX} 版后拒绝再改写，让用户重开 run（实测 ${String(r4.error || '').slice(0, 80)}）`)
+  // ④ **改写次数不设上限**（第一版设过 `PRD_REV_MAX=2`，用户当场否掉）：第 2 版再改仍接受，
+  //    并把被替换的 `PRD.md` 留成 `PRD.v2.md` ⇒ 确认单给出路径，用户能对比「改了什么」。
+  //    为什么不设上限：`redoPrd` 前提是 `prdOnly`（PRD 之后零阶段）⇒ 作废面恒为零，
+  //    改 1 次与改 5 次成本相同；上限只会把人赶去「重开 run」（本阶段纯损失）。
+  prdTextNow = PRD_OK
+  const docs3 = join(home, 'teamflow', 'ws-rev2', 'docs')
+  mkdirSync(docs3, { recursive: true })
+  writeFileSync(join(docs3, 'PRD.md'), '# 第二版 PRD（旧内容）\n', 'utf8')
+  mk('ws-rev2', 'tf-rev2', [{ phase: 'prd', status: 'done', output: '旧 PRD' }], { prdRev: 2, confirmApprovedRev: 2, runDocs: docs3 })
+  const r4 = resumeRun('tf-rev2', 'sid-redo', '再加一个 --verbose')
+  ok(r4.ok === true, `第 2 版之后仍允许改写（不设上限）（实测 ok=${r4.ok} err=${String(r4.error || '').slice(0, 60)}）`)
+  let rev3 = null
+  for (let i = 0; i < 150; i++) {
+    try { rev3 = JSON.parse(readFileSync(join(home, 'teamflow', 'ws-rev2', 'runs', 'tf-rev2.json'), 'utf8')) } catch (e) { rev3 = null }
+    if (rev3 && rev3.confirmSheet) break
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  ok(!!(rev3 && rev3.confirmSheet && Number(rev3.confirmSheet.prdRev) === 3),
+    `第 3 版确认单照常出现（实测 ${rev3 && rev3.confirmSheet && rev3.confirmSheet.prdRev}）`)
+  ok(existsSync(join(docs3, 'PRD.v2.md')), '被替换的那一版留成 `PRD.v2.md`（没有它就没法对比）')
+  ok(!!(rev3 && rev3.confirmSheet && String(rev3.confirmSheet.prevDocPath || '').endsWith('PRD.v2.md')),
+    `确认单给出上一版路径（实测 ${rev3 && rev3.confirmSheet && rev3.confirmSheet.prevDocPath}）`)
 
   // ④ 对照：PRD 之后**已经有阶段跑过** ⇒ 仍必须拒绝（回退会白作废它们的产物）
   mk('ws-late', 'tf-late', [{ phase: 'prd', status: 'done', output: 'x' }, { phase: 'design', status: 'done', output: 'y' }])

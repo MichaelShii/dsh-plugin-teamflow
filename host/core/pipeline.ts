@@ -48,7 +48,7 @@ import { archiveRunLogs, sweepWorkspaceLogs } from './workspace/runlogs.ts'
 import { preflightWorkspaceAcl } from './workspace/acl-preflight.ts'
 import {
   buildConfirmSheet, renderConfirmSheet, confirmHook, prdSnapshotFromBlock,
-  confirmDecision, redoAllowed, PRD_REV_MAX, type ConfirmSheet,
+  confirmDecision, type ConfirmSheet,
 } from './confirm.ts'
 import { parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
 import { ambientLocale, localeForMissingSnapshot, localeSource, runLocaleOf } from './locale.ts'
@@ -978,6 +978,11 @@ export async function executePipeline(
       // `state.openQuestions`）—— 它们是**项目级、跨 run 累积**的，本轮 PRD 没回写时会串上一轮
       // （实锤 tf-mvaubzdz-5w606x：r5 的确认单显示了 r4 的目标与 12 条 AC）。快照缺 = 本轮没给 ⇒
       // 交给确认单诚实显示「没抓到」（`confirm.noSummary` / `confirm.acMissing`），不拿旧内容冒充本轮。
+      // 上一版 PRD 的路径（只在改写后、且副本确实存在时给 —— 别给死链）
+      const docDir = journal.runDocs ? String(journal.runDocs) : ''
+      const prevRev = Number(journal.prdRev) - 1
+      const prevAbs = docDir && prevRev >= 1 ? `${docDir}/PRD.v${prevRev}.md` : ''
+      const prevDocPath = prevAbs && existsSync(prevAbs) ? prevAbs : ''
       const sheet = buildConfirmSheet({
         summary: prdSnap ? prdSnap.summary : null,
         acIndex: prdSnap ? prdSnap.acIndex : null,
@@ -993,8 +998,9 @@ export async function executePipeline(
         openQuestions: prdSnap ? prdSnap.openQuestions : null,
         assumptions: journal.assumptions,
         runDocs: journal.runDocs,
-        // 第几版（>1 时单子上会多一行「这是改写后的版本 + 再改就得重开 run」）
+        // 第几版（>1 时单子上会多一行「这是改写后的版本」+ 上一版路径）
         prdRev: journal.prdRev,
+        prevDocPath,
       })
       // 审批面择路：**有登记的批准能力 ⇒ 试；否则（含抛错 / 返回空）⇒ 回落**停在 interrupted
       // 交主线程兜底（用 `ask_user_question`，已在生产验证）。
@@ -1467,13 +1473,11 @@ export function resumeRun(
   if (supp && afterPrd && !redoPrd) {
     return { ok: false, error: t(locale, 'run.supplementTooLate', { phase: phaseLabel(locale, phaseAtEntry) }) }
   }
-  // **PRD 改写次数封顶**（2026-10-17，issue #11）：没有上界，「改一版 → 再确认 → 再改」就是
-  // `/plan` 模式的活（反复修正需求），与本产品「批量可靠交付」的定位互斥（MEMORY §1/§31）。
-  // 达到 `PRD_REV_MAX` 后拒绝改写并让用户重开 run —— 拒绝必须**显式报错**，不能静默当成「批准」
-  // （静默降级会让他以为改动生效了，然后在错误的 PRD 上开工）。
-  if (redoPrd && !redoAllowed(j.prdRev)) {
-    return { ok: false, error: t(locale, 'run.prdRevLimit', { max: String(PRD_REV_MAX), rev: String(j.prdRev || PRD_REV_MAX) }) }
-  }
+  // ⚠️ **改写次数不设上限**（2026-10-17，用户否掉第一版的 `PRD_REV_MAX = 2`）：
+  // `redoPrd` 的前提是 `prdOnly`（PRD 之后零阶段）⇒ 作废面**恒为零**，改 1 次与改 5 次的成本
+  // 完全相同（都是重跑一次 PRD）。次数上限防不住浪费，只会把用户赶到「重开 run」——
+  // 而重开在本阶段是**纯损失**（同样重跑 PRD，却丢 runId / req/task 卡 / 已收集的补充说明）。
+  // 真正该守的线是「已进 design/tech 后不许改」，由上面的 `supplementTooLate` 保证。
   const productKey = j.workspace || j.product || 'default'
   if (activeProducts.has(productKey) && activeProducts.get(productKey) !== id) {
     return { ok: false, error: t(locale, 'run.workspaceBusy', { ws: j.workspacePath || productKey, id: activeProducts.get(productKey) }) }
@@ -1543,6 +1547,15 @@ export function resumeRun(
       // 落盘时没有它 ⇒ 读回来是 `undefined`/0。而 redo 的前提是「PRD 已经产出过一版」（`prdOnly`），
       // 所以这里必须补成 1 —— 否则重跑后只是 1，`prdRev > 1` 不成立 ⇒ 第二张确认单又不出（issue #11 复发）。
       if (!(Number(j.prdRev || 0) > 0)) j.prdRev = 1
+      // **保留被替换的那一版**（2026-10-17，B 方案）：`PRD.md` 会被下面的重跑覆盖，先把旧版留成
+      // `PRD.v{N}.md`（N = 旧版号）⇒ 确认单给出路径，用户能直接对比「我要求的改了没」。
+      // 为什么这件事比「限制改写次数」有效：反复改的真实原因通常是**看不到上一版改成了什么**，
+      // 只能凭记忆再提一遍需求，来回打转。丢一份副本的成本是一次文件复制。
+      try {
+        const docs = j.runDocs ? String(j.runDocs) : ''
+        const src = docs ? `${docs}/PRD.md` : ''
+        if (src && existsSync(src)) writeFileSync(`${docs}/PRD.v${Number(j.prdRev) || 1}.md`, readFileSync(src))
+      } catch (e) { /* 留档失败不阻断改写（确认单少了「上一版」一行而已） */ }
       // 旧确认单描述的是**即将被替换**的那份 PRD ⇒ 必须清掉，否则在新 PRD 出结论前主线程会看到过期内容。
       j.confirmSheet = null
       // 文本兜底（`journal.assumptions`）同理清空。
