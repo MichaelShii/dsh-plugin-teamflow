@@ -1188,6 +1188,29 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
     runtime.setSessionQuery(undefined)
   }
 
+  // ③d **runDocs 是相对路径**（真机形态 `docs/teamflow/20261018-r1-…`）：快照必须落在
+  //     `workspacePath/runDocs` 下。第一版直接用相对路径 `existsSync` ⇒ 按**进程 cwd** 解析 ⇒
+  //     真机上快照与「上一版路径」全部静默失效（测试夹具传的是绝对路径才没暴露这个差异）。
+  {
+    const wsDir = join(home, 'ws-rel')
+    const relDocs = 'docs/teamflow/r3'
+    mkdirSync(join(wsDir, relDocs), { recursive: true })
+    writeFileSync(join(wsDir, relDocs, 'PRD.md'), '# 旧版 PRD\n', 'utf8')
+    const runDir = join(home, 'teamflow', 'ws-rel', 'runs')
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(join(runDir, 'tf-rel.json'), JSON.stringify({
+      id: 'tf-rel', requirement: '验证相对 runDocs', status: 'interrupted', locale: 'zh',
+      workspace: 'ws-rel', workspacePath: wsDir, logs: [], options: { mode: 'medium' },
+      runDocs: relDocs, prdRev: 2, confirmApprovedRev: 2, prdChildId: 'child-rel',
+      stages: [{ phase: 'prd', status: 'done', output: '旧 PRD', childId: 'child-rel' }],
+    }), 'utf8')
+    prdTextNow = PRD_OK
+    // sessionQuery 已在上一用例置空 ⇒ 续跑关闭，强制走重跑路径，只验快照落盘
+    const rRel = resumeRun('tf-rel', 'sid-redo', '改成别的')
+    ok(rRel.ok === true, `相对 runDocs：redo 被接受（实测 ${String(rRel.error || '').slice(0, 50)}）`)
+    ok(existsSync(join(wsDir, relDocs, 'PRD.v2.md')), '快照落在 `workspacePath/runDocs` 下（真机形态，相对路径）')
+  }
+
   // ④ 对照：PRD 之后**已经有阶段跑过** ⇒ 仍必须拒绝（回退会白作废它们的产物）
   mk('ws-late', 'tf-late', [{ phase: 'prd', status: 'done', output: 'x' }, { phase: 'design', status: 'done', output: 'y' }])
   const r2 = resumeRun('tf-late', 'sid-redo', '改一下')

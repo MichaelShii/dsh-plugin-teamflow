@@ -14,7 +14,7 @@ import { runAcceptancePhase } from './stages/acceptance.ts'
 export type { DevTaskDef } from './stages/dev.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
-import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv, hasHumanReplySince, lastHumanReplySince, isExplicitApproval, normalizeSignal } from '../util.ts'
+import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv, hasHumanReplySince, lastHumanReplySince, isExplicitApproval, absoluteRunDocs, normalizeSignal } from '../util.ts'
 import type { Blueprint } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { RETRY_LIMIT, PHASE_ORDER, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, DEV_MAX_CONCURRENCY, DEV_DEFAULT_CONCURRENCY } from '../constants.ts'
@@ -1054,7 +1054,9 @@ export async function executePipeline(
       // （实锤 tf-mvaubzdz-5w606x：r5 的确认单显示了 r4 的目标与 12 条 AC）。快照缺 = 本轮没给 ⇒
       // 交给确认单诚实显示「没抓到」（`confirm.noSummary` / `confirm.acMissing`），不拿旧内容冒充本轮。
       // 上一版 PRD 的路径（只在改写后、且副本确实存在时给 —— 别给死链）
-      const docDir = journal.runDocs ? String(journal.runDocs) : ''
+      // ⚠️ `journal.runDocs` 在真机是**相对工作区**的路径（`docs/teamflow/20261018-r1-…`）⇒ 要拼工作区；
+      // 但测试夹具可能直接给绝对路径 ⇒ 已绝对就不拼（否则会拼出 `<workspace>/C:/…/docs/…` 这种死路径）。
+      const docDir = absoluteRunDocs(journal.runDocs, journal.workspacePath)
       const prevRev = Number(journal.prdRev) - 1
       const prevAbs = docDir && prevRev >= 1 ? `${docDir}/PRD.v${prevRev}.md` : ''
       const prevDocPath = prevAbs && existsSync(prevAbs) ? prevAbs : ''
@@ -1665,7 +1667,8 @@ export function resumeRun(
       // 为什么这件事比「限制改写次数」有效：反复改的真实原因通常是**看不到上一版改成了什么**，
       // 只能凭记忆再提一遍需求，来回打转。丢一份副本的成本是一次文件复制。
       try {
-        const docs = j.runDocs ? String(j.runDocs) : ''
+        // 同 `absoluteRunDocs`：真机是相对路径，夹具可能是绝对路径，两种都要能用。
+        const docs = absoluteRunDocs(j.runDocs, j.workspacePath)
         const src = docs ? `${docs}/PRD.md` : ''
         if (src && existsSync(src)) writeFileSync(`${docs}/PRD.v${Number(j.prdRev) || 1}.md`, readFileSync(src))
       } catch (e) { /* 留档失败不阻断改写（确认单少了「上一版」一行而已） */ }

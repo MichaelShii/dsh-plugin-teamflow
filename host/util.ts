@@ -547,6 +547,22 @@ export function hasExplicitApprovalSince(session: unknown, sinceMs: number): boo
 }
 
 /**
+ * 任务夹的真实路径（2026-10-18 真机逼出来的）。
+ *
+ * `journal.runDocs` 在真机是**相对工作区**的路径（`docs/teamflow/20261018-r1-…`），直接用它
+ * `existsSync` 会按**进程 cwd** 解析 ⇒ 永远 false ⇒ PRD 快照与「上一版路径」静默失效
+ * （真机 `tf-mvcl5m8t`：任务夹里始终只有 PRD.md，没有任何 `PRD.v*.md`）。
+ * 但测试夹具可能直接给绝对路径 ⇒ 已绝对就不拼，否则会拼成 `<workspace>/C:/…` 这种死路径。
+ */
+export function absoluteRunDocs(runDocs: unknown, workspacePath: unknown): string {
+  const rel = runDocs ? String(runDocs) : ''
+  if (!rel) return ''
+  if (isAbsolute(rel)) return rel
+  const wp = workspacePath ? String(workspacePath) : ''
+  return wp ? `${wp.replace(/[\\/]+$/, '')}/${rel}` : rel
+}
+
+/**
  * 幂等合并 .gitignore 条目（纯函数，便于回归测试）。
  *
  * 场景（实锤 assetd `tf-mtwvwpxa-p3vw08`）：插件强制把命令日志/临时脚本写进 `logs/teamflow/`，
