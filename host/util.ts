@@ -388,21 +388,26 @@ export function normalizeSignal(s: unknown): AbortSignal {
 }
 
 /**
- * 「暂停之后，会话里有没有**人类**说过话」——确认单人工闸门的判据（2026-10-17 实锤 tf-mvc4jrl7-7g6hnb）。
+ * 「暂停之后，有没有**人**给过答复」——确认单人工闸门的判据（2026-10-17 实锤 tf-mvc4jrl7-7g6hnb）。
  *
  * 实锤：插件把暂停汇报作为 `user/message` 注入主会话（`source.kind = 'plugin:dsh-plugin-teamflow'`），
  * 模型把它当用户指令 ⇒ 自己调 `teamflow_resume` 把确认单批了（08:33:36 暂停 → 08:34:02 自调，
  * 窗口内零条人类消息）。ADR-0011 ① 要的是**人工**批准，不能靠模型自律。
- * 宿主会话日志里人类消息带 `data.source.kind === 'user'`，注入消息带 `plugin:*` / `time-context` /
- * `model-selection` 等 ⇒ 判据可机器判定。
+ *
+ * 两类**人的答复**都算（这是同一个漏洞的两面，别只做一半）：
+ * 1. 人会话说：`user/message` 且 `data.source.kind === 'user'`（注入消息是 `plugin:*` / `time-context` 等）；
+ * 2. 人点了 `ask_user_question` 的选项：回答以 **`tool/result`** 落盘（**不产生 user/message**，实测
+ *    `tool/result.data.message.source = {kind:'tool', callId}`），所以必须按 callId 关联回
+ *    `tool/call.data.name === 'ask_user_question'` 才算。⚠️ 只认**结果**不认调用：调用是模型「问了」，
+ *    结果才代表「人答了」。漏掉这条 ⇒ 我们自己在汇报里让模型用 AUQ 问，人点完却被闸门拒 ⇒ 必然误伤。
  *
  * 三态返回（**空值必须可见**，§7 同源）：
- * - `true`  找到晚于 `sinceMs` 的人类消息 ⇒ 人答复过
- * - `false` 能读到会话日志、但没有任何人类消息晚于该时刻 ⇒ **没人答复**
+ * - `true`  找到晚于 `sinceMs` 的人类答复（会话说 / AUQ 答）⇒ 人答复过
+ * - `false` 能读到会话日志、但没有任何人类答复晚于该时刻 ⇒ **没人答复**
  * - `null`  读不到（session 缺失 / 宿主 API 变更）⇒ 调用方自行决定并留痕，**不要当成 false**
  */
-export function hasHumanMessageSince(session: unknown, sinceMs: number): boolean | null {
-  const s = session as { ownEvents?: () => unknown; snapshotEvents?: () => unknown } | null | undefined
+export function hasHumanReplySince(session: unknown, sinceMs: number): boolean | null {
+  const s = session as { snapshotEvents?: () => unknown; ownEvents?: () => unknown } | null | undefined
   if (!s || typeof s !== 'object') return null
   let events: unknown = null
   try {
@@ -416,11 +421,30 @@ export function hasHumanMessageSince(session: unknown, sinceMs: number): boolean
   }
   if (!Array.isArray(events)) return null
   const since = Number.isFinite(sinceMs) ? sinceMs : 0
-  for (const ev of events) {
-    const e = ev as { type?: string; time?: number; data?: { source?: { kind?: string } } } | null
-    if (!e || e.type !== 'user/message') continue
-    if (!(Number(e.time) > since)) continue
-    if (e.data && e.data.source && e.data.source.kind === 'user') return true
+  type Ev = { type?: string; time?: number; data?: Record<string, unknown> } | null
+  const list = events as Ev[]
+  // 先按 callId 收集「模型问过人的那些提问」
+  const askIds = new Set<string>()
+  for (const ev of list) {
+    const e = ev as Ev
+    if (!e || e.type !== 'tool/call' || !e.data) continue
+    if (e.data.name !== 'ask_user_question') continue
+    const cid = e.data.callId
+    if (typeof cid === 'string' && cid) askIds.add(cid)
+  }
+  for (const ev of list) {
+    const e = ev as Ev
+    if (!e || !(Number(e.time) > since)) continue
+    if (e.type === 'user/message') {
+      const src = e.data && (e.data.source as { kind?: string } | undefined)
+      if (src && src.kind === 'user') return true
+      continue
+    }
+    if (e.type === 'tool/result' && e.data) {
+      const msg = e.data.message as { source?: { callId?: string } } | undefined
+      const cid = e.data.toolCallId || (msg && msg.source && msg.source.callId)
+      if (typeof cid === 'string' && askIds.has(cid)) return true
+    }
   }
   return false
 }

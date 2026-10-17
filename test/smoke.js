@@ -414,12 +414,12 @@ ok(/viewport\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')
 ok(readFileSync(join(here, '../package.json'), 'utf8').includes('test/signal-brand.test.js'), 'package.json：信号 brand 门禁套件登记双链（issue #20 追评：鸭子 signal 在 Node 24 抛 signals[N] is not of type AbortSignal）')
 ok(readFileSync(join(here, '../package.json'), 'utf8').includes('test/human-approval.test.js'), 'package.json：确认单「人工批准」判据套件登记双链')
 // 确认单人工闸门（2026-10-17 实锤 tf-mvc4jrl7-7g6hnb：模型把注入的汇报当用户指令，自己把确认单批了）
-ok(pipelineSrc.includes('hasHumanMessageSince') && pipelineSrc.includes("origin !== 'ui' && afterPrd && prdOnly"),
-  'pipeline：确认单断点带「人工批准」闸（模型工具路径必须有人类消息证据；界面入口免检）')
+ok(pipelineSrc.includes('hasHumanReplySince') && pipelineSrc.includes("origin !== 'ui' && afterPrd && prdOnly"),
+  'pipeline：确认单断点带「人工批准」闸（模型工具路径必须有人类答复证据；界面入口免检）')
 ok(/resumeRun\(id, parent\.session\.id, sup, 'tool'\)/.test(indexSrc) && /resumeRun\(runId, sessionId, undefined, 'ui'\)/.test(indexSrc),
   'index：两个 resume 入口标注来源（工具=tool / 界面=ui），闸门据此区分')
-ok(utilSrc.includes('hasHumanMessageSince') && utilSrc.includes("data.source.kind === 'user'"),
-  'util：人工消息判据只认 source.kind===\'user\'（插件注入的 plugin:* 与 time-context 一律不算——否则闸门恒开）')
+ok(utilSrc.includes('hasHumanReplySince') && utilSrc.includes("src.kind === 'user'") && utilSrc.includes("e.data.name !== 'ask_user_question'"),
+  'util：人工答复判据认两类（会话说 source.kind===\'user\' / AUQ 的 tool/result 按 callId 关联）——漏掉 AUQ 会让「人点了选项却被拒」')
 ok(/响应块构成：\{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')) && /response blocks: \{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')), 'locales：diag.emptyTurn 带块构成占位（zh/en 齐备——诊断必须自证，2026-09-26 tf-muigy5eq r12 实踩）')
 ok(/const beforeLen = journal\.stages\.length/.test(runnerSrc) && /lastStage = journal\.stages\[beforeLen\] \|\| null/.test(runnerSrc), 'runner：withRetry 按调用前长度取本次尝试 stage——并发安全（防证据/重试诊断/usage 累计串位）')
 ok(/stage: JournalStage \| null/.test(runnerSrc), 'runner：withRetry 返回携带 stage 引用')

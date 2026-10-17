@@ -14,7 +14,7 @@ import { runAcceptancePhase } from './stages/acceptance.ts'
 export type { DevTaskDef } from './stages/dev.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
-import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv, hasHumanMessageSince } from '../util.ts'
+import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv, hasHumanReplySince } from '../util.ts'
 import type { Blueprint } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { RETRY_LIMIT, PHASE_ORDER, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, DEV_MAX_CONCURRENCY, DEV_DEFAULT_CONCURRENCY } from '../constants.ts'
@@ -1453,7 +1453,7 @@ export function resumeRun(
   // 界面入口（`api.resume`，origin='ui'）不受限——那次点击本身就是人的动作。
   // ⚠️ 三态：`null`=读不到会话日志（宿主 API 变更）⇒ **不硬拒**（否则所有人续跑全挂）但必须留痕。
   if (origin !== 'ui' && afterPrd && prdOnly) {
-    const human = hasHumanMessageSince(agent && (agent as { session?: unknown }).session, Number(j.interruptedAt || 0))
+    const human = hasHumanReplySince(agent && (agent as { session?: unknown }).session, Number(j.interruptedAt || 0))
     if (human === false) {
       try {
         j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.resumeNeedsHuman', { n: String(supp || '').length }) })
