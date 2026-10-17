@@ -334,7 +334,11 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.confirmRevised': '确认单：PRD 已被改写（第 {rev} 版）⇒ 上一版批准自动失效，重新等批准',
     // PRD 续跑改写（2026-10-17）：在**原 PRD 子代理的上下文里**改，而不是重跑。
     'log.prdRevisedViaChild': 'PRD 改写走**续跑**：在原 PRD 子代理的上下文里增量修改（{n} 字符，未重新读需求/文档）',
-    'log.reviseFallback': 'PRD 改写**回落为重跑**：续跑不可用（子代理已释放 / 宿主无 sessionQuery / 超时 / 拿到空文本）⇒ 重新 spawn 一个 PRD 子代理',
+    // ⚠️ 三种回落原因**必须分开**：真机 tf-mvcl5m8t 等满 3 分钟回落后，合在一起的文案无从定位
+    // 是「投递没被接受」「投递后事件零增长（第二轮没启动）」还是「跑了但没结束」。
+    'log.reviseNoDeliver': 'PRD 改写**回落为重跑**：向原子代理投递修改要求**被拒绝**（事件 {base} 条，等待 {secs}s）⇒ 重新 spawn',
+    'log.reviseNoFire': 'PRD 改写**回落为重跑**：投递后事件**零增长**（{base} → {end}，等待 {secs}s）⇒ 第二轮没有启动（cold resume 未触发 / 子代理会话不可恢复）⇒ 重新 spawn',
+    'log.reviseFallback': 'PRD 改写**回落为重跑**：第二轮跑了但没拿到可用文本（事件 {base} → {end}，等待 {secs}s）⇒ 重新 spawn',
     'log.reviseNoChild': 'PRD 改写**没有走续跑**：找不到产出当前 PRD 的子代理 id（可能是老 run / 阶段记录已被摘掉）⇒ 回落为重跑',
     'log.reviseNoHost': 'PRD 改写**没有走续跑**：宿主缺少 sendMessage 或 sessionQuery 能力 ⇒ 回落为重跑（插件照常工作，只是没有增量改写）',
     'log.resumeNeedsHuman': '续跑被拒：确认单断点之后没有任何用户消息（只有插件注入的汇报）—— 人工批准闸门生效（补录 {n} 字符未采用；已要求主线程先问用户）',
@@ -794,7 +798,9 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.confirmAbort': 'PRD confirm sheet (ADR-0011): PRD finished → **paused for approval** ({ac} AC(s) / {as} assumption line(s)). No later stage has started',
     'log.confirmRevised': 'Confirm sheet: the PRD was revised (version {rev}) ⇒ the previous approval is void and a new approval is required',
     'log.prdRevisedViaChild': 'PRD revised via **continuation**: edited inside the original PRD child\'s context ({n} chars, no re-read of the requirement or docs)',
-    'log.reviseFallback': 'PRD revision **fell back to a fresh run**: continuation unavailable (child released / no sessionQuery / timeout / empty text) ⇒ spawning a new PRD child',
+    'log.reviseNoDeliver': 'PRD revision **fell back to a fresh run**: delivering the change to the original child was **rejected** ({base} events, waited {secs}s) => spawning a new child',
+    'log.reviseNoFire': 'PRD revision **fell back to a fresh run**: **no new events** after delivery ({base} -> {end}, waited {secs}s) => the second turn never started (cold resume did not fire / child session unrecoverable) => spawning a new child',
+    'log.reviseFallback': 'PRD revision **fell back to a fresh run**: the second turn ran but produced no usable text ({base} -> {end} events, waited {secs}s) => spawning a new child',
     'log.reviseNoChild': 'PRD revision did **not** use continuation: no child id for the current PRD (old run / stage record already dropped) ⇒ falling back to a fresh run',
     'log.reviseNoHost': 'PRD revision did **not** use continuation: host lacks sendMessage or sessionQuery ⇒ falling back to a fresh run (the plugin still works, just without incremental revision)',
     'log.resumeNeedsHuman': 'Resume rejected: no user message exists after the confirm-sheet pause (only plugin-injected reports) — human-approval gate fired ({n} chars of supplement not applied; the main thread was told to ask the user first)',

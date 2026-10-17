@@ -53,7 +53,7 @@ import {
 import { parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
 import { ambientLocale, localeForMissingSnapshot, localeSource, runLocaleOf } from './locale.ts'
 import { noteClarifyAnswered, noteClarifyProceeded } from './clarify-log.ts'
-import { canReviseViaChild, revisePrdViaChild } from './prd-revise.ts'
+import { canReviseViaChild, revisePrdViaChild, type RevisionDiag } from './prd-revise.ts'
 
 /** dev 子卡/阶段 label 的「开发 · 」前缀与重试后缀：zh 存量兼容 + en 新增（QA-2：既有解析契约只增不改）。
  *  en 侧必须覆盖词典 `dev.taskRetry` 的实际产出 `(attempt N)`（R3-2 实锤：只写 retry \d+ 时，
@@ -944,6 +944,7 @@ export async function executePipeline(
       const label = pForm.label
       const startedAt = Date.now()
       journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: label }) })
+      const diag: RevisionDiag = { base: 0, end: 0, waitedMs: 0, delivered: false }
       const out = await revisePrdViaChild({
         subagents: runtime.subagents,
         sessionQuery: runtime.sessionQuery,
@@ -951,11 +952,17 @@ export async function executePipeline(
         childId,
         instruction,
         signal: normalizeSignal(signal),
+        diag,
         onWait: () => { /* 超时由返回值表达，这里不额外刷日志 */ },
       })
       if (!out) {
-        // 回落必须**可见**：否则「为什么这次忽然又慢又贵」永远是黑盒。
-        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.reviseFallback') })
+        // **回落原因必须可区分**（2026-10-18 真机教训：第一版四种原因写在同一句话里，
+        // 等满 3 分钟回落后无从判断是「没启动」还是「没结束」）。
+        const secs = String(Math.round((diag.waitedMs || 0) / 1000))
+        const key = !diag.delivered
+          ? 'log.reviseNoDeliver'
+          : diag.end <= diag.base ? 'log.reviseNoFire' : 'log.reviseFallback'
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, key, { base: String(diag.base), end: String(diag.end), secs }) })
         return null
       }
       const shown = stripStateBlock(out.text)

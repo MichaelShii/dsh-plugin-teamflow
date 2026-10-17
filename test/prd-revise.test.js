@@ -136,7 +136,7 @@ console.log('── 6) 失败必须回落（返回 null，绝不返回空串）�
 }
 
 console.log('── 7) 默认等待预算 ──')
-eq(REVISE_WAIT_MS, 180000, '默认 180s（PRD 改写 1–3 分钟，给足余量后回落重跑）')
+eq(REVISE_WAIT_MS, 300000, '默认 300s（真机 tf-mvcl5m8t 实测：改一轮 PRD 约 2 分钟，180s 会误超时 ⇒ 提到 5 分钟）')
 
 console.log(failed === 0 ? '\n✅ prd-revise 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

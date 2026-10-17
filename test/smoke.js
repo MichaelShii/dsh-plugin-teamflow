@@ -1343,7 +1343,7 @@ console.log('── 11) PRD 改写走续跑（continuable），失败回落重�
     'prd-revise：取文本优先 `data.message.content`（实机踩过 data.content 取空）')
   ok(/const turned = tail\.some\(\(e\) => !!e && \(e as \{ type\?: unknown \}\)\.type === 'turn\/end'\)/.test(reviseSrc),
     'prd-revise：结束判据是 `turn/end`（否则会把第一轮旧文本当结果）')
-  ok(/if \(!text \|\| !text\.trim\(\)\) return null/.test(reviseSrc),
+  ok(reviseSrc.includes('if (!text || !text.trim()) {'),
     'prd-revise：拿到空文本 ⇒ null（**绝不返回空串**，否则 PRD 被写空）')
   ok(/if \(!before\) return null/.test(reviseSrc),
     'prd-revise：读不到基线事件就不投递（无法区分新旧文本）')

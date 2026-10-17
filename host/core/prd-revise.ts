@@ -23,9 +23,27 @@
  */
 
 /** 续跑等待上限（PRD 改写实测 1–3 分钟；给足余量，超时即回落重跑）。 */
-export const REVISE_WAIT_MS = 180_000
+export const REVISE_WAIT_MS = 300_000
 /** 轮询间隔（宿主的 session 落盘不是事件推送，只能轮询；1s 粒度对分钟级任务足够）。 */
 export const REVISE_POLL_MS = 1000
+
+/**
+ * 续跑失败的诊断数据（2026-10-18 加，真机 `tf-mvcl5m8t` 逼出来的）。
+ *
+ * 教训：第一版的回落文案把「子代理已释放 / 宿主无 sessionQuery / 超时 / 拿到空文本」四个原因
+ * 写在同一句话里 ⇒ 真机等满 3 分钟回落后，**完全无法区分**是「投递后事件零增长（第二轮没启动）」
+ * 还是「跑了但没结束」。以后凡「失败即回落」的路径，必须把可区分的观测值带出来。
+ */
+export interface RevisionDiag {
+  /** 投递前的基线事件数 */
+  base: number
+  /** 结束（或超时）时的事件数 */
+  end: number
+  /** 等了多少毫秒 */
+  waitedMs: number
+  /** 投递是否被接受 */
+  delivered: boolean
+}
 
 /** 一条 assistant/message 事件的可见文本（字段名见文件头：`data.message.content` 才是对的）。 */
 export function assistantTextOf(event: unknown): string {
@@ -132,7 +150,12 @@ export async function revisePrdViaChild(v: {
   waitMs?: number
   pollMs?: number
   onWait?: (msg: string) => void
+  /** 失败时的诊断出口（调用方必须把它写进日志 —— 否则「为什么回落」永远是黑盒）。 */
+  diag?: RevisionDiag | null
 }): Promise<RevisionOutcome | null> {
+  const putDiag = (base: number, end: number, delivered: boolean, startedAt: number): void => {
+    if (v.diag) { v.diag.base = base; v.diag.end = end; v.diag.delivered = delivered; v.diag.waitedMs = Date.now() - startedAt }
+  }
   const sub = v.subagents as RevisionHost | undefined
   const sq = v.sessionQuery as RevisionHost | undefined
   if (!sub || typeof sub.sendMessage !== 'function' || !sq || typeof sq.observeSession !== 'function') return null
@@ -155,23 +178,27 @@ export async function revisePrdViaChild(v: {
   try {
     await sub.sendMessage!(v.parent, v.childId, [{ type: 'text', text: v.instruction }], { signal })
   } catch (e) {
+    putDiag(base, base, false, Date.now())
     return null
   }
   const started = Date.now()
   let events: unknown[] | null = null
+  let end = base
   while (Date.now() - started < waitMs) {
-    if (signal && signal.aborted) return null
+    if (signal && signal.aborted) { putDiag(base, end, true, started); return null }
     await new Promise((r) => setTimeout(r, pollMs))
     events = await observe()
     if (!events || events.length <= base) continue
+    end = events.length
     const tail = events.slice(base)
     // 结束判据用 `turn/end`（事件顺序：assistant/message → step/end → turn/end）
     const turned = tail.some((e) => !!e && (e as { type?: unknown }).type === 'turn/end')
     if (!turned) continue
     const text = lastAssistantText(events, base)
-    if (!text || !text.trim()) return null
+    if (!text || !text.trim()) { putDiag(base, end, true, started); return null }
     return { text, usage: sumRevisionUsage(events, base), baseEvents: base, endEvents: events.length }
   }
   if (v.onWait) v.onWait('timeout')
+  putDiag(base, end, true, started)
   return null
 }
