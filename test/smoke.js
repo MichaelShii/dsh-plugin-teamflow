@@ -1337,6 +1337,12 @@ console.log('── 11) PRD 改写走续跑（continuable），失败回落重�
   ok(/const prdRec = \(j\.stages \|\| \[\]\)\.filter\(\(s\) => phaseKeyOf\(s\.phase\) === 'prd'\)\.pop\(\)/.test(pipelineSrc),
     'pipeline：redo 摘阶段记录**之前**先存下产出 PRD 的 childId')
   ok(/prdChildId: journal\.prdChildId \|\| null/.test(storeSrc), 'store：prdChildId 落盘（否则重启后续跑无从下手）')
+  // 节点卡展示「本阶段总用量」⇒ 改写多轮时每轮都要累加，且 redo 摘记录前要把旧 usage 带走
+  ok(pipelineSrc.includes('rec.usage = addUsage(journal.prdUsageAcc, rec.usage)'),
+    'pipeline：阶段用量**累加**而不是覆盖（否则前几轮改写的 token 凭空消失）')
+  ok(pipelineSrc.includes('if (prdRec && prdRec.usage) j.prdUsageAcc = prdRec.usage'),
+    'pipeline：redo 摘掉旧 stage **之前**先把它的 usage 带走')
+  ok(/prdUsageAcc: journal\.prdUsageAcc \|\| null/.test(storeSrc), 'store：prdUsageAcc 落盘（跨轮累计的载体）')
   ok(/export function setSessionQuery/.test(ctxSrc), 'context：sessionQuery 走单独 setter（可选能力，不进 static inject）')
   ok(/ctx\.inject\(\['sessionQuery'\]/.test(hostSrc), 'host：按可选能力注入 sessionQuery（缺失时插件照常加载）')
   ok(reviseSrc.includes('(d.message as Record<string, unknown>).content') && reviseSrc.includes('export function assistantTextOf'),

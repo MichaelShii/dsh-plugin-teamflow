@@ -1211,6 +1211,55 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
     ok(existsSync(join(wsDir, relDocs, 'PRD.v2.md')), '快照落在 `workspacePath/runDocs` 下（真机形态，相对路径）')
   }
 
+  // ③c2 **阶段用量必须累计**（2026-10-18 真机 tf-mvcoqg9e）：节点卡展示「本阶段总用量」，
+  //     而续跑每轮只报「这一轮」的增量。构造「前面已改过一轮（acc=1000）」+ 本轮续跑（12）
+  //     ⇒ 新 stage.usage.input 必须是 **1012**，不是 12（覆盖）。
+  //     为什么不用「连续两次 redo」：mock 的 observeSession 是有状态的，第二次的基线会把
+  //     上一轮的事件算进去 ⇒ 投递后事件不增长 ⇒ 只能干等超时（第一版就是这么写的，测了个寂寞）。
+  {
+    const baseEv = [
+      { type: 'user/message', data: { content: [{ type: 'text', text: '原始需求' }] } },
+      { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '旧 PRD' }] } } },
+      { type: 'turn/end', data: {} },
+    ]
+    let polls2 = 0
+    runtime.setSessionQuery({
+      observeSession: async () => {
+        polls2++
+        if (polls2 <= 1) return { events: baseEv }
+        return {
+          events: [
+            ...baseEv,
+            { type: 'user/message', data: { content: [{ type: 'text', text: '再改一处' }] } },
+            { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: PRD_REVISED }] }, usage: { inputTokens: 12, outputTokens: 3, cacheReadTokens: 99, cacheWriteTokens: 0 } } },
+            { type: 'turn/end', data: {} },
+          ],
+        }
+      },
+    })
+    const accBefore = { input: 1000, cacheRead: 5000, cacheWrite: 0, output: 200, calls: 3 }
+    // ⚠️ 工作区目录必须真存在：ACL 预检对不存在的路径会判 failed ⇒ run 直接 failed、不 push stage
+    //（第一版就是这么「测了个寂寞」——断言全红但原因是夹具没建目录）。
+    mkdirSync(join(home, 'ws-acc'), { recursive: true })
+    const runDir = join(home, 'teamflow', 'ws-acc', 'runs')
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(join(runDir, 'tf-acc.json'), JSON.stringify({
+      id: 'tf-acc', requirement: '验证用量累计', status: 'interrupted', locale: 'zh',
+      workspace: 'ws-acc', workspacePath: join(home, 'ws-acc'), logs: [], options: { mode: 'medium' },
+      prdRev: 1, confirmApprovedRev: 1, prdChildId: 'child-acc', prdUsageAcc: accBefore,
+      stages: [{ phase: 'prd', status: 'done', output: '旧 PRD', childId: 'child-acc', usage: accBefore }],
+    }), 'utf8')
+    sessionEvents = [pluginNoticeEvent(Date.now() - 5000), humanTextEvent(Date.now() - 2000, '再改一处')]
+    const rAcc = resumeRun('tf-acc', 'sid-redo', '再改一处')
+    ok(rAcc.ok === true, `累计用例：redo 被接受（实测 ${String(rAcc.error || '').slice(0, 50)}）`)
+    // 只验「redo 时把上一轮用量带走」这一步（不依赖后续 PRD 跑通：mock 环境里续跑/重跑都可能失败，
+    // 而累加公式本身由 metering.addUsage 的单测覆盖）。判据：摘掉旧 stage 之前必须先把 usage 存进 acc。
+    let accJ = null
+    try { accJ = JSON.parse(readFileSync(join(runDir, 'tf-acc.json'), 'utf8')) } catch (e) { accJ = null }
+    ok(Number(accJ && accJ.prdUsageAcc && accJ.prdUsageAcc.input) === 1000,
+      `redo 时把上一轮的 1000 input 带进 prdUsageAcc（实测 ${JSON.stringify(accJ && accJ.prdUsageAcc)}）`)
+  }
+
   // ④ 对照：PRD 之后**已经有阶段跑过** ⇒ 仍必须拒绝（回退会白作废它们的产物）
   mk('ws-late', 'tf-late', [{ phase: 'prd', status: 'done', output: 'x' }, { phase: 'design', status: 'done', output: 'y' }])
   const r2 = resumeRun('tf-late', 'sid-redo', '改一下')

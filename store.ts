@@ -170,6 +170,18 @@ export interface JournalRecord {
    * 否则续跑无从下手（会静默回落为重跑，功能等于不存在）。
    */
   prdChildId?: string | null
+  /**
+   * **PRD 阶段的累计用量**（2026-10-18）：PRD 会被改写多轮，每轮（续跑或重跑）的 usage 都要往这里加。
+   * redo 会把旧的 prd 阶段记录摘掉 ⇒ 必须先把它的 usage 存过来，否则前面几轮的 token 凭空消失，
+   * 节点卡（「本阶段总用量」）与 dsh 子代理面板（全程累计）对不上（真机 tf-mvcoqg9e）。
+   */
+  prdUsageAcc?: {
+    input: number
+    cacheRead: number
+    cacheWrite: number
+    output: number
+    calls: number
+  } | null
   result?: unknown
   [key: string]: unknown
 }
@@ -328,6 +340,8 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
     confirmApprovedRev: journal.confirmApprovedRev == null ? null : (Number(journal.confirmApprovedRev) || 0),
     // 产出当前 PRD 的子代理 id（redo 续跑用；阶段记录被摘掉后它是唯一线索）
     prdChildId: journal.prdChildId || null,
+    // PRD 阶段的用量累计（跨改写轮次；节点卡是「本阶段总用量」，不是「这一轮」）
+    prdUsageAcc: journal.prdUsageAcc || null,
     /** 外部供应商故障标记（限流/无额度/上游故障/超时）：run 落可续跑中断态时置位，汇报据此讲清「非交付缺陷」。 */
     externalFailure: journal.externalFailure === true,
     interrupted: journal.interrupted === true,

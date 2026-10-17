@@ -166,6 +166,30 @@ export function totalTokensOf(usage: UsageBuckets | null | undefined): number {
 }
 
 /**
+ * 两份 usage 相加（同一阶段的多次尝试/多轮改写累计）。
+ *
+ * **为什么必须有它**（2026-10-18 真机 tf-mvcoqg9e）：节点卡展示的是「本阶段总用量」
+ * （官方口径：输入(未命中) / 输入(命中) / 输出），而 PRD 会被**改写多轮**（每轮一次续跑）。
+ * 第一版续跑只写入「这一轮」的增量 ⇒ 节点数字与 dsh 子代理面板（全程累计）对不上，
+ * 前面几轮的用量凭空消失。⇒ 每一轮都必须往**阶段累计**上加，而不是覆盖。
+ */
+export function addUsage(
+  a: UsageBuckets | null | undefined,
+  b: UsageBuckets | null | undefined,
+): UsageBuckets | null {
+  if (!a && !b) return null
+  const x = a || { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 }
+  const y = b || { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 }
+  return {
+    input: (x.input || 0) + (y.input || 0),
+    cacheRead: (x.cacheRead || 0) + (y.cacheRead || 0),
+    cacheWrite: (x.cacheWrite || 0) + (y.cacheWrite || 0),
+    output: (x.output || 0) + (y.output || 0),
+    calls: (x.calls || 0) + (y.calls || 0),
+  }
+}
+
+/**
  * 熔断口径「新增消耗」= input + cacheWrite + output（**排除 cacheRead**）。
  *
  * 为什么与汇报口径分家（2026-09-11）：cacheRead 是上下文复用的缓存重放，单价低且是

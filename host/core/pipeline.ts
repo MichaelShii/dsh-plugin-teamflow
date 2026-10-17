@@ -54,6 +54,7 @@ import { parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
 import { ambientLocale, localeForMissingSnapshot, localeSource, runLocaleOf } from './locale.ts'
 import { noteClarifyAnswered, noteClarifyProceeded } from './clarify-log.ts'
 import { canReviseViaChild, revisePrdViaChild, type RevisionDiag } from './prd-revise.ts'
+import { addUsage } from './agent/metering.ts'
 
 /** dev 子卡/阶段 label 的「开发 · 」前缀与重试后缀：zh 存量兼容 + en 新增（QA-2：既有解析契约只增不改）。
  *  en 侧必须覆盖词典 `dev.taskRetry` 的实际产出 `(attempt N)`（R3-2 实锤：只写 retry \d+ 时，
@@ -988,6 +989,17 @@ export async function executePipeline(
     })
     if (prdStage.cancelled) return
     prd = prdStage.text
+    // **本阶段用量累计**（2026-10-18）：节点卡展示的是「本阶段总用量」（输入未命中/输入命中/输出），
+    // 而 PRD 会被改写多轮（每轮一次续跑或重跑）。只写「这一轮」⇒ 前面几轮的 token 凭空消失 ⇒
+    // 与 dsh 子代理面板（全程累计）对不上（真机 tf-mvcoqg9e）。⇒ 每一轮都把历史累计并进来。
+    // 续跑与重跑两条路径在这里同一处理，避免只修一条造成新的口径分叉。
+    try {
+      const rec = (journal.stages || []).filter((s) => phaseKeyOf(s.phase) === 'prd').pop()
+      if (rec) {
+        rec.usage = addUsage(journal.prdUsageAcc, rec.usage)
+        journal.prdUsageAcc = rec.usage || null
+      }
+    } catch (e) { /* 计量失败不阻断流水线 */ }
     // **PRD 版本自增**（2026-10-17，issue #11）：只有**真正产出**了 PRD 才算一版 ——
     // `runSimpleStage` 在 resume 复用存档产物时返回 `skipped:true`（PRD 没变，版本不动）。
     // 为什么必须在这里而不是 `mergeStageState` 里：那条通道依赖模型写出 state 块
@@ -1650,6 +1662,10 @@ export function resumeRun(
         const cid = prdRec && prdRec.childId ? String(prdRec.childId) : ''
         if (cid) j.prdChildId = cid
         else j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.reviseNoChild') })
+        // **这一阶段的历史用量要带走**（2026-10-18）：下面会把旧的 prd 记录摘掉，而节点卡展示的是
+        // 「本阶段总用量」。不带走 ⇒ 前面几轮改写花的 token 凭空消失 ⇒ 与 dsh 子代理面板（全程累计）
+        // 对不上（真机 tf-mvcoqg9e 对不上才发现）。
+        if (prdRec && prdRec.usage) j.prdUsageAcc = prdRec.usage
       } catch (e) { /* 取不到就回落为重跑（不是错误） */ }
     }
     j.stages = (j.stages || [])
