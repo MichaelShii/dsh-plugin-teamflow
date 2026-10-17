@@ -1324,8 +1324,8 @@ console.log('── 11) PRD 改写走续跑（continuable），失败回落重�
 {
   const reviseSrc = readFileSync(join(here, '../host/core/prd-revise.ts'), 'utf8')
   const ctxSrc = readFileSync(join(here, '../host/core/agent/context.ts'), 'utf8')
-  ok(/if \(!resume \|\| !resume\.redo \|\| !childId \|\| !supplement\) return null/.test(pipelineSrc),
-    'pipeline：只在「redo 改写」且拿到 childId/supplement 时才尝试续跑')
+  ok(pipelineSrc.includes('if (!resume || !resume.redo || !supplement) return null') && pipelineSrc.includes("t(locale, 'log.reviseNoChild')"),
+    'pipeline：只在「redo 改写」时尝试续跑；拿不到 childId ⇒ **记 warn 回落**（不再静默——第一版就是静默失效，真机才发现）')
   ok(/const revisedPrdStage = await revisePrdViaChildIfPossible\(\)/.test(pipelineSrc),
     'pipeline：PRD 段先试续跑')
   ok(/const prdStage = revisedPrdStage \|\| await runSimpleStage\('prd'/.test(pipelineSrc),

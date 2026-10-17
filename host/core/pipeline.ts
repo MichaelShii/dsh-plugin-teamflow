@@ -923,8 +923,17 @@ export async function executePipeline(
      */
     const revisePrdViaChildIfPossible = async (): Promise<{ text: string; cancelled: boolean; skipped: boolean } | null> => {
       const childId = journal.prdChildId ? String(journal.prdChildId) : ''
-      if (!resume || !resume.redo || !childId || !supplement) return null
-      if (!canReviseViaChild({ subagents: runtime.subagents, sessionQuery: runtime.sessionQuery, childId })) return null
+      if (!resume || !resume.redo || !supplement) return null
+      if (!childId) {
+        // 本该续跑但没有 childId 线索 ⇒ **必须可见**（第一版就是静默 return null，
+        // 导致「为什么每次都在重跑」变成黑盒，直到真机日志里出现「回退重跑 PRD」才发现）。
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.reviseNoChild') })
+        return null
+      }
+      if (!canReviseViaChild({ subagents: runtime.subagents, sessionQuery: runtime.sessionQuery, childId })) {
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.reviseNoHost') })
+        return null
+      }
       const instruction = [
         '[REVISED — the user reviewed the PRD you wrote and asked for these changes; treat them as authoritative and do NOT re-ask]',
         supplement,
@@ -1623,19 +1632,23 @@ export function resumeRun(
     j.endedAt = null
     j.logs = (j.logs || []).slice(-200)
     j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.resume', { phase: phaseLabel(locale, resumePhase) }) })
+    // **先记住产出当前 PRD 的子代理 id**（必须在下面把阶段记录摘掉**之前**——摘掉后就没线索了）：
+    // redo 会优先对它「续跑改写」（上下文接着干），而不是重新 spawn 一个从零读需求的 PRD 子代理。
+    // ⚠️ 第一版就栽在这：取值写在 filter 之后 ⇒ `prdChildId` 永远是 null ⇒ 续跑静默失效、每次都重跑。
+    if (redoPrd) {
+      try {
+        const prdRec = (j.stages || []).filter((s) => phaseKeyOf(s.phase) === 'prd').pop()
+        const cid = prdRec && prdRec.childId ? String(prdRec.childId) : ''
+        if (cid) j.prdChildId = cid
+        else j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.reviseNoChild') })
+      } catch (e) { /* 取不到就回落为重跑（不是错误） */ }
+    }
     j.stages = (j.stages || [])
       .filter((s) => s.status !== 'running' && s.status !== 'pending') // 清理未完成 stage；保留 done/failed 历史（失败痕迹不消失）
       // 回退重跑 PRD：把旧的 prd 记录**摘掉**，否则 `enterStage` 会再推一条 ⇒ 同一阶段两条记录
       // （报告与断点定位都按「每阶段一条」读）。安全前提正是 `prdOnly`：PRD 之后确实没跑过任何阶段。
       .filter((s) => !(redoPrd && phaseKeyOf(s.phase) === 'prd'))
     if (redoPrd) {
-      // **先记住产出当前 PRD 的子代理 id**（下面把阶段记录摘掉后就没线索了）：redo 会优先对它
-      // 「续跑改写」（上下文接着干），而不是重新 spawn 一个从零读需求的 PRD 子代理。
-      try {
-        const prdRec = (j.stages || []).filter((s) => phaseKeyOf(s.phase) === 'prd').pop()
-        const cid = prdRec && prdRec.childId ? String(prdRec.childId) : ''
-        if (cid) j.prdChildId = cid
-      } catch (e) { /* 取不到就回落为重跑（不是错误） */ }
       // **存量 run 的版本起点**（2026-10-17）：`prdRev` 是本版新加的字段，v0.3.0 之前创建的 run
       // 落盘时没有它 ⇒ 读回来是 `undefined`/0。而 redo 的前提是「PRD 已经产出过一版」（`prdOnly`），
       // 所以这里必须补成 1 —— 否则重跑后只是 1，`prdRev > 1` 不成立 ⇒ 第二张确认单又不出（issue #11 复发）。

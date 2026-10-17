@@ -335,6 +335,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     // PRD 续跑改写（2026-10-17）：在**原 PRD 子代理的上下文里**改，而不是重跑。
     'log.prdRevisedViaChild': 'PRD 改写走**续跑**：在原 PRD 子代理的上下文里增量修改（{n} 字符，未重新读需求/文档）',
     'log.reviseFallback': 'PRD 改写**回落为重跑**：续跑不可用（子代理已释放 / 宿主无 sessionQuery / 超时 / 拿到空文本）⇒ 重新 spawn 一个 PRD 子代理',
+    'log.reviseNoChild': 'PRD 改写**没有走续跑**：找不到产出当前 PRD 的子代理 id（可能是老 run / 阶段记录已被摘掉）⇒ 回落为重跑',
+    'log.reviseNoHost': 'PRD 改写**没有走续跑**：宿主缺少 sendMessage 或 sessionQuery 能力 ⇒ 回落为重跑（插件照常工作，只是没有增量改写）',
     'log.resumeNeedsHuman': '续跑被拒：确认单断点之后没有任何用户消息（只有插件注入的汇报）—— 人工批准闸门生效（补录 {n} 字符未采用；已要求主线程先问用户）',
     // 「说过话」≠「批准」（2026-10-17 实锤 tf-mvckeco4-2o1p91）：用户那句「加 --depth N，默认 0」恰好是
     // 待拍板项的缺省建议 ⇒ 模型当成「整版认可」自己 resume ⇒ 直接进架构设计。无 supplement 的 resume
@@ -793,6 +795,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.confirmRevised': 'Confirm sheet: the PRD was revised (version {rev}) ⇒ the previous approval is void and a new approval is required',
     'log.prdRevisedViaChild': 'PRD revised via **continuation**: edited inside the original PRD child\'s context ({n} chars, no re-read of the requirement or docs)',
     'log.reviseFallback': 'PRD revision **fell back to a fresh run**: continuation unavailable (child released / no sessionQuery / timeout / empty text) ⇒ spawning a new PRD child',
+    'log.reviseNoChild': 'PRD revision did **not** use continuation: no child id for the current PRD (old run / stage record already dropped) ⇒ falling back to a fresh run',
+    'log.reviseNoHost': 'PRD revision did **not** use continuation: host lacks sendMessage or sessionQuery ⇒ falling back to a fresh run (the plugin still works, just without incremental revision)',
     'log.resumeNeedsHuman': 'Resume rejected: no user message exists after the confirm-sheet pause (only plugin-injected reports) — human-approval gate fired ({n} chars of supplement not applied; the main thread was told to ask the user first)',
     'run.needsExplicitApproval': 'Resume refused: **a resume without `supplement` approves the whole PRD, so it must be the human explicit approval**. The last human reply after the pause carries no approval semantics (text: {text}) — agreeing with a default suggestion is NOT an approval, and anything said while discussing the requirement counts as a change request. Pick one: (1) the user wants **changes** => call `teamflow_resume` again with `supplement`; (2) the user **approves** => ask via `ask_user_question` and let them pick approve, then call `teamflow_resume` (runId={id}); (3) let the user press the resume button in the workbench. **Do not decide on their behalf that they approved.**',
     'log.resumeNeedsExplicitApproval': 'Resume refused: last human reply has no approval semantics ({text}) — a supplement-less resume approves the whole PRD; the main thread was told to separate change from approve',
