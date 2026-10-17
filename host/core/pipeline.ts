@@ -14,7 +14,7 @@ import { runAcceptancePhase } from './stages/acceptance.ts'
 export type { DevTaskDef } from './stages/dev.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
-import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv, hasHumanReplySince, normalizeSignal } from '../util.ts'
+import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv, hasHumanReplySince, lastHumanReplySince, isExplicitApproval, normalizeSignal } from '../util.ts'
 import type { Blueprint } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { RETRY_LIMIT, PHASE_ORDER, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, DEV_MAX_CONCURRENCY, DEV_DEFAULT_CONCURRENCY } from '../constants.ts'
@@ -1551,8 +1551,12 @@ export function resumeRun(
   // 时，要求会话日志里存在**晚于暂停时刻**的 `source.kind==='user'` 消息；没有就拒绝。
   // 界面入口（`api.resume`，origin='ui'）不受限——那次点击本身就是人的动作。
   // ⚠️ 三态：`null`=读不到会话日志（宿主 API 变更）⇒ **不硬拒**（否则所有人续跑全挂）但必须留痕。
+  /** 这一版 PRD 是否被人**显式**批准过（tool 路径的记账依据；界面点击本身就是人的动作）。 */
+  let approvalVerified = origin === 'ui'
   if (origin !== 'ui' && afterPrd && prdOnly) {
-    const human = hasHumanReplySince(agent && (agent as { session?: unknown }).session, Number(j.interruptedAt || 0))
+    const session = agent && (agent as { session?: unknown }).session
+    const sinceAt = Number(j.interruptedAt || 0)
+    const human = hasHumanReplySince(session, sinceAt)
     if (human === false) {
       try {
         j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.resumeNeedsHuman', { n: String(supp || '').length }) })
@@ -1565,6 +1569,29 @@ export function resumeRun(
         j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.resumeHumanUnverifiable') })
         persistJournal(j)
       } catch (e) { /* 同上 */ }
+    }
+    // **「说过话」≠「批准」**（2026-10-17 实锤 tf-mvckeco4-2o1p91）：确认单只剩 1 项待拍板时，
+    // 用户那句「加 --depth N，默认 0」**恰好是那项的缺省建议** ⇒ 模型判成「你答了这题 ⇒ 整版认可」⇒
+    // 自己调 resume（无 supplement）⇒ 直接进架构设计，用户从没点过批准，PRD 却被锁死（再改会被
+    // supplementTooLate 拒）。⇒ **不带 supplement 的 resume = 整版放行**，必须要求**显式批准语义**。
+    // 带 supplement 的（= 要改）不受这条限制：那是「改」，本来就该由人驱动。
+    if (!supp) {
+      const reply = lastHumanReplySince(session, sinceAt)
+      const explicit = reply === undefined ? undefined : (reply === null ? false : isExplicitApproval(reply.text))
+      approvalVerified = explicit === true
+      if (explicit === false) {
+        try {
+          j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.resumeNeedsExplicitApproval', { text: clip(reply === null ? '' : reply.text, 120) }) })
+          persistJournal(j)
+        } catch (e) { /* 同上 */ }
+        return { ok: false, error: t(locale, 'run.needsExplicitApproval', { id, text: clip(reply === null ? '' : reply.text, 120) }) }
+      }
+      if (explicit === undefined) {
+        try {
+          j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.resumeApprovalUnverifiable') })
+          persistJournal(j)
+        } catch (e) { /* 同上 */ }
+      }
     }
   }
   try {
@@ -1641,8 +1668,13 @@ export function resumeRun(
       // **放行 = 批准这一版 PRD**（2026-10-17，issue #11）。确认单的判据是「这一版有没有被批过」，
       // 不带 supplement 的 resume 就是「认可当前版本」。不记的话：任何一次续跑（不必是确认单断点）
       // 再走到确认单判断时，同一版又会被拦一次 —— 那就是用户担心的「反复修正需求」。
-      // ⚠️ redo 分支**不记**：新 PRD 还没被看过，批准必须等下一张单。
-      j.confirmApprovedRev = Number(j.prdRev || 0) || 0
+      // ⚠️ **确认单形态下必须有人显式批准才记**（`approvalVerified`）：模型把用户的一句修改要求
+      // 当成「回答待拍板项 ⇒ 整版认可」时（实锤 tf-mvckeco4-2o1p91），一旦记进去，这版就永久
+      // 「已批准」⇒ 之后想改会撞 `supplementTooLate`，PRD 被锁死。宁可下次再出一次单。
+      // 非确认单断点（design/tech 失败后续跑）说明这版早就被放行过（否则跑不到下游）⇒ 直接记。
+      if (!(afterPrd && prdOnly) || approvalVerified) {
+        j.confirmApprovedRev = Number(j.prdRev || 0) || 0
+      }
     }
     // 补录的答复落 journal（PRD 会读它拼 `[CLARIFIED]`）；`answered` 埋点只在这里记一次
     // —— `executePipeline` 的同一埋点已按 `!resume` 排除续跑路径，否则会重复计一次。

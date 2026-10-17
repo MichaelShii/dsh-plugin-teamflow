@@ -1352,6 +1352,27 @@ console.log('── 11) PRD 改写走续跑（continuable），失败回落重�
   }
 }
 
+// ── 12) 「说过话」≠「批准」：无 supplement 的 resume 必须有显式批准语义 ──
+console.log('── 12) 无 supplement 的 resume = 整版放行 ⇒ 要求显式批准 ──')
+{
+  ok(/export function isExplicitApproval\(text: unknown\): boolean/.test(utilSrc),
+    'util：显式批准判据是纯函数（真值表由 human-approval 测试锁）')
+  ok(/export function lastHumanReplySince\(session: unknown, sinceMs: number\)/.test(utilSrc),
+    'util：取「最后一条人类答复」（user 打字 / AUQ 选项），不是「有没有人说过话」')
+  ok(pipelineSrc.includes('if (!supp) {') && pipelineSrc.includes('const reply = lastHumanReplySince(session, sinceAt)'),
+    'pipeline：只有**不带 supplement**（= 批准）才要求显式批准；带 supplement（= 要改）不受限')
+  ok(/return \{ ok: false, error: t\(locale, 'run\.needsExplicitApproval'/.test(pipelineSrc),
+    'pipeline：无批准语义 ⇒ **拒绝**（不替用户判断他批准了）')
+  ok(/if \(!\(afterPrd && prdOnly\) \|\| approvalVerified\) \{/.test(pipelineSrc),
+    'pipeline：确认单形态下只有显式批准才写 confirmApprovedRev（防一次误判把 PRD 永久锁死）')
+  ok(/const approvalVerified = origin === 'ui'/.test(pipelineSrc) || /let approvalVerified = origin === 'ui'/.test(pipelineSrc),
+    'pipeline：界面点击（origin=ui）天然算人的动作')
+  for (const k of ['run.needsExplicitApproval', 'log.resumeNeedsExplicitApproval', 'log.resumeApprovalUnverifiable']) {
+    ok(new RegExp(`'${k}':`).test(hostSrc), `locales：含文案键 ${k}（zh/en 同形，locale 不变量测试守奇偶）`)
+  }
+}
+
+
 
 
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)

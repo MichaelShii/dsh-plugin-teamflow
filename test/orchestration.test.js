@@ -969,6 +969,8 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
   // `plugin:dsh-plugin-teamflow`。默认空 ⇒ 等价「暂停后没人说过话」，各用例自己按需注入。
   let sessionEvents = []
   const humanEvent = (t) => ({ type: 'user/message', time: t, data: { content: [{ type: 'text', text: '批准' }], source: { kind: 'user' } } })
+  /** 人打字但**不是批准**（用于「说过话 ≠ 批准」的用例）。 */
+  const humanTextEvent = (t, text) => ({ type: 'user/message', time: t, data: { content: [{ type: 'text', text }], source: { kind: 'user' } } })
   const pluginNoticeEvent = (t) => ({ type: 'user/message', time: t, data: { content: [{ type: 'text', text: '【团队研发流水线汇报】…' }], source: { kind: 'plugin:dsh-plugin-teamflow', form: 'notice' } } })
   // `resumeRun` 要能从 runtime.agents 取到 agent（测试 [21] 那里取不到 ⇒ 只能观测到「被拒/放行」，
   // 观测不到回退是否真的发生）。这里给它一个假 agent，才能把「PRD 真的重跑了」断言出来。
@@ -1015,6 +1017,28 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
   ok(rAuto.ok === false && /必须由用户本人批准|human-approval|approved by the user/.test(String(rAuto.error)),
     `暂停后无人类消息 ⇒ 模型代批被拒（实测 ok=${rAuto.ok} err=${String(rAuto.error || '').slice(0, 70)}）`)
   ok(seen.length === seenBefore, `被拒时**没有**起任何子代理（实测 ${seenBefore} → ${seen.length}）`)
+
+  // ⓪b **「说过话」≠「批准」**（2026-10-17 实锤 tf-mvckeco4-2o1p91）：确认单只剩 1 项待拍板时，
+  //     用户那句「加 --depth N，默认 0」恰好是那项的缺省建议 ⇒ 模型判成「整版认可」⇒ 自己 resume
+  //     （无 supplement）⇒ 直接进架构设计（`confirmApprovedRev` 被写死，PRD 再也改不动）。
+  //     ⇒ 无 supplement 的 resume（= 整版放行）必须要求**显式批准语义**。
+  sessionEvents = [pluginNoticeEvent(Date.now() - 50000), humanTextEvent(Date.now() - 30000, '加一个 --depth N 参数，默认 0 不限制')]
+  mk('ws-ambig', 'tf-ambig', [{ phase: 'prd', status: 'done', output: '旧 PRD' }])
+  const rAmb = resumeRun('tf-ambig', 'sid-redo')
+  ok(rAmb.ok === false && /必须是人明确批准|explicit approval/.test(String(rAmb.error)),
+    `「修改要求」被当成批准 ⇒ 拒绝（实测 ${String(rAmb.error || '').slice(0, 60)}）`)
+  ok(!(JSON.parse(readFileSync(join(home, 'teamflow', 'ws-ambig', 'runs', 'tf-ambig.json'), 'utf8')).logs || []).some((l) => /续跑：从/.test(String(l.message))),
+    '被拒时**没有**真的进阶段（日志里不出现「断点续跑：从…继续」）')
+  // 同一个人、同一句话，但**带 supplement**（= 明确要改）⇒ 放行（否则用户就改不了 PRD 了）
+  mk('ws-ambig2', 'tf-ambig2', [{ phase: 'prd', status: 'done', output: '旧 PRD' }])
+  const rAmb2 = resumeRun('tf-ambig2', 'sid-redo', '加一个 --depth N 参数')
+  ok(rAmb2.ok === true && rAmb2.resumedFrom === 'prd',
+    `同一句话带 supplement ⇒ 按「要改」放行（实测 ok=${rAmb2.ok} from=${rAmb2.resumedFrom}）`)
+  // 界面点击（origin='ui'）不受这条约束：那次点击本身就是人的动作
+  sessionEvents = [pluginNoticeEvent(Date.now() - 50000)]
+  mk('ws-ui', 'tf-ui', [{ phase: 'prd', status: 'done', output: '旧 PRD' }])
+  const rUi = resumeRun('tf-ui', 'sid-redo', undefined, 'ui')
+  ok(rUi.ok === true, `界面续跑（origin=ui）免检放行（实测 ok=${rUi.ok} err=${String(rUi.error || '').slice(0, 50)}）`)
 
   // ① 确认单形态（只有 prd done）＋ supplement ⇒ 接受，检查点回退到 prd
   //    人类确实说过话（晚于暂停）⇒ 闸门放行。

@@ -10,7 +10,7 @@
  *
  * 三态是重点：`null`（读不到）必须与 `false`（确实没人说话）区分开——前者放行但留痕，后者拒绝。
  */
-import { hasHumanReplySince } from '../host/util.ts'
+import { hasHumanReplySince, isExplicitApproval, lastHumanReplySince, hasExplicitApprovalSince } from '../host/util.ts'
 
 let failed = 0
 const eq = (a, b, m) => {
@@ -71,6 +71,62 @@ eq(hasHumanReplySince({ snapshotEvents: () => [userMsg(PAUSE + 1)], ownEvents: (
 eq(hasHumanReplySince({ ownEvents: () => [null, 123, {}, { type: 'user/message' }] }, PAUSE), false, '脏事件不炸：缺 time/source 一律不计')
 eq(hasHumanReplySince(sessionOf([{ type: 'user/message', time: PAUSE + 1, data: {} }]), PAUSE), false, 'user/message 缺 source → 不计（宁可不认）')
 eq(hasHumanReplySince(sessionOf([userMsg(PAUSE + 1)]), Number.NaN), true, 'sinceMs 非法 → 按 0 处理（不因参数错误静默变成 false）')
+
+console.log('── 5) 「说过话」≠「批准」：isExplicitApproval 真值表 ──')
+// 事故（2026-10-17 tf-mvckeco4-2o1p91）：确认单只剩 1 项待拍板，用户那句「加 --depth N，默认 0」
+// 恰好是那项的缺省建议 ⇒ 模型判成「整版认可」⇒ 自己 resume ⇒ 直接进架构设计。无 supplement 的
+// resume 是**整版放行**，所以必须要求显式批准语义。
+eq(isExplicitApproval('批准'), true, '「批准」→ 批准')
+eq(isExplicitApproval('可以，开工吧'), true, '「可以，开工吧」→ 批准')
+eq(isExplicitApproval('同意，按这个做'), true, '「同意，按这个做」→ 批准')
+eq(isExplicitApproval('approved, go ahead'), true, 'en：approved / go ahead → 批准')
+// ⚠️ 刻意**不认**裸 `ok`：它太容易和「ok 但是…」混淆，误判成批准会封死修改窗口。
+// 代价只是多问一句（模型有三条出路），方向是安全的。
+eq(isExplicitApproval('  OK  '), false, '裸 OK → **不认**（歧义太大；多问一句比误批便宜）')
+// 修改类：都不是批准
+eq(isExplicitApproval('加一个 --depth N 参数，默认 0 不限制'), false, '「加一个参数」→ **不是**批准（本次事故那句话）')
+eq(isExplicitApproval('把 --json 改成嵌套结构'), false, '「改成…」→ 不是批准')
+eq(isExplicitApproval('去掉 --depth'), false, '「去掉…」→ 不是批准')
+eq(isExplicitApproval('可以，但再加个 --json 开关'), false, '「可以，但再加…」→ 不是批准（有修改词 ⇒ 必须走 supplement）')
+// ⚠️ 这条专治「批准词 + 修改词同现」：夹具必须让 CHANGE_WORDS 判定**单独有作用**，
+// 否则删掉该判定的变异体会算出同样的结果（第一版就漏了这条）。
+eq(isExplicitApproval('批准，但把缩进改成两格'), false, '「批准，但把X改成Y」→ 不是纯批准（要改就走 supplement）')
+eq(isExplicitApproval('开工，再加个 --depth'), false, '「开工，再加个…」→ 不是纯批准')
+eq(isExplicitApproval('add a --depth flag'), false, 'en：add → 不是批准')
+// 否定优先
+eq(isExplicitApproval('不批准'), false, '「不批准」→ 不是批准（否定优先）')
+eq(isExplicitApproval('先别开工'), false, '「先别开工」→ 不是批准')
+eq(isExplicitApproval('暂不开始'), false, '「暂不开始」→ 不是批准')
+eq(isExplicitApproval("don't approve yet"), false, 'en：否定 → 不是批准')
+// 边界
+eq(isExplicitApproval(''), false, '空串 → 不是批准')
+eq(isExplicitApproval(null), false, 'null → 不是批准')
+eq(isExplicitApproval('嗯'), false, '模糊答复（「嗯」）→ 不是批准（保守）')
+eq(isExplicitApproval('第 6 项的缺省建议我同意'), true, '「缺省建议我同意」→ 批准（有明确「同意」且无修改词）')
+
+console.log('── 6) lastHumanReplySince：取最后一条（三态）──')
+const approvalMsg = (t, text) => ({ type: 'user/message', time: t, data: { content: [{ type: 'text', text }], source: { kind: 'user' } } })
+const auqCallEv = (t, id) => ({ type: 'tool/call', time: t, data: { name: 'ask_user_question', callId: id } })
+const auqResultEv = (t, id, answers) => ({ type: 'tool/result', time: t, data: { toolCallId: id, message: { role: 'tool', source: { kind: 'tool', callId: id }, content: [{ type: 'text', text: JSON.stringify({ answers }) }] } } })
+eq(lastHumanReplySince(undefined, PAUSE), undefined, 'session 缺失 → undefined（读不到）')
+eq(lastHumanReplySince(sessionOf([]), PAUSE), null, '读到了但没人说话 → null')
+const emptyMsg = { type: 'user/message', time: PAUSE + 1000, data: { source: { kind: 'user' } } }
+eq(lastHumanReplySince(sessionOf([emptyMsg]), PAUSE).text, '', '没有 content ⇒ 文本为空串（但仍算一条人类答复）')
+const r1 = lastHumanReplySince(sessionOf([userMsg(PAUSE + 1000)]), PAUSE)
+eq(r1 && r1.kind, 'user', '人直接打字 → kind=user')
+eq(lastHumanReplySince(sessionOf([auqCallEv(PAUSE + 1000, 'c1'), auqResultEv(PAUSE + 2000, 'c1', ['批准开工'])]), PAUSE).kind, 'auq', 'AUQ 答复 → kind=auq')
+eq(hasExplicitApprovalSince(sessionOf([auqCallEv(PAUSE + 1000, 'c1'), auqResultEv(PAUSE + 2000, 'c1', ['批准开工'])]), PAUSE), true,
+  'AUQ 选「批准开工」→ 显式批准')
+eq(hasExplicitApprovalSince(sessionOf([auqCallEv(PAUSE + 1000, 'c1'), auqResultEv(PAUSE + 2000, 'c1', ['我要改几项'])]), PAUSE), false,
+  'AUQ 选「我要改几项」→ **不是**批准')
+eq(hasExplicitApprovalSince(sessionOf([approvalMsg(PAUSE + 1000, '加一个 --depth N 参数，默认 0')]), PAUSE), false,
+  '人打字说「加一个参数」→ false（这就是本次事故的形态：说过话 ≠ 批准）')
+// 以**最后一条**为准：先说「要改」，后说「批准」⇒ 批准
+eq(hasExplicitApprovalSince(sessionOf([userMsg(PAUSE + 1000), approvalMsg(PAUSE + 2000, '批准')]), PAUSE), true,
+  '先说改、后说批准 → 以最后一条为准（true）')
+eq(hasExplicitApprovalSince(sessionOf([{ type: 'user/message', time: PAUSE + 1000, data: { content: [{ type: 'text', text: '批准' }], source: { kind: 'user' } } }, approvalMsg(PAUSE + 2000, '再改一下默认值')]), PAUSE), false,
+  '先说批准、后说「再改一下」→ 最后一条是修改 ⇒ false（不拿前面的批准顶上）')
+eq(hasExplicitApprovalSince(undefined, PAUSE), undefined, '读不到日志 → undefined（三态，调用方只 warn）')
 
 console.log(failed === 0 ? '\n✅ human-approval 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

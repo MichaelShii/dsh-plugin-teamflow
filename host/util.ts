@@ -450,6 +450,103 @@ export function hasHumanReplySince(session: unknown, sinceMs: number): boolean |
 }
 
 /**
+ * **显式批准判据**（2026-10-17，实锤 `tf-mvckeco4-2o1p91`）。
+ *
+ * 事故形态：确认单上只剩 1 项待拍板（`--depth` 的默认与互斥形态），而用户那句「加 `--depth N`，
+ * 默认 0 不限制」**恰好是那项的缺省建议** ⇒ 模型判定「你在回答这项 ⇒ 本版 10 条 AC 全部认可」⇒
+ * 自己调了 `resume`（**不带 supplement**）⇒ 直接进架构设计。用户从没点过批准，PRD 却被锁死
+ * （`stages` 里有了 scaffold ⇒ 再改会被 `supplementTooLate` 拒）。
+ *
+ * `hasHumanReplySince` 只回答「暂停后有没有人说过话」，回答不了「这句话是不是批准」——
+ * 而「无 supplement 的 resume = 批准」正是**整版放行**的动作，代价最大。所以单独加这一层。
+ *
+ * 判据（保守优先，宁可让人再说一次）：**有否定 ⇒ 不批准；没有批准词 ⇒ 不批准；有修改词 ⇒ 视为修改**。
+ * 这是启发式，但方向是安全的：误判成「不算批准」只会多问一句，误判成「算批准」会封死修改窗口。
+ */
+const APPROVAL_WORDS = ['批准', '同意', '开工', '开始吧', '可以开工', '没问题', '就这样', '照这个来', 'approve', 'approved', 'go ahead', 'lgtm', 'ship it']
+const NEGATION_WORDS = ['不批准', '不同意', '先别', '暂不', '先不', '不用了', '再等等', '先等等', "don't", 'do not', 'not yet', 'hold on', 'no ']
+const CHANGE_WORDS = ['改', '加', '删', '换', '调整', '去掉', '不要', '新增', '补充', '修改', '替换', 'add ', 'change', 'remove', 'adjust', 'revise', 'rename']
+
+/** 一段人类话里是否含**显式批准**语义（纯函数，便于真值表测试）。 */
+export function isExplicitApproval(text: unknown): boolean {
+  const t = String(text == null ? '' : text).toLowerCase().replace(/\s+/g, ' ').trim()
+  if (!t) return false
+  if (NEGATION_WORDS.some((w) => t.includes(w))) return false
+  // 有修改词 ⇒ 这是「改」不是「批准」，即使同时说了「可以」也必须走 supplement 通道
+  if (CHANGE_WORDS.some((w) => t.includes(w))) return false
+  return APPROVAL_WORDS.some((w) => t.includes(w))
+}
+
+/** 暂停之后**最后一条人类答复**（`user` = 人直接打字；`auq` = 人点了 ask_user_question 的选项）。 */
+export interface HumanReply { kind: 'user' | 'auq'; text: string }
+
+/**
+ * 取最后一题人类答复。三态：
+ * - `undefined` = 读不到会话日志（宿主 API 变更）⇒ 调用方只 warn 不硬拒（与 `hasHumanReplySince` 一致）；
+ * - `null` = 读到了，但暂停之后没人说过话；
+ * - 对象 = 最后一条答复及其文本。
+ * 为什么只要「最后一条」：用户可能先说「要改 X」再说「批准」——以最后一句为准。
+ */
+export function lastHumanReplySince(session: unknown, sinceMs: number): HumanReply | null | undefined {
+  const s = session as { snapshotEvents?: () => unknown; ownEvents?: () => unknown } | null | undefined
+  if (!s || typeof s !== 'object') return undefined
+  let events: unknown = null
+  try {
+    if (typeof s.snapshotEvents === 'function') events = s.snapshotEvents()
+    else if (typeof s.ownEvents === 'function') events = s.ownEvents()
+  } catch (e) {
+    return undefined
+  }
+  if (!Array.isArray(events)) return undefined
+  const since = Number.isFinite(sinceMs) ? sinceMs : 0
+  type Ev = { type?: string; time?: number; data?: Record<string, unknown> } | null
+  const list = events as Ev[]
+  const askIds = new Set<string>()
+  for (const ev of list) {
+    if (!ev || ev.type !== 'tool/call' || !ev.data) continue
+    if (ev.data.name !== 'ask_user_question') continue
+    const cid = ev.data.callId
+    if (typeof cid === 'string' && cid) askIds.add(cid)
+  }
+  const textOfBlocks = (content: unknown): string => {
+    if (!Array.isArray(content)) return ''
+    return content.map((b) => (b && typeof (b as { text?: unknown }).text === 'string' ? String((b as { text: string }).text) : '')).join(' ')
+  }
+  let last: HumanReply | null = null
+  for (const ev of list) {
+    if (!ev || !(Number(ev.time) > since)) continue
+    if (ev.type === 'user/message') {
+      const src = ev.data && (ev.data.source as { kind?: string } | undefined)
+      if (src && src.kind === 'user') last = { kind: 'user', text: textOfBlocks(ev.data && ev.data.content) }
+      continue
+    }
+    if (ev.type === 'tool/result' && ev.data) {
+      const msg = ev.data.message as { source?: { callId?: string }; content?: unknown } | undefined
+      const cid = ev.data.toolCallId || (msg && msg.source && msg.source.callId)
+      if (typeof cid === 'string' && askIds.has(cid)) {
+        const raw = textOfBlocks((msg && msg.content) || ev.data.content)
+        // AUQ 的结果是 `{"answers":[...]}`：只取答案本身，避免把问题正文里的「要不要改」当成修改意图
+        let answers = raw
+        try {
+          const parsed = JSON.parse(raw) as { answers?: unknown }
+          if (parsed && Array.isArray(parsed.answers)) answers = parsed.answers.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')
+        } catch (e) { /* 非 JSON ⇒ 用整段文本 */ }
+        last = { kind: 'auq', text: answers }
+      }
+    }
+  }
+  return last
+}
+
+/** **显式批准**的三态版本（`undefined` = 读不到日志）。 */
+export function hasExplicitApprovalSince(session: unknown, sinceMs: number): boolean | null | undefined {
+  const r = lastHumanReplySince(session, sinceMs)
+  if (r === undefined) return undefined
+  if (r === null) return false
+  return isExplicitApproval(r.text)
+}
+
+/**
  * 幂等合并 .gitignore 条目（纯函数，便于回归测试）。
  *
  * 场景（实锤 assetd `tf-mtwvwpxa-p3vw08`）：插件强制把命令日志/临时脚本写进 `logs/teamflow/`，
