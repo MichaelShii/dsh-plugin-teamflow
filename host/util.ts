@@ -365,11 +365,88 @@ export function sanitizeSnapOptions(o) {
 }
 // 安全信号兜底：宿主（09-04+）在 subagents.start 内部调用 signal.throwIfAborted()——
 // 缺该方法会「启动/执行失败：options?.signal?.throwIfAborted is not a function」（实锤 r1-json-tree-view
-// 3 任务 3 轮 resume 全失败）。SAFE_SIGNAL 永不 abort（aborted 恒 false），空实现语义正确。
-export const SAFE_SIGNAL = { aborted: false, addEventListener: () => {}, removeEventListener: () => {}, throwIfAborted: () => {} }
-export function normalizeSignal(s) {
-  // 真 AbortSignal 判定：须具备 throwIfAborted（宿主硬依赖）；伪 signal 一律降级 SAFE_SIGNAL
-  return (s && typeof s === 'object' && typeof s.addEventListener === 'function' && typeof s.aborted === 'boolean' && typeof s.throwIfAborted === 'function') ? s : SAFE_SIGNAL
+// 3 任务 3 轮 resume 全失败）。
+//
+// ⚠️ **必须是真正的 AbortSignal，不能是鸭子对象**（2026-10-17 issue #20 追评实锤）：宿主会把调用方的
+// signal 原样丢进 `AbortSignal.any([token.abort.signal, callerSignal])`（api-gateway client.node.js:1694）
+// 与 `AbortSignal.any([inputs.signal, controller.signal])`（dsh-subagent lib/index.js:1688）。
+// Node 22 的 `AbortSignal.any` 只做鸭子校验（是对象且有 `aborted` 即收）⇒ 伪 signal 一路蒙混；
+// **Node 24 改走 WebIDL `sequence<AbortSignal>` 真 brand 校验** ⇒ `TypeError: signals[1] is not of type
+// AbortSignal.`，阶段在 1–3ms 内启动即死。本插件有三条入口传 `undefined`（resumeRun / api.start /
+// triage 预检）⇒ 在 Node 24 上「续跑」与「面板启动」全部不可用，只有带真 exec.signal 的
+// `teamflow_start` 幸免。语义保持不变：真 signal、永不 abort（aborted 恒 false）。
+export const SAFE_SIGNAL: AbortSignal = new AbortController().signal
+const ABORT_SIGNAL_BRAND = '[object AbortSignal]'
+/**
+ * 真 AbortSignal 判定。**只认真 brand，不认鸭子形状**——鸭子判定正是 Node 24 崩溃的放行口。
+ * 跨 realm（vm / jsdom / 独立 context）造出的**真** signal `instanceof` 会失配，用 `toString` brand 兜一层。
+ */
+export function normalizeSignal(s: unknown): AbortSignal {
+  if (s instanceof AbortSignal) return s
+  if (Object.prototype.toString.call(s) === ABORT_SIGNAL_BRAND && typeof (s as AbortSignal).throwIfAborted === 'function') return s as AbortSignal
+  return SAFE_SIGNAL
+}
+
+/**
+ * 「暂停之后，有没有**人**给过答复」——确认单人工闸门的判据（2026-10-17 实锤 tf-mvc4jrl7-7g6hnb）。
+ *
+ * 实锤：插件把暂停汇报作为 `user/message` 注入主会话（`source.kind = 'plugin:dsh-plugin-teamflow'`），
+ * 模型把它当用户指令 ⇒ 自己调 `teamflow_resume` 把确认单批了（08:33:36 暂停 → 08:34:02 自调，
+ * 窗口内零条人类消息）。ADR-0011 ① 要的是**人工**批准，不能靠模型自律。
+ *
+ * 两类**人的答复**都算（这是同一个漏洞的两面，别只做一半）：
+ * 1. 人会话说：`user/message` 且 `data.source.kind === 'user'`（注入消息是 `plugin:*` / `time-context` 等）；
+ * 2. 人点了 `ask_user_question` 的选项：回答以 **`tool/result`** 落盘（**不产生 user/message**，实测
+ *    `tool/result.data.message.source = {kind:'tool', callId}`），所以必须按 callId 关联回
+ *    `tool/call.data.name === 'ask_user_question'` 才算。⚠️ 只认**结果**不认调用：调用是模型「问了」，
+ *    结果才代表「人答了」。漏掉这条 ⇒ 我们自己在汇报里让模型用 AUQ 问，人点完却被闸门拒 ⇒ 必然误伤。
+ *
+ * 三态返回（**空值必须可见**，§7 同源）：
+ * - `true`  找到晚于 `sinceMs` 的人类答复（会话说 / AUQ 答）⇒ 人答复过
+ * - `false` 能读到会话日志、但没有任何人类答复晚于该时刻 ⇒ **没人答复**
+ * - `null`  读不到（session 缺失 / 宿主 API 变更）⇒ 调用方自行决定并留痕，**不要当成 false**
+ */
+export function hasHumanReplySince(session: unknown, sinceMs: number): boolean | null {
+  const s = session as { snapshotEvents?: () => unknown; ownEvents?: () => unknown } | null | undefined
+  if (!s || typeof s !== 'object') return null
+  let events: unknown = null
+  try {
+    // ⚠️ `snapshotEvents()` 优先：它返回**完整日志**且未标废弃；`ownEvents()` 在宿主 d.ts 里已
+    // `@deprecated`（= `snapshotEvents(inheritedEventCount)`，只剔掉 fork 继承前缀），new calls 被禁止。
+    // 保留它只作旧宿主（没有 snapshotEvents）的兜底。
+    if (typeof s.snapshotEvents === 'function') events = s.snapshotEvents()
+    else if (typeof s.ownEvents === 'function') events = s.ownEvents()
+  } catch (e) {
+    return null
+  }
+  if (!Array.isArray(events)) return null
+  const since = Number.isFinite(sinceMs) ? sinceMs : 0
+  type Ev = { type?: string; time?: number; data?: Record<string, unknown> } | null
+  const list = events as Ev[]
+  // 先按 callId 收集「模型问过人的那些提问」
+  const askIds = new Set<string>()
+  for (const ev of list) {
+    const e = ev as Ev
+    if (!e || e.type !== 'tool/call' || !e.data) continue
+    if (e.data.name !== 'ask_user_question') continue
+    const cid = e.data.callId
+    if (typeof cid === 'string' && cid) askIds.add(cid)
+  }
+  for (const ev of list) {
+    const e = ev as Ev
+    if (!e || !(Number(e.time) > since)) continue
+    if (e.type === 'user/message') {
+      const src = e.data && (e.data.source as { kind?: string } | undefined)
+      if (src && src.kind === 'user') return true
+      continue
+    }
+    if (e.type === 'tool/result' && e.data) {
+      const msg = e.data.message as { source?: { callId?: string } } | undefined
+      const cid = e.data.toolCallId || (msg && msg.source && msg.source.callId)
+      if (typeof cid === 'string' && askIds.has(cid)) return true
+    }
+  }
+  return false
 }
 
 /**

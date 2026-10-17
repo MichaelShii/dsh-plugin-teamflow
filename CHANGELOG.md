@@ -2,6 +2,44 @@
 
 > 本插件首次公开发布版本为 **v0.1.0**；发布前的内部迭代（v0.3~v0.13）记录于 `AGENTS.md` §5，对外统一归到 v0.1.0。
 
+## [0.3.0] - 2026-10-17
+
+> **4 笔提交 / 10 个文件 / +349 −18 行**（`v0.2.9..HEAD` git 对比生成；不含本版 `CHANGELOG` /
+> `docs/releases/` 自身与版本号 bump）。⚠️ **行为变更**：PRD 确认单必须由**人**批准 —— 模型工具路径的续跑
+> 需要「暂停之后有人答复过」的证据，否则拒绝并要求先把确认单要点问用户；界面按钮不受此限。
+> 其余为修复，`teamflow_*` 工具 schema / journal / 任务夹契约零改动。详细论证与真机取证见
+> `docs/releases/v0.3.0.md`。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **无 `engines` 变化**（宿主仍须 ≥ `0.2.1-alpha.2`）。升完**重启** `dsh --profile web`（桌面版重启应用）。
+- 若宿主跑在 **Node 24** 上，本版修掉「续跑与面板启动 100% 起不来」的硬故障，务必升级。
+
+### ① Node 24 上续跑 / 面板启动全挂（修复）
+
+- 兜底 signal 此前是**鸭子对象**（`{aborted:false, addEventListener(){}, …}`），被当作 `request.signal` 交给宿主。
+  宿主会把它丢进 `AbortSignal.any([...])`：Node 22 的校验是**鸭子式**（有 `aborted` 即收）⇒ 长期无症状；
+  **Node 24 改走 WebIDL `sequence<AbortSignal>` 真 brand 校验** ⇒ `signals[1] is not of type AbortSignal.`，
+  阶段在 1–3ms 内启动即死。三条传 `undefined` 的入口全中：`resumeRun`（续跑）、`api.start`（面板启动）、
+  triage 预检；只有带真 `exec.signal` 的 `teamflow_start` 幸免。
+- 改为真 `AbortController().signal`（语义不变：永不 abort），`normalizeSignal` 只认 **brand**
+  （`instanceof` + `toString` 跨 realm 兜底），不再接受鸭子形状。
+- 门禁：新增 `test/signal-brand.test.js`（29 条）与编排级 brand 断言 —— 断言**契约**而非「宿主那行抛不抛」，
+  因此在 Node 22 上就能判死；CI 增加 Node 24 矩阵（仅兜其它运行时差异，抓不住这一类，注释已写明）。
+
+### ② 确认单可以被模型自己「批准」（行为变更 + 修复）
+
+- 插件把暂停汇报作为 `user/message` **注入**主会话，模型把它当用户指令 ⇒ 自己调 `teamflow_resume`
+  把确认单批了（窗口内零条人类消息），而代价是「直接开始写代码」。
+- 现在由**宿主判定**：模型工具路径停在确认单形态（PRD 之后一个阶段都没跑过）时，要求会话里存在
+  **晚于暂停时刻的人工答复**，否则拒绝并要求先问用户。人工答复认两类：人会话说（`source.kind==='user'`）
+  与**人点了 `ask_user_question` 的选项**（宿主落盘为 `tool/result`、不产生 `user/message` —— 漏掉这条
+  会让用户点完选项却被拒，是本版补齐的第二半）。
+- 界面入口（工作台「↻ 从断点重跑」）标注为人工来源，不受此限；读不到会话日志时**放行并留痕**
+  （宁可降级，也不能让所有续跑全挂）。
+- 汇报文案不再给模型「批准：调 `teamflow_resume`」的可执行样例，改为「只能由人决定，不要替用户批准」。
+- 门禁：`test/human-approval.test.js`（24 条）+ 编排「无人工答复 ⇒ 代批被拒且不起子代理」。
+
 ## [0.2.9] - 2026-10-17
 
 > **11 笔提交 / 35 个文件 / +1371 −102 行**（`v0.2.8..HEAD` 全量对比，变更清单由 git 对比生成；

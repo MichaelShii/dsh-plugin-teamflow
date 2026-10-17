@@ -156,6 +156,7 @@ const hostSrc = [
   ...CORE_FILES.map((f) => readFileSync(join(here, `../host/core/${f}.ts`), 'utf8')),
 ].join('\n//#region host-pool\n')
 const utilSrc = readFileSync(join(here, '../host/util.ts'), 'utf8')
+const indexSrc = readFileSync(join(here, '../host/index.ts'), 'utf8')
 // smoke 自身源码（用于断言「测试里确实写了这条回归样本」——防测试被悄悄删掉而源码仍在/或反之）
 const smokeSelf = readFileSync(join(here, 'verdict.test.js'), 'utf8')
 const constantsSrc = readFileSync(join(here, '../host/constants.ts'), 'utf8')
@@ -410,11 +411,20 @@ ok(/orchestration\.test\.js/.test(readFileSync(join(here, '../package.json'), 'u
 ok(/interface-check\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：接口核对套件登记双链')
 ok(/smoke-check\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：host 冒烟套件登记双链')
 ok(/viewport\.test\.js/.test(readFileSync(join(here, '../package.json'), 'utf8')), 'package.json：画布视图套件登记双链')
+ok(readFileSync(join(here, '../package.json'), 'utf8').includes('test/signal-brand.test.js'), 'package.json：信号 brand 门禁套件登记双链（issue #20 追评：鸭子 signal 在 Node 24 抛 signals[N] is not of type AbortSignal）')
+ok(readFileSync(join(here, '../package.json'), 'utf8').includes('test/human-approval.test.js'), 'package.json：确认单「人工批准」判据套件登记双链')
+// 确认单人工闸门（2026-10-17 实锤 tf-mvc4jrl7-7g6hnb：模型把注入的汇报当用户指令，自己把确认单批了）
+ok(pipelineSrc.includes('hasHumanReplySince') && pipelineSrc.includes("origin !== 'ui' && afterPrd && prdOnly"),
+  'pipeline：确认单断点带「人工批准」闸（模型工具路径必须有人类答复证据；界面入口免检）')
+ok(/resumeRun\(id, parent\.session\.id, sup, 'tool'\)/.test(indexSrc) && /resumeRun\(runId, sessionId, undefined, 'ui'\)/.test(indexSrc),
+  'index：两个 resume 入口标注来源（工具=tool / 界面=ui），闸门据此区分')
+ok(utilSrc.includes('hasHumanReplySince') && utilSrc.includes("src.kind === 'user'") && utilSrc.includes("e.data.name !== 'ask_user_question'"),
+  'util：人工答复判据认两类（会话说 source.kind===\'user\' / AUQ 的 tool/result 按 callId 关联）——漏掉 AUQ 会让「人点了选项却被拒」')
 ok(/响应块构成：\{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')) && /response blocks: \{shape\}/.test(readFileSync(join(here, '../host/locales/pipeline.ts'), 'utf8')), 'locales：diag.emptyTurn 带块构成占位（zh/en 齐备——诊断必须自证，2026-09-26 tf-muigy5eq r12 实踩）')
 ok(/const beforeLen = journal\.stages\.length/.test(runnerSrc) && /lastStage = journal\.stages\[beforeLen\] \|\| null/.test(runnerSrc), 'runner：withRetry 按调用前长度取本次尝试 stage——并发安全（防证据/重试诊断/usage 累计串位）')
 ok(/stage: JournalStage \| null/.test(runnerSrc), 'runner：withRetry 返回携带 stage 引用')
 ok(/resumePrompt = devPrompt\(task, tech, prd, design, root, journal\.id, state\) \+ \(prevStage \? buildRetryDiagnostic\(2, prevStage\) : ''\)/.test(pipelineSrc), 'pipeline：resume 补跑附上次失败诊断（全新会话不再盲试——r37 实证 PowerShell 坑第三次踩）')
-ok(/throwIfAborted: \(\) => \{\}/.test(utilSrc) && /typeof s\.throwIfAborted === 'function'/.test(utilSrc), 'util：SAFE_SIGNAL 补 throwIfAborted + 真 AbortSignal 判定（宿主 09-04+ 硬依赖——r1 json 树图 3 任务 3 轮 resume 全失败 root cause）')
+ok(utilSrc.includes('export const SAFE_SIGNAL: AbortSignal = new AbortController().signal') && utilSrc.includes('ABORT_SIGNAL_BRAND') && !utilSrc.includes('throwIfAborted: () => {}') && !utilSrc.includes("typeof s.aborted === 'boolean'"), 'util：SAFE_SIGNAL 必须是**真 AbortSignal**、判定只认真 brand（鸭子对象在 Node 24 的 AbortSignal.any 里抛 signals[N] is not of type AbortSignal——issue #20 追评；行为断言见 test/signal-brand.test.js）')
 ok(/export function devTaskStatuses/.test(utilSrc) && /有 done stage = 该任务已成功/.test(utilSrc), 'util：任务级聚合 devTaskStatuses（放 util 以便行为级测试直接 import——pipeline 链宿主私有 peer 取不到）')
 // 任务身份 = host 生成的 dt-N（2026-09-18 实锤 probe-cache tf-mu6tb281：合并执行把 title 拼成
 // "T0 + T6 + T7"，resume 拿未合并的 title 去查必然落空 → 重复执行已成功的 T0/T6/T7）
@@ -541,7 +551,7 @@ ok(/!verdict\.ok && text && stop === 'completed'/.test(runnerSrc), 'runner：**�
 ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
-ok(/"version": "0\.2\.9"/.test(pkgSrc), 'package.json：版本 0.2.9（release-v0.2.9 开发线）')
+ok(/"version": "0\.3\.0"/.test(pkgSrc), 'package.json：版本 0.3.0（release-v0.3.0 开发线）')
 // 安装期钩子白名单：只有 prepare 可以在消费者安装时**不**运行。
 // 实锤（2026-10-03 用户实锤）：v0.2.5 的 `postinstall: lefthook install` 在**消费者从 registry 安装**时也会跑，
 // 而 lefthook 是 devDependency（tarball 里不存在）⇒ `npm error 'lefthook' 不是内部或外部命令` ⇒ **整个安装失败**。
@@ -938,7 +948,7 @@ ok(/'confirm\.acExtracted'/.test(hostSrc) && /'confirm\.acMissing'/.test(hostSrc
 ok(/t\(locale, clarifyKey\)/.test(hostSrc) && !/function clarifyStrengthForTeam\(/.test(hostSrc), 'host：澄清变体按强度**选槽位**（不再反查 run 快照 —— 那是「迟一拍」的根因）')
 // 续跑补录入口：`supplement` 从 teamflow_resume 一路传到 resumeRun；PRD 是唯一消费点
 // ⇒ 断点晚于 prd 必须**显式拒绝**（静默接受 = 静默丢弃，本仓反复踩）
-ok(/supplement\?: string \| null/.test(pipelineSrc) && /resumeRun\(id, parent\.session\.id, sup\)/.test(hostSrc), 'resume：supplement 从 teamflow_resume 一路传到 resumeRun')
+ok(/supplement\?: string \| null/.test(pipelineSrc) && /resumeRun\(id, parent\.session\.id, sup, 'tool'\)/.test(hostSrc), 'resume：supplement 从 teamflow_resume 一路传到 resumeRun（并标注 origin=tool）')
 // ⚠️ 2026-10-08：判据从「断点晚于 prd 一律拒绝」改成「**除 PRD 之后未跑过任何阶段外**一律拒绝」。
 // 锁必须覆盖**两边**：只要拒绝条件（`afterPrd && !redoPrd`）或「作废面为零」的前置（`prdOnly`）
 // 任一半被改掉，就有一种形态会静默走错（要么假承诺、要么白作废下游产物）。
