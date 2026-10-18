@@ -1188,6 +1188,9 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
       `续跑后照常出第 2 版确认单（实测 ${contJ && contJ.confirmSheet && contJ.confirmSheet.prdRev}）`)
     ok(!!(contJ && contJ.confirmSheet && String(contJ.confirmSheet.summary || '') === '四格缩进'),
       `确认单用的是**续跑产出的新 PRD**（state 块被解析）（实测 ${JSON.stringify(contJ && contJ.confirmSheet && contJ.confirmSheet.summary)}）`)
+    const prdRec1 = ((contJ && contJ.stages) || []).filter((s) => String(s.phase) === 'prd').pop()
+    ok(Number(prdRec1 && prdRec1.usage && prdRec1.usage.input) === 12,
+      `续跑一轮后 stage.usage.input 恰好是本轮的 12（实测 ${JSON.stringify(prdRec1 && prdRec1.usage)} —— 若是 24 说明加了两次）`)
     ok(!!contJ && (contJ.stages || []).some((s) => String(s.phase) === 'prd' && String(s.childId || '') === 'child-old'),
       '续跑那一轮进了 stages（断点/汇报/用量按「每阶段一条」读）')
     runtime.setSessionQuery(undefined)

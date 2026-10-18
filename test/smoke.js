@@ -1339,8 +1339,10 @@ console.log('── 11) PRD 改写走续跑（continuable），失败回落重�
     'pipeline：redo 摘阶段记录**之前**先存下产出 PRD 的 childId')
   ok(/prdChildId: journal\.prdChildId \|\| null/.test(storeSrc), 'store：prdChildId 落盘（否则重启后续跑无从下手）')
   // 节点卡展示「本阶段总用量」⇒ 改写多轮时每轮都要累加，且 redo 摘记录前要把旧 usage 带走
-  ok(pipelineSrc.includes('journal.prdUsageAcc = addUsage(journal.prdUsageAcc, round)'),
+  ok(pipelineSrc.includes('journal.prdUsageAcc = addUsage(acc, round)'),
     'pipeline：阶段用量**累加**而不是覆盖（否则前几轮改写的 token 凭空消失）')
+  ok(pipelineSrc.includes("t(locale, 'log.usageAccumDup'"),
+    'pipeline：重复护栏 —— 本轮与累计完全相同时**跳过累加**（真机拿到的可能是累计值，加了就翻倍）')
   ok(pipelineSrc.includes('if (prdRec && prdRec.usage) j.prdUsageAcc = prdRec.usage') || pipelineSrc.includes('j.prdUsageAcc = { ...prdRec.usage }'),
     'pipeline：redo 摘掉旧 stage **之前**先把它的 usage 带走')
   // ⚠️ 双倍 bug 的回归锁（真机 tf-mvdeqi60：四项全精确 2 倍 —— addUsage(a, a)）

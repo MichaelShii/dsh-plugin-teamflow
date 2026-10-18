@@ -999,8 +999,26 @@ export async function executePipeline(
         // 先拷贝「本轮」再相加：`rec.usage` 可能与 `prdUsageAcc` 同源（见 redo 块的注释），
         // 直接 `addUsage(acc, rec.usage)` 在同对象时会翻倍。
         const round = { ...rec.usage }
-        journal.prdUsageAcc = addUsage(journal.prdUsageAcc, round)
-        rec.usage = journal.prdUsageAcc
+        const acc = journal.prdUsageAcc
+        // **重复护栏**（2026-10-18 真机 tf-mvdh065z 仍是 2 倍时加）：若「本轮」与「已有累计」逐项完全相同，
+        // 说明拿到的其实是累计值（不是本轮增量）—— 再相加必然翻倍。宁可这一轮不加，也不能让总数错。
+        const dup = !!acc && round.input === acc.input && round.cacheRead === acc.cacheRead
+          && round.output === acc.output && round.calls === acc.calls
+        if (dup) {
+          rec.usage = acc
+          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.usageAccumDup', {
+            round: `${round.input}/${round.cacheRead}/${round.output}/${round.calls}`,
+          }) })
+        } else {
+          journal.prdUsageAcc = addUsage(acc, round)
+          rec.usage = journal.prdUsageAcc
+          // **逐轮留痕**：本轮多少、累计后多少 —— 没有这条，「为什么总数是 2 倍」只能靠猜
+          // （本地 mock 复现不出来，只有真机有）。
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.usageAccum', {
+            round: `${round.input}/${round.cacheRead}/${round.output}/${round.calls}`,
+            acc: `${journal.prdUsageAcc.input}/${journal.prdUsageAcc.cacheRead}/${journal.prdUsageAcc.output}/${journal.prdUsageAcc.calls}`,
+          }) })
+        }
       } else if (rec && journal.prdUsageAcc) {
         // 本轮没有用量数据（mock/投影缺失）⇒ 至少把已有累计挂在节点上，不能显示成空
         rec.usage = journal.prdUsageAcc
