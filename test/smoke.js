@@ -1358,6 +1358,14 @@ console.log('── 11) PRD 改写走续跑（continuable），失败回落重�
     'pipeline：阶段用量**累加**而不是覆盖（否则前几轮改写的 token 凭空消失）')
   ok(pipelineSrc.includes("t(locale, 'log.usageAccumDup'"),
     'pipeline：重复护栏 —— 本轮与累计完全相同时**跳过累加**（真机拿到的可能是累计值，加了就翻倍）')
+  // 2026-10-19 真机 tf-mve3fwma：批准后的 resume 会**复用** PRD（skipped）⇒ 不是新一轮，不该累加。
+  // 靠护栏拦住只是兜底；真正的判据是 `!prdStage.skipped`，且累加块必须在这个 if 内。
+  {
+    const i = pipelineSrc.indexOf('if (!prdStage.skipped) {')
+    const block = i >= 0 ? pipelineSrc.slice(i, i + 1200) : ''
+    ok(i >= 0 && block.includes('journal.prdUsageAcc = addUsage'),
+      'pipeline：复用 PRD（resume 批准）时不累加 —— 累加块必须在 `if (!prdStage.skipped)` 内')
+  }
   ok(pipelineSrc.includes('if (prdRec && prdRec.usage) j.prdUsageAcc = prdRec.usage') || pipelineSrc.includes('j.prdUsageAcc = { ...prdRec.usage }'),
     'pipeline：redo 摘掉旧 stage **之前**先把它的 usage 带走')
   // ⚠️ 双倍 bug 的回归锁（真机 tf-mvdeqi60：四项全精确 2 倍 —— addUsage(a, a)）

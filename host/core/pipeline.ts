@@ -993,37 +993,42 @@ export async function executePipeline(
     // 而 PRD 会被改写多轮（每轮一次续跑或重跑）。只写「这一轮」⇒ 前面几轮的 token 凭空消失 ⇒
     // 与 dsh 子代理面板（全程累计）对不上（真机 tf-mvcoqg9e）。⇒ 每一轮都把历史累计并进来。
     // 续跑与重跑两条路径在这里同一处理，避免只修一条造成新的口径分叉。
-    try {
-      const rec = (journal.stages || []).filter((s) => phaseKeyOf(s.phase) === 'prd').pop()
-      if (rec && rec.usage) {
+    // **只在 PRD 真的跑过时累加**（2026-10-19 真机 tf-mve3fwma）：批准后的 resume 会**复用** PRD 产物
+    // （`runSimpleStage` 返回 `skipped:true`），那不是新的一轮 —— 累加会让首版被算两次。
+    // 上一版靠「重复护栏」拦住（本轮值恰好等于累计），但那是兜底，不是设计。
+    if (!prdStage.skipped) {
+      try {
+        const rec = (journal.stages || []).filter((s) => phaseKeyOf(s.phase) === 'prd').pop()
+        if (rec && rec.usage) {
         // 先拷贝「本轮」再相加：`rec.usage` 可能与 `prdUsageAcc` 同源（见 redo 块的注释），
         // 直接 `addUsage(acc, rec.usage)` 在同对象时会翻倍。
-        const round = { ...rec.usage }
-        const acc = journal.prdUsageAcc
-        // **重复护栏**（2026-10-18 真机 tf-mvdh065z 仍是 2 倍时加）：若「本轮」与「已有累计」逐项完全相同，
-        // 说明拿到的其实是累计值（不是本轮增量）—— 再相加必然翻倍。宁可这一轮不加，也不能让总数错。
-        const dup = !!acc && round.input === acc.input && round.cacheRead === acc.cacheRead
+          const round = { ...rec.usage }
+          const acc = journal.prdUsageAcc
+          // **重复护栏**（2026-10-18 真机 tf-mvdh065z 仍是 2 倍时加）：若「本轮」与「已有累计」逐项完全相同，
+          // 说明拿到的其实是累计值（不是本轮增量）—— 再相加必然翻倍。宁可这一轮不加，也不能让总数错。
+          const dup = !!acc && round.input === acc.input && round.cacheRead === acc.cacheRead
           && round.output === acc.output && round.calls === acc.calls
-        if (dup) {
-          rec.usage = acc
-          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.usageAccumDup', {
-            round: `${round.input}/${round.cacheRead}/${round.output}/${round.calls}`,
-          }) })
-        } else {
-          journal.prdUsageAcc = addUsage(acc, round)
-          rec.usage = journal.prdUsageAcc
-          // **逐轮留痕**：本轮多少、累计后多少 —— 没有这条，「为什么总数是 2 倍」只能靠猜
-          // （本地 mock 复现不出来，只有真机有）。
-          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.usageAccum', {
-            round: `${round.input}/${round.cacheRead}/${round.output}/${round.calls}`,
-            acc: `${journal.prdUsageAcc.input}/${journal.prdUsageAcc.cacheRead}/${journal.prdUsageAcc.output}/${journal.prdUsageAcc.calls}`,
-          }) })
-        }
-      } else if (rec && journal.prdUsageAcc) {
+          if (dup) {
+            rec.usage = acc
+            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.usageAccumDup', {
+              round: `${round.input}/${round.cacheRead}/${round.output}/${round.calls}`,
+            }) })
+          } else {
+            journal.prdUsageAcc = addUsage(acc, round)
+            rec.usage = journal.prdUsageAcc
+            // **逐轮留痕**：本轮多少、累计后多少 —— 没有这条，「为什么总数是 2 倍」只能靠猜
+            // （本地 mock 复现不出来，只有真机有）。
+            journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.usageAccum', {
+              round: `${round.input}/${round.cacheRead}/${round.output}/${round.calls}`,
+              acc: `${journal.prdUsageAcc.input}/${journal.prdUsageAcc.cacheRead}/${journal.prdUsageAcc.output}/${journal.prdUsageAcc.calls}`,
+            }) })
+          }
+        } else if (rec && journal.prdUsageAcc) {
         // 本轮没有用量数据（mock/投影缺失）⇒ 至少把已有累计挂在节点上，不能显示成空
-        rec.usage = journal.prdUsageAcc
-      }
-    } catch (e) { /* 计量失败不阻断流水线 */ }
+          rec.usage = journal.prdUsageAcc
+        }
+      } catch (e) { /* 计量失败不阻断流水线 */ }
+    }
     // **PRD 版本自增**（2026-10-17，issue #11）：只有**真正产出**了 PRD 才算一版 ——
     // `runSimpleStage` 在 resume 复用存档产物时返回 `skipped:true`（PRD 没变，版本不动）。
     // 为什么必须在这里而不是 `mergeStageState` 里：那条通道依赖模型写出 state 块
