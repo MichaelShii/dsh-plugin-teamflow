@@ -265,12 +265,17 @@ export function renderConfirmSheet(sheet: ConfirmSheet, locale: HostLocale): str
   }
   if (sheet.questions.length) {
     const list = sheet.questions
-      .map((q) => {
+      .map((q, i) => {
         const def = q.default ? t(locale, 'confirm.defaultAnswer', { value: q.default }) : ''
         const why = q.why ? t(locale, 'confirm.whyAsk', { value: q.why }) : ''
         // 主观项打标（2026-10-08）：它会触发暂停，用户要能一眼看出「哪几条是我必须定的」。
-        const tag = q.kind === 'taste' ? t(locale, 'confirm.tasteTag') : ''
-        return `- ${tag}${q.q}${def}${why}`
+        // 事实项也打标（2026-10-18）：不打标则用户无从分辨「哪些已按缺省定了、不用管」——
+        // 而这正是把人从"逐条读完 5 条"解放出来的关键信息。
+        const tag = q.kind === 'taste'
+          ? t(locale, 'confirm.tasteTag')
+          : q.kind === 'fact' ? t(locale, 'confirm.factTag') : ''
+        // **序号**（2026-10-18）：用户要改某条时会说「第 1 条改成 GBK」，没有编号就对不上号。
+        return `${i + 1}. ${tag}${q.q}${def}${why}`
       })
       .join('\n')
     lines.push(t(locale, 'confirm.questions', { n: sheet.questions.length, total: sheet.questionsTotal, list }))

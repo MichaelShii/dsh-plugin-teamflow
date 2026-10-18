@@ -1000,7 +1000,22 @@ ok(/'log\.openQuestionsUntagged'/.test(hostSrc) && /'confirm\.tasteTag'/.test(ho
 ok(/kind === 'taste'/.test(pipelineSrc), 'pipeline：主观项（kind=taste）被认出来 —— 只有它触发暂停')
 // ⚠️ 打标必须锁**条件 → 用法**整句，不能只锁 `tasteTag` 这个词：词典里那条 `'confirm.tasteTag'`
 // 也在 hostSrc 里 ⇒ M26 实测「把渲染改成 `const tag = ''`」时只锁词的写法**假绿**（第 8 次同型）。
-ok(/const tag = q\.kind === 'taste' \? t\(locale, 'confirm\.tasteTag'\) : ''/.test(hostSrc), 'confirm：主观项打标真的接在渲染里（用户要能一眼看出哪几条必须他定）')
+ok(/const tag = q\.kind === 'taste'/.test(hostSrc), 'confirm：主观项打标真的接在渲染里（用户要能一眼看出哪几条必须他定）')
+// 2026-10-18：确认单阶段的**交互规范**必须写死，否则逐题弹卡片是模型自发行为（prompt 没规定）
+// ⇒ 行为不可预期（轻决策变重流程）。
+ok(hostSrc.includes('不要逐题弹卡片'), 'needsConfirm：明确禁止逐题弹卡片（否则 5 条待澄清 = 5 轮问答）')
+ok(hostSrc.includes('do not ask them one card at a time'), 'needsConfirm(en)：同样禁止逐题弹卡片')
+ok(hostSrc.includes('第 1 条改成 GBK') && hostSrc.includes('item 1'),
+  'needsConfirm：给出「点名改某条」的示例（否则用户不知道这条路存在，只能逐条读）')
+ok(hostSrc.includes('列成清单'), 'needsConfirm：要求把待澄清项列成清单而非散文')
+// 2026-10-18：事实项也要打标 —— 不打标用户无从分辨「哪些已按缺省定了、不用管」。
+// 锁「条件片段之后的 240 字符内两个 tag 用法都在」：有人把 tag 改成 `''` 会红，且不依赖换行/缩进格式。
+{
+  const after = hostSrc.split("const tag = q.kind === 'taste'")[1] || ''
+  const window240 = after.slice(0, 240)
+  ok(window240.includes("'confirm.tasteTag'") && window240.includes("'confirm.factTag'"),
+    'confirm：主观/事实两类标签都接在渲染里（事实项不打标 ⇒ 用户看不出哪些已按缺省定了）')
+}
 ok(/confirmSheet: journal\.confirmSheet \|\| null/.test(storeSrc) && /confirmSheet\?: unknown \| null/.test(storeSrc), 'store：确认单必须落盘（不落 ⇒ 重启后讲不出「批准什么」，只能让用户去重读 PRD.md）')
 // 确认单的**目标一句话**来自 PRD state 块的 extra.summary —— 此前该字段被要求却从未落盘，
 // 逼得确认单只能去抽模型自由写的段落标题（不可靠，同 `## 9. 假设与待澄清` 那次失手）。
