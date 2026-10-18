@@ -1120,7 +1120,12 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
   }
   ok(!!(rev3 && rev3.confirmSheet && Number(rev3.confirmSheet.prdRev) === 3),
     `第 3 版确认单照常出现（实测 ${rev3 && rev3.confirmSheet && rev3.confirmSheet.prdRev}）`)
-  ok(existsSync(join(docs3, 'PRD.v2.md')), '被替换的那一版留成 `PRD.v2.md`（没有它就没法对比）')
+  // 旧版快照放**运行日志目录**（`logs/teamflow/<runId>/`），任务夹只留当前版 ——
+  // 任务夹是交付物会被 `git add`，把 PRD.v1/v2/v3 放进去等于把过程产物混进交付物（真机 72KB）。
+  const snap3 = join(home, 'teamflow', 'ws-rev2', 'work', 'logs', 'teamflow', 'tf-rev2', 'PRD.v2.md')
+  const snap3Alt = join(home, 'work', 'logs', 'teamflow', 'tf-rev2', 'PRD.v2.md')
+  ok(existsSync(snap3) || existsSync(snap3Alt), '旧版快照落在运行日志目录（不是任务夹）')
+  ok(!existsSync(join(docs3, 'PRD.v2.md')), '**任务夹里不产生 `PRD.v*.md`**（否则会进 git）')
   ok(!!(rev3 && rev3.confirmSheet && String(rev3.confirmSheet.prevDocPath || '').endsWith('PRD.v2.md')),
     `确认单给出上一版路径（实测 ${rev3 && rev3.confirmSheet && rev3.confirmSheet.prevDocPath}）`)
 
@@ -1208,7 +1213,9 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
     // sessionQuery 已在上一用例置空 ⇒ 续跑关闭，强制走重跑路径，只验快照落盘
     const rRel = resumeRun('tf-rel', 'sid-redo', '改成别的')
     ok(rRel.ok === true, `相对 runDocs：redo 被接受（实测 ${String(rRel.error || '').slice(0, 50)}）`)
-    ok(existsSync(join(wsDir, relDocs, 'PRD.v2.md')), '快照落在 `workspacePath/runDocs` 下（真机形态，相对路径）')
+    ok(existsSync(join(wsDir, 'logs', 'teamflow', 'tf-rel', 'PRD.v2.md')),
+      '相对 runDocs：快照落在 `logs/teamflow/<runId>/`（真机形态，且不在交付目录）')
+    ok(!existsSync(join(wsDir, relDocs, 'PRD.v2.md')), '相对 runDocs：任务夹里不产生旧版文件')
   }
 
   // ③c2 **阶段用量必须累计**（2026-10-18 真机 tf-mvcoqg9e）：节点卡展示「本阶段总用量」，

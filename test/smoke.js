@@ -1069,14 +1069,15 @@ ok(/args\.preAction === 'stash' \|\| args\.preAction === 'commit' \|\| args\.pre
   const pipeCode = pipelineSrc.split('\n').filter((l) => { const s = l.trim(); return !s.startsWith('*') && !s.startsWith('/*') && !s.startsWith('//') }).join('\n')
   ok(!/ensureCommonNoiseIgnores/.test(pipeCode), 'pipeline：**不得**回退为写用户 .gitignore 的噪音排除（ensureCommonNoiseIgnores 已从代码删除）')
   ok(!/mergeGitignore\([^)]*'\.pnpm-store'/.test(pipeCode) && !/mergeGitignore\([^)]*node_modules/.test(pipeCode), 'pipeline：噪音项**不得**经由 mergeGitignore 落进用户 .gitignore（只允许 logs/teamflow 那条自有日志规则）')
-  // 2026-10-17（issue #11 B 方案）：新增**一处**「任务夹内的 PRD 版本快照」写入（`${docs}/PRD.v{N}.md`）。
-  // 它不是「替用户写文件」—— 路径固定在 runDocs 里、文件名以 `PRD.v` 开头，所以按**路径白名单**放行：
+  // 2026-10-17（issue #11 B 方案）：新增**一处**「PRD 版本快照」写入。
+  // 2026-10-18 修正落点：快照从**任务夹**移到**运行日志目录**（`logs/teamflow/<runId>/`）——
+  // 任务夹是交付物、会被 git add，改 3 版就在仓库里堆 4 个 PRD（真机实测 72KB）。
   // 白名单内恰好 1 处 + 白名单外仍 ≤2。⚠️ 别改成「总数 ≤3」——那等于给任意新增写入开门。
-  const SNAP_WRITE = 'writeFileSync(`${docs}/PRD.v'
+  const SNAP_WRITE = 'writeFileSync(`${snapDir}/PRD.v'
   const snapWrites = pipeCode.split(SNAP_WRITE).length - 1
   const allWrites = pipeCode.split('writeFileSync(').length - 1
   ok(snapWrites === 1, `pipeline：PRD 版本快照写入点恰好 1 处（路径模板固定，实测 ${snapWrites}）`)
-  ok(allWrites - snapWrites <= 2, `pipeline：写文件处收敛（除任务夹内 PRD 快照外，其余 ≤2；实测 ${allWrites - snapWrites}）`)
+  ok(allWrites - snapWrites <= 2, `pipeline：写文件处收敛（除 PRD 快照外，其余 ≤2；实测 ${allWrites - snapWrites}）`)
   const sanitySrc = readFileSync(join(here, '../host/core/workspace/sanity.ts'), 'utf8')
   ok(/export const BASELINE_NOISE_EXCLUDES[^=]*=\s*\[/.test(sanitySrc), 'sanity：BASELINE_NOISE_EXCLUDES 常量（排除清单数据化，一处可改）')
   ok(/check-ignore/.test(sanitySrc), 'sanity：用 `git check-ignore` 判"是否已被忽略"（以目标仓库为根；自读 .gitignore 会读成宿主 cwd → 两个方向同时错，2026-09-18 实测）')
@@ -1301,8 +1302,8 @@ ok(/journal\.confirmApprovedRev = Number\(journal\.prdRev \|\| 1\) \|\| 1/.test(
   'pipeline：审批面就地批准也记版本')
 ok(/prdRev: journal\.prdRev,\n/.test(pipelineSrc) || /prdRev: journal\.prdRev,/.test(pipelineSrc),
   'pipeline：确认单带出版本号（第 2 版要能在单子上看出来）')
-ok(/writeFileSync\(`\$\{docs\}\/PRD\.v\$\{Number\(j\.prdRev\) \|\| 1\}\.md`, readFileSync\(src\)\)/.test(pipelineSrc),
-  'pipeline：redo 前把被替换的 PRD 留成 `PRD.v{N}.md`（整条语句；没有它就没法对比）')
+ok(/writeFileSync\(`\$\{snapDir\}\/PRD\.v\$\{Number\(j\.prdRev\) \|\| 1\}\.md`, readFileSync\(srcFile\)\)/.test(pipelineSrc),
+  'pipeline：redo 前把被替换的 PRD 留成 `PRD.v{N}.md`，落在**运行日志目录**（不进交付物）')
 ok(/const prevDocPath = prevAbs && existsSync\(prevAbs\) \? prevAbs : ''/.test(pipelineSrc),
   'pipeline：上一版路径只在文件确实存在时给（不给死链）')
 ok(/export function confirmDecision\(v: \{/.test(confirmSrc9),

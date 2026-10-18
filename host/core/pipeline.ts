@@ -44,7 +44,7 @@ export function cliOnPath(): boolean {
 }
 import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddPlan, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from './workspace/sanity.ts'
 import type { GitResult } from './workspace/sanity.ts'
-import { archiveRunLogs, sweepWorkspaceLogs } from './workspace/runlogs.ts'
+import { archiveRunLogs, sweepWorkspaceLogs, stagingRoot } from './workspace/runlogs.ts'
 import { preflightWorkspaceAcl } from './workspace/acl-preflight.ts'
 import {
   buildConfirmSheet, renderConfirmSheet, confirmHook, prdSnapshotFromBlock,
@@ -1066,11 +1066,11 @@ export async function executePipeline(
       // （实锤 tf-mvaubzdz-5w606x：r5 的确认单显示了 r4 的目标与 12 条 AC）。快照缺 = 本轮没给 ⇒
       // 交给确认单诚实显示「没抓到」（`confirm.noSummary` / `confirm.acMissing`），不拿旧内容冒充本轮。
       // 上一版 PRD 的路径（只在改写后、且副本确实存在时给 —— 别给死链）
-      // ⚠️ `journal.runDocs` 在真机是**相对工作区**的路径（`docs/teamflow/20261018-r1-…`）⇒ 要拼工作区；
-      // 但测试夹具可能直接给绝对路径 ⇒ 已绝对就不拼（否则会拼出 `<workspace>/C:/…/docs/…` 这种死路径）。
-      const docDir = absoluteRunDocs(journal.runDocs, journal.workspacePath)
+      // ⚠️ 快照存放在**运行日志目录**（`logs/teamflow/<runId>/`），不是任务夹：任务夹是交付物，
+      // 旧版属过程产物（2026-10-18 用户实测：4 个 PRD 共 72KB 堆在交付目录里，还会被 git add）。
+      const snapDir = snapshotDir(journal)
       const prevRev = Number(journal.prdRev) - 1
-      const prevAbs = docDir && prevRev >= 1 ? `${docDir}/PRD.v${prevRev}.md` : ''
+      const prevAbs = snapDir && prevRev >= 1 ? `${snapDir}/PRD.v${prevRev}.md` : ''
       const prevDocPath = prevAbs && existsSync(prevAbs) ? prevAbs : ''
       const sheet = buildConfirmSheet({
         summary: prdSnap ? prdSnap.summary : null,
@@ -1502,6 +1502,18 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
 /* 取消运行 `cancelRun` 在 core/agent/context.ts（只操作 runs/inFlight，且无宿主私有依赖 → 可被 tests 直接加载）。 */
 
 /** 从断点续跑：跳过已完成阶段，从第一个未完成阶段重跑（service 与工具共用）。 */
+/**
+ * 旧版 PRD 快照的目录 = 运行日志目录 `logs/teamflow/<runId>`（**不是任务夹**）。
+ *
+ * 为什么不能放任务夹：任务夹是「本需求产物收口」，会被 `git add` 提交 ⇒ 改 3 版就在仓库里堆
+ * 4 个 PRD 文件（真机 tf-mvcoqg9e：共 72KB）。日志目录已 gitignore、run 结束随日志归档到
+ * `$DSH_HOME`（keep-whitelist 含 `.md` ⇒ 旧版不会丢），项目里只留当前版。
+ */
+function snapshotDir(j: JournalRecord): string {
+  const root = stagingRoot(j.workspacePath)
+  return root && j.id ? `${root}/${String(j.id)}` : ''
+}
+
 export function resumeRun(
   runId: string | null | undefined,
   sessionId: string | null | undefined,
@@ -1683,10 +1695,18 @@ export function resumeRun(
       // 为什么这件事比「限制改写次数」有效：反复改的真实原因通常是**看不到上一版改成了什么**，
       // 只能凭记忆再提一遍需求，来回打转。丢一份副本的成本是一次文件复制。
       try {
-        // 同 `absoluteRunDocs`：真机是相对路径，夹具可能是绝对路径，两种都要能用。
-        const docs = absoluteRunDocs(j.runDocs, j.workspacePath)
-        const src = docs ? `${docs}/PRD.md` : ''
-        if (src && existsSync(src)) writeFileSync(`${docs}/PRD.v${Number(j.prdRev) || 1}.md`, readFileSync(src))
+        // **旧版快照放运行日志目录，不放任务夹**（2026-10-18 用户实测）：任务夹是「本需求产物收口」，
+        // 会被 `git add` 提交 ⇒ 把 `PRD.v1/v2/v3.md` 放进去等于**把过程产物混进交付物**，
+        // 一个改了 3 版的需求会在仓库里堆 70KB+ 的旧 PRD。
+        // 放 `logs/teamflow/<runId>/` 则天然符合既有设计：该目录已 gitignore、run 结束随日志归档到
+        // `$DSH_HOME`（keep-whitelist 含 .md ⇒ 旧版不会丢），项目里只留当前版 `PRD.md`。
+        const snapDir = snapshotDir(j)
+        const src = absoluteRunDocs(j.runDocs, j.workspacePath)
+        const srcFile = src ? `${src}/PRD.md` : ''
+        if (snapDir && srcFile && existsSync(srcFile)) {
+          mkdirSync(snapDir, { recursive: true })
+          writeFileSync(`${snapDir}/PRD.v${Number(j.prdRev) || 1}.md`, readFileSync(srcFile))
+        }
       } catch (e) { /* 留档失败不阻断改写（确认单少了「上一版」一行而已） */ }
       // 旧确认单描述的是**即将被替换**的那份 PRD ⇒ 必须清掉，否则在新 PRD 出结论前主线程会看到过期内容。
       j.confirmSheet = null
