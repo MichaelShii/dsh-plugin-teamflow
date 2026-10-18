@@ -1339,10 +1339,15 @@ console.log('── 11) PRD 改写走续跑（continuable），失败回落重�
     'pipeline：redo 摘阶段记录**之前**先存下产出 PRD 的 childId')
   ok(/prdChildId: journal\.prdChildId \|\| null/.test(storeSrc), 'store：prdChildId 落盘（否则重启后续跑无从下手）')
   // 节点卡展示「本阶段总用量」⇒ 改写多轮时每轮都要累加，且 redo 摘记录前要把旧 usage 带走
-  ok(pipelineSrc.includes('rec.usage = addUsage(journal.prdUsageAcc, rec.usage)'),
+  ok(pipelineSrc.includes('journal.prdUsageAcc = addUsage(journal.prdUsageAcc, round)'),
     'pipeline：阶段用量**累加**而不是覆盖（否则前几轮改写的 token 凭空消失）')
-  ok(pipelineSrc.includes('if (prdRec && prdRec.usage) j.prdUsageAcc = prdRec.usage'),
+  ok(pipelineSrc.includes('if (prdRec && prdRec.usage) j.prdUsageAcc = prdRec.usage') || pipelineSrc.includes('j.prdUsageAcc = { ...prdRec.usage }'),
     'pipeline：redo 摘掉旧 stage **之前**先把它的 usage 带走')
+  // ⚠️ 双倍 bug 的回归锁（真机 tf-mvdeqi60：四项全精确 2 倍 —— addUsage(a, a)）
+  ok(pipelineSrc.includes('j.prdUsageAcc = { ...prdRec.usage }') && pipelineSrc.includes('prdRec.usage = null'),
+    'pipeline：带走累计时**必须拷贝并清零旧记录**（同引用会让 addUsage(a,a) 翻倍）')
+  ok(pipelineSrc.includes('const round = { ...rec.usage }'),
+    'pipeline：累加前先拷贝「本轮」值（防 acc 与 rec.usage 同源）')
   ok(/prdUsageAcc: journal\.prdUsageAcc \|\| null/.test(storeSrc), 'store：prdUsageAcc 落盘（跨轮累计的载体）')
   ok(/export function setSessionQuery/.test(ctxSrc), 'context：sessionQuery 走单独 setter（可选能力，不进 static inject）')
   ok(/ctx\.inject\(\['sessionQuery'\]/.test(hostSrc), 'host：按可选能力注入 sessionQuery（缺失时插件照常加载）')

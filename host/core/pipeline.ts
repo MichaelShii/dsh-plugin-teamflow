@@ -995,9 +995,15 @@ export async function executePipeline(
     // 续跑与重跑两条路径在这里同一处理，避免只修一条造成新的口径分叉。
     try {
       const rec = (journal.stages || []).filter((s) => phaseKeyOf(s.phase) === 'prd').pop()
-      if (rec) {
-        rec.usage = addUsage(journal.prdUsageAcc, rec.usage)
-        journal.prdUsageAcc = rec.usage || null
+      if (rec && rec.usage) {
+        // 先拷贝「本轮」再相加：`rec.usage` 可能与 `prdUsageAcc` 同源（见 redo 块的注释），
+        // 直接 `addUsage(acc, rec.usage)` 在同对象时会翻倍。
+        const round = { ...rec.usage }
+        journal.prdUsageAcc = addUsage(journal.prdUsageAcc, round)
+        rec.usage = journal.prdUsageAcc
+      } else if (rec && journal.prdUsageAcc) {
+        // 本轮没有用量数据（mock/投影缺失）⇒ 至少把已有累计挂在节点上，不能显示成空
+        rec.usage = journal.prdUsageAcc
       }
     } catch (e) { /* 计量失败不阻断流水线 */ }
     // **PRD 版本自增**（2026-10-17，issue #11）：只有**真正产出**了 PRD 才算一版 ——
@@ -1677,7 +1683,14 @@ export function resumeRun(
         // **这一阶段的历史用量要带走**（2026-10-18）：下面会把旧的 prd 记录摘掉，而节点卡展示的是
         // 「本阶段总用量」。不带走 ⇒ 前面几轮改写花的 token 凭空消失 ⇒ 与 dsh 子代理面板（全程累计）
         // 对不上（真机 tf-mvcoqg9e 对不上才发现）。
-        if (prdRec && prdRec.usage) j.prdUsageAcc = prdRec.usage
+        // ⚠️ 必须**拷贝**并清零旧记录的 usage（2026-10-18 真机 tf-mvdeqi60 抓到的双倍 bug）：
+        // 直接 `j.prdUsageAcc = prdRec.usage` 会让 acc 与 rec.usage **指向同一个对象**；若累加时
+        // `rec` 恰好还是这条记录，`addUsage(a, a)` 就是 2 倍（实测 input/cacheRead/output/calls
+        // 四项都精确翻倍）。清零还能兜住「rec 是旧记录」的任何路径。
+        if (prdRec && prdRec.usage) {
+          j.prdUsageAcc = { ...prdRec.usage }
+          prdRec.usage = null
+        }
       } catch (e) { /* 取不到就回落为重跑（不是错误） */ }
     }
     j.stages = (j.stages || [])
