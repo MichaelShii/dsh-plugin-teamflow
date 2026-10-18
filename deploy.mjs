@@ -12,7 +12,7 @@
  * peerDeps 拉到 registry 404 的问题。
  */
 import { execSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, existsSync, readdirSync, rmSync } from 'node:fs'
+import { copyFileSync, mkdirSync, existsSync, readdirSync, rmSync, readFileSync } from 'node:fs'
 import { join, dirname, relative } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -179,6 +179,32 @@ for (const f of FILES) {
 console.log(`✅ 完成：${count} 个文件已同步。`)
 if (failed.length) {
   console.log(`⚠ 以下文件未同步（需更高权限或源缺失）：\n  ${failed.join('\n  ')}`)
+}
+
+/* ── 3c) 部署自检：对面装的是不是**我们刚构建的这份** ─────────────────────────
+ * 教训（2026-10-19 真机实锤）：sync 报「50 个文件已同步」，但 profile 里落地的是 **0.2.9**
+ * （外部操作在之后覆盖过），于是后续所有真机验证都跑在旧代码上——现象是「已修复的 bug 复发」，
+ * 排查花了 3 小时。只数「复制成功几个文件」证明不了落地，必须核对**版本号 + 产物指纹**。
+ */
+try {
+  const wantVer = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version
+  const gotPkg = join(PROFILE, 'package.json')
+  const gotVer = existsSync(gotPkg) ? JSON.parse(readFileSync(gotPkg, 'utf8')).version : '(缺失)'
+  const localLib = join(ROOT, 'lib/host.mjs')
+  const gotLib = join(PROFILE, 'lib/host.mjs')
+  const sameLib = existsSync(localLib) && existsSync(gotLib) && readFileSync(localLib).equals(readFileSync(gotLib))
+  if (gotVer !== wantVer) {
+    console.error(`❌ 部署自检失败：profile 版本 ${gotVer} ≠ 本地 ${wantVer}（对面不是这份代码，别在此之上做验证）`)
+    process.exitCode = 1
+  } else if (!sameLib) {
+    console.error('❌ 部署自检失败：profile 的 lib/host.mjs 与本地构建产物不一致')
+    process.exitCode = 1
+  } else {
+    console.log(`✅ 部署自检：profile 版本 ${gotVer}，lib/host.mjs 与本地构建逐字节一致`)
+  }
+} catch (e) {
+  console.error(`❌ 部署自检异常：${e.message}`)
+  process.exitCode = 1
 }
 
 /* ── 4) 生效提示：检测运行中的 web（改 host 侧必须重启进程才加载新 lib） ── */
