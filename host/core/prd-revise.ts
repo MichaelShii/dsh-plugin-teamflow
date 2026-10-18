@@ -63,10 +63,39 @@ export function assistantTextOf(event: unknown): string {
  * 为什么要「最后一个」：第二轮可能跨多个 step（先推理再答），中间可能夹着空文本的 assistant/message。
  * 纯函数，便于行为测试（不读文件、不认宿主私有类型）。
  */
-export function lastAssistantText(events: readonly unknown[] | null | undefined, fromIndex = 0): string {
+/**
+ * 「某一刻之后」的事件过滤锚点。
+ *
+ * **为什么不能再用数组下标**（2026-10-18 真机 `tf-mvdixrhs` 实锤）：投递前 `observeSession`
+ * 返回的事件数组可能**只加载了一部分**，投递后同一 child 的数组会**补加载历史**（长度暴涨、
+ * 前面插入的是旧事件）⇒ `events.slice(base)` 里混进旧事件 ⇒ 这一轮的 usage 变成**全会话累计**，
+ * 与 `prdUsageAcc` 相加就翻倍（当时靠「重复护栏」兜住，但那只是止血）。
+ *
+ * 事件自带宿主写的 `time`（epoch ms，同机同钟）⇒ 用**投递时刻**当锚点，与数组长度/顺序无关。
+ */
+export interface UsageSince {
+  /** 投递时刻（`Date.now()`）。只统计 `time >= since` 的 assistant/message。 */
+  since: number
+  /** 投递前的数组长度：**仅当事件缺 `time` 时**（老格式/夹具）回落用它，真机走时间锚点。 */
+  index?: number
+}
+
+/** 锚点既接受下标（旧调用/测试），也接受时间（真机路径）。 */
+export type UsageAnchor = number | UsageSince
+
+function inRound(e: unknown, index: number, anchor: UsageAnchor): boolean {
+  if (typeof anchor === 'number') return index >= Math.max(0, anchor)
+  const t = (e as { time?: unknown } | null)?.time
+  if (typeof t === 'number' && Number.isFinite(t)) return t >= anchor.since
+  // 没有 time 的事件只能按位置判（夹具就是这种）——真机的补加载问题不会出现在这里。
+  return index >= Math.max(0, Number(anchor.index ?? 0))
+}
+
+export function lastAssistantText(events: readonly unknown[] | null | undefined, anchor: UsageAnchor = 0): string {
   if (!Array.isArray(events)) return ''
   let out = ''
-  for (let i = Math.max(0, fromIndex); i < events.length; i++) {
+  for (let i = 0; i < events.length; i++) {
+    if (!inRound(events[i], i, anchor)) continue
     const t = assistantTextOf(events[i])
     if (t && t.trim()) out = t
   }
@@ -83,13 +112,14 @@ export function lastAssistantText(events: readonly unknown[] | null | undefined,
  */
 export function sumRevisionUsage(
   events: readonly unknown[] | null | undefined,
-  fromIndex = 0,
+  anchor: UsageAnchor = 0,
 ): { input: number; cacheRead: number; cacheWrite: number; output: number; calls: number } | null {
   if (!Array.isArray(events)) return null
   const out = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, calls: 0 }
   let seen = false
   const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0)
-  for (let i = Math.max(0, fromIndex); i < events.length; i++) {
+  for (let i = 0; i < events.length; i++) {
+    if (!inRound(events[i], i, anchor)) continue
     const e = events[i] as { type?: unknown; data?: unknown } | null
     if (!e || e.type !== 'assistant/message') continue
     const u = (e.data || {}) as Record<string, unknown>
@@ -175,28 +205,32 @@ export async function revisePrdViaChild(v: {
   const before = await observe()
   if (!before) return null
   const base = before.length
+  // **锚点 = 我们要求改的那一刻**（投递前取），而不是投递前数组的长度：
+  // cold resume 后同一 child 会补加载历史 ⇒ 长度暴涨、旧事件被插到前面 ⇒ 按下标切会重复计。
+  const started = Date.now()
+  const anchor: UsageAnchor = { since: started, index: base }
   try {
     await sub.sendMessage!(v.parent, v.childId, [{ type: 'text', text: v.instruction }], { signal })
   } catch (e) {
     putDiag(base, base, false, Date.now())
     return null
   }
-  const started = Date.now()
   let events: unknown[] | null = null
   let end = base
   while (Date.now() - started < waitMs) {
     if (signal && signal.aborted) { putDiag(base, end, true, started); return null }
     await new Promise((r) => setTimeout(r, pollMs))
     events = await observe()
-    if (!events || events.length <= base) continue
+    if (!events) continue
     end = events.length
-    const tail = events.slice(base)
-    // 结束判据用 `turn/end`（事件顺序：assistant/message → step/end → turn/end）
-    const turned = tail.some((e) => !!e && (e as { type?: unknown }).type === 'turn/end')
-    if (!turned) continue
-    const text = lastAssistantText(events, base)
+    // **判据换成「锚点之后有没有 turn/end」**：不能用 `events.length <= base` 继续等——
+    // 补加载历史会让长度立刻变大（旧实现会在那一刻误判"有新事件"）。
+    const fresh = events.filter((e, i) => inRound(e, i, anchor))
+    if (!fresh.length) continue
+    if (!fresh.some((e) => !!e && (e as { type?: unknown }).type === 'turn/end')) continue
+    const text = lastAssistantText(events, anchor)
     if (!text || !text.trim()) { putDiag(base, end, true, started); return null }
-    return { text, usage: sumRevisionUsage(events, base), baseEvents: base, endEvents: events.length }
+    return { text, usage: sumRevisionUsage(events, anchor), baseEvents: base, endEvents: events.length }
   }
   if (v.onWait) v.onWait('timeout')
   putDiag(base, end, true, started)

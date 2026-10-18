@@ -138,5 +138,36 @@ console.log('── 6) 失败必须回落（返回 null，绝不返回空串）�
 console.log('── 7) 默认等待预算 ──')
 eq(REVISE_WAIT_MS, 300000, '默认 300s（真机 tf-mvcl5m8t 实测：改一轮 PRD 约 2 分钟，180s 会误超时 ⇒ 提到 5 分钟）')
 
+console.log('── 8) 时间锚点：补加载历史时不能重复计（2026-10-18 真机 tf-mvdixrhs）──')
+{
+  // 真机形态：投递前 observe 只拿到 1 条，投递后同一 child 补加载了 3 条历史（插在前面）。
+  // 老实现 `events.slice(base)`（base=1）⇒ 把 2 条旧事件算进这一轮 ⇒ usage = 全会话累计
+  // ⇒ 与 prdUsageAcc 相加翻倍（当时靠重复护栏兜住，但那只是止血）。
+  const t0 = 1792308055000
+  const oldEv = (i) => ({ type: 'assistant/message', time: t0 - 10000 + i, data: { usage: { inputTokens: 1000 }, message: { content: [{ type: 'text', text: `旧答案${i}` }] } } })
+  const newEv = { type: 'assistant/message', time: t0 + 120, data: { usage: { inputTokens: 12, outputTokens: 3 }, message: { content: [{ type: 'text', text: '新 PRD' }] } } }
+  const turnEnd = { type: 'turn/end', time: t0 + 200, data: {} }
+  const events = [oldEv(1), oldEv(2), oldEv(3), newEv, turnEnd]
+  const anchor = { since: t0, index: 1 } // 投递前只有 1 条
+  const u = sumRevisionUsage(events, anchor)
+  eq(u && u.input, 12, '只算锚点之后的 input（老实现会得 2012）')
+  eq(u && u.calls, 1, '只算 1 次调用（老实现会得 3）')
+
+  // 旧锚点（纯下标）用作对照：证明这个场景确实能分辨两种实现
+  const byIndex = sumRevisionUsage(events, 1)
+  eq(byIndex && byIndex.input, 2012, '对照：纯下标切分会多算（说明判据有牙）')
+
+  eq(lastAssistantText(events, anchor), '新 PRD', '取文本同样只认锚点之后（不拿旧答案）')
+  eq(lastAssistantText(events, 1), '新 PRD', '对照：无 time 的事件按位置回落，行为不变')
+
+  // 无 time 的事件（夹具）⇒ 回落 index，不因缺 time 而全放行
+  const noTime = [
+    { type: 'assistant/message', data: { usage: { inputTokens: 500 }, message: { content: [{ type: 'text', text: '旧' }] } } },
+    { type: 'assistant/message', data: { usage: { inputTokens: 7 }, message: { content: [{ type: 'text', text: '新' }] } } },
+  ]
+  const u2 = sumRevisionUsage(noTime, { since: t0, index: 1 })
+  eq(u2 && u2.input, 7, '无 time 的事件回落下标锚点（不会全放行）')
+}
+
 console.log(failed === 0 ? '\n✅ prd-revise 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

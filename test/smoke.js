@@ -1370,8 +1370,11 @@ console.log('── 11) PRD 改写走续跑（continuable），失败回落重�
   ok(/ctx\.inject\(\['sessionQuery'\]/.test(hostSrc), 'host：按可选能力注入 sessionQuery（缺失时插件照常加载）')
   ok(reviseSrc.includes('(d.message as Record<string, unknown>).content') && reviseSrc.includes('export function assistantTextOf'),
     'prd-revise：取文本优先 `data.message.content`（实机踩过 data.content 取空）')
-  ok(/const turned = tail\.some\(\(e\) => !!e && \(e as \{ type\?: unknown \}\)\.type === 'turn\/end'\)/.test(reviseSrc),
-    'prd-revise：结束判据是 `turn/end`（否则会把第一轮旧文本当结果）')
+  // 2026-10-18：判据从 `tail`（下标切）改为 `fresh`（时间锚点）—— 补加载历史会让 tail 混进旧事件。
+  ok(/const fresh = events\.filter\(\(e, i\) => inRound\(e, i, anchor\)\)/.test(reviseSrc) && /fresh\.some\(\(e\) => !!e && \(e as \{ type\?: unknown \}\)\.type === 'turn\/end'\)/.test(reviseSrc),
+    'prd-revise：结束判据是「锚点之后的 turn/end」（否则会把第一轮旧文本当结果）')
+  ok(/const anchor: UsageAnchor = \{ since: started, index: base \}/.test(reviseSrc),
+    'prd-revise：锚点用投递时刻（`since`）+ 下标兜底（补加载历史时下标不可靠）')
   ok(reviseSrc.includes('if (!text || !text.trim()) {'),
     'prd-revise：拿到空文本 ⇒ null（**绝不返回空串**，否则 PRD 被写空）')
   ok(/if \(!before\) return null/.test(reviseSrc),
