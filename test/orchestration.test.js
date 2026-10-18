@@ -969,6 +969,8 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
   // `plugin:dsh-plugin-teamflow`。默认空 ⇒ 等价「暂停后没人说过话」，各用例自己按需注入。
   let sessionEvents = []
   const humanEvent = (t) => ({ type: 'user/message', time: t, data: { content: [{ type: 'text', text: '批准' }], source: { kind: 'user' } } })
+  /** 人打字但**不是批准**（用于「说过话 ≠ 批准」的用例）。 */
+  const humanTextEvent = (t, text) => ({ type: 'user/message', time: t, data: { content: [{ type: 'text', text }], source: { kind: 'user' } } })
   const pluginNoticeEvent = (t) => ({ type: 'user/message', time: t, data: { content: [{ type: 'text', text: '【团队研发流水线汇报】…' }], source: { kind: 'plugin:dsh-plugin-teamflow', form: 'notice' } } })
   // `resumeRun` 要能从 runtime.agents 取到 agent（测试 [21] 那里取不到 ⇒ 只能观测到「被拒/放行」，
   // 观测不到回退是否真的发生）。这里给它一个假 agent，才能把「PRD 真的重跑了」断言出来。
@@ -976,6 +978,8 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
     session: { id: 'sid-redo', header: { cwd: work }, append() {}, snapshotEvents: () => sessionEvents },
     status: 'idle', followup() {}, inject() {}, options: {},
   }
+  // PRD 子代理的产出（默认空 = 让 PRD 阶段失败；需要「PRD 真成功」的用例自己换掉）。
+  let prdTextNow = ''
   setRuntime({ get: (sid) => (sid === 'sid-redo' ? fakeParent : undefined) }, {
     // 真实宿主一定有 provider 注册表（providerName 靠 list 取），漏了它 provider 会传成 null（宿主直接抛）
     list: () => ['spawn'],
@@ -983,14 +987,15 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
       const init = spec && spec.request
       const label = String((spec && spec.label) || '')
       seen.push({ label, prompt: String((init && init.prompt && init.prompt[0] && init.prompt[0].text) || ''), signal: spec && spec.signal })
+      const text = /梳理 PRD/.test(label) ? prdTextNow : ''
       return {
         childId: `c-${seen.length}`,
-        result: (async () => ({ stopReason: 'completed', output: [{ type: 'text', text: '' }] }))(),
+        result: (async () => ({ stopReason: 'completed', output: [{ type: 'text', text }] }))(),
         dispose: async () => {},
       }
     },
   })
-  const mk = (ws, id, stages) => {
+  const mk = (ws, id, stages, extra) => {
     const dir = join(home, 'teamflow', ws, 'runs')
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, `${id}.json`), JSON.stringify({
@@ -999,6 +1004,7 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
       options: { mode: 'medium', needDesign: false, needScaffold: false },
       stages, humanIntervention: true, interrupted: true, interruptedAt: Date.now() - 60000,
       confirmSheet: { summary: '旧确认单', ac: [], questions: [], assumptions: [], at: 1 },
+      ...(extra || {}),
     }), 'utf8')
   }
 
@@ -1011,6 +1017,28 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
   ok(rAuto.ok === false && /必须由用户本人批准|human-approval|approved by the user/.test(String(rAuto.error)),
     `暂停后无人类消息 ⇒ 模型代批被拒（实测 ok=${rAuto.ok} err=${String(rAuto.error || '').slice(0, 70)}）`)
   ok(seen.length === seenBefore, `被拒时**没有**起任何子代理（实测 ${seenBefore} → ${seen.length}）`)
+
+  // ⓪b **「说过话」≠「批准」**（2026-10-17 实锤 tf-mvckeco4-2o1p91）：确认单只剩 1 项待拍板时，
+  //     用户那句「加 --depth N，默认 0」恰好是那项的缺省建议 ⇒ 模型判成「整版认可」⇒ 自己 resume
+  //     （无 supplement）⇒ 直接进架构设计（`confirmApprovedRev` 被写死，PRD 再也改不动）。
+  //     ⇒ 无 supplement 的 resume（= 整版放行）必须要求**显式批准语义**。
+  sessionEvents = [pluginNoticeEvent(Date.now() - 50000), humanTextEvent(Date.now() - 30000, '加一个 --depth N 参数，默认 0 不限制')]
+  mk('ws-ambig', 'tf-ambig', [{ phase: 'prd', status: 'done', output: '旧 PRD' }])
+  const rAmb = resumeRun('tf-ambig', 'sid-redo')
+  ok(rAmb.ok === false && /必须是人明确批准|explicit approval/.test(String(rAmb.error)),
+    `「修改要求」被当成批准 ⇒ 拒绝（实测 ${String(rAmb.error || '').slice(0, 60)}）`)
+  ok(!(JSON.parse(readFileSync(join(home, 'teamflow', 'ws-ambig', 'runs', 'tf-ambig.json'), 'utf8')).logs || []).some((l) => /续跑：从/.test(String(l.message))),
+    '被拒时**没有**真的进阶段（日志里不出现「断点续跑：从…继续」）')
+  // 同一个人、同一句话，但**带 supplement**（= 明确要改）⇒ 放行（否则用户就改不了 PRD 了）
+  mk('ws-ambig2', 'tf-ambig2', [{ phase: 'prd', status: 'done', output: '旧 PRD' }])
+  const rAmb2 = resumeRun('tf-ambig2', 'sid-redo', '加一个 --depth N 参数')
+  ok(rAmb2.ok === true && rAmb2.resumedFrom === 'prd',
+    `同一句话带 supplement ⇒ 按「要改」放行（实测 ok=${rAmb2.ok} from=${rAmb2.resumedFrom}）`)
+  // 界面点击（origin='ui'）不受这条约束：那次点击本身就是人的动作
+  sessionEvents = [pluginNoticeEvent(Date.now() - 50000)]
+  mk('ws-ui', 'tf-ui', [{ phase: 'prd', status: 'done', output: '旧 PRD' }])
+  const rUi = resumeRun('tf-ui', 'sid-redo', undefined, 'ui')
+  ok(rUi.ok === true, `界面续跑（origin=ui）免检放行（实测 ok=${rUi.ok} err=${String(rUi.error || '').slice(0, 50)}）`)
 
   // ① 确认单形态（只有 prd done）＋ supplement ⇒ 接受，检查点回退到 prd
   //    人类确实说过话（晚于暂停）⇒ 闸门放行。
@@ -1045,7 +1073,204 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
   ok(!(after.stages || []).some((s) => String(s.output || '') === '旧 PRD'),
     `回退时旧 prd 记录已摘掉（否则同阶段两条记录，报告与断点定位都按「每阶段一条」读）（实测 ${JSON.stringify((after.stages || []).map((s) => s.status))}）`)
 
-  // ② 对照：PRD 之后**已经有阶段跑过** ⇒ 仍必须拒绝（回退会白作废它们的产物）
+  // ③ **改写后必须重出确认单**（2026-10-17，issue #11 实锤 `tf-mv5xkem-imgt7v`）：用户改主意 ⇒
+  //    redo 重跑 PRD ⇒ 上一版批准**自动失效** ⇒ 必须再让他看一次。旧实现 `!resume` 把 redo 路径
+  //    一起挡掉了 ⇒ 模型许诺 "a fresh confirm sheet will arrive"，没来，PRD 变了却没人看过就开了工。
+  //    这里的 PRD 子代理**给真产出**（默认空 ⇒ 阶段失败，测不到确认单）。
+  const PRD_OK = '## 目标\n做一个小工具。\n\n## 验收标准\n- AC-1 能跑\n\n' +
+    '本 PRD 按契约逐条对应验收条件并给出可测判据，范围与非目标均已写明。'.repeat(12) +
+    `\n\n<!-- state -->${JSON.stringify({
+      phase: 'prd', summary: '改写后的目标', memory: [],
+      extra: { acIndex: { 'AC-1': '能跑' }, summary: '改写后的目标' },
+    })}<!-- /state -->`
+  prdTextNow = PRD_OK
+  sessionEvents = [pluginNoticeEvent(Date.now() - 50000), humanEvent(Date.now() - 30000)]
+  mk('ws-rev', 'tf-rev', [{ phase: 'prd', status: 'done', output: '旧 PRD' }], { prdRev: 1, confirmApprovedRev: 1 })
+  const r3 = resumeRun('tf-rev', 'sid-redo', '形象改成手绘 SVG，不要 emoji')
+  ok(r3.ok === true && r3.resumedFrom === 'prd', `第 2 版改写被接受（实测 ok=${r3.ok} err=${String(r3.error || '').slice(0, 60)}）`)
+  let revJ = null
+  for (let i = 0; i < 150; i++) {
+    try { revJ = JSON.parse(readFileSync(join(home, 'teamflow', 'ws-rev', 'runs', 'tf-rev.json'), 'utf8')) } catch (e) { revJ = null }
+    if (revJ && revJ.confirmSheet) break
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  ok(!!(revJ && revJ.confirmSheet && Number(revJ.confirmSheet.prdRev) === 2),
+    `改写后**必须再出一张确认单**且标为第 2 版（实测 ${JSON.stringify(revJ && revJ.confirmSheet && { rev: revJ.confirmSheet.prdRev, sum: revJ.confirmSheet.summary })}）`)
+  ok(!!revJ && revJ.status === 'interrupted' && revJ.humanIntervention === true,
+    `…并且停成 interrupted 等人工批准（实测 status=${revJ && revJ.status}）`)
+  ok(!!revJ && Number(revJ.prdRev) === 2, `prdRev 递增到 2（实测 ${revJ && revJ.prdRev}）`)
+  ok(!!revJ && (revJ.stages || []).every((s) => ['prd'].includes(String(s.phase))),
+    `第 2 版确认单期间其后的阶段一个都没起（实测 ${JSON.stringify(revJ && (revJ.stages || []).map((s) => s.phase))}）`)
+  // ④ **改写次数不设上限**（第一版设过 `PRD_REV_MAX=2`，用户当场否掉）：第 2 版再改仍接受，
+  //    并把被替换的 `PRD.md` 留成 `PRD.v2.md` ⇒ 确认单给出路径，用户能对比「改了什么」。
+  //    为什么不设上限：`redoPrd` 前提是 `prdOnly`（PRD 之后零阶段）⇒ 作废面恒为零，
+  //    改 1 次与改 5 次成本相同；上限只会把人赶去「重开 run」（本阶段纯损失）。
+  prdTextNow = PRD_OK
+  const docs3 = join(home, 'teamflow', 'ws-rev2', 'docs')
+  mkdirSync(docs3, { recursive: true })
+  writeFileSync(join(docs3, 'PRD.md'), '# 第二版 PRD（旧内容）\n', 'utf8')
+  mk('ws-rev2', 'tf-rev2', [{ phase: 'prd', status: 'done', output: '旧 PRD' }], { prdRev: 2, confirmApprovedRev: 2, runDocs: docs3 })
+  const r4 = resumeRun('tf-rev2', 'sid-redo', '再加一个 --verbose')
+  ok(r4.ok === true, `第 2 版之后仍允许改写（不设上限）（实测 ok=${r4.ok} err=${String(r4.error || '').slice(0, 60)}）`)
+  let rev3 = null
+  for (let i = 0; i < 150; i++) {
+    try { rev3 = JSON.parse(readFileSync(join(home, 'teamflow', 'ws-rev2', 'runs', 'tf-rev2.json'), 'utf8')) } catch (e) { rev3 = null }
+    if (rev3 && rev3.confirmSheet) break
+    await new Promise((r) => setTimeout(r, 20))
+  }
+  ok(!!(rev3 && rev3.confirmSheet && Number(rev3.confirmSheet.prdRev) === 3),
+    `第 3 版确认单照常出现（实测 ${rev3 && rev3.confirmSheet && rev3.confirmSheet.prdRev}）`)
+  // 旧版快照放**运行日志目录**（`logs/teamflow/<runId>/`），任务夹只留当前版 ——
+  // 任务夹是交付物会被 `git add`，把 PRD.v1/v2/v3 放进去等于把过程产物混进交付物（真机 72KB）。
+  const snap3 = join(home, 'teamflow', 'ws-rev2', 'work', 'logs', 'teamflow', 'tf-rev2', 'PRD.v2.md')
+  const snap3Alt = join(home, 'work', 'logs', 'teamflow', 'tf-rev2', 'PRD.v2.md')
+  ok(existsSync(snap3) || existsSync(snap3Alt), '旧版快照落在运行日志目录（不是任务夹）')
+  ok(!existsSync(join(docs3, 'PRD.v2.md')), '**任务夹里不产生 `PRD.v*.md`**（否则会进 git）')
+  ok(!!(rev3 && rev3.confirmSheet && String(rev3.confirmSheet.prevDocPath || '').endsWith('PRD.v2.md')),
+    `确认单给出上一版路径（实测 ${rev3 && rev3.confirmSheet && rev3.confirmSheet.prevDocPath}）`)
+
+  // ③c **续跑改写**（2026-10-17）：journal 里有 `prdChildId` 且宿主有 sessionQuery + sendMessage
+  //     ⇒ redo **不再 spawn**，而是对**原 child** 投一条修改要求，读它这一轮的新文本。
+  //     这是「复用上下文」在编排层的唯一证据：spawn 次数不增 + 投递目标正确 + 新文本进了确认单。
+  {
+    const PRD_REVISED = '## 目标\n四格缩进的目录工具\n\n<!-- state -->'
+      + JSON.stringify({ phase: 'prd', summary: '四格缩进', memory: [], extra: { acIndex: { 'AC-1': '四格' }, summary: '四格缩进' } })
+      + '<!-- /state -->'
+    const sendSeen = []
+    const spawnSeen = []
+    setRuntime({ get: (sid) => (sid === 'sid-redo' ? fakeParent : undefined) }, {
+      list: () => ['spawn'],
+      sendMessage: async (sender, target, content) => {
+        sendSeen.push({ target: String(target), text: String((content && content[0] && content[0].text) || '') })
+        return 'mid-cont'
+      },
+      startActivation: async (spec) => {
+        spawnSeen.push(String((spec && spec.label) || ''))
+        return { childId: 'c-should-not-spawn', result: (async () => ({ stopReason: 'completed', output: [{ type: 'text', text: '' }] }))(), dispose: async () => {} }
+      },
+    })
+    const baseEvents = [
+      { type: 'user/message', data: { content: [{ type: 'text', text: '原始需求' }] } },
+      { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '旧 PRD' }] } } },
+      { type: 'turn/end', data: {} },
+    ]
+    let polls = 0
+    runtime.setSessionQuery({
+      observeSession: async () => {
+        polls++
+        if (polls <= 1) return { events: baseEvents } // 基线
+        return {
+          events: [
+            ...baseEvents,
+            { type: 'user/message', data: { content: [{ type: 'text', text: '改成四格' }] } },
+            { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: PRD_REVISED }] }, usage: { inputTokens: 12, outputTokens: 3, cacheReadTokens: 99, cacheWriteTokens: 0 } } },
+            { type: 'turn/end', data: {} },
+          ],
+        }
+      },
+    })
+    sessionEvents = [pluginNoticeEvent(Date.now() - 50000), humanEvent(Date.now() - 30000)]
+    prdTextNow = ''
+    mk('ws-cont', 'tf-cont', [{ phase: 'prd', status: 'done', output: '旧 PRD', childId: 'child-old' }], { prdRev: 1, confirmApprovedRev: 1, prdChildId: 'child-old' })
+    const r5 = resumeRun('tf-cont', 'sid-redo', '改成四格')
+    ok(r5.ok === true, `续跑改写被接受（实测 ok=${r5.ok} err=${String(r5.error || '').slice(0, 60)}）`)
+    let contJ = null
+    for (let i = 0; i < 150; i++) {
+      try { contJ = JSON.parse(readFileSync(join(home, 'teamflow', 'ws-cont', 'runs', 'tf-cont.json'), 'utf8')) } catch (e) { contJ = null }
+      if (contJ && contJ.confirmSheet) break
+      await new Promise((r) => setTimeout(r, 30))
+    }
+    ok(spawnSeen.length === 0, `**没有再 spawn PRD 子代理**（实测 ${JSON.stringify(spawnSeen)}）`)
+    ok(sendSeen.length === 1 && sendSeen[0].target === 'child-old',
+      `对**原 child** 投递了修改要求（实测 ${JSON.stringify(sendSeen.map((x) => x.target))}）`)
+    ok(sendSeen.length === 1 && sendSeen[0].text.indexOf('改成四格') >= 0, '投递内容包含用户的修改点')
+    ok(!!(contJ && contJ.confirmSheet && Number(contJ.confirmSheet.prdRev) === 2),
+      `续跑后照常出第 2 版确认单（实测 ${contJ && contJ.confirmSheet && contJ.confirmSheet.prdRev}）`)
+    ok(!!(contJ && contJ.confirmSheet && String(contJ.confirmSheet.summary || '') === '四格缩进'),
+      `确认单用的是**续跑产出的新 PRD**（state 块被解析）（实测 ${JSON.stringify(contJ && contJ.confirmSheet && contJ.confirmSheet.summary)}）`)
+    const prdRec1 = ((contJ && contJ.stages) || []).filter((s) => String(s.phase) === 'prd').pop()
+    ok(Number(prdRec1 && prdRec1.usage && prdRec1.usage.input) === 12,
+      `续跑一轮后 stage.usage.input 恰好是本轮的 12（实测 ${JSON.stringify(prdRec1 && prdRec1.usage)} —— 若是 24 说明加了两次）`)
+    ok(!!contJ && (contJ.stages || []).some((s) => String(s.phase) === 'prd' && String(s.childId || '') === 'child-old'),
+      '续跑那一轮进了 stages（断点/汇报/用量按「每阶段一条」读）')
+    runtime.setSessionQuery(undefined)
+  }
+
+  // ③d **runDocs 是相对路径**（真机形态 `docs/teamflow/20261018-r1-…`）：快照必须落在
+  //     `workspacePath/runDocs` 下。第一版直接用相对路径 `existsSync` ⇒ 按**进程 cwd** 解析 ⇒
+  //     真机上快照与「上一版路径」全部静默失效（测试夹具传的是绝对路径才没暴露这个差异）。
+  {
+    const wsDir = join(home, 'ws-rel')
+    const relDocs = 'docs/teamflow/r3'
+    mkdirSync(join(wsDir, relDocs), { recursive: true })
+    writeFileSync(join(wsDir, relDocs, 'PRD.md'), '# 旧版 PRD\n', 'utf8')
+    const runDir = join(home, 'teamflow', 'ws-rel', 'runs')
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(join(runDir, 'tf-rel.json'), JSON.stringify({
+      id: 'tf-rel', requirement: '验证相对 runDocs', status: 'interrupted', locale: 'zh',
+      workspace: 'ws-rel', workspacePath: wsDir, logs: [], options: { mode: 'medium' },
+      runDocs: relDocs, prdRev: 2, confirmApprovedRev: 2, prdChildId: 'child-rel',
+      stages: [{ phase: 'prd', status: 'done', output: '旧 PRD', childId: 'child-rel' }],
+    }), 'utf8')
+    prdTextNow = PRD_OK
+    // sessionQuery 已在上一用例置空 ⇒ 续跑关闭，强制走重跑路径，只验快照落盘
+    const rRel = resumeRun('tf-rel', 'sid-redo', '改成别的')
+    ok(rRel.ok === true, `相对 runDocs：redo 被接受（实测 ${String(rRel.error || '').slice(0, 50)}）`)
+    ok(existsSync(join(wsDir, 'logs', 'teamflow', 'tf-rel', 'PRD.v2.md')),
+      '相对 runDocs：快照落在 `logs/teamflow/<runId>/`（真机形态，且不在交付目录）')
+    ok(!existsSync(join(wsDir, relDocs, 'PRD.v2.md')), '相对 runDocs：任务夹里不产生旧版文件')
+  }
+
+  // ③c2 **阶段用量必须累计**（2026-10-18 真机 tf-mvcoqg9e）：节点卡展示「本阶段总用量」，
+  //     而续跑每轮只报「这一轮」的增量。构造「前面已改过一轮（acc=1000）」+ 本轮续跑（12）
+  //     ⇒ 新 stage.usage.input 必须是 **1012**，不是 12（覆盖）。
+  //     为什么不用「连续两次 redo」：mock 的 observeSession 是有状态的，第二次的基线会把
+  //     上一轮的事件算进去 ⇒ 投递后事件不增长 ⇒ 只能干等超时（第一版就是这么写的，测了个寂寞）。
+  {
+    const baseEv = [
+      { type: 'user/message', data: { content: [{ type: 'text', text: '原始需求' }] } },
+      { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: '旧 PRD' }] } } },
+      { type: 'turn/end', data: {} },
+    ]
+    let polls2 = 0
+    runtime.setSessionQuery({
+      observeSession: async () => {
+        polls2++
+        if (polls2 <= 1) return { events: baseEv }
+        return {
+          events: [
+            ...baseEv,
+            { type: 'user/message', data: { content: [{ type: 'text', text: '再改一处' }] } },
+            { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: PRD_REVISED }] }, usage: { inputTokens: 12, outputTokens: 3, cacheReadTokens: 99, cacheWriteTokens: 0 } } },
+            { type: 'turn/end', data: {} },
+          ],
+        }
+      },
+    })
+    const accBefore = { input: 1000, cacheRead: 5000, cacheWrite: 0, output: 200, calls: 3 }
+    // ⚠️ 工作区目录必须真存在：ACL 预检对不存在的路径会判 failed ⇒ run 直接 failed、不 push stage
+    //（第一版就是这么「测了个寂寞」——断言全红但原因是夹具没建目录）。
+    mkdirSync(join(home, 'ws-acc'), { recursive: true })
+    const runDir = join(home, 'teamflow', 'ws-acc', 'runs')
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(join(runDir, 'tf-acc.json'), JSON.stringify({
+      id: 'tf-acc', requirement: '验证用量累计', status: 'interrupted', locale: 'zh',
+      workspace: 'ws-acc', workspacePath: join(home, 'ws-acc'), logs: [], options: { mode: 'medium' },
+      prdRev: 1, confirmApprovedRev: 1, prdChildId: 'child-acc', prdUsageAcc: accBefore,
+      stages: [{ phase: 'prd', status: 'done', output: '旧 PRD', childId: 'child-acc', usage: accBefore }],
+    }), 'utf8')
+    sessionEvents = [pluginNoticeEvent(Date.now() - 5000), humanTextEvent(Date.now() - 2000, '再改一处')]
+    const rAcc = resumeRun('tf-acc', 'sid-redo', '再改一处')
+    ok(rAcc.ok === true, `累计用例：redo 被接受（实测 ${String(rAcc.error || '').slice(0, 50)}）`)
+    // 只验「redo 时把上一轮用量带走」这一步（不依赖后续 PRD 跑通：mock 环境里续跑/重跑都可能失败，
+    // 而累加公式本身由 metering.addUsage 的单测覆盖）。判据：摘掉旧 stage 之前必须先把 usage 存进 acc。
+    let accJ = null
+    try { accJ = JSON.parse(readFileSync(join(runDir, 'tf-acc.json'), 'utf8')) } catch (e) { accJ = null }
+    ok(Number(accJ && accJ.prdUsageAcc && accJ.prdUsageAcc.input) === 1000,
+      `redo 时把上一轮的 1000 input 带进 prdUsageAcc（实测 ${JSON.stringify(accJ && accJ.prdUsageAcc)}）`)
+  }
+
+  // ④ 对照：PRD 之后**已经有阶段跑过** ⇒ 仍必须拒绝（回退会白作废它们的产物）
   mk('ws-late', 'tf-late', [{ phase: 'prd', status: 'done', output: 'x' }, { phase: 'design', status: 'done', output: 'y' }])
   const r2 = resumeRun('tf-late', 'sid-redo', '改一下')
   ok(r2.ok === false && /补录被拒绝/.test(String(r2.error)),

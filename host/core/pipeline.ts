@@ -14,7 +14,7 @@ import { runAcceptancePhase } from './stages/acceptance.ts'
 export type { DevTaskDef } from './stages/dev.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
-import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv, hasHumanReplySince } from '../util.ts'
+import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv, hasHumanReplySince, lastHumanReplySince, isExplicitApproval, absoluteRunDocs, normalizeSignal } from '../util.ts'
 import type { Blueprint } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { RETRY_LIMIT, PHASE_ORDER, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, DEV_MAX_CONCURRENCY, DEV_DEFAULT_CONCURRENCY } from '../constants.ts'
@@ -44,12 +44,17 @@ export function cliOnPath(): boolean {
 }
 import { runSanityCheck, gitCmd, gitRun, tfAddArgs, tfUnstageArgs, tfDocAddPlan, GIT_NOTHING_TO_COMMIT, TF_DOCS_DIR, TF_LOG_DIR, BASELINE_NOISE_EXCLUDES } from './workspace/sanity.ts'
 import type { GitResult } from './workspace/sanity.ts'
-import { archiveRunLogs, sweepWorkspaceLogs } from './workspace/runlogs.ts'
+import { archiveRunLogs, sweepWorkspaceLogs, stagingRoot } from './workspace/runlogs.ts'
 import { preflightWorkspaceAcl } from './workspace/acl-preflight.ts'
-import { buildConfirmSheet, renderConfirmSheet, confirmHook, prdSnapshotFromBlock, type ConfirmSheet } from './confirm.ts'
+import {
+  buildConfirmSheet, renderConfirmSheet, confirmHook, prdSnapshotFromBlock,
+  confirmDecision, type ConfirmSheet,
+} from './confirm.ts'
 import { parseLocale, phaseLabel, t, type HostLocale } from '../locales.ts'
 import { ambientLocale, localeForMissingSnapshot, localeSource, runLocaleOf } from './locale.ts'
 import { noteClarifyAnswered, noteClarifyProceeded } from './clarify-log.ts'
+import { canReviseViaChild, revisePrdViaChild, type RevisionDiag } from './prd-revise.ts'
+import { addUsage } from './agent/metering.ts'
 
 /** dev 子卡/阶段 label 的「开发 · 」前缀与重试后缀：zh 存量兼容 + en 新增（QA-2：既有解析契约只增不改）。
  *  en 侧必须覆盖词典 `dev.taskRetry` 的实际产出 `(attempt N)`（R3-2 实锤：只写 retry \d+ 时，
@@ -904,12 +909,126 @@ export async function executePipeline(
         ? `${requirement}\n\n[REVISED — the user reviewed the previous PRD and asked for these changes; treat them as authoritative and do NOT re-ask]\n${supplement}`
         : `${requirement}\n\n[CLARIFIED — the user answered the open questions below during a clarification round; treat them as authoritative and do NOT re-assume]\n${supplement}`
       : requirement
+    /**
+     * **PRD 续跑改写**（2026-10-17）：确认单上「要改」时，对**产出当前 PRD 的那个子代理**投一条修改要求，
+     * 让它带着自己的上下文只改需要改的部分 —— 而不是重新 spawn、从零读需求/文档再重写整份 PRD。
+     *
+     * 为什么要这样：重跑会**漂移**（用户只要求改一处，没提的部分也可能被顺手改写），而且贵。
+     * 为什么现在能做：阶段子代理**本来就是 continuable**（`startActivation` 内部按 provider 的
+     * `prepareContinuable` 分派，spawn 有该能力），插件此前只是从没给它发过第二条消息。
+     * 实测（headless 探针）：settle 后 `sendMessage` 仍被接受（coldResume），第二轮复用上下文
+     * （第一轮给的口令被正确复述），usage `input 180 / cacheRead 8448 / output 6`。
+     *
+     * **失败一律回落为重跑**（返回 null）：child 没了、宿主没这能力、超时、拿到空文本 ——
+     * 续跑是加速路径，不是唯一路径；不能因为它失败就让用户改不了 PRD。
+     */
+    const revisePrdViaChildIfPossible = async (): Promise<{ text: string; cancelled: boolean; skipped: boolean } | null> => {
+      const childId = journal.prdChildId ? String(journal.prdChildId) : ''
+      if (!resume || !resume.redo || !supplement) return null
+      if (!childId) {
+        // 本该续跑但没有 childId 线索 ⇒ **必须可见**（第一版就是静默 return null，
+        // 导致「为什么每次都在重跑」变成黑盒，直到真机日志里出现「回退重跑 PRD」才发现）。
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.reviseNoChild') })
+        return null
+      }
+      if (!canReviseViaChild({ subagents: runtime.subagents, sessionQuery: runtime.sessionQuery, childId })) {
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.reviseNoHost') })
+        return null
+      }
+      const instruction = [
+        '[REVISED — the user reviewed the PRD you wrote and asked for these changes; treat them as authoritative and do NOT re-ask]',
+        supplement,
+        '',
+        'Update the PRD you already wrote: change ONLY what these notes require and keep everything else intact.',
+        'Reply with the complete updated PRD (including the state block), exactly as you did the first time.',
+      ].join('\n')
+      const label = pForm.label
+      const startedAt = Date.now()
+      journal.logs.push({ t: Date.now(), level: 'phase', message: t(locale, 'log.enterStage', { phase: label }) })
+      const diag: RevisionDiag = { base: 0, end: 0, waitedMs: 0, delivered: false }
+      const out = await revisePrdViaChild({
+        subagents: runtime.subagents,
+        sessionQuery: runtime.sessionQuery,
+        parent,
+        childId,
+        instruction,
+        signal: normalizeSignal(signal),
+        diag,
+        onWait: () => { /* 超时由返回值表达，这里不额外刷日志 */ },
+      })
+      if (!out) {
+        // **回落原因必须可区分**（2026-10-18 真机教训：第一版四种原因写在同一句话里，
+        // 等满 3 分钟回落后无从判断是「没启动」还是「没结束」）。
+        const secs = String(Math.round((diag.waitedMs || 0) / 1000))
+        const key = !diag.delivered
+          ? 'log.reviseNoDeliver'
+          : diag.end <= diag.base ? 'log.reviseNoFire' : 'log.reviseFallback'
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, key, { base: String(diag.base), end: String(diag.end), secs }) })
+        return null
+      }
+      const shown = stripStateBlock(out.text)
+      // 阶段记录：续跑那一轮也要进 stages（断点定位/汇报/用量都按「每阶段一条」读）。
+      // 只在成功后 push —— 失败不留 running 残影。
+      const seq = (journal.stages.length ? Math.max(...journal.stages.map((s) => s.seq)) : 0) + 1
+      journal.stages.push({
+        seq, label, phase: 'prd', status: 'done', outcome: 'completed',
+        taskKey: null, taskIds: null, childId, startedAt, endedAt: Date.now(),
+        summary: clip(shown, 3000), usage: out.usage, handoff: null,
+        output: clip(shown, 50000),
+      })
+      journal.agentsStarted += 1
+      mergeStageState('prd', out.text, stateBlockRelPath(journal.id, 'prd'))
+      timeline['prd'] = shown
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.prdRevisedViaChild', { n: String(shown.length) }) })
+      return { text: shown, cancelled: false, skipped: false }
+    }
     // patch 档的「单点确认」是机械阶段（核对现状 + 给直改指令，不做架构判断）→ 降档省 token
-    const prdStage = await runSimpleStage('prd', pForm.fn(prdInput, root, journal.id, state), pForm.label, {
+    const revisedPrdStage = await revisePrdViaChildIfPossible()
+    const prdStage = revisedPrdStage || await runSimpleStage('prd', pForm.fn(prdInput, root, journal.id, state), pForm.label, {
       effort: options.mode === 'patch' ? MECHANICAL_STAGE_EFFORT : null,
     })
     if (prdStage.cancelled) return
     prd = prdStage.text
+    // **本阶段用量累计**（2026-10-18）：节点卡展示的是「本阶段总用量」（输入未命中/输入命中/输出），
+    // 而 PRD 会被改写多轮（每轮一次续跑或重跑）。只写「这一轮」⇒ 前面几轮的 token 凭空消失 ⇒
+    // 与 dsh 子代理面板（全程累计）对不上（真机 tf-mvcoqg9e）。⇒ 每一轮都把历史累计并进来。
+    // 续跑与重跑两条路径在这里同一处理，避免只修一条造成新的口径分叉。
+    try {
+      const rec = (journal.stages || []).filter((s) => phaseKeyOf(s.phase) === 'prd').pop()
+      if (rec && rec.usage) {
+        // 先拷贝「本轮」再相加：`rec.usage` 可能与 `prdUsageAcc` 同源（见 redo 块的注释），
+        // 直接 `addUsage(acc, rec.usage)` 在同对象时会翻倍。
+        const round = { ...rec.usage }
+        const acc = journal.prdUsageAcc
+        // **重复护栏**（2026-10-18 真机 tf-mvdh065z 仍是 2 倍时加）：若「本轮」与「已有累计」逐项完全相同，
+        // 说明拿到的其实是累计值（不是本轮增量）—— 再相加必然翻倍。宁可这一轮不加，也不能让总数错。
+        const dup = !!acc && round.input === acc.input && round.cacheRead === acc.cacheRead
+          && round.output === acc.output && round.calls === acc.calls
+        if (dup) {
+          rec.usage = acc
+          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.usageAccumDup', {
+            round: `${round.input}/${round.cacheRead}/${round.output}/${round.calls}`,
+          }) })
+        } else {
+          journal.prdUsageAcc = addUsage(acc, round)
+          rec.usage = journal.prdUsageAcc
+          // **逐轮留痕**：本轮多少、累计后多少 —— 没有这条，「为什么总数是 2 倍」只能靠猜
+          // （本地 mock 复现不出来，只有真机有）。
+          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.usageAccum', {
+            round: `${round.input}/${round.cacheRead}/${round.output}/${round.calls}`,
+            acc: `${journal.prdUsageAcc.input}/${journal.prdUsageAcc.cacheRead}/${journal.prdUsageAcc.output}/${journal.prdUsageAcc.calls}`,
+          }) })
+        }
+      } else if (rec && journal.prdUsageAcc) {
+        // 本轮没有用量数据（mock/投影缺失）⇒ 至少把已有累计挂在节点上，不能显示成空
+        rec.usage = journal.prdUsageAcc
+      }
+    } catch (e) { /* 计量失败不阻断流水线 */ }
+    // **PRD 版本自增**（2026-10-17，issue #11）：只有**真正产出**了 PRD 才算一版 ——
+    // `runSimpleStage` 在 resume 复用存档产物时返回 `skipped:true`（PRD 没变，版本不动）。
+    // 为什么必须在这里而不是 `mergeStageState` 里：那条通道依赖模型写出 state 块
+    // （`extra` 兑现率实测 ~20%），没写就提前 `return` ⇒ 版本号会卡住 ⇒「改写后必须重新确认」失效。
+    if (!prdStage.skipped) journal.prdRev = (Number(journal.prdRev || 0) || 0) + 1
     // PRD 收口（2026-09-16 需求澄清闸门 Phase 1）：把「假设 / 待澄清」段读出来落 journal，
     // 让完成汇报能显式提示「本次基于以下假设启动」——今天的缺口是**假设完全不可见**
     // （实测 12/12、39/39 份 PRD 都没这一段），验收人无从知道 agent 替他决定了什么。
@@ -944,15 +1063,39 @@ export async function executePipeline(
     // （`always` / `never`）。它是环境变量 `TEAMFLOW_CONFIRM`，**不进工具 schema**
     // （MEMORY §6：临时/实验开关不进公共工具契约——description 每次进主会话上下文 ≈137 tok/会话）。
     const confirmMode = options.confirmMode || 'auto'
-    const shouldConfirm = confirmMode === 'always' || (confirmMode === 'auto' && tasteCount > 0)
-    // 为什么 `!resume`：确认单只做**一轮**（轮次上限归 `interview` 档，ADR-0011 ③）。
+    // **触发判据 = 「这一版 PRD 还没被批过」× 「内容是否值得打断」**（2026-10-17 改，issue #11）。
+    // 旧写法是 `shouldConfirm && !resume` —— 把「确认单只做一轮」当成不变量，而真正可变的是
+    // **被批准的对象**：redo 重跑 PRD 走的正是 resume 路径 ⇒ 用户改完需求、PRD 变了，
+    // 确认单却不再出现 ⇒ 在**没看过新 PRD** 的情况下被推进开发（`tf-mv5xkem-imgt7v` 实锤：
+    // 模型自己都许诺 "a fresh confirm sheet will arrive"，没来；汇报文案 `report.confirmSheet`
+    // 也一直在许诺「会再出一份新确认单」—— 旧实现是**假承诺**）。
+    // 现判据见 `confirm.confirmDecision`：`approvedRev >= prdRev` ⇒ 已批过（不打断）；
+    // `prdRev > 1` ⇒ 改写后的版本**无条件**再看一次（不看 taste）；其余沿用内容驱动（有 taste 才停）。
+    const decision = confirmDecision({
+      mode: options.mode,
+      confirmMode,
+      tasteCount,
+      prdRev: journal.prdRev,
+      approvedRev: journal.confirmApprovedRev,
+    })
+    // 判据结论必须可审计（`approved`/`none` 是常态，不刷日志；`revised` 是新形态，值得留痕）。
+    if (decision.reason === 'revised') {
+      journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.confirmRevised', { rev: String(journal.prdRev || 1) }) })
+    }
     // 为什么排除 `patch`：patch = 单 agent 直改（STAGE_POLICY），它的 PRD 是「单点确认」机械阶段，
-    // 不为它加一道人工闸门（ADR-0011 策略档矩阵：`patch` 恒 off）。
-    if (shouldConfirm && options.mode !== 'patch' && !resume) {
+    // 不为它加一道人工闸门（ADR-0011 策略档矩阵：`patch` 恒 off）——该判断已在 `confirmDecision` 内。
+    if (decision.ask) {
       // ⚠️ 目标/AC/待澄清项一律取**本轮快照**（不读 `state.product.summary` / `state.acIndex` /
       // `state.openQuestions`）—— 它们是**项目级、跨 run 累积**的，本轮 PRD 没回写时会串上一轮
       // （实锤 tf-mvaubzdz-5w606x：r5 的确认单显示了 r4 的目标与 12 条 AC）。快照缺 = 本轮没给 ⇒
       // 交给确认单诚实显示「没抓到」（`confirm.noSummary` / `confirm.acMissing`），不拿旧内容冒充本轮。
+      // 上一版 PRD 的路径（只在改写后、且副本确实存在时给 —— 别给死链）
+      // ⚠️ 快照存放在**运行日志目录**（`logs/teamflow/<runId>/`），不是任务夹：任务夹是交付物，
+      // 旧版属过程产物（2026-10-18 用户实测：4 个 PRD 共 72KB 堆在交付目录里，还会被 git add）。
+      const snapDir = snapshotDir(journal)
+      const prevRev = Number(journal.prdRev) - 1
+      const prevAbs = snapDir && prevRev >= 1 ? `${snapDir}/PRD.v${prevRev}.md` : ''
+      const prevDocPath = prevAbs && existsSync(prevAbs) ? prevAbs : ''
       const sheet = buildConfirmSheet({
         summary: prdSnap ? prdSnap.summary : null,
         acIndex: prdSnap ? prdSnap.acIndex : null,
@@ -968,6 +1111,9 @@ export async function executePipeline(
         openQuestions: prdSnap ? prdSnap.openQuestions : null,
         assumptions: journal.assumptions,
         runDocs: journal.runDocs,
+        // 第几版（>1 时单子上会多一行「这是改写后的版本」+ 上一版路径）
+        prdRev: journal.prdRev,
+        prevDocPath,
       })
       // 审批面择路：**有登记的批准能力 ⇒ 试；否则（含抛错 / 返回空）⇒ 回落**停在 interrupted
       // 交主线程兜底（用 `ask_user_question`，已在生产验证）。
@@ -982,6 +1128,8 @@ export async function executePipeline(
         return abortForConfirmSheet(journal, sheet, locale)
       }
       journal.confirmAnswer = approved
+      // 审批面就地批准 ⇒ 这一版已放行（否则同一 run 内再走到确认单会重复打断）。
+      journal.confirmApprovedRev = Number(journal.prdRev || 1) || 1
       journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.confirmed') })
     }
 
@@ -1378,6 +1526,18 @@ export function startPipeline(agent: unknown, requirement: string, options: Pipe
 /* 取消运行 `cancelRun` 在 core/agent/context.ts（只操作 runs/inFlight，且无宿主私有依赖 → 可被 tests 直接加载）。 */
 
 /** 从断点续跑：跳过已完成阶段，从第一个未完成阶段重跑（service 与工具共用）。 */
+/**
+ * 旧版 PRD 快照的目录 = 运行日志目录 `logs/teamflow/<runId>`（**不是任务夹**）。
+ *
+ * 为什么不能放任务夹：任务夹是「本需求产物收口」，会被 `git add` 提交 ⇒ 改 3 版就在仓库里堆
+ * 4 个 PRD 文件（真机 tf-mvcoqg9e：共 72KB）。日志目录已 gitignore、run 结束随日志归档到
+ * `$DSH_HOME`（keep-whitelist 含 `.md` ⇒ 旧版不会丢），项目里只留当前版。
+ */
+function snapshotDir(j: JournalRecord): string {
+  const root = stagingRoot(j.workspacePath)
+  return root && j.id ? `${root}/${String(j.id)}` : ''
+}
+
 export function resumeRun(
   runId: string | null | undefined,
   sessionId: string | null | undefined,
@@ -1438,6 +1598,11 @@ export function resumeRun(
   if (supp && afterPrd && !redoPrd) {
     return { ok: false, error: t(locale, 'run.supplementTooLate', { phase: phaseLabel(locale, phaseAtEntry) }) }
   }
+  // ⚠️ **改写次数不设上限**（2026-10-17，用户否掉第一版的 `PRD_REV_MAX = 2`）：
+  // `redoPrd` 的前提是 `prdOnly`（PRD 之后零阶段）⇒ 作废面**恒为零**，改 1 次与改 5 次的成本
+  // 完全相同（都是重跑一次 PRD）。次数上限防不住浪费，只会把用户赶到「重开 run」——
+  // 而重开在本阶段是**纯损失**（同样重跑 PRD，却丢 runId / req/task 卡 / 已收集的补充说明）。
+  // 真正该守的线是「已进 design/tech 后不许改」，由上面的 `supplementTooLate` 保证。
   const productKey = j.workspace || j.product || 'default'
   if (activeProducts.has(productKey) && activeProducts.get(productKey) !== id) {
     return { ok: false, error: t(locale, 'run.workspaceBusy', { ws: j.workspacePath || productKey, id: activeProducts.get(productKey) }) }
@@ -1452,8 +1617,12 @@ export function resumeRun(
   // 时，要求会话日志里存在**晚于暂停时刻**的 `source.kind==='user'` 消息；没有就拒绝。
   // 界面入口（`api.resume`，origin='ui'）不受限——那次点击本身就是人的动作。
   // ⚠️ 三态：`null`=读不到会话日志（宿主 API 变更）⇒ **不硬拒**（否则所有人续跑全挂）但必须留痕。
+  /** 这一版 PRD 是否被人**显式**批准过（tool 路径的记账依据；界面点击本身就是人的动作）。 */
+  let approvalVerified = origin === 'ui'
   if (origin !== 'ui' && afterPrd && prdOnly) {
-    const human = hasHumanReplySince(agent && (agent as { session?: unknown }).session, Number(j.interruptedAt || 0))
+    const session = agent && (agent as { session?: unknown }).session
+    const sinceAt = Number(j.interruptedAt || 0)
+    const human = hasHumanReplySince(session, sinceAt)
     if (human === false) {
       try {
         j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.resumeNeedsHuman', { n: String(supp || '').length }) })
@@ -1466,6 +1635,29 @@ export function resumeRun(
         j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.resumeHumanUnverifiable') })
         persistJournal(j)
       } catch (e) { /* 同上 */ }
+    }
+    // **「说过话」≠「批准」**（2026-10-17 实锤 tf-mvckeco4-2o1p91）：确认单只剩 1 项待拍板时，
+    // 用户那句「加 --depth N，默认 0」**恰好是那项的缺省建议** ⇒ 模型判成「你答了这题 ⇒ 整版认可」⇒
+    // 自己调 resume（无 supplement）⇒ 直接进架构设计，用户从没点过批准，PRD 却被锁死（再改会被
+    // supplementTooLate 拒）。⇒ **不带 supplement 的 resume = 整版放行**，必须要求**显式批准语义**。
+    // 带 supplement 的（= 要改）不受这条限制：那是「改」，本来就该由人驱动。
+    if (!supp) {
+      const reply = lastHumanReplySince(session, sinceAt)
+      const explicit = reply === undefined ? undefined : (reply === null ? false : isExplicitApproval(reply.text))
+      approvalVerified = explicit === true
+      if (explicit === false) {
+        try {
+          j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.resumeNeedsExplicitApproval', { text: clip(reply === null ? '' : reply.text, 120) }) })
+          persistJournal(j)
+        } catch (e) { /* 同上 */ }
+        return { ok: false, error: t(locale, 'run.needsExplicitApproval', { id, text: clip(reply === null ? '' : reply.text, 120) }) }
+      }
+      if (explicit === undefined) {
+        try {
+          j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.resumeApprovalUnverifiable') })
+          persistJournal(j)
+        } catch (e) { /* 同上 */ }
+      }
     }
   }
   try {
@@ -1497,12 +1689,56 @@ export function resumeRun(
     j.endedAt = null
     j.logs = (j.logs || []).slice(-200)
     j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.resume', { phase: phaseLabel(locale, resumePhase) }) })
+    // **先记住产出当前 PRD 的子代理 id**（必须在下面把阶段记录摘掉**之前**——摘掉后就没线索了）：
+    // redo 会优先对它「续跑改写」（上下文接着干），而不是重新 spawn 一个从零读需求的 PRD 子代理。
+    // ⚠️ 第一版就栽在这：取值写在 filter 之后 ⇒ `prdChildId` 永远是 null ⇒ 续跑静默失效、每次都重跑。
+    if (redoPrd) {
+      try {
+        const prdRec = (j.stages || []).filter((s) => phaseKeyOf(s.phase) === 'prd').pop()
+        const cid = prdRec && prdRec.childId ? String(prdRec.childId) : ''
+        if (cid) j.prdChildId = cid
+        else j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.reviseNoChild') })
+        // **这一阶段的历史用量要带走**（2026-10-18）：下面会把旧的 prd 记录摘掉，而节点卡展示的是
+        // 「本阶段总用量」。不带走 ⇒ 前面几轮改写花的 token 凭空消失 ⇒ 与 dsh 子代理面板（全程累计）
+        // 对不上（真机 tf-mvcoqg9e 对不上才发现）。
+        // ⚠️ 必须**拷贝**并清零旧记录的 usage（2026-10-18 真机 tf-mvdeqi60 抓到的双倍 bug）：
+        // 直接 `j.prdUsageAcc = prdRec.usage` 会让 acc 与 rec.usage **指向同一个对象**；若累加时
+        // `rec` 恰好还是这条记录，`addUsage(a, a)` 就是 2 倍（实测 input/cacheRead/output/calls
+        // 四项都精确翻倍）。清零还能兜住「rec 是旧记录」的任何路径。
+        if (prdRec && prdRec.usage) {
+          j.prdUsageAcc = { ...prdRec.usage }
+          prdRec.usage = null
+        }
+      } catch (e) { /* 取不到就回落为重跑（不是错误） */ }
+    }
     j.stages = (j.stages || [])
       .filter((s) => s.status !== 'running' && s.status !== 'pending') // 清理未完成 stage；保留 done/failed 历史（失败痕迹不消失）
       // 回退重跑 PRD：把旧的 prd 记录**摘掉**，否则 `enterStage` 会再推一条 ⇒ 同一阶段两条记录
       // （报告与断点定位都按「每阶段一条」读）。安全前提正是 `prdOnly`：PRD 之后确实没跑过任何阶段。
       .filter((s) => !(redoPrd && phaseKeyOf(s.phase) === 'prd'))
     if (redoPrd) {
+      // **存量 run 的版本起点**（2026-10-17）：`prdRev` 是本版新加的字段，v0.3.0 之前创建的 run
+      // 落盘时没有它 ⇒ 读回来是 `undefined`/0。而 redo 的前提是「PRD 已经产出过一版」（`prdOnly`），
+      // 所以这里必须补成 1 —— 否则重跑后只是 1，`prdRev > 1` 不成立 ⇒ 第二张确认单又不出（issue #11 复发）。
+      if (!(Number(j.prdRev || 0) > 0)) j.prdRev = 1
+      // **保留被替换的那一版**（2026-10-17，B 方案）：`PRD.md` 会被下面的重跑覆盖，先把旧版留成
+      // `PRD.v{N}.md`（N = 旧版号）⇒ 确认单给出路径，用户能直接对比「我要求的改了没」。
+      // 为什么这件事比「限制改写次数」有效：反复改的真实原因通常是**看不到上一版改成了什么**，
+      // 只能凭记忆再提一遍需求，来回打转。丢一份副本的成本是一次文件复制。
+      try {
+        // **旧版快照放运行日志目录，不放任务夹**（2026-10-18 用户实测）：任务夹是「本需求产物收口」，
+        // 会被 `git add` 提交 ⇒ 把 `PRD.v1/v2/v3.md` 放进去等于**把过程产物混进交付物**，
+        // 一个改了 3 版的需求会在仓库里堆 70KB+ 的旧 PRD。
+        // 放 `logs/teamflow/<runId>/` 则天然符合既有设计：该目录已 gitignore、run 结束随日志归档到
+        // `$DSH_HOME`（keep-whitelist 含 .md ⇒ 旧版不会丢），项目里只留当前版 `PRD.md`。
+        const snapDir = snapshotDir(j)
+        const src = absoluteRunDocs(j.runDocs, j.workspacePath)
+        const srcFile = src ? `${src}/PRD.md` : ''
+        if (snapDir && srcFile && existsSync(srcFile)) {
+          mkdirSync(snapDir, { recursive: true })
+          writeFileSync(`${snapDir}/PRD.v${Number(j.prdRev) || 1}.md`, readFileSync(srcFile))
+        }
+      } catch (e) { /* 留档失败不阻断改写（确认单少了「上一版」一行而已） */ }
       // 旧确认单描述的是**即将被替换**的那份 PRD ⇒ 必须清掉，否则在新 PRD 出结论前主线程会看到过期内容。
       j.confirmSheet = null
       // 文本兜底（`journal.assumptions`）同理清空。
@@ -1518,6 +1754,17 @@ export function resumeRun(
         if ((st.openQuestions || []).length) { st.openQuestions = []; saveState(productKey, st) }
       } catch (e) { /* 清不掉也不影响重跑（新 PRD 会覆盖） */ }
       j.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'run.redoPrd', { n: String(supp || '').length }) })
+    } else {
+      // **放行 = 批准这一版 PRD**（2026-10-17，issue #11）。确认单的判据是「这一版有没有被批过」，
+      // 不带 supplement 的 resume 就是「认可当前版本」。不记的话：任何一次续跑（不必是确认单断点）
+      // 再走到确认单判断时，同一版又会被拦一次 —— 那就是用户担心的「反复修正需求」。
+      // ⚠️ **确认单形态下必须有人显式批准才记**（`approvalVerified`）：模型把用户的一句修改要求
+      // 当成「回答待拍板项 ⇒ 整版认可」时（实锤 tf-mvckeco4-2o1p91），一旦记进去，这版就永久
+      // 「已批准」⇒ 之后想改会撞 `supplementTooLate`，PRD 被锁死。宁可下次再出一次单。
+      // 非确认单断点（design/tech 失败后续跑）说明这版早就被放行过（否则跑不到下游）⇒ 直接记。
+      if (!(afterPrd && prdOnly) || approvalVerified) {
+        j.confirmApprovedRev = Number(j.prdRev || 0) || 0
+      }
     }
     // 补录的答复落 journal（PRD 会读它拼 `[CLARIFIED]`）；`answered` 埋点只在这里记一次
     // —— `executePipeline` 的同一埋点已按 `!resume` 排除续跑路径，否则会重复计一次。

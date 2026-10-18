@@ -9,7 +9,7 @@
  * **官方 Session 投影优先**（tokenUsage 四桶 + sessionStats.steps 调用数），事件扫描降级为
  * 无投影宿主的回退——本文件同时冻结两条路径与回退触发条件。
  */
-import { accumulateSessionUsage, totalTokensOf, cacheHitRatioOf, effectiveFreshBudget } from '../host/core/agent/metering.ts'
+import { accumulateSessionUsage, totalTokensOf, cacheHitRatioOf, effectiveFreshBudget, addUsage } from '../host/core/agent/metering.ts'
 import { runtime } from '../host/core/agent/context.ts'
 
 let failed = 0
@@ -134,6 +134,25 @@ console.log('   17 次调用 259k → 熔断；同阶段在命中 90%+ 的 provi
   ok(cacheHitRatioOf({ input: 500, cacheRead: 500, cacheWrite: 0, output: 0, calls: 2 }) === 0.5, 'cacheHitRatioOf = cacheRead/(input+cacheRead)')
   // 与官方口径的关系：放宽只影响熔断，不影响汇报
   ok(totalTokensOf({ input: 100, cacheRead: 900, cacheWrite: 0, output: 50 }) === 1050, '汇报口径仍是 totalTokensOf（含 cacheRead）——两套口径不合并')
+}
+
+console.log('── addUsage：同阶段多次尝试/多轮改写的累计 ──')
+// 事故（2026-10-18 真机 tf-mvcoqg9e）：节点卡展示「本阶段总用量」，但续跑只写了最后一轮的增量
+// ⇒ 与 dsh 子代理面板（全程累计）对不上，前面几轮的 token 凭空消失。
+{
+  const a = { input: 100, cacheRead: 1000, cacheWrite: 0, output: 50, calls: 2 }
+  const b = { input: 10, cacheRead: 500, cacheWrite: 5, output: 7, calls: 1 }
+  const sum = addUsage(a, b)
+  eqJson(sum, { input: 110, cacheRead: 1500, cacheWrite: 5, output: 57, calls: 3 }, '两项逐字段相加')
+  eqJson(addUsage(a, null), a, 'null 不改变原值（首轮无历史累计）')
+  eqJson(addUsage(null, b), b, '历史为空 ⇒ 等于本轮')
+  eqJson(addUsage(null, null), null, '两边都空 ⇒ null（不编造 0 桶）')
+  // 真实形态：hy3 三轮（每轮 20 万 input）累计后应约等于 60 万，而不是只剩最后一轮的 20 万
+  const r1 = { input: 217782, cacheRead: 27904, cacheWrite: 0, output: 16086, calls: 10 }
+  const r2 = { input: 18902, cacheRead: 1624576, cacheWrite: 0, output: 26148, calls: 12 }
+  const acc = addUsage(r1, r2)
+  eqJson(acc.input, 236684, '真机形态：两轮 input 相加（不是覆盖）')
+  eqJson(acc.cacheRead, 1652480, '真机形态：两轮 cacheRead 相加')
 }
 
 console.log(failed === 0 ? '\n✅ metering 全部通过' : `\n❌ metering ${failed} 项失败`)

@@ -331,10 +331,34 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     // 回退重跑 PRD（2026-10-08）：确认单断点上唯一允许 supplement 的形态（PRD 之后无任何阶段执行）。
     'run.redoPrd': '回退重跑 PRD：PRD 之后尚无任何阶段执行（PRD 确认单暂停就是这个形态）⇒ 已带上补充说明（{n} 字符）**重跑 PRD**；旧的确认单已作废，新 PRD 完成后会再出一份确认单。',
     'log.confirmAbort': 'PRD 确认单（ADR-0011）：PRD 已完成 → **已暂停等批准**（AC {ac} 条 / 假设 {as} 行）。后续阶段一个都没开始',
+    'log.confirmRevised': '确认单：PRD 已被改写（第 {rev} 版）⇒ 上一版批准自动失效，重新等批准',
+    // PRD 续跑改写（2026-10-17）：在**原 PRD 子代理的上下文里**改，而不是重跑。
+    'log.prdRevisedViaChild': 'PRD 改写走**续跑**：在原 PRD 子代理的上下文里增量修改（{n} 字符，未重新读需求/文档）',
+    // ⚠️ 三种回落原因**必须分开**：真机 tf-mvcl5m8t 等满 3 分钟回落后，合在一起的文案无从定位
+    // 是「投递没被接受」「投递后事件零增长（第二轮没启动）」还是「跑了但没结束」。
+    'log.reviseNoDeliver': 'PRD 改写**回落为重跑**：向原子代理投递修改要求**被拒绝**（事件 {base} 条，等待 {secs}s）⇒ 重新 spawn',
+    'log.reviseNoFire': 'PRD 改写**回落为重跑**：投递后事件**零增长**（{base} → {end}，等待 {secs}s）⇒ 第二轮没有启动（cold resume 未触发 / 子代理会话不可恢复）⇒ 重新 spawn',
+    'log.reviseFallback': 'PRD 改写**回落为重跑**：第二轮跑了但没拿到可用文本（事件 {base} → {end}，等待 {secs}s）⇒ 重新 spawn',
+    'log.reviseNoChild': 'PRD 改写**没有走续跑**：找不到产出当前 PRD 的子代理 id（可能是老 run / 阶段记录已被摘掉）⇒ 回落为重跑',
+    'log.reviseNoHost': 'PRD 改写**没有走续跑**：宿主缺少 sendMessage 或 sessionQuery 能力 ⇒ 回落为重跑（插件照常工作，只是没有增量改写）',
+    // 逐轮用量留痕（in/cacheRead/out/calls）：排查「总数翻倍」时唯一能分辨「本轮被算两次」vs「本轮值本身就是累计」的证据
+    'log.usageAccum': 'PRD 用量累计：本轮 in/cr/out/calls = {round} ⇒ 累计 {acc}',
+    'log.usageAccumDup': 'PRD 用量**跳过累加**：本轮值与已有累计完全相同（{round}）⇒ 判定为「拿到的是累计值而非本轮增量」，不加（否则翻倍）',
     'log.resumeNeedsHuman': '续跑被拒：确认单断点之后没有任何用户消息（只有插件注入的汇报）—— 人工批准闸门生效（补录 {n} 字符未采用；已要求主线程先问用户）',
+    // 「说过话」≠「批准」（2026-10-17 实锤 tf-mvckeco4-2o1p91）：用户那句「加 --depth N，默认 0」恰好是
+    // 待拍板项的缺省建议 ⇒ 模型当成「整版认可」自己 resume ⇒ 直接进架构设计。无 supplement 的 resume
+    // 是**整版放行**，必须要求显式批准语义。
+    'run.needsExplicitApproval': '续跑被拒：**「不带 supplement 的 resume」等于整版放行，必须是人明确批准**。暂停之后最后一条人类答复没有批准语义（{text}）——「与缺省建议一致」不算批准；用户在讨论需求和回答待拍板项时说的话，都属于**修改**。请三选一：① 用户是**要改** ⇒ 带 `supplement`（要改的地方）再调 `teamflow_resume`；② 用户是**认可** ⇒ 先用 `ask_user_question` 让他点「批准开工」，再调 `teamflow_resume`（runId={id}）；③ 让用户在工作台点「↻ 从断点重跑」。**不要替用户判断他已经批准。**',
+    'log.resumeNeedsExplicitApproval': '续跑被拒：最后一条人类答复无批准语义（{text}）—— 无 supplement 的 resume = 整版放行，已要求主线程区分「要改」与「批准」',
+    'log.resumeApprovalUnverifiable': '续跑：读不到会话日志 ⇒ 显式批准判据本次**未生效**（放行但留痕；同时该版批准状态不会被记入，下次仍会重新出确认单）',
     'log.resumeHumanUnverifiable': '续跑：读不到会话日志（宿主 API 不可用）⇒ 人工批准闸门本次**未生效**（放行但留痕——按设计宁可放行也不能让所有续跑全挂）',
-    'report.confirmSheet': '📋 **PRD 确认单**（等批准，已停在设计/技术方案之前）：\n{sheet}\n→ 认可：**调 `teamflow_resume`（runId={id}）** —— 它会**立即开始写代码**（设计 → 技术方案 → 开发 → QA → 验收，真实改动落到工作区），**不是继续讨论**；不调就不会自动往下跑。\n→ 要改：**调 `teamflow_resume`（runId={id}，`supplement` = 要改的地方）** —— PRD 之后还没跑过任何阶段 ⇒ 会**回退重跑 PRD** 并**再出一份新确认单**，无需另起新 run。',
+    'report.confirmSheet': '📋 **PRD 确认单**（等批准，已停在设计/技术方案之前）：\n{sheet}\n→ 认可：**调 `teamflow_resume`（runId={id}）** —— 它会**立即开始写代码**（设计 → 技术方案 → 开发 → QA → 验收，真实改动落到工作区），**不是继续讨论**；不调就不会自动往下跑。\n→ 要改：**调 `teamflow_resume`（runId={id}，`supplement` = 要改的地方）** —— PRD 之后还没跑过任何阶段 ⇒ 会**回退重跑 PRD** 并**再出一份新确认单**（附上一版路径，可直接对比），无需另起新 run。改几次都行，改到满意再批。',
     'confirm.head': '[PRD 确认单] 目标：{goal}',
+    // 改写后的版本要自曝（2026-10-17）：两张单长得一样时，用户无从核对「我要改的改了没」。
+    'confirm.rev': '↻ 这是**第 {n} 版** PRD（按你的修改重跑）。**不限次数**——改到满意再批。',
+    'confirm.prev': '↻ 上一版（改之前）：{path}',
+    // 只提示成本，不阻断（第一版的硬上限被用户否掉：改几次该由用户定）
+    'confirm.revMany': '💡 已改 {n} 次。如果方向还没定，把需求整体重述一遍比继续微调更省 —— 每次重跑 PRD 都要几分钟。',
     'confirm.ac': '验收条件（{n}/{total} 条）：\n{list}',
     // AC 来源标注（ADR-0011 C，2026-10-07）：PRD state 块的 extra.acIndex 实测兑现率仅 ~20%
     // ⇒ host 从正文兜底抽取，但**必须自曝来源**（空壳比空更糟：会让人以为「没什么要注意的」）。
@@ -775,10 +799,25 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'run.needsHumanApproval': 'Resume rejected: **the confirm sheet must be approved by the user in person**. No user message exists after the pause (only plugin-injected reports), so there is no evidence the user approved — do not approve on their behalf. Relay the confirm-sheet essentials to the user (or ask directly) and resume only after the user explicitly says "approve" or "change X". The user can also click "↻ Resume from" in the workbench (runId={id}).',
     'run.redoPrd': 'PRD re-run (rewind): no stage has run after PRD yet (this is the PRD confirm-sheet pause) ⇒ re-running PRD with the supplemental input ({n} chars). The previous confirm sheet is superseded; a fresh one follows once the new PRD is done.',
     'log.confirmAbort': 'PRD confirm sheet (ADR-0011): PRD finished → **paused for approval** ({ac} AC(s) / {as} assumption line(s)). No later stage has started',
+    'log.confirmRevised': 'Confirm sheet: the PRD was revised (version {rev}) ⇒ the previous approval is void and a new approval is required',
+    'log.prdRevisedViaChild': 'PRD revised via **continuation**: edited inside the original PRD child\'s context ({n} chars, no re-read of the requirement or docs)',
+    'log.reviseNoDeliver': 'PRD revision **fell back to a fresh run**: delivering the change to the original child was **rejected** ({base} events, waited {secs}s) => spawning a new child',
+    'log.reviseNoFire': 'PRD revision **fell back to a fresh run**: **no new events** after delivery ({base} -> {end}, waited {secs}s) => the second turn never started (cold resume did not fire / child session unrecoverable) => spawning a new child',
+    'log.reviseFallback': 'PRD revision **fell back to a fresh run**: the second turn ran but produced no usable text ({base} -> {end} events, waited {secs}s) => spawning a new child',
+    'log.reviseNoChild': 'PRD revision did **not** use continuation: no child id for the current PRD (old run / stage record already dropped) ⇒ falling back to a fresh run',
+    'log.reviseNoHost': 'PRD revision did **not** use continuation: host lacks sendMessage or sessionQuery ⇒ falling back to a fresh run (the plugin still works, just without incremental revision)',
+    'log.usageAccum': 'PRD usage accumulated: this round in/cr/out/calls = {round} ⇒ total {acc}',
+    'log.usageAccumDup': 'PRD usage accumulation **skipped**: this round equals the running total ({round}) ⇒ treated as a cumulative value rather than this round increment (adding it would double-count)',
     'log.resumeNeedsHuman': 'Resume rejected: no user message exists after the confirm-sheet pause (only plugin-injected reports) — human-approval gate fired ({n} chars of supplement not applied; the main thread was told to ask the user first)',
+    'run.needsExplicitApproval': 'Resume refused: **a resume without `supplement` approves the whole PRD, so it must be the human explicit approval**. The last human reply after the pause carries no approval semantics (text: {text}) — agreeing with a default suggestion is NOT an approval, and anything said while discussing the requirement counts as a change request. Pick one: (1) the user wants **changes** => call `teamflow_resume` again with `supplement`; (2) the user **approves** => ask via `ask_user_question` and let them pick approve, then call `teamflow_resume` (runId={id}); (3) let the user press the resume button in the workbench. **Do not decide on their behalf that they approved.**',
+    'log.resumeNeedsExplicitApproval': 'Resume refused: last human reply has no approval semantics ({text}) — a supplement-less resume approves the whole PRD; the main thread was told to separate change from approve',
+    'log.resumeApprovalUnverifiable': 'Resume: session log unreadable => explicit-approval gate **did not apply** (allowed, but recorded; the approval is also NOT persisted, so the confirm sheet will show up again next time)',
     'log.resumeHumanUnverifiable': 'Resume: session log unreadable (host API unavailable) ⇒ human-approval gate **did not apply** this time (allowed, but recorded — by design, a missing API must not block every resume)',
-    'report.confirmSheet': '📋 **PRD confirm sheet** (awaiting approval; stopped before design/tech):\n{sheet}\n→ To approve: **call `teamflow_resume` with runId={id}** — that **starts writing code immediately** (design → tech → dev → QA → acceptance; real edits land in the workspace), **not a continuation of the discussion**. Nothing runs until you do.\n→ To change something: **call `teamflow_resume` with runId={id} and `supplement` = what to change** — no stage has run after PRD yet ⇒ it **re-runs PRD** and returns a **fresh confirm sheet**; no need for a new run.',
+    'report.confirmSheet': '📋 **PRD confirm sheet** (awaiting approval; stopped before design/tech):\n{sheet}\n→ To approve: **call `teamflow_resume` with runId={id}** — that **starts writing code immediately** (design → tech → dev → QA → acceptance; real edits land in the workspace), **not a continuation of the discussion**. Nothing runs until you do.\n→ To change something: **call `teamflow_resume` with runId={id} and `supplement` = what to change** — no stage has run after PRD yet ⇒ it **re-runs PRD** and returns a **fresh confirm sheet** (with the previous version for comparison); no need for a new run. Revise as many times as you need, then approve.',
     'confirm.head': '[PRD confirm sheet] Goal: {goal}',
+    'confirm.rev': '↻ This is **PRD version {n}** (re-run with your changes). **No revision limit** — iterate until it is right, then approve.',
+    'confirm.prev': '↻ Previous version (before your change): {path}',
+    'confirm.revMany': '💡 {n} revisions so far. If the direction is still unsettled, restating the requirement in one go beats continued micro-edits — each PRD re-run costs a few minutes.',
     'confirm.ac': 'Acceptance criteria ({n}/{total}):\n{list}',
     'confirm.acExtracted': '⚠️ The ACs above were **extracted from the PRD body by the host** (the PRD state block carried no structured `acIndex`) — skim the full PRD to confirm nothing is missing.',
     'confirm.acMissing': '⚠️ **No acceptance criteria found**: the PRD state block carried no `acIndex` and none were extractable from the body ⇒ **open the full PRD and check** (the AC section of this summary is not trustworthy).',

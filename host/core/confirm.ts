@@ -25,6 +25,60 @@ export const CONFIRM_ASSUMPTIONS_MAX = 8
 /** 结构化待澄清项上限（同上）。 */
 export const CONFIRM_QUESTIONS_MAX = 8
 
+/**
+ * **「改了很多次」的提示阈值**（2026-10-17，issue #11 第二轮）。
+ *
+ * ⚠️ **这不是上限，不阻断任何操作。** 第一版实现把它做成硬上限（`PRD_REV_MAX = 2`，
+ * 第 3 次改写直接报错让用户重开 run），被用户当场否掉：「要么不做，要么就别限制两轮，这样太死」。
+ *
+ * 为什么原来是错的（判据，别再用）：`redoPrd` 的前提是 `prdOnly` —— **PRD 之后一个阶段都没跑过**
+ * ⇒ 改写的作废面**恒为零**。所以「改写次数」防不住资源浪费，它防的只是「用户纠结」，
+ * 而「让用户确认到自己满意」正是确认单存在的目的（ADR-0011 ①）。用次数把门关上，
+ * 与这个目的直接冲突；而且「重开 run」在 `prdOnly` 阶段是**纯损失**（成本与 redo 相同，
+ * 却丢 runId / req/task 卡 / 已收集的补充说明）。
+ *
+ * ⇒ 改为**成本可见**：到第 3 版起在单子上提示「方向未定的话，整体重述比继续微调省」，
+ * 但仍允许继续改。真正该守的线是「已进 design/tech 后不许改」（`supplementTooLate`）。
+ */
+export const PRD_REV_HINT = 3
+
+/**
+ * **确认单的触发判据（纯函数）**（2026-10-17，取代 `!resume`）。
+ *
+ * 旧判据是「只做一轮」＝ `!resume`（`pipeline.ts` 里那句注释：轮次上限归 interview 档）。
+ * 它的漏洞：**redo 重跑 PRD 走的正是 resume 路径** ⇒ PRD 已经变了，确认单却不再出现 ⇒
+ * 用户在**没看过新 PRD** 的情况下被推进开发（issue #11 实锤 `tf-mv5xkem-imgt7v`：模型自己都说
+ * "a fresh confirm sheet will arrive"，没来）。「只做一轮」把**轮次**当成了不变量，而真正可变的
+ * 是**被批准的对象**。
+ *
+ * 现在的判据：**被批准的对象变了，批准必须自动失效**。
+ *   - `approvedRev === prdRev`（且 `prdRev>0`）⇒ 这一版已经批过 ⇒ 不再打断（`reason:'approved'`）。
+ *   - `prdRev > 1` ⇒ 这是**改写后的** PRD ⇒ 无条件再看一次（`reason:'revised'`），
+ *     **不看 taste**：用户刚主动改了需求，他要确认改对了，而不是再由模型判断「这项要不要紧」。
+ *   - 其余沿用内容驱动：有 `taste` 项才停（`reason:'taste'`／`'none'`）。
+ *
+ * 无次数上限：`approvedRev` 封住「重复打断同一版」，改写次数由用户自己决定（见 `PRD_REV_HINT`）。
+ */
+export function confirmDecision(v: {
+  mode?: string | null
+  confirmMode?: string | null
+  tasteCount?: number | null
+  prdRev?: number | null
+  approvedRev?: number | null
+}): { ask: boolean; reason: 'patch' | 'off' | 'approved' | 'revised' | 'taste' | 'none' } {
+  // `patch` = 单 agent 直改，它的 PRD 是「单点确认」机械阶段 ⇒ 不为它加人工闸门（ADR-0011 档位矩阵）。
+  if (v.mode === 'patch') return { ask: false, reason: 'patch' }
+  // `never` 是显式关闸（环境变量 `TEAMFLOW_CONFIRM`，调试/A-B 用）⇒ 连「改写后必须再看」也一并关掉。
+  if (v.confirmMode === 'never') return { ask: false, reason: 'off' }
+  const rev = Number(v.prdRev || 0) || 0
+  const approved = Number(v.approvedRev || 0) || 0
+  if (rev > 0 && approved >= rev) return { ask: false, reason: 'approved' }
+  if (rev > 1) return { ask: true, reason: 'revised' }
+  const taste = Number(v.tasteCount || 0) || 0
+  if (v.confirmMode === 'always' || taste > 0) return { ask: true, reason: 'taste' }
+  return { ask: false, reason: 'none' }
+}
+
 /** 一条**待用户拍板**的澄清项（来自 PRD state 块的 `extra.openQuestions`，结构化）。 */
 export interface ConfirmQuestion {
   q: string
@@ -117,6 +171,21 @@ export interface ConfirmSheet {
   questionsTotal: number
   /** 假设总行数（同上）。 */
   assumptionsTotal: number
+  /**
+   * **这张单描述的是第几版 PRD**（2026-10-17，issue #11）。1 = 首版；2 = 用户改过一次后的版本。
+   * 必须在单子上显式标出来：用户要能分清「这是我刚要求的那版」还是「第一版」——
+   * 否则第二张单看起来和第一张一模一样，改了哪儿反而更难核对。
+   */
+  prdRev: number
+  /**
+   * **上一版 PRD 的路径**（2026-10-17，B 方案）：改写时把被替换的那份留成 `PRD.v{N}.md`，
+   * 单子上给出path ⇒ 用户能直接对比「我要求的改了没」。
+   *
+   * 为什么这件事比「限制改写次数」有效：用户反复改的真实原因通常是**看不到上一版改成了什么**，
+   * 只能凭记忆再提一遍需求，来回打转。上限只会在第 N 次把人赶走，对比能让人一次改到位。
+   * 空串 = 没有旧版（首版）或旧文件没留住。
+   */
+  prevDocPath: string
   at: number
 }
 
@@ -133,6 +202,10 @@ export function buildConfirmSheet(v: {
   openQuestions?: ConfirmQuestion[] | null
   assumptions?: string | null
   runDocs?: string | null
+  /** 本版 PRD 的版本号（缺省按 1）。 */
+  prdRev?: number | null
+  /** 上一版 PRD 的完整路径（改写时留下 `PRD.v{N}.md` 才有；首版为空）。 */
+  prevDocPath?: string | null
 }): ConfirmSheet {
   // AC：**结构化优先、文本兜底**（ADR-0011 C）。兜底必要性的实测依据：`extra` 兑现率 ~20%（7/34）。
   let acEntries = Object.entries(v.acIndex || {}).filter(([, text]) => String(text || '').trim())
@@ -165,6 +238,8 @@ export function buildConfirmSheet(v: {
     acTotal: acEntries.length,
     questionsTotal: questions.length,
     assumptionsTotal: assumpLines.length,
+    prdRev: Math.max(1, Number(v.prdRev || 1) || 1),
+    prevDocPath: v.prevDocPath ? String(v.prevDocPath) : '',
     at: Date.now(),
   }
 }
@@ -172,6 +247,14 @@ export function buildConfirmSheet(v: {
 /** 渲染成 ≤40 行的文本（交给主线程/用户批准用）。 */
 export function renderConfirmSheet(sheet: ConfirmSheet, locale: HostLocale): string {
   const lines: string[] = [t(locale, 'confirm.head', { goal: sheet.summary || t(locale, 'confirm.noSummary') })]
+  // 改写后的版本必须自曝（2026-10-17）：第二张单与第一张长得一样时，用户无从核对「我要求改的
+  // 到底改没改」。**不设次数上限**——改多少次由用户定（`prdRev` 只用来让「批准失效」可判定）；
+  // 第 `PRD_REV_HINT` 版起加一句成本提示，但照样允许继续改。
+  if (sheet.prdRev > 1) {
+    lines.push(t(locale, 'confirm.rev', { n: String(sheet.prdRev) }))
+    if (sheet.prevDocPath) lines.push(t(locale, 'confirm.prev', { path: sheet.prevDocPath }))
+    if (sheet.prdRev >= PRD_REV_HINT) lines.push(t(locale, 'confirm.revMany', { n: String(sheet.prdRev - 1) }))
+  }
   if (sheet.ac.length) {
     const list = sheet.ac.map((a) => `${a.id} ${a.text}`).join('\n')
     lines.push(t(locale, 'confirm.ac', { n: sheet.ac.length, total: sheet.acTotal, list }))

@@ -137,7 +137,7 @@ console.log('── 3) host 模块结构 ──')
 // v0.2.5：core 已按职责分子目录（stages/ agent/ workspace/ domain/，pipeline/triage/locale/report 留根）；
 // 这里写**相对 core 的路径**（含子目录），与 smoke 的「真实文件 ⊆ 清单」门禁同一坐标系。
 const CORE_FILES = [
-  'pipeline', 'triage', 'clarify-log', 'confirm', 'locale', 'report', 'update-check', // core 根：编排门面 + 分诊决策 + 澄清埋点 + PRD 确认单 + 语言/汇报横切 + 版本探测
+  'pipeline', 'triage', 'clarify-log', 'confirm', 'prd-revise', 'locale', 'report', 'update-check', // core 根：编排门面 + 分诊决策 + 澄清埋点 + PRD 确认单 + PRD 续跑改写 + 语言/汇报横切 + 版本探测
   'stages/dev', 'stages/qa', 'stages/acceptance', // stages/：流水线各阶段的实现
   'agent/context', 'agent/runner', 'agent/guard', 'agent/metering', // agent/：子代理生命周期
   'workspace/sanity', 'workspace/runlogs', 'workspace/acl-preflight', 'workspace/products', 'workspace/browser-probe', // workspace/
@@ -551,7 +551,7 @@ ok(/!verdict\.ok && text && stop === 'completed'/.test(runnerSrc), 'runner：**�
 ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
-ok(/"version": "0\.3\.0"/.test(pkgSrc), 'package.json：版本 0.3.0（release-v0.3.0 开发线）')
+ok(/"version": "0\.3\.1"/.test(pkgSrc), 'package.json：版本 0.3.1（release-v0.3.1 开发线）')
 // 安装期钩子白名单：只有 prepare 可以在消费者安装时**不**运行。
 // 实锤（2026-10-03 用户实锤）：v0.2.5 的 `postinstall: lefthook install` 在**消费者从 registry 安装**时也会跑，
 // 而 lefthook 是 devDependency（tarball 里不存在）⇒ `npm error 'lefthook' 不是内部或外部命令` ⇒ **整个安装失败**。
@@ -980,8 +980,17 @@ ok(/failed: failedBefore/.test(hostSrc) && /未完成任务/.test(hostSrc) && !/
 ok(/function abortForConfirmSheet/.test(pipelineSrc) && /return abortForConfirmSheet\(journal, sheet, locale\)/.test(pipelineSrc), 'pipeline：PRD 确认单的暂停落点（PRD 之后、design 之前）')
 // ⚠️ 判据 2026-10-08 从「显式开关」改成「**内容驱动**」⇒ 必须锁住 `tasteCount > 0` 这半句：
 // 只锁 `mode !== 'patch' && !resume` 的话，判据被改回开关形态时源码锁会**假绿**（后半句还在）。
-ok(/confirmMode === 'always' \|\| \(confirmMode === 'auto' && tasteCount > 0\)/.test(pipelineSrc), 'pipeline：确认单触发 = **内容驱动**（有 kind=taste 主观项才停）＋ 内部强制位 always/never')
-ok(/options\.mode !== 'patch' && !resume/.test(pipelineSrc), 'pipeline：patch 档不暂停 ＋ 只在非 resume 时停一轮')
+// 2026-10-17（issue #11）：触发判据从 pipeline 内联搬到 `confirm.confirmDecision`（纯函数、可测），
+// 语义从「只做一轮 = !resume」改成「这一版 PRD 还没被批过」。这两条锁**判据的落点**与**两条硬约束**，
+// 不再锁内联表达式 —— 锁内联会把「参数挑一个」和「判据」混在一起，正是上一版写成 `!resume` 的原因。
+const confirmSrcEarly = readFileSync(join(here, '../host/core/confirm.ts'), 'utf8')
+ok(/const decision = confirmDecision\(\{/.test(pipelineSrc), 'pipeline：确认单触发走纯函数 confirmDecision（判据集中一处）')
+ok(/confirmMode === 'never'\) return \{ ask: false, reason: 'off' \}/.test(confirmSrcEarly),
+  'confirm：内部强制位 never 真的关掉（含改写后的版本）')
+ok(/if \(v\.confirmMode === 'always' \|\| taste > 0\) return \{ ask: true, reason: 'taste' \}/.test(confirmSrcEarly),
+  'confirm：always 或存在 taste 主观项才停（内容驱动）')
+ok(/if \(v\.mode === 'patch'\) return \{ ask: false, reason: 'patch' \}/.test(confirmSrcEarly),
+  'confirm：patch 档不暂停（ADR-0011 档位矩阵）；不再靠 pipeline 里的 `!resume` 兜')
 // 「缺 kind 不阻断」**不等于**「静默」：必须发 warn（否则就是又一次功能静默空转，§7③）。
 // ⚠️ 必须从**判定条件**起锚，不能只锁 `log.openQuestionsUntagged` 这个标识符 ——
 // M22 实测：把条件改成 `if (false && …)` 时，只锁标识符的写法**假绿**（标识符原样还在）。
@@ -1060,7 +1069,15 @@ ok(/args\.preAction === 'stash' \|\| args\.preAction === 'commit' \|\| args\.pre
   const pipeCode = pipelineSrc.split('\n').filter((l) => { const s = l.trim(); return !s.startsWith('*') && !s.startsWith('/*') && !s.startsWith('//') }).join('\n')
   ok(!/ensureCommonNoiseIgnores/.test(pipeCode), 'pipeline：**不得**回退为写用户 .gitignore 的噪音排除（ensureCommonNoiseIgnores 已从代码删除）')
   ok(!/mergeGitignore\([^)]*'\.pnpm-store'/.test(pipeCode) && !/mergeGitignore\([^)]*node_modules/.test(pipeCode), 'pipeline：噪音项**不得**经由 mergeGitignore 落进用户 .gitignore（只允许 logs/teamflow 那条自有日志规则）')
-  ok((pipeCode.match(/writeFileSync\(/g) || []).length <= 2, 'pipeline：写文件处收敛（仅 .gitignore 自有日志规则 + 任务夹/产物写入，不得新增"替用户写文件"的点）')
+  // 2026-10-17（issue #11 B 方案）：新增**一处**「PRD 版本快照」写入。
+  // 2026-10-18 修正落点：快照从**任务夹**移到**运行日志目录**（`logs/teamflow/<runId>/`）——
+  // 任务夹是交付物、会被 git add，改 3 版就在仓库里堆 4 个 PRD（真机实测 72KB）。
+  // 白名单内恰好 1 处 + 白名单外仍 ≤2。⚠️ 别改成「总数 ≤3」——那等于给任意新增写入开门。
+  const SNAP_WRITE = 'writeFileSync(`${snapDir}/PRD.v'
+  const snapWrites = pipeCode.split(SNAP_WRITE).length - 1
+  const allWrites = pipeCode.split('writeFileSync(').length - 1
+  ok(snapWrites === 1, `pipeline：PRD 版本快照写入点恰好 1 处（路径模板固定，实测 ${snapWrites}）`)
+  ok(allWrites - snapWrites <= 2, `pipeline：写文件处收敛（除 PRD 快照外，其余 ≤2；实测 ${allWrites - snapWrites}）`)
   const sanitySrc = readFileSync(join(here, '../host/core/workspace/sanity.ts'), 'utf8')
   ok(/export const BASELINE_NOISE_EXCLUDES[^=]*=\s*\[/.test(sanitySrc), 'sanity：BASELINE_NOISE_EXCLUDES 常量（排除清单数据化，一处可改）')
   ok(/check-ignore/.test(sanitySrc), 'sanity：用 `git check-ignore` 判"是否已被忽略"（以目标仓库为根；自读 .gitignore 会读成宿主 cwd → 两个方向同时错，2026-09-18 实测）')
@@ -1264,8 +1281,113 @@ ok(/j\.prdSnapshot = null/.test(pipelineSrc),
 const confirmSrc9 = readFileSync(join(here, '../host/core/confirm.ts'), 'utf8')
 ok(/export function prdSnapshotFromBlock\(block: unknown\): PrdSnapshot/.test(confirmSrc9),
   'confirm：导出纯提取器 prdSnapshotFromBlock（逻辑由 confirm-run-snapshot 测试断言）')
-ok(/import \{ buildConfirmSheet, renderConfirmSheet, confirmHook, prdSnapshotFromBlock/.test(pipelineSrc),
+ok(/import \{[\s\S]{0,140}?buildConfirmSheet[\s\S]{0,140}?prdSnapshotFromBlock/.test(pipelineSrc),
   'pipeline：从 confirm 导入提取器（接线未悬空）')
+
+// ── 10) 确认单绑 PRD 版本（issue #11：redo 后不出第二张单）──
+console.log('── 10) 确认单「批准失效」：判据绑 PRD 版本，不绑轮次 ──')
+ok(/if \(!prdStage\.skipped\) journal\.prdRev = \(Number\(journal\.prdRev \|\| 0\) \|\| 0\) \+ 1/.test(pipelineSrc),
+  'pipeline：PRD 真正产出才自增版本（resume 复用 skipped 不增 —— 整条语句）')
+ok(/const decision = confirmDecision\(\{[\s\S]{0,220}?prdRev: journal\.prdRev,[\s\S]{0,120}?approvedRev: journal\.confirmApprovedRev,/.test(pipelineSrc),
+  'pipeline：确认单判定走 confirmDecision（读版本 + 已批准版本）')
+ok(/if \(decision\.ask\) \{/.test(pipelineSrc),
+  'pipeline：按 decision.ask 分支（返回值被消费，不是算完丢掉）')
+ok(!/shouldConfirm && options\.mode !== 'patch' && !resume/.test(pipelineSrc),
+  'pipeline：旧的「只做一轮 = !resume」死条件已移除（否则 redo 后确认单必不再出现）')
+ok(/if \(redoPrd && !redoAllowed\(j\.prdRev\)\)/.test(pipelineSrc) === false,
+  'pipeline：**不再有改写次数硬上限**（第一版 `PRD_REV_MAX=2` 被用户否掉：prdOnly 下作废面为零，上限只会逼人重开 run）')
+ok(/j\.confirmApprovedRev = Number\(j\.prdRev \|\| 0\) \|\| 0/.test(pipelineSrc),
+  'pipeline：resume 放行 = 批准当前版本（不记则同一版续跑会被反复打断）')
+ok(/journal\.confirmApprovedRev = Number\(journal\.prdRev \|\| 1\) \|\| 1/.test(pipelineSrc),
+  'pipeline：审批面就地批准也记版本')
+ok(/prdRev: journal\.prdRev,\n/.test(pipelineSrc) || /prdRev: journal\.prdRev,/.test(pipelineSrc),
+  'pipeline：确认单带出版本号（第 2 版要能在单子上看出来）')
+ok(/writeFileSync\(`\$\{snapDir\}\/PRD\.v\$\{Number\(j\.prdRev\) \|\| 1\}\.md`, readFileSync\(srcFile\)\)/.test(pipelineSrc),
+  'pipeline：redo 前把被替换的 PRD 留成 `PRD.v{N}.md`，落在**运行日志目录**（不进交付物）')
+ok(/const prevDocPath = prevAbs && existsSync\(prevAbs\) \? prevAbs : ''/.test(pipelineSrc),
+  'pipeline：上一版路径只在文件确实存在时给（不给死链）')
+ok(/export function confirmDecision\(v: \{/.test(confirmSrc9),
+  'confirm：触发判据是纯函数（行为由 prd-rev 测试断言，不靠读源码推演）')
+ok(/export const PRD_REV_HINT = 3/.test(confirmSrc9),
+  'confirm：只留「改了很多次」的**提示**阈值（不阻断）')
+ok(/if \(sheet\.prdRev > 1\) \{/.test(confirmSrc9),
+  'confirm：第 1 版不渲染版本行（省 token），第 2 版必须自曝')
+ok(/if \(sheet\.prdRev >= PRD_REV_HINT\) lines\.push\(t\(locale, 'confirm\.revMany'/.test(confirmSrc9),
+  'confirm：到提示阈值多一行成本提示（仍允许继续改）')
+for (const k of ['log.confirmRevised', 'confirm.rev', 'confirm.prev', 'confirm.revMany']) {
+  ok(new RegExp(`'${k}':`).test(hostSrc), `locales：含文案键 ${k}（zh/en 同形，locale 不变量测试守奇偶）`)
+}
+ok(/'run\.prdRevLimit':/.test(hostSrc) === false,
+  'locales：硬上限的拒绝文案已移除（留着说明还有人在阻断改写）')
+
+// ── 11) PRD 续跑改写（continuable）：在原子代理上下文里增量改，失败必回落 ──
+console.log('── 11) PRD 改写走续跑（continuable），失败回落重跑 ──')
+{
+  const reviseSrc = readFileSync(join(here, '../host/core/prd-revise.ts'), 'utf8')
+  const ctxSrc = readFileSync(join(here, '../host/core/agent/context.ts'), 'utf8')
+  ok(pipelineSrc.includes('if (!resume || !resume.redo || !supplement) return null') && pipelineSrc.includes("t(locale, 'log.reviseNoChild')"),
+    'pipeline：只在「redo 改写」时尝试续跑；拿不到 childId ⇒ **记 warn 回落**（不再静默——第一版就是静默失效，真机才发现）')
+  ok(/const revisedPrdStage = await revisePrdViaChildIfPossible\(\)/.test(pipelineSrc),
+    'pipeline：PRD 段先试续跑')
+  ok(/const prdStage = revisedPrdStage \|\| await runSimpleStage\('prd'/.test(pipelineSrc),
+    'pipeline：续跑不可用 ⇒ **回落重跑**（`||` 链，不是二选一分支）')
+  ok(/mergeStageState\('prd', out\.text, stateBlockRelPath\(journal\.id, 'prd'\)\)/.test(pipelineSrc),
+    'pipeline：续跑产出的文本仍过 state 块解析（否则确认单没内容）')
+  ok(/journal\.stages\.push\(\{[\s\S]{0,220}?phase: 'prd', status: 'done'/.test(pipelineSrc),
+    'pipeline：续跑那一轮也进 stages（断点/汇报/用量按「每阶段一条」读）')
+  ok(/const prdRec = \(j\.stages \|\| \[\]\)\.filter\(\(s\) => phaseKeyOf\(s\.phase\) === 'prd'\)\.pop\(\)/.test(pipelineSrc),
+    'pipeline：redo 摘阶段记录**之前**先存下产出 PRD 的 childId')
+  ok(/prdChildId: journal\.prdChildId \|\| null/.test(storeSrc), 'store：prdChildId 落盘（否则重启后续跑无从下手）')
+  // 节点卡展示「本阶段总用量」⇒ 改写多轮时每轮都要累加，且 redo 摘记录前要把旧 usage 带走
+  ok(pipelineSrc.includes('journal.prdUsageAcc = addUsage(acc, round)'),
+    'pipeline：阶段用量**累加**而不是覆盖（否则前几轮改写的 token 凭空消失）')
+  ok(pipelineSrc.includes("t(locale, 'log.usageAccumDup'"),
+    'pipeline：重复护栏 —— 本轮与累计完全相同时**跳过累加**（真机拿到的可能是累计值，加了就翻倍）')
+  ok(pipelineSrc.includes('if (prdRec && prdRec.usage) j.prdUsageAcc = prdRec.usage') || pipelineSrc.includes('j.prdUsageAcc = { ...prdRec.usage }'),
+    'pipeline：redo 摘掉旧 stage **之前**先把它的 usage 带走')
+  // ⚠️ 双倍 bug 的回归锁（真机 tf-mvdeqi60：四项全精确 2 倍 —— addUsage(a, a)）
+  ok(pipelineSrc.includes('j.prdUsageAcc = { ...prdRec.usage }') && pipelineSrc.includes('prdRec.usage = null'),
+    'pipeline：带走累计时**必须拷贝并清零旧记录**（同引用会让 addUsage(a,a) 翻倍）')
+  ok(pipelineSrc.includes('const round = { ...rec.usage }'),
+    'pipeline：累加前先拷贝「本轮」值（防 acc 与 rec.usage 同源）')
+  ok(/prdUsageAcc: journal\.prdUsageAcc \|\| null/.test(storeSrc), 'store：prdUsageAcc 落盘（跨轮累计的载体）')
+  ok(/export function setSessionQuery/.test(ctxSrc), 'context：sessionQuery 走单独 setter（可选能力，不进 static inject）')
+  ok(/ctx\.inject\(\['sessionQuery'\]/.test(hostSrc), 'host：按可选能力注入 sessionQuery（缺失时插件照常加载）')
+  ok(reviseSrc.includes('(d.message as Record<string, unknown>).content') && reviseSrc.includes('export function assistantTextOf'),
+    'prd-revise：取文本优先 `data.message.content`（实机踩过 data.content 取空）')
+  ok(/const turned = tail\.some\(\(e\) => !!e && \(e as \{ type\?: unknown \}\)\.type === 'turn\/end'\)/.test(reviseSrc),
+    'prd-revise：结束判据是 `turn/end`（否则会把第一轮旧文本当结果）')
+  ok(reviseSrc.includes('if (!text || !text.trim()) {'),
+    'prd-revise：拿到空文本 ⇒ null（**绝不返回空串**，否则 PRD 被写空）')
+  ok(/if \(!before\) return null/.test(reviseSrc),
+    'prd-revise：读不到基线事件就不投递（无法区分新旧文本）')
+  for (const k of ['log.prdRevisedViaChild', 'log.reviseFallback']) {
+    ok(new RegExp(`'${k}':`).test(hostSrc), `locales：含文案键 ${k}（续跑/回落都必须可见）`)
+  }
+}
+
+// ── 12) 「说过话」≠「批准」：无 supplement 的 resume 必须有显式批准语义 ──
+console.log('── 12) 无 supplement 的 resume = 整版放行 ⇒ 要求显式批准 ──')
+{
+  ok(/export function isExplicitApproval\(text: unknown\): boolean/.test(utilSrc),
+    'util：显式批准判据是纯函数（真值表由 human-approval 测试锁）')
+  ok(/export function lastHumanReplySince\(session: unknown, sinceMs: number\)/.test(utilSrc),
+    'util：取「最后一条人类答复」（user 打字 / AUQ 选项），不是「有没有人说过话」')
+  ok(pipelineSrc.includes('if (!supp) {') && pipelineSrc.includes('const reply = lastHumanReplySince(session, sinceAt)'),
+    'pipeline：只有**不带 supplement**（= 批准）才要求显式批准；带 supplement（= 要改）不受限')
+  ok(/return \{ ok: false, error: t\(locale, 'run\.needsExplicitApproval'/.test(pipelineSrc),
+    'pipeline：无批准语义 ⇒ **拒绝**（不替用户判断他批准了）')
+  ok(/if \(!\(afterPrd && prdOnly\) \|\| approvalVerified\) \{/.test(pipelineSrc),
+    'pipeline：确认单形态下只有显式批准才写 confirmApprovedRev（防一次误判把 PRD 永久锁死）')
+  ok(/const approvalVerified = origin === 'ui'/.test(pipelineSrc) || /let approvalVerified = origin === 'ui'/.test(pipelineSrc),
+    'pipeline：界面点击（origin=ui）天然算人的动作')
+  for (const k of ['run.needsExplicitApproval', 'log.resumeNeedsExplicitApproval', 'log.resumeApprovalUnverifiable']) {
+    ok(new RegExp(`'${k}':`).test(hostSrc), `locales：含文案键 ${k}（zh/en 同形，locale 不变量测试守奇偶）`)
+  }
+}
+
+
+
 
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)
