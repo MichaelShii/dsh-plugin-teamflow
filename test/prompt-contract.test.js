@@ -188,6 +188,16 @@ assertContract({
   intent: 'QA 缺陷修复必须先查最近改动（git log/diff 对 baseline），再决定动不动手',
   include: [/\[Check what changed first\]/, /git diff/, /baseline before teamflow run/],
 })
+/** **state 文件已存在时要先读**（2026-10-23，真机 tf-mvjpfwo1 实锤）。
+ * 第 2 轮 QA 修复重写 `state/dev.json` 时踩「file has not been read」防护，
+ * 花一轮恢复 ⇒ 该轮的 `gate:` / sweep 证据丢了（日志报「没有类别门禁/命中数」）。
+ * 判据锁的是**提示语本身**：缺了它模型不知道文件可能已存在。
+ * 变异：删掉这句 ⇒ 本契约红。 */
+assertContract({
+  id: 'STATE-BLOCK-EXISTING-FILE', level: 'policy', targets: 'prdPrompt',
+  intent: 'state 块指令必须提示「文件已存在时先读再写」（重跑阶段不会白丢一轮）',
+  include: [/If this file already exists/, /read it first, then write/, /file has not been read/],
+})
 assertContract({
   id: 'PRD-ANTI-GOALS', level: 'policy', targets: 'prdPrompt',
   intent: 'PRD 必须有 anti-goals 段（技术可行但产品失败的情形），与 non-goals 区分且要求可观察',
