@@ -1208,9 +1208,25 @@ export function isToolScopeFailure(text: unknown): boolean {
  *     计进环境指纹 ⇒ 第 3 次误判 `env-unavailable` 硬停、不重试，run 直接 failed。⇒ **按前缀整体豁免，
  *     不逐个列举类型**（`must be an array|string|number|object|…` 列不全，下次又会漏一个新的）。
  *     该前缀 = 调用在 parse 层就被拒，与上面三条同性质，绝不等价于文件系统/权限/沙箱故障。
+ *   **会话/权限层的参数配套校验 → 前缀 `invalid escalation:` 或句式 `is only valid together with`**，
+ *     形如 `invalid escalation: justification is only valid together with sandbox_permissions`。
+ *     实锤 tf-mvjd3k2w-hpd3qa（2026-10-22）：dev T3 与 QA 缺陷修复各中一次 ⇒ 被判 `env-unavailable`
+ *     ⇒ **停止自动重试、整条流水线停**（`开发失败任务数 3/5`），用户被迫手工 resume 两次才跑完。
+ *     这同样是「模型换个参数就能继续」，不是沙箱/权限坏了 —— 宿主把 `justification`（升级理由）
+ *     与 `sandbox_permissions`（目标权限）当成必须成对出现的参数，模型只给了一个。
+ *     ⚠️ 这已经是**第三族**：① `invalid arguments:`（通用 schema）② `must be …`（fs 工具）
+ *     ③ `invalid escalation:` / `is only valid together with`（权限升级）。**再遇到新族别再逐个
+ *     补文案**——凡是宿主在**调用前**拒绝、且错误文本里说明了"参数该长什么样"的，都属于同一性质。
  * 判据边界：这些都是 **parse*Args 层**的参数校验（调用前就抛），不是文件系统/权限/沙箱的失败；
  * 宿主换文案时这里同步（与 FS_SELF_HEAL_TEXT 同款纪律）。 */
-const TOOL_ARG_FAILURE = /invalid arguments:|must be a non-empty string|must differ\b|must be a positive integer/i
+const TOOL_ARG_FAILURE = new RegExp([
+  'invalid arguments:',
+  'invalid escalation:',
+  'is only valid together with',
+  'must be a non-empty string',
+  'must differ',
+  'must be a positive integer',
+].join('|'), 'i')
 
 /** 是否属于「模型参数传错」（换个参数即可继续）—— 据此**不计入**环境不可用指纹。 */
 export function isToolArgFailure(text: unknown): boolean {
