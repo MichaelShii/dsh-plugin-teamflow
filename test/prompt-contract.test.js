@@ -170,6 +170,20 @@ assertContract({
  * ⚠️ 只在 prompt 层要求（§2：prompt 提标准不当保障）。
  * 变异：删掉 (b) 段或那句「NOT a reason to omit」⇒ 本契约立刻红。
  */
+/**
+ * **anti-goals**（2026-10-22，来源：superpowers/brainstorming 的 design doc 结构）。
+ * 为什么需要：PRD 只有 `non-goals`（不做什么功能），没有「**什么会让它即使技术可行也算失败**」。
+ * 实锤缺口：真机 PRD 里出现过「绝不静默选年」这种 anti-goal，但那是模型自由发挥——
+ * 换条需求就没了，因为没有规范要求它写。
+ * ⚠️ 判据必须锁「与 non-goals 的区分」+ 「必须可被观察/核查」，否则模型会写成
+ * 「should be fast / must be user-friendly」这类不可核查的套话。
+ * 变异：删掉 4b 段或那句 Bad 示例 ⇒ 本契约立刻红（已验证）。
+ */
+assertContract({
+  id: 'PRD-ANTI-GOALS', level: 'policy', targets: 'prdPrompt',
+  intent: 'PRD 必须有 anti-goals 段（技术可行但产品失败的情形），与 non-goals 区分且要求可观察',
+  include: [/\[anti-goals · mandatory, distinct from non-goals\]/, /even if it technically works/, /Bad: "should be fast"/, /\[anti-goals → openQuestions\]/],
+})
 assertContract({
   id: 'PRD-TASTE-DECISIONS', level: 'policy', targets: 'prdPrompt',
   intent: 'PRD 必须把「主观决策项」（多种同样成立、取决于用户品味）也列进假设段/openQuestions，且不得以「我能自己定」为由省略',
