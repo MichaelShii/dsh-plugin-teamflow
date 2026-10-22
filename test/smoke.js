@@ -1003,11 +1003,12 @@ ok(/kind === 'taste'/.test(pipelineSrc), 'pipeline：主观项（kind=taste）�
 ok(/const tag = q\.kind === 'taste'/.test(hostSrc), 'confirm：主观项打标真的接在渲染里（用户要能一眼看出哪几条必须他定）')
 // 2026-10-18：确认单阶段的**交互规范**必须写死，否则逐题弹卡片是模型自发行为（prompt 没规定）
 // ⇒ 行为不可预期（轻决策变重流程）。
-ok(hostSrc.includes('不要逐题弹卡片'), 'needsConfirm：明确禁止逐题弹卡片（否则 5 条待澄清 = 5 轮问答）')
-ok(hostSrc.includes('do not ask them one card at a time'), 'needsConfirm(en)：同样禁止逐题弹卡片')
+ok(hostSrc.includes('绝不要逐题弹多张'), 'needsConfirm：禁止逐题弹多张卡（否则 5 条待澄清 = 5 轮问答）')
+ok(hostSrc.includes('never one card per question'), 'needsConfirm(en)：同样禁止逐题弹多张卡')
 ok(hostSrc.includes('第 1 条改成 GBK') && hostSrc.includes('item 1'),
   'needsConfirm：给出「点名改某条」的示例（否则用户不知道这条路存在，只能逐条读）')
 ok(hostSrc.includes('列成清单'), 'needsConfirm：要求把待澄清项列成清单而非散文')
+ok(hostSrc.includes('最多用一张') && hostSrc.includes('at most one'), 'needsConfirm：允许**一张**汇总卡（实测比纯文本省事），但只限一张')
 // 2026-10-18：事实项也要打标 —— 不打标用户无从分辨「哪些已按缺省定了、不用管」。
 // 锁「条件片段之后的 240 字符内两个 tag 用法都在」：有人把 tag 改成 `''` 会红，且不依赖换行/缩进格式。
 {

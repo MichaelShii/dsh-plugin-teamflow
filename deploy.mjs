@@ -12,7 +12,7 @@
  * peerDeps 拉到 registry 404 的问题。
  */
 import { execSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, existsSync, readdirSync, rmSync, readFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, existsSync, readdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, dirname, relative } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -205,6 +205,32 @@ try {
 } catch (e) {
   console.error(`❌ 部署自检异常：${e.message}`)
   process.exitCode = 1
+}
+
+/* ── 3d) 校正 profile 的依赖声明：必须指向**本地仓库**，不能是版本号 ──────────────
+ * 根因（2026-10-19 真机实锤）：profile 的 package.json 里写着 `"dsh-plugin-teamflow": "0.2.9"`
+ * ⇒ 任何一次 `pnpm install` / `dsh plugin add` / `dsh plugin update` 都会**按这个版本重装**，
+ * 把 deploy 刚同步进去的开发副本打回旧版（实测：01:31 一次 install ⇒ 01:10 起的 run 全跑在 0.2.9 上，
+ * 表现为「v0.3.0 就修好的 signal bug 复发」）。
+ * AGENTS.md 写的运行环境本来就是「`file:` 安装 + 从 profile 副本加载」⇒ 这里把它纠回来。
+ */
+try {
+  const profilePkgPath = join(PROFILE, '..', '..', 'package.json')
+  if (existsSync(profilePkgPath)) {
+    const raw = readFileSync(profilePkgPath, 'utf8')
+    const pkg = JSON.parse(raw)
+    const cur = pkg.dependencies && pkg.dependencies['dsh-plugin-teamflow']
+    const want = `file:${ROOT.split('\\').join('/')}`
+    if (cur && cur !== want) {
+      pkg.dependencies['dsh-plugin-teamflow'] = want
+      // 保留原格式缩进（profile 的 package.json 是 2 空格）
+      writeFileSync(profilePkgPath, JSON.stringify(pkg, null, 2) + '\n')
+      console.log(`🔧 profile 依赖声明已校正：${cur} → ${want}`)
+      console.log('   （请在 profile 目录跑一次 pnpm install，让 lockfile 与 node_modules 跟上；否则下次 install 仍会打回旧版）')
+    }
+  }
+} catch (e) {
+  console.log(`⚠ 校正 profile 依赖声明失败（不影响本次同步，但下次 install 可能打回旧版）：${e.message}`)
 }
 
 /* ── 4) 生效提示：检测运行中的 web（改 host 侧必须重启进程才加载新 lib） ── */
