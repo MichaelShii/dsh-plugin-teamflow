@@ -179,6 +179,15 @@ assertContract({
  * 「should be fast / must be user-friendly」这类不可核查的套话。
  * 变异：删掉 4b 段或那句 Bad 示例 ⇒ 本契约立刻红（已验证）。
  */
+/** **修缺陷前先看变更**（2026-10-22，来源：superpowers/systematic-debugging 的「Check Recent Changes」）。
+ * 为什么：回归缺陷通常指向最后一次改动，而不是整个模块；先读 diff 比重读 500 行便宜，
+ * 也能判定「这个缺陷到底是不是本 run 引入的」（不是就别去改无关代码）。
+ * 变异：删掉 1b 段 ⇒ 本契约红。 */
+assertContract({
+  id: 'QAFIX-RECENT-CHANGES', level: 'policy', targets: 'qaFixPrompt',
+  intent: 'QA 缺陷修复必须先查最近改动（git log/diff 对 baseline），再决定动不动手',
+  include: [/\[Check what changed first\]/, /git diff/, /baseline before teamflow run/],
+})
 assertContract({
   id: 'PRD-ANTI-GOALS', level: 'policy', targets: 'prdPrompt',
   intent: 'PRD 必须有 anti-goals 段（技术可行但产品失败的情形），与 non-goals 区分且要求可观察',
