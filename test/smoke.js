@@ -1230,9 +1230,14 @@ ok(!/artifactText\(/.test(accSrc) &&
 ok(/export function isToolArgFailure/.test(utilSrcFresh) && /must differ/.test(utilSrcFresh),
   'util：参数类失败判据（isToolArgFailure，含实锤原文 must differ）')
 // 宿主通用参数校验前缀（实锤 tf-mvb3lm0b-bbgoyv：web_search.queries 传成字符串被误判 env-unavailable）——
-// 必须锁进正则本体，否则下次谁把这条前缀删了，非 fs 工具的类型错又会硬停（行为断言在 empty-turn §5）
-ok(/const TOOL_ARG_FAILURE = \/invalid arguments:\|/.test(utilSrcFresh),
-  'util：参数类失败判据覆盖宿主通用参数校验前缀 invalid arguments:（非 fs 工具的类型错）')
+// 必须锁进正则本体，否则下次谁把这条前缀删了，非 fs 工具的类型错又会硬停（行为断言在 empty-turn §5）。
+// 2026-10-22：正则改成 `new RegExp([...].join('|'))`（单行超 140 列 lint），锚点改锁**数组元素**；
+// 同时把「三族」一起锁住（arguments / escalation / only-valid-together），避免只保一族。
+ok(/const TOOL_ARG_FAILURE = new RegExp\(\[/.test(utilSrcFresh),
+  'util：参数类失败判据用 new RegExp 构造（数组形式，便于补族且不超行宽）')
+ok(["'invalid arguments:'", "'invalid escalation:'", "'is only valid together with'"]
+  .every((k) => utilSrcFresh.includes(k)),
+  'util：参数类三族锚点齐备（invalid arguments: / invalid escalation: / is only valid together with）')
 // ⚠️ 只锁调用点会漏掉「函数被掏空」：新鲜度**判据本体**也要锁整条语句（M11 实测：掏空此句时调用点锁仍绿）
 ok(/if \(artifactIsStale\(journal, name, baseline\)\) continue/.test(utilSrcFresh),
   'util：stageDocText 内部真的跳过陈旧候选（整条语句，防「调用点还在、判定被掏空」）')
