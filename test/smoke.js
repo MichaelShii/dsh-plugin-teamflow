@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { TEAMFLOW_DESCRIPTORS } from '../descriptors.ts'
 import { parseAcceptanceVerdict } from '../host/util.ts'
+import { registerBrainstormSkill, BRAINSTORM_SKILL_NAME } from '../host/core/skill.ts'
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -137,7 +138,7 @@ console.log('── 3) host 模块结构 ──')
 // v0.2.5：core 已按职责分子目录（stages/ agent/ workspace/ domain/，pipeline/triage/locale/report 留根）；
 // 这里写**相对 core 的路径**（含子目录），与 smoke 的「真实文件 ⊆ 清单」门禁同一坐标系。
 const CORE_FILES = [
-  'pipeline', 'triage', 'clarify-log', 'confirm', 'prd-revise', 'locale', 'report', 'update-check', // core 根：编排门面 + 分诊决策 + 澄清埋点 + PRD 确认单 + PRD 续跑改写 + 语言/汇报横切 + 版本探测
+  'pipeline', 'triage', 'clarify-log', 'confirm', 'prd-revise', 'locale', 'report', 'update-check', 'skill', // core 根：编排门面 + 分诊决策 + 澄清埋点 + PRD 确认单 + PRD 续跑改写 + 语言/汇报横切 + 版本探测
   'stages/dev', 'stages/qa', 'stages/acceptance', // stages/：流水线各阶段的实现
   'agent/context', 'agent/runner', 'agent/guard', 'agent/metering', // agent/：子代理生命周期
   'workspace/sanity', 'workspace/runlogs', 'workspace/acl-preflight', 'workspace/products', 'workspace/browser-probe', // workspace/
@@ -1421,5 +1422,23 @@ console.log('── 12) 无 supplement 的 resume = 整版放行 ⇒ 要求显�
 
 
 
+/* ── /teamflow-brainstorm：只许用户调用（2026-10-23）────────────────────────
+ * 为什么必须锁 modelInvocable:false：superpowers 的 brainstorming 用 "You MUST use this
+ * before any creative work" 让模型自触发 ⇒ 每个新需求都被拦下来讨论一轮。我们这版反过来，
+ * 只有用户敲 /teamflow-brainstorm 才进；一旦有人手滑改成 true，这条会红。
+ */
+{
+  let captured = null
+  const okReg = registerBrainstormSkill({ register: (x) => { captured = x } })
+  ok(okReg === true, 'skill：注册成功返回 true')
+  ok(captured && captured.name === BRAINSTORM_SKILL_NAME, 'skill：名字 = teamflow-brainstorm（与 superpowers 的 brainstorming 区分）')
+  ok(captured && captured.invocation.modelInvocable === false, 'skill：**模型不可自触发**（否则每个需求都被拦一道讨论）')
+  ok(captured && captured.invocation.userInvocable === true, 'skill：用户可调用（出现在命令目录）')
+  ok(captured && captured.source === 'runtime', 'skill：source=runtime（虚拟 skill，无磁盘文件）')
+  ok(captured && String(captured.content || '').length > 800, 'skill：正文非空（>800 字符）')
+  ok(registerBrainstormSkill(null) === false, 'skill：服务缺失 ⇒ false 降级，不抛')
+  ok(registerBrainstormSkill({ register: () => { throw new Error('boom') } }) === false, 'skill：注册抛错（名字被占等）⇒ false 降级')
+  ok(indexSrc.includes("ctx.inject(['skills'],"), 'skill：index 走 ctx.inject([\'skills\'],…) 注册（服务缺失插件照常加载）')
+}
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

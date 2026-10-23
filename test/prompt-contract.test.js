@@ -17,7 +17,7 @@
 import {
   prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt,
   devPrompt, qaPrompt, qaFixPrompt, acceptancePrompt, TRIAGE_PROMPT,
-  techChangePrompt, patchConfirmPrompt, VISUAL_POLICY,
+  techChangePrompt, patchConfirmPrompt, VISUAL_POLICY, brainstormSkillPrompt,
 } from '../host/prompts/index.ts'
 // 形态契约夹具需要 host 数据表（纯数据；core/triage.ts 不依赖 prompts → 无循环）
 import { artifactContractsFor } from '../host/core/triage.ts'
@@ -80,6 +80,8 @@ const out = {
   triagePrompt: TRIAGE_PROMPT('给游戏加本地持久化', { needDesign: true }, { rationale: ['持久化 → medium'] }),
   visualOn: VISUAL_POLICY(true, 'zh'),
   visualOff: VISUAL_POLICY(false, 'zh'),
+  /** `/teamflow-brainstorm` 技能正文（与 locale 无关：它自己要求跟随用户语言）。 */
+  brainstormSkillPrompt: brainstormSkillPrompt(),
 }
 
 /**
@@ -197,6 +199,20 @@ assertContract({
   id: 'STATE-BLOCK-EXISTING-FILE', level: 'policy', targets: 'prdPrompt',
   intent: 'state 块指令必须提示「文件已存在时先读再写」（重跑阶段不会白丢一轮）',
   include: [/If this file already exists/, /read it first, then write/, /file has not been read/],
+})
+/**
+ * **`/teamflow-brainstorm` 技能正文**（2026-10-23，来源：superpowers/brainstorming 裁剪版）。
+ * 锁四件事，每件都是「抄漏就退化」的：
+ * ① 一条一问（superpowers 的核心，缺了会变成一次性罗列问题）；
+ * ② anti-goals（技术可行但产品失败 —— 与 PRD 4b 对齐）；
+ * ③ **不碰架构**（缺了它就会与「技术方案」阶段重复，这正是我们砍掉 Lay out the approaches 的理由）；
+ * ④ 收尾指向 teamflow_start（缺了「聊完接不上流水线」，那这个 skill 就白做）。
+ * 变异：删任一段 ⇒ 本契约红。
+ */
+assertContract({
+  id: 'BRAINSTORM-SKILL', level: 'policy', targets: 'brainstormSkillPrompt',
+  intent: '头脑风暴技能的正文必须：一条一问 + anti-goals + 不碰架构 + 接 teamflow_start',
+  include: [/One question per message/, /anti-goals/, /Do NOT propose architecture/, /teamflow_start/],
 })
 assertContract({
   id: 'PRD-ANTI-GOALS', level: 'policy', targets: 'prdPrompt',

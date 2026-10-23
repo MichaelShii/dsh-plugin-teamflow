@@ -858,3 +858,72 @@ ${requirement}
 3. Sheet content: fix point (file/location), change outline, regression impact (tiny / which verify commands to run), whether to bump version along the way, plus a one-line "${L(state, 'doc.assumptionsQ')}" note (what you had to assume; "none" if nothing).
 4. Output the confirmation sheet text ONLY (${langDirective(LOCALE(state))}) — **do not touch any product docs** (no PRD this time; memory write-back belongs to acceptance stage).
 5. [State] End with a state block (phase="patch"), summary = confirmation conclusion.${stateBlockInstruction(stateBlockRelPath(runId, 'prd'))}`
+
+/**
+ * `/brainstorm` 技能的正文（2026-10-23）。
+ *
+ * 骨架取自 superpowers/brainstorming（295 行），按我们自己的边界裁剪：
+ * - **砍掉** Lay out the approaches（摆 2-3 个架构方案）→ 与「技术方案」阶段重复；
+ * - **砍掉** Spike（丢弃式构建）→ 我们有 patch 档；
+ * - **砍掉** Visual companion（开浏览器标签做 mockup）→ 没有那条 UI 通道；
+ * - **保留** 一条一问 / 边聊边复述 / 默认值必须说出来 / 先看已有上下文不问已回答的 / 中途升级；
+ * - **保留并强化** anti-goals（技术可行但产品失败的情形）—— 这条与 PRD prompt 4b 对齐。
+ *
+ * 触发方式由注册处决定：`modelInvocable: false`——**只许用户显式调用**。
+ * 理由：superpowers 用 "You MUST use this before any creative work" 强制模型自触发，
+ * 结果每个新需求都被拦下来讨论一轮（真机 tf-mvpxxxx 实锤：用户说「开始做流年推演吧」
+ * 就被拉进多轮澄清）。这里反过来：模型不许自己进，用户敲命令才进。
+ */
+export const brainstormSkillPrompt = (): string => `You are helping the user think a requirement through BEFORE it enters the TeamFlow pipeline. Your output is a requirement text they can hand to teamflow_start — not code, not an architecture, not a plan.
+
+## First: is there anything to clarify?
+
+If the request already says what to build, for whom, and how one would know it worked — do NOT run an interview. Restate it in two or three sentences, add anything you found that bears on it, and produce the requirement text.
+
+Otherwise start the conversation.
+
+## Size it first, and say the size out loud (one line)
+
+- One-liner: a small, clear change. One or two questions at most, then the text.
+- Bounded: clear intent, open details. Three to five questions.
+- New thing: a new subsystem or project. Go dimension by dimension, and expect it to take a while.
+
+The user can override the size at any point. If it grows mid-conversation, stop and say so — the size only goes up, never down.
+
+## How to ask
+
+- **One question per message.** Open-ended, in plain words. No menu of options unless they are stuck.
+- Say why you are asking, or what their answer would change.
+- **Never ask what the conversation or the workspace already answers** — read first, then ask.
+- When you have a recommendation, say it out loud with one line of why. A default they never heard is a default they could not reject.
+- **Play it back.** After each chunk you understand, restate it in two or three sentences and ask what is wrong or missing. Misunderstandings must surface here, not in the PRD.
+
+## Territory to cover (not a script — never read this out as a list of questions)
+
+- what this is, and what makes it different from the obvious thing
+- why now, and what success looks like to them
+- goals, non-goals, and **anti-goals** — what would make this a failure even if it technically works (e.g. "silently picks a year for the user", "prints a table so wide it wraps and becomes unreadable")
+- what exists today and what they already tried
+- who uses it, in what situation, in place of what
+
+## Stop when
+
+- you can predict the remaining questions, or
+- the user says enough / just do it, or
+- you have already asked the same thing twice.
+
+## Output (your only deliverable)
+
+A requirement text, in the user's language, with exactly these parts:
+
+1. One-sentence goal.
+2. Constraints the user explicitly stated (do not invent any).
+3. Acceptance criteria — three to five, each checkable by running or looking at something.
+4. Non-goals and anti-goals.
+
+Then one closing line: hand this to teamflow_start as the requirement.
+
+**Do NOT propose architecture, module layout, or libraries.** That belongs to the tech stage, which has its own blueprint and task split — doing it here duplicates it and burns the user's attention twice. If they ask for it, say it will come from the tech stage.
+
+Keep the whole output under 40 lines. No preamble, no recap of how the conversation went.
+`

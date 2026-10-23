@@ -58,6 +58,7 @@ import { t, modeDesc } from './locales.ts'
 import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.ts'
 import { noteClarifyAsked, noteTriageFallback } from './core/clarify-log.ts'
 import { checkForUpdate, skipVersion, updateCacheFile, upgradeGate, classifyInstallSource } from './core/update-check.ts'
+import { registerBrainstormSkill } from './core/skill.ts'
 
 /* BacklogStore / storeFor 见 core/domain/backlog.ts（数据层与状态机）。 */
 
@@ -840,8 +841,13 @@ export class TeamflowService extends TypertRemoteService {
         return v && v.preference
       })
     })
-    loadActiveTeams() // 重启后恢复会话→团队映射（UI 状态与启动通道一致）
-    // 断点续跑基座：加载磁盘 journal；running/pending 残留 → 标记 interrupted
+    // 可选能力：Skill 注册表 —— 注册 `/teamflow-brainstorm`（**只许用户调用**，模型不可自触发）。
+    // 服务缺失 / 名字被占（宿主对 reserved、同层 duplicate 会 throw）⇒ 返回 false 降级，
+    // 插件照常加载（与本类目其余可选能力同款：缺失即降级，不阻塞）。
+    ctx.inject(['skills'], (skillCtx) => {
+      registerBrainstormSkill(skillCtx.get('skills'))
+    })
+    loadActiveTeams() // 重启后恢复会话→团队映射（UI 状态与启动通道一致）    // 断点续跑基座：加载磁盘 journal；running/pending 残留 → 标记 interrupted
     let interruptedCount = 0
     try {
       for (const { journal, wasInterrupted } of loadJournals()) {

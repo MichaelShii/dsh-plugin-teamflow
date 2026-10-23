@@ -54,6 +54,7 @@ const FILES = [
   'host/core/prd-revise.ts', // PRD 续跑改写（continuable）：同上，纯逻辑 + 投递循环，漏同步则续跑静默失效
   'host/core/update-check.ts', // 版本探测（ADR-0012）：同上，纯逻辑模块
   'host/core/triage.ts',
+  'host/core/skill.ts', // /teamflow-brainstorm 注册（只许用户调用）
   'host/core/workspace/sanity.ts',
   'host/core/workspace/runlogs.ts',
   'host/core/workspace/acl-preflight.ts',
