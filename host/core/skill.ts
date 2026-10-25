@@ -23,6 +23,28 @@ import { brainstormSkillPrompt } from '../prompts/index.ts'
 
 export const BRAINSTORM_SKILL_NAME = 'teamflow-brainstorm'
 
+/**
+ * 注册结果的可观测状态。
+ * 为什么要它：注册失败是**静默降级**（下面 catch 掉）⇒ 没有它，用户看到「`/` 里没有这个命令」时
+ * 分不清是「没注册成功」还是「注册了但没显示在用户命令目录」——这两种的修法完全不同。
+ * 暴露在 `teamflow_status`（无 runId 分支）里，用户一条命令就能查。
+ */
+export interface BrainstormSkillState {
+  /** 是否真的注册进宿主 skill 注册表。 */
+  registered: boolean
+  /** 技能名（固定，便于用户搜）。 */
+  name: string
+  /** 失败原因（成功时为 null）。 */
+  error: string | null
+}
+
+let state: BrainstormSkillState = { registered: false, name: BRAINSTORM_SKILL_NAME, error: null }
+
+/** 读当前注册状态（快照，不外泄内部对象）。 */
+export function brainstormSkillState(): BrainstormSkillState {
+  return { ...state }
+}
+
 /** 注册面用的最小鸭子类型（不 import 宿主类型：本模块只拿得到 ctx.get 的结果）。 */
 interface SkillRegistryLike {
   register?: (skill: unknown) => unknown
@@ -34,7 +56,10 @@ interface SkillRegistryLike {
  */
 export function registerBrainstormSkill(skills: unknown): boolean {
   const reg = skills as SkillRegistryLike | null | undefined
-  if (!reg || typeof reg.register !== 'function') return false
+  if (!reg || typeof reg.register !== 'function') {
+    state = { registered: false, name: BRAINSTORM_SKILL_NAME, error: 'skills service unavailable' }
+    return false
+  }
   try {
     reg.register({
       name: BRAINSTORM_SKILL_NAME,
@@ -46,8 +71,14 @@ export function registerBrainstormSkill(skills: unknown): boolean {
       // 关键：模型不可自触发。少了这一行，它就会变成第二个「每个需求先讨论一轮」的强制入口。
       invocation: { modelInvocable: false, userInvocable: true },
     })
+    state = { registered: true, name: BRAINSTORM_SKILL_NAME, error: null }
     return true
   } catch (e) {
+    state = {
+      registered: false,
+      name: BRAINSTORM_SKILL_NAME,
+      error: `register failed: ${e && (e as { message?: unknown }).message ? String((e as { message?: unknown }).message) : String(e)}`,
+    }
     return false
   }
 }

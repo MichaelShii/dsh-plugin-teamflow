@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { TEAMFLOW_DESCRIPTORS } from '../descriptors.ts'
 import { parseAcceptanceVerdict } from '../host/util.ts'
-import { registerBrainstormSkill, BRAINSTORM_SKILL_NAME } from '../host/core/skill.ts'
+import { registerBrainstormSkill, BRAINSTORM_SKILL_NAME, brainstormSkillState } from '../host/core/skill.ts'
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -1438,6 +1438,11 @@ console.log('── 12) 无 supplement 的 resume = 整版放行 ⇒ 要求显�
   ok(captured && String(captured.content || '').length > 800, 'skill：正文非空（>800 字符）')
   ok(registerBrainstormSkill(null) === false, 'skill：服务缺失 ⇒ false 降级，不抛')
   ok(registerBrainstormSkill({ register: () => { throw new Error('boom') } }) === false, 'skill：注册抛错（名字被占等）⇒ false 降级')
+  // 可观测：注册失败是静默降级 ⇒ 必须能从 teamflow_status 查到，否则「/ 里没有它」分不清是没注册还是没显示
+  ok(brainstormSkillState().name === 'teamflow-brainstorm', 'skill：注册状态可观测（名字）')
+  ok(typeof brainstormSkillState().registered === 'boolean', 'skill：注册状态可观测（registered 布尔）')
+  ok('error' in brainstormSkillState(), 'skill：注册状态可观测（失败原因字段在）')
+
   ok(indexSrc.includes("ctx.inject(['skills'],"), 'skill：index 走 ctx.inject([\'skills\'],…) 注册（服务缺失插件照常加载）')
 }
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)

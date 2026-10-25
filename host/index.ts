@@ -58,7 +58,7 @@ import { t, modeDesc } from './locales.ts'
 import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.ts'
 import { noteClarifyAsked, noteTriageFallback } from './core/clarify-log.ts'
 import { checkForUpdate, skipVersion, updateCacheFile, upgradeGate, classifyInstallSource } from './core/update-check.ts'
-import { registerBrainstormSkill } from './core/skill.ts'
+import { registerBrainstormSkill, brainstormSkillState } from './core/skill.ts'
 
 /* BacklogStore / storeFor 见 core/domain/backlog.ts（数据层与状态机）。 */
 
@@ -562,7 +562,7 @@ function registerTools(ctx) {
       }
       const sc = workspaceScopeOf(exec && exec.agent)
       const arr = runsFor(sc.projectKey).slice(0, 10).map((j) => ({ id: j.id, status: j.status, startedAt: j.startedAt, endedAt: j.endedAt, agentsStarted: j.agentsStarted, stageCount: j.stages.length, incompleteStages: (j.stages || []).some((x) => x.status !== 'done'), requirement: clip(j.requirement, 60) }))
-      return { runs: arr, workspace: sc }
+      return { runs: arr, workspace: sc, skills: { brainstorm: brainstormSkillState() } }
     },
   })
 
@@ -845,9 +845,18 @@ export class TeamflowService extends TypertRemoteService {
     // 服务缺失 / 名字被占（宿主对 reserved、同层 duplicate 会 throw）⇒ 返回 false 降级，
     // 插件照常加载（与本类目其余可选能力同款：缺失即降级，不阻塞）。
     ctx.inject(['skills'], (skillCtx) => {
-      registerBrainstormSkill(skillCtx.get('skills'))
+      const regOk = registerBrainstormSkill(skillCtx.get('skills'))
+      const st = brainstormSkillState()
+      const log = skillCtx.logger
+      // 可观测：注册失败是静默降级 ⇒ 必须留痕（否则用户看到「/ 里没有它」时，分不清是
+      // 「没注册成功」还是「注册了但没显示在用户命令目录」——这两种的修法完全不同）。
+      if (log) {
+        if (regOk) log.info('teamflow: skill /' + st.name + ' registered (user-invoked only)')
+        else log.warn('teamflow: skill /' + st.name + ' NOT registered: ' + String(st.error))
+      }
     })
-    loadActiveTeams() // 重启后恢复会话→团队映射（UI 状态与启动通道一致）    // 断点续跑基座：加载磁盘 journal；running/pending 残留 → 标记 interrupted
+    loadActiveTeams() // 重启后恢复会话→团队映射（UI 状态与启动通道一致）
+    // 断点续跑基座：加载磁盘 journal；running/pending 残留 → 标记 interrupted
     let interruptedCount = 0
     try {
       for (const { journal, wasInterrupted } of loadJournals()) {
