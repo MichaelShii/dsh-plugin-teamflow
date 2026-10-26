@@ -27,6 +27,8 @@ import { homedir } from 'node:os'
 const requireHere = createRequire(import.meta.url)
 /** tsdown 的 CLI 入口（`exports["./run"] = ./dist/run.mjs`）。用它而不是 node_modules/.bin/tsdown。 */
 const TSDOWN_CLI = requireHere.resolve('tsdown/run')
+/** tsc 的 CLI 入口（typescript 包没有 exports 约束，可直接解析 bin）。 */
+const TSC_CLI = requireHere.resolve('typescript/bin/tsc')
 
 const ROOT = import.meta.dirname ?? process.cwd()
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -131,7 +133,11 @@ if (skipBuild) {
 if (skipTest) {
   console.log('⏭ 跳过测试。\n')
 } else {
-  console.log('2/3 🧪 运行测试 ...\n')
+  console.log('2/3 🧪 类型检查 + 测试 ...\n')
+  // 类型检查只能在这里跑，不能在 CI：它需要 `@deepseek-ai/dsh-*` 的类型声明，而那些包不在
+  // npm registry（tsconfig 的 paths 指向本机 profile）⇒ CI 里必然 TS2307。本机有宿主包，
+  // 所以它是「部署前必经」的门禁，而不是「每次 push 都跑」的门禁。
+  nodeRun('tsc --noEmit', [TSC_CLI, '--noEmit'])
   nodeRun('node test/smoke.js', ['test/smoke.js'])
   nodeRun('node test/journal.test.js', ['test/journal.test.js'])
   console.log('')

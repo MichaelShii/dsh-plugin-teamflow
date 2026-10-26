@@ -19,6 +19,10 @@ updates:
     groups:
       actions:
         patterns: ['*']
+        # ⚠️ 这行是 2026-10-27 补的：原配置只写 patterns，**major 也会被并进来**，
+        # 于是「小更新分组」里出现了 checkout v5→v7 / setup-node v5→v7 这种跨大版本改动，
+        # 标题却写着 chores(ci) —— 危险动作被贴了无害标签。major 必须单独来、单独看。
+        update-types: ['minor', 'patch']
 
   # npm 依赖：devDependencies 为主（本插件运行时依赖宿主提供的服务）。
   # 一律走 minor/patch 分组，major 单独来 —— major 需要人读 changelog，不能混在批量里。
@@ -34,3 +38,13 @@ updates:
       minor-and-patch:
         patterns: ['*']
         update-types: ['minor', 'patch']
+    # 主版本一律不自动提：这两项的大版本**必须与别的声明同步动**，单独升就是类型层面的谎。
+    ignore:
+      # typescript 7 是原生（Go）移植版，行为与 6 不同；本项目已明确「TS7 勿用」。
+      # 真要迁，是一次独立评估，不该由 bot 每月提醒一次。
+      - dependency-name: 'typescript'
+        update-types: ['version-update:semver-major']
+      # @types/react 必须与 peerDependencies.react 同 major。我们把 react 声明成 ^18.2.0，
+      # 类型单独跑到 19 ⇒ 类型检查通过的东西在运行时可能是另一套 API。
+      - dependency-name: '@types/react'
+        update-types: ['version-update:semver-major']
