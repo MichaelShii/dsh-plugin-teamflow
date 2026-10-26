@@ -567,12 +567,18 @@ export const TRIAGE_TIMEOUT_MS = 240000
 export const TRIAGE_CACHE_TTL_MS = 2 * 60 * 60 * 1000
 /** 容量上限（导出供测试断言，避免测试里硬编码重复数字——改了上限只改这一处）。 */
 export const TRIAGE_CACHE_MAX = 32
-const triageCache = new Map<string, { verdict: TriageVerdict; at: number; pendingDecision: boolean }>()
+const triageCache = new Map<string, { verdict: TriageVerdict; at: number; pendingDecision: boolean; requirement: string }>()
 
 /** 缓存键 = 需求 + 澄清答复（**不含任何决策字段**；见上方注释）。 */
 export function triageCacheKey(requirement: string, supplement?: unknown): string {
   const sup = typeof supplement === 'string' ? supplement.trim() : ''
   return `${String(requirement || '').trim()}\u0000${sup}`
+}
+
+/** 从缓存键还原需求部分（键格式 `<requirement>\0<supplement>`；`adopt` 放宽命中时用它比对）。 */
+function requirementOfKey(key: string): string {
+  const i = key.indexOf('\u0000')
+  return i >= 0 ? key.slice(0, i) : key
 }
 
 /** 读缓存。**待决策条目无视 TTL**（见上方注释）；非待决策条目按 TTL 兜底回收。 */
@@ -584,6 +590,38 @@ export function triageCacheGet(key: string): TriageVerdict | null {
 }
 
 /**
+ * **待决策期间**放宽命中：只看需求，不看澄清答复。
+ *
+ * 为什么需要（2026-10-26 真机 `tf-mvotyc03-0vhbo3` 实锤）：首次 `teamflow_start` 跑完分诊 →
+ * 返回 `needs-decision`（改动存档）→ 用户点选后**重调**时，模型把 `requirementSupplement`
+ * **重写了一遍**（1152 → 1214 字符，补了「环境事实」一节）⇒ `triageCacheKey` 变了 ⇒ 精确命中失败
+ * ⇒ **又起一个分诊子代理**（`8a7151df` 与 `049e2539`，两次都是完整模型调用）。
+ *
+ * 语义依据：`pendingDecision` 的定义是「**用户还没回答同一个决策问题**」——这跟模型怎么措辞
+ * supplement 无关。真改了需求（requirement 变了）仍然 miss ⇒ 该重跑就重跑。
+ *
+ * ⚠️ 与「澄清前/后的裁决不得复用」不冲突：那条约束针对**非待决策**条目（澄清闸门拦下后
+ * 用户补了答复，此时条目早已 settle 或压根不入缓存），本函数只捞 `pendingDecision === true` 的。
+ *
+ * 命中即把条目**迁移**到新键（旧键的 supplement 已过时，但「仍待决策」状态不变），
+ * 使后续 `triageCacheSettle(newKey)` / `markPending(newKey)` 仍能命中同一条目。
+ *
+ * @returns 命中则返回裁决（已迁移到 `key`）；否则 `null`（调用方照常重跑分诊）。
+ */
+export function triageCacheAdoptPending(key: string): TriageVerdict | null {
+  if (!key) return null
+  const req = requirementOfKey(key)
+  for (const [k, v] of triageCache) {
+    if (k === key || !v.pendingDecision || v.requirement !== req) continue
+    triageCache.delete(k)
+    triageCache.delete(key)
+    triageCache.set(key, { ...v, at: Date.now() })
+    return v.verdict
+  }
+  return null
+}
+
+/**
  * 写缓存（**仅 model 裁决**；容量超限淘汰最旧）。
  * @param pendingDecision 该裁决是否**仍未被消费**（= 本次调用会返回 needs-decision、不建 run）。
  *   工具侧两次调用共享同一 key，故：首次预检返回 needs-decision 时置 true（下次复用，隔多久都行）；
@@ -592,7 +630,7 @@ export function triageCacheGet(key: string): TriageVerdict | null {
 export function triageCachePut(key: string, verdict: TriageVerdict, pendingDecision = false): void {
   if (!verdict || verdict.source !== 'model') return
   triageCache.delete(key) // 重新插入以刷新插入序（LRU-ish：命中过的排到最后）
-  triageCache.set(key, { verdict, at: Date.now(), pendingDecision })
+  triageCache.set(key, { verdict, at: Date.now(), pendingDecision, requirement: requirementOfKey(key) })
   while (triageCache.size > TRIAGE_CACHE_MAX) {
     const oldest = triageCache.keys().next()
     if (oldest.done) break

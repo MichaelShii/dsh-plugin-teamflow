@@ -1058,6 +1058,13 @@ ok(/st\.gitMode === 'none' \|\| options\.preAction === 'keep-nogit'/.test(hostSr
   ok(/triageCacheGet\(cacheKey\)/.test(hostSrc) && /triageCachePut\(cacheKey/.test(hostSrc), 'host：preflight **先查缓存再跑分诊**，跑完写缓存（否则两次分诊白花 ~16.5K tok/次）')
   ok(/triageCacheKey\(requirement, options\.requirementSupplement\)/.test(hostSrc), 'host：缓存键 = 需求 + 澄清答复（**不得**含 preAction/branchPolicy——正是它们导致重调，进键就永远命不中）')
   ok(/diag\.triageCacheHit/.test(hostSrc), 'host：缓存命中留痕（否则"为什么这次没跑分诊"会变成新的黑盒）')
+  // 待决策放宽命中（2026-10-26 真机 tf-mvotyc03-0vhbo3）：首次 start 跑完分诊 → needs-decision（改动存档）
+  // → 用户点选后重调时模型**重写 supplement**（1152→1214 字符）⇒ 精确键 miss ⇒ 又起一个分诊子代理（整份白花）。
+  // 锁定三件事：① triage 导出 adopt；② host 在精确未命中后调它；③ 放宽只捞待决策条目（判据见行为断言 triage-gate [9b]）。
+  ok(/export function triageCacheAdoptPending/.test(triageSrc2), 'triage：导出 triageCacheAdoptPending（待决策期间按需求放宽命中）')
+  ok(/triageCacheAdoptPending\(cacheKey\)/.test(hostSrc), 'host：精确键未命中后**尝试待决策放宽命中**（否则用户点选后重调会白跑一次分诊）')
+  ok(/!v\.pendingDecision \|\| v\.requirement !== req/.test(triageSrc2), 'triage：放宽命中**只捞待决策 + 同需求**条目（澄清前/后的裁决不得复用；真改需求该重跑就重跑）')
+  ok(/diag\.triageCacheAdopt/.test(hostSrc), 'host：放宽命中留痕（与精确命中分开记，否则分不清"为什么没跑分诊"的两种原因）')
   // 待决策状态机（2026-09-18 二次修正：TTL 10 分钟失手——probe-cache 实测用户隔 55 分钟才点选；
   // 有效性改为「仍在等用户回答」，TTL 降级为防泄漏兜底）
   ok(/pendingDecision/.test(triageSrc2), 'triage：缓存条目带 pendingDecision（**有效性看"仍在等用户回答"，不看时间**）')

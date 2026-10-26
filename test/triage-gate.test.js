@@ -12,7 +12,7 @@
  *     实测模型系统性自选 `lite:true`（33 次启动 14 次显式传档位、0 次先预览），故放宽为「只有 patch 豁免」。
  * 另外锁住意图归一（非法值一律 requirement，绝不因字段缺失拦启动）。
  */
-import { qualifyBlockers, normalizeSettle, TRIAGE_SETTLES, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, LOCAL_PLUGIN_SAMPLES_HINT, triageRecordOf, triageCacheKey, triageCacheGet, triageCachePut, triageCacheClear, triageCacheSize, triageCacheIsPending, triageCacheMarkPending, triageCacheSettle, TRIAGE_CACHE_MAX, normalizeHost, forceHost, contractsForDeliverable, ARTIFACT_HOSTS } from '../host/core/triage.ts'
+import { qualifyBlockers, normalizeSettle, TRIAGE_SETTLES, normalizeIntent, runTriage, TRIAGE_INTENTS, guardrailUpgrade, MODE_RANK, normalizeArtifact, artifactContractsFor, ARTIFACT_CONTRACTS, ARTIFACT_REFERENCE_SAMPLES, LOCAL_PLUGIN_SAMPLES_HINT, triageRecordOf, triageCacheKey, triageCacheGet, triageCacheAdoptPending, triageCachePut, triageCacheClear, triageCacheSize, triageCacheIsPending, triageCacheMarkPending, triageCacheSettle, TRIAGE_CACHE_MAX, normalizeHost, forceHost, contractsForDeliverable, ARTIFACT_HOSTS } from '../host/core/triage.ts'
 import { clarifyStrengthFromEnv, extractAssumptionsSection, extractHostResearchSection, detectInstallEnv, profileFromModulePath, profileDirFromBaseUrl, isAbsolutePath, installRecipe } from '../host/util.ts'
 import { prdPrompt } from '../host/prompts/index.ts'
 import { readFileSync } from 'node:fs'
@@ -260,6 +260,32 @@ ok(triageCacheSize() === 0, 'markPending 对不存在的键是安全无操作，
 triageCachePut(triageCacheKey('fb2', ''), V({ source: 'fallback' }), true)
 ok(!triageCacheIsPending(triageCacheKey('fb2', '')), 'fallback 裁决仍不入缓存（markPending 也没得标）')
 triageCacheClear()
+
+console.log('\n[9b] 待决策放宽命中（2026-10-26 真机 tf-mvotyc03-0vhbo3：用户点选后重调，模型把 supplement')
+console.log('     从 1152 重写成 1214 字符（补「环境事实」一节）⇒ 精确键 miss ⇒ 又起一个分诊子代理（整份模型调用白花）')
+console.log('     语义依据：待决策 = 「用户还没回答同一个决策问题」，与模型怎么措辞 supplement 无关')
+{
+  triageCacheClear()
+  const kOld = triageCacheKey('weekly-report', 'A'.repeat(1152))
+  triageCachePut(kOld, V({ mode: 'medium' }), true) // 返回 needs-decision → 待决策
+  const kNew = triageCacheKey('weekly-report', 'B'.repeat(1214))
+  ok(triageCacheGet(kNew) === null, '现场复现：supplement 被重写 ⇒ 精确键不命中（这就是那次白跑的起点）')
+  const adopted = triageCacheAdoptPending(kNew)
+  ok(adopted !== null, '**待决策放宽命中**：只看 requirement ⇒ 不再白跑一次分诊')
+  ok(adopted && adopted.mode === 'medium', '放宽命中的裁决内容不漂移（档位仍是上次那个）')
+  ok(triageCacheGet(kNew) !== null, '条目已迁移到新键（后续 settle/markPending 用新键也命中）')
+  ok(triageCacheGet(kOld) === null, '旧键已删除（不留两份，避免同一需求两条待决策）')
+  ok(triageCacheIsPending(kNew), '迁移保留「待决策」状态（不是顺手 settle 掉）')
+  ok(triageCacheAdoptPending(triageCacheKey('other-req', 'B'.repeat(1214))) === null,
+    '需求本身变了 → **不放宽**（该重跑就重跑，不拿旧裁决蒙混）')
+  ok(triageCacheAdoptPending('') === null, '空键不命中（不扫全表乱捞）')
+  // 非待决策条目**不放宽** —— 澄清前/后的复用约束（[8] 那条）不受本次改动影响
+  triageCacheClear()
+  triageCachePut(triageCacheKey('settled-req', 'before-clarify'), V(), false)
+  ok(triageCacheAdoptPending(triageCacheKey('settled-req', 'after-clarify')) === null,
+    '**非待决策条目不放宽**（澄清前/后的裁决不得复用，否则闸门失效）')
+  triageCacheClear()
+}
 
 console.log('\n[10] journal.triage 落盘完整性（第五次「白名单漏字段」→ 形态契约注入整条链失效）')
 console.log('     实锤：旧 triageRecordOf 漏搬 artifact/installable → pipeline 注入读 journal.triage.artifact')

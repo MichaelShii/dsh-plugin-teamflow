@@ -53,7 +53,7 @@ function countFilesBounded(dir: string, cap = 1000): number {
 }
 import { startPipeline, resumeRun, selfModulePath, cliOnPath } from './core/pipeline.ts'
 import { cancelRun } from './core/agent/context.ts'
-import { MODE_REGISTRY, PIPELINE_MODES, MODE_RANK, normalizeMode, runTriage, guardrailUpgrade, triageCacheKey, triageCacheGet, triageCachePut, triageCacheMarkPending, triageCacheSettle, type TriageVerdict } from './core/triage.ts'
+import { MODE_REGISTRY, PIPELINE_MODES, MODE_RANK, normalizeMode, runTriage, guardrailUpgrade, triageCacheKey, triageCacheGet, triageCacheAdoptPending, triageCachePut, triageCacheMarkPending, triageCacheSettle, type TriageVerdict } from './core/triage.ts'
 import { t, modeDesc } from './locales.ts'
 import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.ts'
 import { noteClarifyAsked, noteTriageFallback } from './core/clarify-log.ts'
@@ -105,7 +105,18 @@ async function clarificationPreflight(
   // 有效性由 `pendingDecision` 状态决定（"还在等用户回答同一个问题"），**不看时间**——实测用户隔 55 分钟才点选。
   // 调用方在返回 needs-decision/needs-clarification 时置"待决策"、在建 run 成功后 `triageCacheSettle`。
   const cacheKey = triageCacheKey(requirement, options.requirementSupplement)
-  const cached = triageCacheGet(cacheKey)
+  let cached = triageCacheGet(cacheKey)
+  if (!cached) {
+    // **待决策放宽命中**（2026-10-26 真机 tf-mvotyc03-0vhbo3）：首次 start 跑完分诊 → 返回
+    // needs-decision（改动存档）→ 用户点选后重调时模型**重写了 supplement**（1152→1214 字符）
+    // ⇒ 键变 ⇒ 又起一个分诊子代理（白花一次完整模型调用 + 20s）。
+    // 「待决策」的语义是「用户还没回答同一个问题」，与 supplement 措辞无关 ⇒ 只看 requirement。
+    // 真改了需求仍会 miss（该重跑就重跑）；澄清前/后的复用约束只作用于非待决策条目，不受影响。
+    cached = triageCacheAdoptPending(cacheKey)
+    if (cached) {
+      try { console.error(`[teamflow] ${t(locale, 'diag.triageCacheAdopt')}`) } catch (e) { /* 诊断失败不影响功能 */ }
+    }
+  }
   let verdict: TriageVerdict | null = cached
   let error = ''
   if (verdict) {

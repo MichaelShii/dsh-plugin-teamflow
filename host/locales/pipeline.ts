@@ -240,7 +240,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'diag.retryExhausted': '{label} 连续 {n} 次尝试失败，超出重试阈值，需人工介入',
     'diag.externalBackoff': '{label} 疑似外部供应商不可用（限流/额度/上游故障）→ 第 {n} 次退避 {sec}s 后重试（等待不计 token；命中原文：{detail}）',
     'diag.externalExhausted': '{label} 外部供应商持续不可用，退避 {n} 次仍失败 → 本条 run 落「可续跑中断态」（非交付缺陷；窗口恢复后 resume 只补跑这一段）',
-    'diag.triageCacheHit': '分诊结果命中缓存（同需求 + 同澄清答复，10 分钟内）——复用上次裁决、不重复起子代理（决策返回路径会重调 teamflow_start，实测会白跑一次分诊）',
+    'diag.triageCacheHit': '分诊结果命中缓存（同需求 + 同澄清答复；待决策条目不设时限）——复用上次裁决、不重复起子代理（决策返回路径会重调 teamflow_start，实测会白跑一次分诊）',
+    'diag.triageCacheAdopt': '分诊结果按「待决策」放宽命中（同需求、澄清答复被重写过）——复用上次裁决、不重复起子代理（实测：用户点选后重调时模型会重写 supplement，键一变就白跑一次分诊）',
     'report.externalFailure': '⚠️ **本次失败疑似外部供应商不可用**（限流 / 无额度 / 上游故障 / 超时），**不是交付缺陷**：run 已停在可续跑的中断态，供应商窗口恢复后 `teamflow_resume` 只补跑未完成阶段（已完成阶段与产物全部复用）。',
 
     /* ── 重试诊断包文案在 util.buildRetryDiagnostic 内联（zh/en 同文件双份，见该函数注释）── */
@@ -712,7 +713,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'diag.retryExhausted': '{label} failed {n} consecutive attempts, exceeding the retry threshold; human intervention required',
     'diag.externalBackoff': '{label} looks like an external provider outage (rate limit / quota / upstream failure) → backoff #{n} for {sec}s before retrying (waiting costs no tokens; matched text: {detail})',
     'diag.externalExhausted': '{label} external provider stayed unavailable after {n} backoffs → this run is parked as a resumable interruption (not a delivery defect; once the window recovers, resume re-runs only this segment)',
-    'diag.triageCacheHit': 'triage result served from cache (same requirement + same clarification supplement, within 10 minutes) — reusing the previous verdict instead of spawning another subagent (the decision return path re-calls teamflow_start, which measurably wasted one triage run)',
+    'diag.triageCacheHit': 'triage result served from cache (same requirement + same clarification supplement; pending-decision entries never expire) — reusing the previous verdict instead of spawning another subagent (the decision return path re-calls teamflow_start, which measurably wasted one triage run)',
+    'diag.triageCacheAdopt': 'triage result adopted under a pending decision (same requirement, clarification supplement was rewritten) — reusing the previous verdict instead of spawning another subagent (measurably: after the user picks an option, the re-call rewrites the supplement, so the exact key misses and one full triage run is wasted)',
     'report.externalFailure': '⚠️ **This failure looks like an external provider outage** (rate limit / quota exhausted / upstream failure / timeout) — **not a delivery defect**: the run is parked at a resumable interruption; once the provider recovers, `teamflow_resume` re-runs only the unfinished stages (completed stages and artifacts are all reused).',
 
     /* ── 重试诊断包文案在 util.buildRetryDiagnostic 内联（zh/en 同文件双份，见该函数注释）── */
