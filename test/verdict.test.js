@@ -4,7 +4,7 @@
  * 被旧正则「无需改动」子串命中 → 误判 reject → 整条流水线置 failed。
  * 修复原则：只以显式「验收结论 / 整体结论」行为准，正文散文不做朴素子串匹配。
  */
-import { parseAcceptanceVerdict, extractBlueprint, defectFingerprint, qaRoundEntry, classifyExternalFailure, externalBackoffMs, EXTERNAL_BACKOFF_MS, isDangerousVcsRoot, dirTooLargeForBaseline, judgeDeliverable, DOC_STAGE_FILES, stageDocText, artifactText } from '../host/util.ts'
+import { parseAcceptanceVerdict, extractBlueprint, repairJsonEscapes, defectFingerprint, qaRoundEntry, classifyExternalFailure, externalBackoffMs, EXTERNAL_BACKOFF_MS, isDangerousVcsRoot, dirTooLargeForBaseline, judgeDeliverable, DOC_STAGE_FILES, stageDocText, artifactText } from '../host/util.ts'
 import { parseDefects, parseDefectRows } from '../host/core/domain/backlog.ts'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -153,6 +153,43 @@ console.log('── 蓝图抢救：末尾截断（补齐尾部闭合 ｜ 实锤 
   const TWO = '{"summary":"s","modules":{},"tasks":[{"title":"T","files":["/a.js"]'
   const r2 = extractBlueprint('<!-- blueprint\n' + TWO + '\n<!-- /blueprint -->')
   expect(r2 !== null && r2.tasks.length === 1, true, '多层未闭合（{ 与 [ 同时）按栈逆序补齐')
+}
+
+console.log('── 蓝图抢救：非法 JSON 转义（模型把正则原样写进 spec ｜ 实锤 tf-mvp5tdie-ma36fk）──')
+// 事故：模型把正则原样写进蓝图 JSON 的 spec/api（`/\.md$/i`、`/\[\[...\]\]/`），而 JSON 只允许
+// `\" \\ \/ \b \f \n \r \t \uXXXX` ⇒ JSON.parse 抛「Bad escaped character」⇒ 6.2KB 蓝图（6 模块 / 7 任务）
+// 整份丢弃 ⇒ dev 退化为单任务整体开发（实测该轮 dev 87 calls / 4.8M cacheRead）。
+{
+  const BS = '\\' // 一个反斜杠
+  const badJson = '{"spec":"/' + BS + '.md$/i"}'
+  let threw = false
+  try { JSON.parse(badJson) } catch (e) { threw = true }
+  expect(threw, true, '语料自检：单反斜杠正则在 JSON 里确实非法（这就是事故形态）')
+  const fixed = repairJsonEscapes(badJson)
+  expect(fixed !== null, true, 'repairJsonEscapes：检出非法转义并返回修复串')
+  let fixedSpec = null
+  try { fixedSpec = fixed === null ? null : JSON.parse(fixed).spec } catch (e) { fixedSpec = null }
+  expect(fixedSpec, '/' + BS + '.md$/i', '修复后**语义不变**（字面反斜杠保留，不是删掉）')
+  expect(repairJsonEscapes('{"a":"ok"}'), null, '无需修复 ⇒ 返回 null（调用方据此区分「修过」与「本来没问题」）')
+  expect(repairJsonEscapes('{"a":"' + BS + 'n' + BS + 't' + BS + 'u00e9"}'), null, '合法转义（\\n \\t \\uXXXX）一律不动')
+  // 端到端：整份蓝图不再丢
+  const bp = '<!-- blueprint\n{"summary":"正则蓝图","modules":{"/src/a.js":{"responsibility":"A","api":["/' + BS + '.md$/i"],"why":"w"}},"tasks":[{"title":"T1","files":["/src/a.js"],"spec":"匹配 /' + BS + '[[' + BS + ']]/"}]}\n<!-- /blueprint -->'
+  const diag = {}
+  const rb = extractBlueprint(bp, null, diag)
+  expect(rb !== null, true, '含非法转义的蓝图不再整份丢弃（拆卡保住）')
+  expect(rb ? rb.tasks.length : -1, 1, '修复后 tasks 数量正确')
+  expect(rb ? Object.keys(rb.modules || {}).length : -1, 1, '修复后 modules 数量正确')
+  expect(diag.repairedEscapes, true, '诊断出口报告「修过」（留痕依据，避免契约违约静默）')
+  // 对照组：正常蓝图不得被标成「修过」（判据要有区分力）
+  const diag2 = {}
+  const okBp = extractBlueprint(blueprinted, null, diag2)
+  expect(okBp !== null && diag2.repairedEscapes !== true, true, '正常蓝图不报「修过」')
+  // 双病并发：截断 + 非法转义
+  const both = '{"summary":"双病","modules":{},"tasks":[{"title":"T","files":["/a.js"],"spec":"/' + BS + 'd"'
+  const rBoth = extractBlueprint('<!-- blueprint\n' + both + '\n<!-- /blueprint -->')
+  expect(rBoth !== null && rBoth.tasks.length === 1, true, '截断 + 非法转义同时犯也能救（先修转义再补闭合）')
+  // 修复不是万能：真正坏的 JSON 仍返回 null（不伪造蓝图）
+  expect(extractBlueprint('<!-- blueprint\n{"a": \n<!-- /blueprint -->'), null, '彻底坏的 JSON 仍返回 null')
 }
 
 console.log('── 回归：蓝图「顶层值提前闭合」抢救（实锤 tf-mt85o5jj：duplications 后多一个 }，tasks 被判为块外内容 → 静默回退整体开发）──')

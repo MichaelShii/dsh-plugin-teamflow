@@ -22,7 +22,7 @@ import {
 } from '../host/locales.ts'
 import { PHASE_KEY_OF } from '../host/constants.ts'
 import {
-  ambientLocale, clientLocale, hostPreference, localeForMissingSnapshot, localeSource, newRunLocale, noteClientLocale, runCtxLocale, runLocaleOf, setSettingsPort,
+  ambientLocale, clientLocale, hostPreference, localeForMissingSnapshot, localeSource, newRunLocale, noteClientLocale, resetClientLocale, runCtxLocale, runLocaleOf, setSettingsPort,
 } from '../host/core/locale.ts'
 import { zh as clientZh, en as clientEn } from '../client/locales.ts'
 import { LOCALE_PUSH_MAX_ATTEMPTS, LOCALE_PUSH_RETRY_MS, createLocalePusher, shouldRetryLocalePush } from '../client/locale-push.ts'
@@ -100,15 +100,22 @@ const FROZEN_KEYS = [
 for (const k of FROZEN_KEYS) ok(LOCALE_DICTS.zh[k] !== undefined && LOCALE_DICTS.en[k] !== undefined, `冻结 key 存在：${k}`)
 
 console.log('── 5) 运行期语言源（推送槽 + settings 只读端口；AC-10/AC-11）──')
-noteClientLocale(null)
+resetClientLocale()
 eq(clientLocale(), null, '推送槽初始为空')
 eq(ambientLocale(), 'en', '无任何来源 → en（headless 兜底）')
 noteClientLocale('en')
 eq(ambientLocale(), 'en', '客户端推送 en 生效')
 noteClientLocale('zh')
 eq(ambientLocale(), 'zh', '客户端推送 zh 生效（last-write-wins）')
+// **空/缺失 ⇒ 保留旧值**（2026-10-26 真机 tf-mvp015bq-vy7vgk）：挂载瞬间语言服务可能还没就绪，
+// 客户端可能推空 —— 旧实现当非法**清空** ⇒ 一次坏推送抹掉 zh ⇒ 宿主永久 en 兜底
+// （整轮产物与日志英文 + 团队名/子代理 label 英文，而宿主 UI 是中文）。
+for (const empty of ['', '   ', null, undefined]) {
+  eq(noteClientLocale(empty), false, `空/缺失推送（${JSON.stringify(empty)}）⇒ 拒绝（返回 false）`)
+  eq(clientLocale(), 'zh', `空/缺失推送（${JSON.stringify(empty)}）⇒ **保留旧值 zh**（不抹掉）`)
+}
 noteClientLocale('fr')
-eq(clientLocale(), null, '非法推送清空推送槽（不保留旧值）')
+eq(clientLocale(), null, '非空但不支持的语言（fr）⇒ 清空（保持原语义：避免推了 fr 还在用旧的 en）')
 eq(ambientLocale(), 'en', '清空后回落 en')
 setSettingsPort(() => 'zh')
 eq(hostPreference(), 'zh', '宿主显式语言端口读到 zh')
@@ -117,7 +124,7 @@ noteClientLocale('en')
 eq(ambientLocale(), 'en', '客户端推送优先于宿主显式语言')
 setSettingsPort(() => { throw new Error('boom') })
 eq(hostPreference(), null, 'settings 端口抛异常 → null（不向上抛）')
-noteClientLocale(null)
+resetClientLocale()
 eq(ambientLocale(), 'en', '端口异常 + 无推送 → en')
 setSettingsPort(null)
 eq(hostPreference(), null, '端口未注入 → null')
@@ -126,24 +133,24 @@ eq(newRunLocale(), ambientLocale(), 'newRunLocale = ambientLocale（起跑快照
 noteClientLocale('en')
 eq(localeForMissingSnapshot(true), 'zh', 'QA-1：resume 补写 = zh（不按界面语言，不产生同 run 中英混排）')
 eq(localeForMissingSnapshot(false), 'en', 'QA-1：新 run 补写 = 环境语言 en')
-noteClientLocale(null)
+resetClientLocale()
 eq(localeForMissingSnapshot(true), 'zh', 'QA-1：headless（无推送）resume 仍 = zh')
 eq(runLocaleOf({}), localeForMissingSnapshot(true), 'QA-1：补写口径与 runLocaleOf 缺省一致（同一实现内不自相矛盾）')
 
 console.log('── 5b) 语言来源诊断（localeSource）＋客户端上报重试策略（2026-10-16 实锤）──')
 // 来源三态：`fallback` 就是「两侧都没拿到」——中文环境整轮产物全英文的实测形态；
 // pipeline 起跑据此写一条 warn（此前这条链全静默，所以没人发现）。
-setSettingsPort(null); noteClientLocale(null)
+setSettingsPort(null); resetClientLocale()
 eq(localeSource(), 'fallback', '两侧皆空 → fallback（可见留痕的判据）')
 noteClientLocale('zh')
 eq(localeSource(), 'client', '客户端推送在 → client')
-noteClientLocale(null); setSettingsPort(() => 'en')
+resetClientLocale(); setSettingsPort(() => 'en')
 eq(localeSource(), 'host', '仅宿主显式设置 → host')
 setSettingsPort(() => { throw new Error('boom') })
 eq(localeSource(), 'fallback', 'settings 端口抛异常 → fallback（不向上抛）')
 setSettingsPort(null); noteClientLocale('fr')
 eq(localeSource(), 'fallback', '非法推送（被清空）→ 仍 fallback')
-setSettingsPort(null); noteClientLocale(null)
+setSettingsPort(null); resetClientLocale()
 // 重试策略：**必须有界**（无界重试 = 定时器泄漏；一次失败即永久 en 的旧行为 = 静默降级）
 ok(Number.isFinite(LOCALE_PUSH_RETRY_MS) && LOCALE_PUSH_RETRY_MS > 0, `重试间隔是有限正数（${LOCALE_PUSH_RETRY_MS}ms）`)
 ok(Number.isInteger(LOCALE_PUSH_MAX_ATTEMPTS) && LOCALE_PUSH_MAX_ATTEMPTS > 1 && LOCALE_PUSH_MAX_ATTEMPTS <= 20,
@@ -203,11 +210,30 @@ const makePusher = (push, opts = {}) => {
   for (let i = 0; i < 6; i++) e2.fire()
   eq(n, 3, `一直失败 → 到上限即停（实测 ${n} 次，上限 3）`)
   eq(e2.queued.length, 0, '到上限后不再排（无界重试 = 定时器泄漏）')
-  // ⑥ 非法语言不发
+  // ⑥ 空/非法值：**不推空值**，但**排重试**（重试时重新取值，就绪后推上去）
+  //    —— 2026-10-26 真机 tf-mvp015bq-vy7vgk：挂载瞬间 `getSnapshot()` 为空时，旧实现
+  //    `if (!locale) return` 静默放弃 ⇒ 一次都不推、也不重试 ⇒ 宿主永久停在 en 兜底。
   n = 0
   const f2 = makePusher(() => { n++; return { ok: true } })
-  for (const bad of [undefined, null, '', 42]) f2.pusher.send(bad)
-  eq(n, 0, '非法/空语言 ⇒ 一次都不发')
+  f2.pusher.send(undefined)
+  eq(n, 0, '空值 ⇒ **不推空语言**给宿主')
+  ok(f2.queued.length >= 1, '空值 ⇒ 排了重试（旧实现静默 return ⇒ 永久 en 兜底）')
+  // getter：先空后就绪 ⇒ 重试时**重新取** ⇒ 把真实语言推上去（这是「传 getter」的意义）
+  n = 0
+  let ready = null
+  const f3 = makePusher(() => { n++; return { ok: true } })
+  f3.pusher.send(() => ready)
+  eq(n, 0, 'getter 未就绪 ⇒ 暂不推')
+  ready = 'zh'
+  f3.fire()
+  eq(n, 1, 'getter 就绪后重试 ⇒ 推出去（重新取值是关键）')
+  eq(f3.queued.length, 0, '推成功后不再排（成功即停）')
+  // 常量非法值（42）同样不推，但也排重试（有界，不会无界烧定时器）
+  n = 0
+  const f4 = makePusher(() => { n++; return { ok: true } })
+  f4.pusher.send(42)
+  eq(n, 0, '非字符串常量 ⇒ 不推')
+  ok(f4.queued.length >= 1, '非字符串常量 ⇒ 也排重试（有界）')
   // ⑦ 语言变化重置：新一轮从第 1 次重新计（且作废上一轮的回调）
   n = 0
   const g = makePusher(() => { n++; throw new Error('x') })
@@ -243,7 +269,7 @@ const running = { locale: 'zh' }
 noteClientLocale('en')
 eq(runLocaleOf(running), 'zh', '跑动中切语言：在跑 run 语言不变（AC-2）')
 eq(newRunLocale(), 'en', '新 run 用新语言（AC-11）')
-noteClientLocale(null)
+resetClientLocale()
 
 console.log('── 7) 字面量归属门禁（旧中文文案只在词典里存在）──')
 const read = (rel) => readFileSync(join(here, rel), 'utf8')

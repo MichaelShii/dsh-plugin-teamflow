@@ -93,6 +93,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.blueprintArchived': '架构蓝图已落档到 {path}（原文可随时复查）',
     'log.blueprintParseFailArchived': '独立文件里的蓝图解析不出来（原文已留档 {path}），开发回退整体开发',
     'log.blueprintFromChannel': '蓝图从独立文件 logs/teamflow/<runId>/blueprint.json 提取（机器通道；中转文件已即时清理）',
+    'log.blueprintRepairedEscapes': '蓝图 JSON 含**非法转义**（模型把正则原样写进 spec/api，如 `\\.md$`）已自动加倍修复——本版拆卡保住，但这是契约违约：蓝图里的反斜杠必须写成 `\\\\`',
     'log.blueprintFromFile': '蓝图从任务夹 TECHNICAL.md 提取（历史通道：模型没写独立文件，而是把蓝图写进了文档）',
     'log.blueprintParseFail': '技术方案蓝图块解析失败或内容为空（无 modules/tasks），开发任务将回退整体开发——TECHNICAL.md 蓝图块需人工检查',
     'log.devStart': '开发阶段开始，任务数：{n}（并发 {concurrency}{fromBlueprint}）',
@@ -240,7 +241,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'diag.retryExhausted': '{label} 连续 {n} 次尝试失败，超出重试阈值，需人工介入',
     'diag.externalBackoff': '{label} 疑似外部供应商不可用（限流/额度/上游故障）→ 第 {n} 次退避 {sec}s 后重试（等待不计 token；命中原文：{detail}）',
     'diag.externalExhausted': '{label} 外部供应商持续不可用，退避 {n} 次仍失败 → 本条 run 落「可续跑中断态」（非交付缺陷；窗口恢复后 resume 只补跑这一段）',
-    'diag.triageCacheHit': '分诊结果命中缓存（同需求 + 同澄清答复，10 分钟内）——复用上次裁决、不重复起子代理（决策返回路径会重调 teamflow_start，实测会白跑一次分诊）',
+    'diag.triageCacheHit': '分诊结果命中缓存（同需求 + 同澄清答复；待决策条目不设时限）——复用上次裁决、不重复起子代理（决策返回路径会重调 teamflow_start，实测会白跑一次分诊）',
+    'diag.triageCacheAdopt': '分诊结果按「待决策」放宽命中（同需求、澄清答复被重写过）——复用上次裁决、不重复起子代理（实测：用户点选后重调时模型会重写 supplement，键一变就白跑一次分诊）',
     'report.externalFailure': '⚠️ **本次失败疑似外部供应商不可用**（限流 / 无额度 / 上游故障 / 超时），**不是交付缺陷**：run 已停在可续跑的中断态，供应商窗口恢复后 `teamflow_resume` 只补跑未完成阶段（已完成阶段与产物全部复用）。',
 
     /* ── 重试诊断包文案在 util.buildRetryDiagnostic 内联（zh/en 同文件双份，见该函数注释）── */
@@ -326,7 +328,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.clarifyAbort': '需求澄清闸门（pipeline 兜底）：意图「{intent}」/ must-know 缺口 {n} 条 → **未进入任何阶段**，等用户答复',
     'log.clarifyBlocker': '待澄清：{q}（影响面：{changes}；猜错的代价：{rework}）',
     'run.needsClarification': '需求尚未对齐（意图：{intent}，must-know 缺口 {n} 条）——本 run 未进入任何阶段。请主线程先向用户澄清，再用 `teamflow_resume` 带 `supplement` **续跑本 run**（断点就在 PRD，答复会作为 PRD 的权威输入）；另起新 run 会让本 run 变成僵尸。',
-    'run.needsConfirm': 'PRD 已完成，等**用户**批准（确认单 {n} 行）——本 run 停在 PRD 之后，后续阶段一个都还没开始。**批准 = 立即开始写代码**（设计 → 技术方案 → 开发 → QA → 验收，真实改动会落到工作区），**不是继续讨论**。⚠️ **这一步只能由人决定，不要替用户批准**：把确认单要点转述给用户（不确定就用 ask_user_question 问），等用户明确答复后再动作。用户批准 → 续跑；用户要改 → 续跑并带 `supplement`（此刻 PRD 之后**一个阶段都没跑过**，所以会**回退重跑 PRD** 并**再出一份新确认单**，不浪费已跑的部分）。用户也可以在工作台点「↻ 从断点重跑」。',
+    'run.needsConfirm': 'PRD 已完成，等**用户**批准（确认单 {n} 行）——本 run 停在 PRD 之后，后续阶段一个都还没开始。**批准 = 立即开始写代码**（设计 → 技术方案 → 开发 → QA → 验收，真实改动会落到工作区），**不是继续讨论**。⚠️ **这一步只能由人决定，不要替用户批准**。**转述规范**：① 待澄清项**列成清单**（每行：序号 / 问题 / 缺省值 / 事实或偏好），不要写成一段散文；② **最多用一张** `ask_user_question` 把待澄清项汇总给用户点选（如「全部按缺省开工」/「我要调整几项」）——**绝不要逐题弹多张**（实测：一张汇总卡比纯文本更省事，而逐题弹会把轻决策变成 5 轮问答）；③ 末尾给一句示例：「要改直接说，例如『第 1 条改成 GBK』」。**三条出路**：用户批准 → 无 supplement 续跑；用户要改 → 带 `supplement` 续跑（此刻 PRD 之后**一个阶段都没跑过**，所以会**回退重跑 PRD** 并**再出一份新确认单**，不浪费已跑的部分）；用户也可以在工作台点「↻ 从断点重跑」。',
     'run.needsHumanApproval': '续跑被拒：**确认单必须由用户本人批准**。暂停之后会话里没有任何用户消息（只有插件注入的汇报），因此无法证明用户批准过——不要替用户批准。请把确认单要点转述给用户（或直接问），等用户明确说「批准」或「要改 …」之后再续跑；用户也可以在工作台点「↻ 从断点重跑」（runId={id}）。',
     // 回退重跑 PRD（2026-10-08）：确认单断点上唯一允许 supplement 的形态（PRD 之后无任何阶段执行）。
     'run.redoPrd': '回退重跑 PRD：PRD 之后尚无任何阶段执行（PRD 确认单暂停就是这个形态）⇒ 已带上补充说明（{n} 字符）**重跑 PRD**；旧的确认单已作废，新 PRD 完成后会再出一份确认单。',
@@ -334,11 +336,13 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.confirmRevised': '确认单：PRD 已被改写（第 {rev} 版）⇒ 上一版批准自动失效，重新等批准',
     // PRD 续跑改写（2026-10-17）：在**原 PRD 子代理的上下文里**改，而不是重跑。
     'log.prdRevisedViaChild': 'PRD 改写走**续跑**：在原 PRD 子代理的上下文里增量修改（{n} 字符，未重新读需求/文档）',
+    'log.prdRevisedViaArtifact': 'PRD 改写走**续跑**：子代理只改了产物文件、回复无正文（PRD.md {n} 字符）⇒ 以文件为交付物',
     // ⚠️ 三种回落原因**必须分开**：真机 tf-mvcl5m8t 等满 3 分钟回落后，合在一起的文案无从定位
     // 是「投递没被接受」「投递后事件零增长（第二轮没启动）」还是「跑了但没结束」。
     'log.reviseNoDeliver': 'PRD 改写**回落为重跑**：向原子代理投递修改要求**被拒绝**（事件 {base} 条，等待 {secs}s）⇒ 重新 spawn',
     'log.reviseNoFire': 'PRD 改写**回落为重跑**：投递后事件**零增长**（{base} → {end}，等待 {secs}s）⇒ 第二轮没有启动（cold resume 未触发 / 子代理会话不可恢复）⇒ 重新 spawn',
     'log.reviseFallback': 'PRD 改写**回落为重跑**：第二轮跑了但没拿到可用文本（事件 {base} → {end}，等待 {secs}s）⇒ 重新 spawn',
+    'log.reviseNoDeliverable': 'PRD 改写**回落为重跑**：回合结束了但既无回复正文、又读不到产物文件（等待 {secs}s）⇒ 重新 spawn',
     'log.reviseNoChild': 'PRD 改写**没有走续跑**：找不到产出当前 PRD 的子代理 id（可能是老 run / 阶段记录已被摘掉）⇒ 回落为重跑',
     'log.reviseNoHost': 'PRD 改写**没有走续跑**：宿主缺少 sendMessage 或 sessionQuery 能力 ⇒ 回落为重跑（插件照常工作，只是没有增量改写）',
     // 逐轮用量留痕（in/cacheRead/out/calls）：排查「总数翻倍」时唯一能分辨「本轮被算两次」vs「本轮值本身就是累计」的证据
@@ -371,6 +375,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'confirm.whyAsk': ' — 为什么问：{value}',
     // 主观项打标（2026-10-08）：只有 kind="taste" 会触发暂停，标出来让用户一眼看到「哪几条必须我定」。
     'confirm.tasteTag': '［主观项］',
+    'confirm.factTag': '［事实项］',
     'confirm.assumptions': '假设与待澄清（{n}/{total} 行）：\n{list}',
     'confirm.footer': 'PRD 全文：{doc}（上面只是摘要）',
     'confirm.noSummary': '（PRD 未提供一句话目标 —— 这本身就是该看一眼的信号）',
@@ -574,6 +579,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.blueprintArchived': 'Architecture blueprint archived to {path} (raw text available for later review)',
     'log.blueprintParseFailArchived': 'Blueprint in the dedicated file could not be parsed (raw text archived at {path}); development falls back to whole-requirement mode',
     'log.blueprintFromChannel': 'Blueprint extracted from the dedicated machine-channel file logs/teamflow/<runId>/blueprint.json (the transient file was cleaned up immediately)',
+    'log.blueprintRepairedEscapes': 'Blueprint JSON contained **invalid escapes** (the model pasted raw regex into spec/api, e.g. `\\.md$`) and was auto-repaired by doubling — the task split survived, but this breaks the contract: backslashes in the blueprint must be written as `\\\\`',
     'log.blueprintFromFile': 'Blueprint extracted from the task folder TECHNICAL.md (legacy channel: the model wrote it into the document instead of the dedicated file)',
     'log.blueprintParseFail': 'Technical design blueprint block failed to parse or is empty (no modules/tasks); development falls back to whole-requirement mode — the blueprint block in TECHNICAL.md needs manual review',
     'log.devStart': 'Development started, tasks: {n} (concurrency {concurrency}{fromBlueprint})',
@@ -711,7 +717,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'diag.retryExhausted': '{label} failed {n} consecutive attempts, exceeding the retry threshold; human intervention required',
     'diag.externalBackoff': '{label} looks like an external provider outage (rate limit / quota / upstream failure) → backoff #{n} for {sec}s before retrying (waiting costs no tokens; matched text: {detail})',
     'diag.externalExhausted': '{label} external provider stayed unavailable after {n} backoffs → this run is parked as a resumable interruption (not a delivery defect; once the window recovers, resume re-runs only this segment)',
-    'diag.triageCacheHit': 'triage result served from cache (same requirement + same clarification supplement, within 10 minutes) — reusing the previous verdict instead of spawning another subagent (the decision return path re-calls teamflow_start, which measurably wasted one triage run)',
+    'diag.triageCacheHit': 'triage result served from cache (same requirement + same clarification supplement; pending-decision entries never expire) — reusing the previous verdict instead of spawning another subagent (the decision return path re-calls teamflow_start, which measurably wasted one triage run)',
+    'diag.triageCacheAdopt': 'triage result adopted under a pending decision (same requirement, clarification supplement was rewritten) — reusing the previous verdict instead of spawning another subagent (measurably: after the user picks an option, the re-call rewrites the supplement, so the exact key misses and one full triage run is wasted)',
     'report.externalFailure': '⚠️ **This failure looks like an external provider outage** (rate limit / quota exhausted / upstream failure / timeout) — **not a delivery defect**: the run is parked at a resumable interruption; once the provider recovers, `teamflow_resume` re-runs only the unfinished stages (completed stages and artifacts are all reused).',
 
     /* ── 重试诊断包文案在 util.buildRetryDiagnostic 内联（zh/en 同文件双份，见该函数注释）── */
@@ -795,15 +802,17 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.clarifyAbort': 'Clarification gate (pipeline fallback): intent "{intent}" / {n} must-know gap(s) → **no stage was started**, waiting for the user',
     'log.clarifyBlocker': 'Needs clarification: {q} (changes: {changes}; cost if guessed wrong: {rework})',
     'run.needsClarification': 'The requirement is not settled yet (intent: {intent}, {n} must-know gap(s)) — this run started no stage. The main thread should clarify with the user first, then **resume THIS run** via `teamflow_resume` with `supplement` (the checkpoint is exactly at PRD, and the answers become authoritative PRD input); starting a new run would leave this one a zombie.',
-    'run.needsConfirm': 'PRD is done and awaiting **the user\'s** approval ({n} confirm-sheet line(s)) — this run stopped right after PRD; no later stage has started. **Approving means code starts being written** (design → tech → dev → QA → acceptance, real edits land in the workspace), **not a continuation of the discussion**. ⚠️ **Only a human may decide this — never approve on the user\'s behalf**: relay the confirm-sheet essentials to the user (use ask_user_question if unsure) and act only after the user answers. User approves → resume; user wants changes → resume with `supplement` (**no stage has run after PRD yet**, so it **re-runs PRD** and returns a **fresh confirm sheet**; nothing already done is wasted). The user can also click "↻ Resume from" in the workbench.',
+    'run.needsConfirm': 'PRD is done and awaiting **the user\'s** approval ({n} confirm-sheet line(s)) — this run stopped right after PRD; no later stage has started. **Approving means code starts being written** (design → tech → dev → QA → acceptance, real edits land in the workspace), **not a continuation of the discussion**. ⚠️ **Only a human may decide this — never approve on the user\'s behalf**. **How to present it**: (1) render the open questions as a **list** (each line: number / question / default / fact-or-preference), not a prose paragraph; (2) use **at most one** `ask_user_question` to summarise them for one-click choice (e.g. "accept all defaults" / "I want to change a few") — **never one card per question** (measured: a single summary card beats plain text, while per-question cards turn a light decision into 5 rounds of Q&A); (3) close with an example: "to change something just say it, e.g. `item 1 → GBK`". **Three ways out**: user approves → resume without `supplement`; user wants changes → resume with `supplement` (**no stage has run after PRD yet**, so it **re-runs PRD** and returns a **fresh confirm sheet**; nothing already done is wasted); the user can also click "↻ Resume from" in the workbench.',
     'run.needsHumanApproval': 'Resume rejected: **the confirm sheet must be approved by the user in person**. No user message exists after the pause (only plugin-injected reports), so there is no evidence the user approved — do not approve on their behalf. Relay the confirm-sheet essentials to the user (or ask directly) and resume only after the user explicitly says "approve" or "change X". The user can also click "↻ Resume from" in the workbench (runId={id}).',
     'run.redoPrd': 'PRD re-run (rewind): no stage has run after PRD yet (this is the PRD confirm-sheet pause) ⇒ re-running PRD with the supplemental input ({n} chars). The previous confirm sheet is superseded; a fresh one follows once the new PRD is done.',
     'log.confirmAbort': 'PRD confirm sheet (ADR-0011): PRD finished → **paused for approval** ({ac} AC(s) / {as} assumption line(s)). No later stage has started',
     'log.confirmRevised': 'Confirm sheet: the PRD was revised (version {rev}) ⇒ the previous approval is void and a new approval is required',
     'log.prdRevisedViaChild': 'PRD revised via **continuation**: edited inside the original PRD child\'s context ({n} chars, no re-read of the requirement or docs)',
+    'log.prdRevisedViaArtifact': 'PRD revised via **continuation**: the subagent only changed the artifact file and its reply carried no body (PRD.md {n} chars) => the file is the deliverable',
     'log.reviseNoDeliver': 'PRD revision **fell back to a fresh run**: delivering the change to the original child was **rejected** ({base} events, waited {secs}s) => spawning a new child',
     'log.reviseNoFire': 'PRD revision **fell back to a fresh run**: **no new events** after delivery ({base} -> {end}, waited {secs}s) => the second turn never started (cold resume did not fire / child session unrecoverable) => spawning a new child',
     'log.reviseFallback': 'PRD revision **fell back to a fresh run**: the second turn ran but produced no usable text ({base} -> {end} events, waited {secs}s) => spawning a new child',
+    'log.reviseNoDeliverable': 'PRD revision **fell back to a fresh run**: the turn ended but there was neither reply text nor a readable artifact file (waited {secs}s) => spawning a new child',
     'log.reviseNoChild': 'PRD revision did **not** use continuation: no child id for the current PRD (old run / stage record already dropped) ⇒ falling back to a fresh run',
     'log.reviseNoHost': 'PRD revision did **not** use continuation: host lacks sendMessage or sessionQuery ⇒ falling back to a fresh run (the plugin still works, just without incremental revision)',
     'log.usageAccum': 'PRD usage accumulated: this round in/cr/out/calls = {round} ⇒ total {acc}',
@@ -825,6 +834,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'confirm.defaultAnswer': ' (default: {value})',
     'confirm.whyAsk': ' — why it is asked: {value}',
     'confirm.tasteTag': '[taste] ',
+    'confirm.factTag': '[fact] ',
     'confirm.assumptions': 'Assumptions & open questions ({n}/{total}):\n{list}',
     'confirm.footer': 'Full PRD: {doc} (the above is only a summary)',
     'confirm.noSummary': '(the PRD gave no one-line goal — that itself is worth a look)',

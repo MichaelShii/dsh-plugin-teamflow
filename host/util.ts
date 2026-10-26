@@ -1208,9 +1208,25 @@ export function isToolScopeFailure(text: unknown): boolean {
  *     计进环境指纹 ⇒ 第 3 次误判 `env-unavailable` 硬停、不重试，run 直接 failed。⇒ **按前缀整体豁免，
  *     不逐个列举类型**（`must be an array|string|number|object|…` 列不全，下次又会漏一个新的）。
  *     该前缀 = 调用在 parse 层就被拒，与上面三条同性质，绝不等价于文件系统/权限/沙箱故障。
+ *   **会话/权限层的参数配套校验 → 前缀 `invalid escalation:` 或句式 `is only valid together with`**，
+ *     形如 `invalid escalation: justification is only valid together with sandbox_permissions`。
+ *     实锤 tf-mvjd3k2w-hpd3qa（2026-10-22）：dev T3 与 QA 缺陷修复各中一次 ⇒ 被判 `env-unavailable`
+ *     ⇒ **停止自动重试、整条流水线停**（`开发失败任务数 3/5`），用户被迫手工 resume 两次才跑完。
+ *     这同样是「模型换个参数就能继续」，不是沙箱/权限坏了 —— 宿主把 `justification`（升级理由）
+ *     与 `sandbox_permissions`（目标权限）当成必须成对出现的参数，模型只给了一个。
+ *     ⚠️ 这已经是**第三族**：① `invalid arguments:`（通用 schema）② `must be …`（fs 工具）
+ *     ③ `invalid escalation:` / `is only valid together with`（权限升级）。**再遇到新族别再逐个
+ *     补文案**——凡是宿主在**调用前**拒绝、且错误文本里说明了"参数该长什么样"的，都属于同一性质。
  * 判据边界：这些都是 **parse*Args 层**的参数校验（调用前就抛），不是文件系统/权限/沙箱的失败；
  * 宿主换文案时这里同步（与 FS_SELF_HEAL_TEXT 同款纪律）。 */
-const TOOL_ARG_FAILURE = /invalid arguments:|must be a non-empty string|must differ\b|must be a positive integer/i
+const TOOL_ARG_FAILURE = new RegExp([
+  'invalid arguments:',
+  'invalid escalation:',
+  'is only valid together with',
+  'must be a non-empty string',
+  'must differ',
+  'must be a positive integer',
+].join('|'), 'i')
 
 /** 是否属于「模型参数传错」（换个参数即可继续）—— 据此**不计入**环境不可用指纹。 */
 export function isToolArgFailure(text: unknown): boolean {
@@ -1404,7 +1420,11 @@ function repairBlueprintJson(raw: string): string | null {
   return null
 }
 
-export function extractBlueprint(text: string | null | undefined, locale?: HostLocale | null): Blueprint | null {
+export function extractBlueprint(
+  text: string | null | undefined,
+  locale?: HostLocale | null,
+  diag?: BlueprintRepairDiag,
+): Blueprint | null {
   const s = String(text || '')
   const i = s.indexOf(bdOpen)
   const j = s.indexOf(bdClose)
@@ -1415,7 +1435,7 @@ export function extractBlueprint(text: string | null | undefined, locale?: HostL
   const start = i + bdOpen.length + (lead ? lead[0].length : 0)
   if (j <= start) return null
   const raw = s.slice(start, j).trim()
-  const parsed = parseBlueprintJson(raw)
+  const parsed = parseBlueprintJson(raw, diag)
   if (!parsed) return null
   return toBlueprint(parsed, locale)
 }
@@ -1452,15 +1472,88 @@ function closeTruncated(raw: string): string | null {
 }
 
 /** `JSON.parse` ＋ 两种畸形抢救：**末尾截断**（`closeTruncated`）→ **提前闭合**（`repairBlueprintJson`）。非对象 ⇒ null。 */
-function parseBlueprintJson(raw: string): BlueprintShape | null {
+/** 蓝图抢救的诊断出口（「修过」这件事必须可见，否则契约违约会长期静默）。 */
+export interface BlueprintRepairDiag {
+  /** 非法 JSON 转义（如 `\.` / `\[`）被自动加倍修复过 */
+  repairedEscapes?: boolean
+}
+
+/**
+ * 修复 JSON **字符串内的非法转义**（2026-10-26 真机 `tf-mvp5tdie-ma36fk` 实锤）。
+ *
+ * 由来：模型把正则**原样**写进蓝图的 `spec` / `api` 字段（`/\.md$/i`、`/\[\[[^\[\]]+?\]\]/`），
+ * 而 JSON 只允许 `\" \\ \/ \b \f \n \r \t \uXXXX` ⇒ `JSON.parse` 抛
+ * 「Bad escaped character in JSON at position 4634」⇒ **6.2KB 蓝图（6 模块 / 7 任务）整份丢弃**
+ * ⇒ dev 退化为单任务整体开发（实测该轮 dev 87 calls / 4.8M cacheRead，原本可拆 7 卡）。
+ *
+ * 为什么**可以**确定性地加倍（客观判据，不猜内容）：非法转义在 JSON 里没有第二种解释，
+ * 作者只可能想写一个**字面反斜杠**；加倍是唯一不改变语义的修法（MEMORY §2：不依赖模型自律）。
+ * 同时修**裸控制字符**（字符串内的裸换行/制表符）—— 同一类病（直接粘贴多行文本），JSON 里只允许转义形式。
+ *
+ * 只在**字符串内部**动手（`"` 状态机）：字符串外的反斜杠在合法 JSON 里不存在。
+ * 没有可修之处 ⇒ 返回 `null`（调用方据此区分「修过」与「本来就没问题」）。
+ */
+export function repairJsonEscapes(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string' || !raw) return null
+  let out = ''
+  let inStr = false
+  let changed = false
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i]
+    if (!inStr) {
+      out += c
+      if (c === '"') inStr = true
+      continue
+    }
+    if (c === '"') { inStr = false; out += c; continue }
+    if (c === '\\') {
+      const n = raw[i + 1]
+      if (n === undefined) { out += '\\\\'; changed = true; continue }
+      const okSimple = '"\\/bfnrt'.indexOf(n) >= 0
+      const okUnicode = n === 'u' && /^[0-9a-fA-F]{4}$/.test(raw.slice(i + 2, i + 6))
+      if (okSimple) { out += '\\' + n; i += 1; continue }
+      if (okUnicode) { out += '\\u'; i += 1; continue }
+      // 非法转义（`\.` `\[` `\d` `\s` `\w` …）⇒ 当作字面反斜杠加倍
+      out += '\\\\' + n
+      i += 1
+      changed = true
+      continue
+    }
+    const code = c.charCodeAt(0)
+    if (code < 0x20) {
+      changed = true
+      out += c === '\n' ? '\\n' : c === '\r' ? '\\r' : c === '\t' ? '\\t' : '\\u' + code.toString(16).padStart(4, '0')
+      continue
+    }
+    out += c
+  }
+  return changed ? out : null
+}
+
+function parseBlueprintJson(raw: string, diag?: BlueprintRepairDiag): BlueprintShape | null {
   let parsed: unknown = null
-  try { parsed = JSON.parse(raw) } catch (e) {
-    // 两种形态互不覆盖，都试一次：先补闭合（本批实锤的那类），再删提前闭合（历史那类）。
-    for (const cand of [closeTruncated(raw), repairBlueprintJson(raw)]) {
-      if (!cand) continue
-      try { parsed = JSON.parse(cand); break } catch (e2) { parsed = null }
+  let repairedEscapes = false
+  const tryParse = (cand: string | null): boolean => {
+    if (typeof cand !== 'string' || !cand) return false
+    try { parsed = JSON.parse(cand); return true } catch (e) { parsed = null; return false }
+  }
+  if (!tryParse(raw)) {
+    // 三种病互不覆盖，挨个试：①末尾截断（补闭合）②非法转义（2026-10-26 那类）
+    // ③顶层值提前闭合（历史那类）；**两种同时犯**时先补闭合或先修转义各试一遍。
+    const esc = repairJsonEscapes(raw)
+    const closed = closeTruncated(raw)
+    const candidates: Array<{ text: string | null; esc: boolean }> = [
+      { text: closed, esc: false },
+      { text: esc, esc: true },
+      { text: closed ? repairJsonEscapes(closed) : null, esc: true },
+      { text: repairBlueprintJson(raw), esc: false },
+      { text: esc ? closeTruncated(esc) : null, esc: true },
+    ]
+    for (const c of candidates) {
+      if (tryParse(c.text)) { repairedEscapes = c.esc; break }
     }
   }
+  if (diag) diag.repairedEscapes = repairedEscapes
   return parsed && typeof parsed === 'object' ? (parsed as BlueprintShape) : null
 }
 
@@ -1470,14 +1563,18 @@ function parseBlueprintJson(raw: string): BlueprintShape | null {
  * 契约要求文件里是**纯 JSON**（无标记），但模型可能顺手把 `<!-- blueprint -->` 标记也写进去
  * ⇒ 两种都吃：先按标记块提取（带 repair 抢救），失败再直接 parse 整份内容。
  */
-export function blueprintFromText(raw: string | null | undefined, locale?: HostLocale | null): Blueprint | null {
+export function blueprintFromText(
+  raw: string | null | undefined,
+  locale?: HostLocale | null,
+  diag?: BlueprintRepairDiag,
+): Blueprint | null {
   const s = String(raw == null ? '' : raw).trim()
   if (!s) return null
   if (s.indexOf('<!--') >= 0) {
-    const byMark = extractBlueprint(s, locale)
+    const byMark = extractBlueprint(s, locale, diag)
     if (byMark) return byMark
   }
-  const parsed = parseBlueprintJson(s)
+  const parsed = parseBlueprintJson(s, diag)
   return parsed ? toBlueprint(parsed, locale) : null
 }
 

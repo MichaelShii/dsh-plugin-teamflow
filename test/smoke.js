@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { TEAMFLOW_DESCRIPTORS } from '../descriptors.ts'
 import { parseAcceptanceVerdict } from '../host/util.ts'
+import { registerBrainstormSkill, BRAINSTORM_SKILL_NAME, brainstormSkillState } from '../host/core/skill.ts'
 
 let failed = 0
 const ok = (cond, msg) => {
@@ -137,7 +138,7 @@ console.log('── 3) host 模块结构 ──')
 // v0.2.5：core 已按职责分子目录（stages/ agent/ workspace/ domain/，pipeline/triage/locale/report 留根）；
 // 这里写**相对 core 的路径**（含子目录），与 smoke 的「真实文件 ⊆ 清单」门禁同一坐标系。
 const CORE_FILES = [
-  'pipeline', 'triage', 'clarify-log', 'confirm', 'prd-revise', 'locale', 'report', 'update-check', // core 根：编排门面 + 分诊决策 + 澄清埋点 + PRD 确认单 + PRD 续跑改写 + 语言/汇报横切 + 版本探测
+  'pipeline', 'triage', 'clarify-log', 'confirm', 'prd-revise', 'locale', 'report', 'update-check', 'skill', // core 根：编排门面 + 分诊决策 + 澄清埋点 + PRD 确认单 + PRD 续跑改写 + 语言/汇报横切 + 版本探测
   'stages/dev', 'stages/qa', 'stages/acceptance', // stages/：流水线各阶段的实现
   'agent/context', 'agent/runner', 'agent/guard', 'agent/metering', // agent/：子代理生命周期
   'workspace/sanity', 'workspace/runlogs', 'workspace/acl-preflight', 'workspace/products', 'workspace/browser-probe', // workspace/
@@ -313,7 +314,7 @@ ok(!/次后仍无产出，需人工介入`/.test(pipelineSrc), 'pipeline：不�
 ok(/Engineering actions carried verbatim/.test(promptsSrc) && /git actions from the PRD/.test(promptsSrc), 'prompts：PRD 承接工程指令 + tech 蓝图传递 git 动作')
 ok(/Engineering action execution/.test(promptsSrc) && /execute the action BEFORE writing code/.test(promptsSrc), 'prompts：dev 先执行 git 动作再写码')
 ok(/repairBlueprintJson/.test(utilSrc), 'util：蓝图 JSON 提前闭合抢救（防静默回退整体开发）')
-ok(/const fromFile = extractBlueprint\(raw\)/.test(pipelineSrc) && /bdUsable\(fromFile\)/.test(pipelineSrc), 'pipeline：蓝图提取回退任务夹 TECHNICAL.md，且回退结果**过实质校验**才采用（模型写进文档而非回复输出时 M2 拆卡不退化，实锤 r13 单任务整体开发）')
+ok(/const fromFile = extractBlueprint\(raw, null, bdDiag\)/.test(pipelineSrc) && /bdUsable\(fromFile\)/.test(pipelineSrc), 'pipeline：蓝图提取回退任务夹 TECHNICAL.md，且回退结果**过实质校验**才采用（模型写进文档而非回复输出时 M2 拆卡不退化，实锤 r13 单任务整体开发）')
 ok(/token 观测/.test(guardSrc) && /重复 read|验证脚本重复执行/.test(hostSrc) && /observeToolCalls/.test(guardSrc), 'guard：token 观测信号（重复读/验证循环只记 warning 不中止）')
 ok(/蓝图块解析失败/.test(hostSrc) && /devAssign: \(mainTask && mainTask\.devAssign\) \|\| null/.test(backlogSrc), 'pipeline/backlog：蓝图解析失败告警 + 子卡继承 devAssign')
 
@@ -551,7 +552,7 @@ ok(/!verdict\.ok && text && stop === 'completed'/.test(runnerSrc), 'runner：**�
 ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
-ok(/"version": "0\.3\.1"/.test(pkgSrc), 'package.json：版本 0.3.1（release-v0.3.1 开发线）')
+ok(/"version": "0\.3\.2"/.test(pkgSrc), 'package.json：版本 0.3.2（release-v0.3.2 开发线）')
 // 安装期钩子白名单：只有 prepare 可以在消费者安装时**不**运行。
 // 实锤（2026-10-03 用户实锤）：v0.2.5 的 `postinstall: lefthook install` 在**消费者从 registry 安装**时也会跑，
 // 而 lefthook 是 devDependency（tarball 里不存在）⇒ `npm error 'lefthook' 不是内部或外部命令` ⇒ **整个安装失败**。
@@ -1000,7 +1001,23 @@ ok(/'log\.openQuestionsUntagged'/.test(hostSrc) && /'confirm\.tasteTag'/.test(ho
 ok(/kind === 'taste'/.test(pipelineSrc), 'pipeline：主观项（kind=taste）被认出来 —— 只有它触发暂停')
 // ⚠️ 打标必须锁**条件 → 用法**整句，不能只锁 `tasteTag` 这个词：词典里那条 `'confirm.tasteTag'`
 // 也在 hostSrc 里 ⇒ M26 实测「把渲染改成 `const tag = ''`」时只锁词的写法**假绿**（第 8 次同型）。
-ok(/const tag = q\.kind === 'taste' \? t\(locale, 'confirm\.tasteTag'\) : ''/.test(hostSrc), 'confirm：主观项打标真的接在渲染里（用户要能一眼看出哪几条必须他定）')
+ok(/const tag = q\.kind === 'taste'/.test(hostSrc), 'confirm：主观项打标真的接在渲染里（用户要能一眼看出哪几条必须他定）')
+// 2026-10-18：确认单阶段的**交互规范**必须写死，否则逐题弹卡片是模型自发行为（prompt 没规定）
+// ⇒ 行为不可预期（轻决策变重流程）。
+ok(hostSrc.includes('绝不要逐题弹多张'), 'needsConfirm：禁止逐题弹多张卡（否则 5 条待澄清 = 5 轮问答）')
+ok(hostSrc.includes('never one card per question'), 'needsConfirm(en)：同样禁止逐题弹多张卡')
+ok(hostSrc.includes('第 1 条改成 GBK') && hostSrc.includes('item 1'),
+  'needsConfirm：给出「点名改某条」的示例（否则用户不知道这条路存在，只能逐条读）')
+ok(hostSrc.includes('列成清单'), 'needsConfirm：要求把待澄清项列成清单而非散文')
+ok(hostSrc.includes('最多用一张') && hostSrc.includes('at most one'), 'needsConfirm：允许**一张**汇总卡（实测比纯文本省事），但只限一张')
+// 2026-10-18：事实项也要打标 —— 不打标用户无从分辨「哪些已按缺省定了、不用管」。
+// 锁「条件片段之后的 240 字符内两个 tag 用法都在」：有人把 tag 改成 `''` 会红，且不依赖换行/缩进格式。
+{
+  const after = hostSrc.split("const tag = q.kind === 'taste'")[1] || ''
+  const window240 = after.slice(0, 240)
+  ok(window240.includes("'confirm.tasteTag'") && window240.includes("'confirm.factTag'"),
+    'confirm：主观/事实两类标签都接在渲染里（事实项不打标 ⇒ 用户看不出哪些已按缺省定了）')
+}
 ok(/confirmSheet: journal\.confirmSheet \|\| null/.test(storeSrc) && /confirmSheet\?: unknown \| null/.test(storeSrc), 'store：确认单必须落盘（不落 ⇒ 重启后讲不出「批准什么」，只能让用户去重读 PRD.md）')
 // 确认单的**目标一句话**来自 PRD state 块的 extra.summary —— 此前该字段被要求却从未落盘，
 // 逼得确认单只能去抽模型自由写的段落标题（不可靠，同 `## 9. 假设与待澄清` 那次失手）。
@@ -1041,6 +1058,13 @@ ok(/st\.gitMode === 'none' \|\| options\.preAction === 'keep-nogit'/.test(hostSr
   ok(/triageCacheGet\(cacheKey\)/.test(hostSrc) && /triageCachePut\(cacheKey/.test(hostSrc), 'host：preflight **先查缓存再跑分诊**，跑完写缓存（否则两次分诊白花 ~16.5K tok/次）')
   ok(/triageCacheKey\(requirement, options\.requirementSupplement\)/.test(hostSrc), 'host：缓存键 = 需求 + 澄清答复（**不得**含 preAction/branchPolicy——正是它们导致重调，进键就永远命不中）')
   ok(/diag\.triageCacheHit/.test(hostSrc), 'host：缓存命中留痕（否则"为什么这次没跑分诊"会变成新的黑盒）')
+  // 待决策放宽命中（2026-10-26 真机 tf-mvotyc03-0vhbo3）：首次 start 跑完分诊 → needs-decision（改动存档）
+  // → 用户点选后重调时模型**重写 supplement**（1152→1214 字符）⇒ 精确键 miss ⇒ 又起一个分诊子代理（整份白花）。
+  // 锁定三件事：① triage 导出 adopt；② host 在精确未命中后调它；③ 放宽只捞待决策条目（判据见行为断言 triage-gate [9b]）。
+  ok(/export function triageCacheAdoptPending/.test(triageSrc2), 'triage：导出 triageCacheAdoptPending（待决策期间按需求放宽命中）')
+  ok(/triageCacheAdoptPending\(cacheKey\)/.test(hostSrc), 'host：精确键未命中后**尝试待决策放宽命中**（否则用户点选后重调会白跑一次分诊）')
+  ok(/!v\.pendingDecision \|\| v\.requirement !== req/.test(triageSrc2), 'triage：放宽命中**只捞待决策 + 同需求**条目（澄清前/后的裁决不得复用；真改需求该重跑就重跑）')
+  ok(/diag\.triageCacheAdopt/.test(hostSrc), 'host：放宽命中留痕（与精确命中分开记，否则分不清"为什么没跑分诊"的两种原因）')
   // 待决策状态机（2026-09-18 二次修正：TTL 10 分钟失手——probe-cache 实测用户隔 55 分钟才点选；
   // 有效性改为「仍在等用户回答」，TTL 降级为防泄漏兜底）
   ok(/pendingDecision/.test(triageSrc2), 'triage：缓存条目带 pendingDecision（**有效性看"仍在等用户回答"，不看时间**）')
@@ -1214,9 +1238,14 @@ ok(!/artifactText\(/.test(accSrc) &&
 ok(/export function isToolArgFailure/.test(utilSrcFresh) && /must differ/.test(utilSrcFresh),
   'util：参数类失败判据（isToolArgFailure，含实锤原文 must differ）')
 // 宿主通用参数校验前缀（实锤 tf-mvb3lm0b-bbgoyv：web_search.queries 传成字符串被误判 env-unavailable）——
-// 必须锁进正则本体，否则下次谁把这条前缀删了，非 fs 工具的类型错又会硬停（行为断言在 empty-turn §5）
-ok(/const TOOL_ARG_FAILURE = \/invalid arguments:\|/.test(utilSrcFresh),
-  'util：参数类失败判据覆盖宿主通用参数校验前缀 invalid arguments:（非 fs 工具的类型错）')
+// 必须锁进正则本体，否则下次谁把这条前缀删了，非 fs 工具的类型错又会硬停（行为断言在 empty-turn §5）。
+// 2026-10-22：正则改成 `new RegExp([...].join('|'))`（单行超 140 列 lint），锚点改锁**数组元素**；
+// 同时把「三族」一起锁住（arguments / escalation / only-valid-together），避免只保一族。
+ok(/const TOOL_ARG_FAILURE = new RegExp\(\[/.test(utilSrcFresh),
+  'util：参数类失败判据用 new RegExp 构造（数组形式，便于补族且不超行宽）')
+ok(["'invalid arguments:'", "'invalid escalation:'", "'is only valid together with'"]
+  .every((k) => utilSrcFresh.includes(k)),
+  'util：参数类三族锚点齐备（invalid arguments: / invalid escalation: / is only valid together with）')
 // ⚠️ 只锁调用点会漏掉「函数被掏空」：新鲜度**判据本体**也要锁整条语句（M11 实测：掏空此句时调用点锁仍绿）
 ok(/if \(artifactIsStale\(journal, name, baseline\)\) continue/.test(utilSrcFresh),
   'util：stageDocText 内部真的跳过陈旧候选（整条语句，防「调用点还在、判定被掏空」）')
@@ -1237,8 +1266,10 @@ ok(/const localePusher = createLocalePusher\(\{[\s\S]{0,300}?push: \(loc\) => te
 ok(/return \(\) => \{ off\(\); localePusher\.dispose\(\) \}/.test(clientSrc),
   'client：卸载时 dispose（清待发定时器 —— 不泄漏）')
 // 世代/存活判据必须覆盖**两处**：只在「排期」判 ⇒ dispose 后已排的定时器照样会发（locale 测试 ⑧ 实测）
+// ⚠️ `attempt(gen)`（不是 `attempt(locale, gen)`）：locale 现在由 `readSource()` 每次尝试时**重新取**
+//    —— 挂载瞬间语言服务未就绪时取到空值，重试要能拿到后来就绪的真实语言（2026-10-26 实锤）。
 ok((pushSrc.match(/gen !== generation/g) || []).length >= 2 &&
-  /if \(!alive \|\| gen !== generation\) return[\s\S]{0,120}?attempt\(locale, gen\)/.test(pushSrc),
+  /if \(!alive \|\| gen !== generation\) return[\s\S]{0,120}?attempt\(gen\)/.test(pushSrc),
   'locale-push：触发时再判一次存活/世代（防「dispose 后补发」与「切语言旧轮回调」）')
 ok((pushSrc.match(/shouldRetryLocalePush\(attempts, maxAttempts\)/g) || []).length >= 1 &&
   /export function shouldRetryLocalePush/.test(pushSrc),
@@ -1343,6 +1374,14 @@ console.log('── 11) PRD 改写走续跑（continuable），失败回落重�
     'pipeline：阶段用量**累加**而不是覆盖（否则前几轮改写的 token 凭空消失）')
   ok(pipelineSrc.includes("t(locale, 'log.usageAccumDup'"),
     'pipeline：重复护栏 —— 本轮与累计完全相同时**跳过累加**（真机拿到的可能是累计值，加了就翻倍）')
+  // 2026-10-19 真机 tf-mve3fwma：批准后的 resume 会**复用** PRD（skipped）⇒ 不是新一轮，不该累加。
+  // 靠护栏拦住只是兜底；真正的判据是 `!prdStage.skipped`，且累加块必须在这个 if 内。
+  {
+    const i = pipelineSrc.indexOf('if (!prdStage.skipped) {')
+    const block = i >= 0 ? pipelineSrc.slice(i, i + 1200) : ''
+    ok(i >= 0 && block.includes('journal.prdUsageAcc = addUsage'),
+      'pipeline：复用 PRD（resume 批准）时不累加 —— 累加块必须在 `if (!prdStage.skipped)` 内')
+  }
   ok(pipelineSrc.includes('if (prdRec && prdRec.usage) j.prdUsageAcc = prdRec.usage') || pipelineSrc.includes('j.prdUsageAcc = { ...prdRec.usage }'),
     'pipeline：redo 摘掉旧 stage **之前**先把它的 usage 带走')
   // ⚠️ 双倍 bug 的回归锁（真机 tf-mvdeqi60：四项全精确 2 倍 —— addUsage(a, a)）
@@ -1355,8 +1394,11 @@ console.log('── 11) PRD 改写走续跑（continuable），失败回落重�
   ok(/ctx\.inject\(\['sessionQuery'\]/.test(hostSrc), 'host：按可选能力注入 sessionQuery（缺失时插件照常加载）')
   ok(reviseSrc.includes('(d.message as Record<string, unknown>).content') && reviseSrc.includes('export function assistantTextOf'),
     'prd-revise：取文本优先 `data.message.content`（实机踩过 data.content 取空）')
-  ok(/const turned = tail\.some\(\(e\) => !!e && \(e as \{ type\?: unknown \}\)\.type === 'turn\/end'\)/.test(reviseSrc),
-    'prd-revise：结束判据是 `turn/end`（否则会把第一轮旧文本当结果）')
+  // 2026-10-18：判据从 `tail`（下标切）改为 `fresh`（时间锚点）—— 补加载历史会让 tail 混进旧事件。
+  ok(/const fresh = events\.filter\(\(e, i\) => inRound\(e, i, anchor\)\)/.test(reviseSrc) && /fresh\.some\(\(e\) => !!e && \(e as \{ type\?: unknown \}\)\.type === 'turn\/end'\)/.test(reviseSrc),
+    'prd-revise：结束判据是「锚点之后的 turn/end」（否则会把第一轮旧文本当结果）')
+  ok(/const anchor: UsageAnchor = \{ since: started, index: base \}/.test(reviseSrc),
+    'prd-revise：锚点用投递时刻（`since`）+ 下标兜底（补加载历史时下标不可靠）')
   ok(reviseSrc.includes('if (!text || !text.trim()) {'),
     'prd-revise：拿到空文本 ⇒ null（**绝不返回空串**，否则 PRD 被写空）')
   ok(/if \(!before\) return null/.test(reviseSrc),
@@ -1389,5 +1431,28 @@ console.log('── 12) 无 supplement 的 resume = 整版放行 ⇒ 要求显�
 
 
 
+/* ── /teamflow-brainstorm：只许用户调用（2026-10-23）────────────────────────
+ * 为什么必须锁 modelInvocable:false：superpowers 的 brainstorming 用 "You MUST use this
+ * before any creative work" 让模型自触发 ⇒ 每个新需求都被拦下来讨论一轮。我们这版反过来，
+ * 只有用户敲 /teamflow-brainstorm 才进；一旦有人手滑改成 true，这条会红。
+ */
+{
+  let captured = null
+  const okReg = registerBrainstormSkill({ register: (x) => { captured = x } })
+  ok(okReg === true, 'skill：注册成功返回 true')
+  ok(captured && captured.name === BRAINSTORM_SKILL_NAME, 'skill：名字 = teamflow-brainstorm（与 superpowers 的 brainstorming 区分）')
+  ok(captured && captured.invocation.modelInvocable === false, 'skill：**模型不可自触发**（否则每个需求都被拦一道讨论）')
+  ok(captured && captured.invocation.userInvocable === true, 'skill：用户可调用（出现在命令目录）')
+  ok(captured && captured.source === 'runtime', 'skill：source=runtime（虚拟 skill，无磁盘文件）')
+  ok(captured && String(captured.content || '').length > 800, 'skill：正文非空（>800 字符）')
+  ok(registerBrainstormSkill(null) === false, 'skill：服务缺失 ⇒ false 降级，不抛')
+  ok(registerBrainstormSkill({ register: () => { throw new Error('boom') } }) === false, 'skill：注册抛错（名字被占等）⇒ false 降级')
+  // 可观测：注册失败是静默降级 ⇒ 必须能从 teamflow_status 查到，否则「/ 里没有它」分不清是没注册还是没显示
+  ok(brainstormSkillState().name === 'teamflow-brainstorm', 'skill：注册状态可观测（名字）')
+  ok(typeof brainstormSkillState().registered === 'boolean', 'skill：注册状态可观测（registered 布尔）')
+  ok('error' in brainstormSkillState(), 'skill：注册状态可观测（失败原因字段在）')
+
+  ok(indexSrc.includes("ctx.inject(['skills'],"), 'skill：index 走 ctx.inject([\'skills\'],…) 注册（服务缺失插件照常加载）')
+}
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

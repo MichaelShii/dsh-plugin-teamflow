@@ -446,7 +446,9 @@ ${requirement}
    - \`<!-- meta: summary="<one sentence: what this requirement delivers>" -->\`
    - ${hdrBaseline}
    - ${hdrSupersede}
-4. Output the full PRD (${langDirective(LOCALE(state))}): background & goals, user stories (each with testable acceptance criteria), scope & non-goals, interaction flow summary, priority (P0/P1/P2), dependencies & risks, milestone suggestions. ACs must be testable/quantifiable; prefer precision & brevity. ${L(state, 'doc.noRevisionTable')} (the folder IS the archive; its name carries the identity).
+4. Output the full PRD (${langDirective(LOCALE(state))}): background & goals, user stories (each with testable acceptance criteria), scope & non-goals, **anti-goals** (see 4b), interaction flow summary, priority (P0/P1/P2), dependencies & risks, milestone suggestions. ACs must be testable/quantifiable; prefer precision & brevity. ${L(state, 'doc.noRevisionTable')} (the folder IS the archive; its name carries the identity).
+4b. [anti-goals · mandatory, distinct from non-goals] Add a section titled "anti-goals / 反面目标" answering: **what would make this a failure even if it technically works?** Not "features we won't build" (that's non-goals) but the outcomes that would make a human reject it despite green tests. Each item must be **observable by someone using it** and phrased as a concrete failure, not a virtue. Good: "silently picks a year for the user when several candidates exist", "prints a table wider than 100 columns so it wraps and becomes unreadable", "a 3-line CSV takes over 10s". Bad: "should be fast", "must be user-friendly". Derive them from what this specific requirement could plausibly get wrong — 2 to 5 items, no padding. If a reviewer of the PRD would not be able to *check* an item, rewrite it until they can. (Source of this section: superpowers' brainstorming skill calls this the difference between "goals we didn't do" and "technical success that is still a product failure".)
+4c. [anti-goals → openQuestions] Every anti-goal whose threshold or trade-off is a **user's call** (how strict, which failure matters most) also goes into \`openQuestions\` with \`kind: "taste"\` and a recommended \`default\`; one that is objectively derivable (e.g. "must not silently pick a year" when the requirement says the user chooses) stays a plain constraint and needs no question.
 5. [Memory write-back · convention changes ONLY] Update docs/teamflow/memory.md ONLY if this requirement introduces new team conventions / tech-stack decisions (replace the same-topic line, idempotent, no changelog-style appending); otherwise do not touch memory.
 6. [Engineering actions carried verbatim] Engineering instructions in the raw requirement (create/switch branch, commit, tag...) MUST be preserved verbatim into the "${L(state, 'doc.engConstraints')}" section of the PRD: specify the action, timing, and baseline (e.g. "branch from latest main, then implement"). If the workspace already has uncommitted changes, note how to handle them. Never silently drop or reword engineering instructions.
 6b. [Version-control hygiene · mandatory when the workspace is versioned] If the workspace has (or will get, per the host log "改动存档/git init") version control: audit the existing/potential \`.gitignore\` **for THIS project's stack** — build outputs, dependency/tool caches, IDE files, local env secrets — and put "complete/extend .gitignore" into the engineering-constraints section as a dev-stage action (file names must match this project's real tooling: a Python project needs __pycache__/.venv, a Rust one target/, a pnpm monorepo .pnpm-store — read the project, don't guess from a generic list). Rationale: the closing commit stages the whole tree; noise that slips into it becomes permanent history.
@@ -702,6 +704,7 @@ ${clip(tech, 4000)}`
 [REQUIREMENTS]
 1. [Confirm first, then fix] For each defect, verify one by one whether it truly holds (read code / reproduce / compare actual vs expected):
    — confirmed → fix it directly; QA false positive / contradicts reality → state evidence explicit in the summary (no fabricated changes, and no ignoring real defects either).
+1b. [Check what changed first] When a defect looks like "this used to work", look at the delta before reading the whole module: \`git log --oneline -8\` and \`git diff\` against the run's baseline commit (the \`chore: baseline before teamflow run\` commit named in the log). A regression usually points at the last change, not at the entire file — reading the diff first is cheaper than re-reading a 500-line module, and it also tells you whether the defect was introduced by this run at all (if not, say so instead of "fixing" unrelated code).
 2. Touch ONLY defect-related files (grep to locate; no whole-file reads of irrelevant big files); respect existing architecture & code style.
 2c. [Write path · policy] Change source files ONLY through the file-editing tools (**write / edit / str_replace_editor**). **Never** create or rewrite source files from a shell (> / >> redirection, heredocs, node -e fs.writeFileSync(...), sed -i, python one-liners) — those bypass the host's version guard, so a concurrent fixer's edit of the same file is silently overwritten (or vice versa) with no error. Running a script **that is itself the deliverable** is fine; using a script as a shortcut to write files is not.
 2b. [Class gate · policy, mandatory for P0/P1/P2] A defect is a CLASS, not the places QA happened to list. Before claiming a fix:
@@ -855,3 +858,72 @@ ${requirement}
 3. Sheet content: fix point (file/location), change outline, regression impact (tiny / which verify commands to run), whether to bump version along the way, plus a one-line "${L(state, 'doc.assumptionsQ')}" note (what you had to assume; "none" if nothing).
 4. Output the confirmation sheet text ONLY (${langDirective(LOCALE(state))}) — **do not touch any product docs** (no PRD this time; memory write-back belongs to acceptance stage).
 5. [State] End with a state block (phase="patch"), summary = confirmation conclusion.${stateBlockInstruction(stateBlockRelPath(runId, 'prd'))}`
+
+/**
+ * `/brainstorm` 技能的正文（2026-10-23）。
+ *
+ * 骨架取自 superpowers/brainstorming（295 行），按我们自己的边界裁剪：
+ * - **砍掉** Lay out the approaches（摆 2-3 个架构方案）→ 与「技术方案」阶段重复；
+ * - **砍掉** Spike（丢弃式构建）→ 我们有 patch 档；
+ * - **砍掉** Visual companion（开浏览器标签做 mockup）→ 没有那条 UI 通道；
+ * - **保留** 一条一问 / 边聊边复述 / 默认值必须说出来 / 先看已有上下文不问已回答的 / 中途升级；
+ * - **保留并强化** anti-goals（技术可行但产品失败的情形）—— 这条与 PRD prompt 4b 对齐。
+ *
+ * 触发方式由注册处决定：`modelInvocable: false`——**只许用户显式调用**。
+ * 理由：superpowers 用 "You MUST use this before any creative work" 强制模型自触发，
+ * 结果每个新需求都被拦下来讨论一轮（真机 tf-mvpxxxx 实锤：用户说「开始做流年推演吧」
+ * 就被拉进多轮澄清）。这里反过来：模型不许自己进，用户敲命令才进。
+ */
+export const brainstormSkillPrompt = (): string => `You are helping the user think a requirement through BEFORE it enters the TeamFlow pipeline. Your output is a requirement text they can hand to teamflow_start — not code, not an architecture, not a plan.
+
+## First: is there anything to clarify?
+
+If the request already says what to build, for whom, and how one would know it worked — do NOT run an interview. Restate it in two or three sentences, add anything you found that bears on it, and produce the requirement text.
+
+Otherwise start the conversation.
+
+## Size it first, and say the size out loud (one line)
+
+- One-liner: a small, clear change. One or two questions at most, then the text.
+- Bounded: clear intent, open details. Three to five questions.
+- New thing: a new subsystem or project. Go dimension by dimension, and expect it to take a while.
+
+The user can override the size at any point. If it grows mid-conversation, stop and say so — the size only goes up, never down.
+
+## How to ask
+
+- **One question per message.** Open-ended, in plain words. No menu of options unless they are stuck.
+- Say why you are asking, or what their answer would change.
+- **Never ask what the conversation or the workspace already answers** — read first, then ask.
+- When you have a recommendation, say it out loud with one line of why. A default they never heard is a default they could not reject.
+- **Play it back.** After each chunk you understand, restate it in two or three sentences and ask what is wrong or missing. Misunderstandings must surface here, not in the PRD.
+
+## Territory to cover (not a script — never read this out as a list of questions)
+
+- what this is, and what makes it different from the obvious thing
+- why now, and what success looks like to them
+- goals, non-goals, and **anti-goals** — what would make this a failure even if it technically works (e.g. "silently picks a year for the user", "prints a table so wide it wraps and becomes unreadable")
+- what exists today and what they already tried
+- who uses it, in what situation, in place of what
+
+## Stop when
+
+- you can predict the remaining questions, or
+- the user says enough / just do it, or
+- you have already asked the same thing twice.
+
+## Output (your only deliverable)
+
+A requirement text, in the user's language, with exactly these parts:
+
+1. One-sentence goal.
+2. Constraints the user explicitly stated (do not invent any).
+3. Acceptance criteria — three to five, each checkable by running or looking at something.
+4. Non-goals and anti-goals.
+
+Then one closing line: hand this to teamflow_start as the requirement.
+
+**Do NOT propose architecture, module layout, or libraries.** That belongs to the tech stage, which has its own blueprint and task split — doing it here duplicates it and burns the user's attention twice. If they ask for it, say it will come from the tech stage.
+
+Keep the whole output under 40 lines. No preamble, no recap of how the conversation went.
+`

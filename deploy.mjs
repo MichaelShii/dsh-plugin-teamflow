@@ -12,7 +12,7 @@
  * peerDeps 拉到 registry 404 的问题。
  */
 import { execSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, existsSync, readdirSync, rmSync } from 'node:fs'
+import { copyFileSync, mkdirSync, existsSync, readdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, dirname, relative } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -54,6 +54,7 @@ const FILES = [
   'host/core/prd-revise.ts', // PRD 续跑改写（continuable）：同上，纯逻辑 + 投递循环，漏同步则续跑静默失效
   'host/core/update-check.ts', // 版本探测（ADR-0012）：同上，纯逻辑模块
   'host/core/triage.ts',
+  'host/core/skill.ts', // /teamflow-brainstorm 注册（只许用户调用）
   'host/core/workspace/sanity.ts',
   'host/core/workspace/runlogs.ts',
   'host/core/workspace/acl-preflight.ts',
@@ -179,6 +180,58 @@ for (const f of FILES) {
 console.log(`✅ 完成：${count} 个文件已同步。`)
 if (failed.length) {
   console.log(`⚠ 以下文件未同步（需更高权限或源缺失）：\n  ${failed.join('\n  ')}`)
+}
+
+/* ── 3c) 部署自检：对面装的是不是**我们刚构建的这份** ─────────────────────────
+ * 教训（2026-10-19 真机实锤）：sync 报「50 个文件已同步」，但 profile 里落地的是 **0.2.9**
+ * （外部操作在之后覆盖过），于是后续所有真机验证都跑在旧代码上——现象是「已修复的 bug 复发」，
+ * 排查花了 3 小时。只数「复制成功几个文件」证明不了落地，必须核对**版本号 + 产物指纹**。
+ */
+try {
+  const wantVer = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version
+  const gotPkg = join(PROFILE, 'package.json')
+  const gotVer = existsSync(gotPkg) ? JSON.parse(readFileSync(gotPkg, 'utf8')).version : '(缺失)'
+  const localLib = join(ROOT, 'lib/host.mjs')
+  const gotLib = join(PROFILE, 'lib/host.mjs')
+  const sameLib = existsSync(localLib) && existsSync(gotLib) && readFileSync(localLib).equals(readFileSync(gotLib))
+  if (gotVer !== wantVer) {
+    console.error(`❌ 部署自检失败：profile 版本 ${gotVer} ≠ 本地 ${wantVer}（对面不是这份代码，别在此之上做验证）`)
+    process.exitCode = 1
+  } else if (!sameLib) {
+    console.error('❌ 部署自检失败：profile 的 lib/host.mjs 与本地构建产物不一致')
+    process.exitCode = 1
+  } else {
+    console.log(`✅ 部署自检：profile 版本 ${gotVer}，lib/host.mjs 与本地构建逐字节一致`)
+  }
+} catch (e) {
+  console.error(`❌ 部署自检异常：${e.message}`)
+  process.exitCode = 1
+}
+
+/* ── 3d) 校正 profile 的依赖声明：必须指向**本地仓库**，不能是版本号 ──────────────
+ * 根因（2026-10-19 真机实锤）：profile 的 package.json 里写着 `"dsh-plugin-teamflow": "0.2.9"`
+ * ⇒ 任何一次 `pnpm install` / `dsh plugin add` / `dsh plugin update` 都会**按这个版本重装**，
+ * 把 deploy 刚同步进去的开发副本打回旧版（实测：01:31 一次 install ⇒ 01:10 起的 run 全跑在 0.2.9 上，
+ * 表现为「v0.3.0 就修好的 signal bug 复发」）。
+ * AGENTS.md 写的运行环境本来就是「`file:` 安装 + 从 profile 副本加载」⇒ 这里把它纠回来。
+ */
+try {
+  const profilePkgPath = join(PROFILE, '..', '..', 'package.json')
+  if (existsSync(profilePkgPath)) {
+    const raw = readFileSync(profilePkgPath, 'utf8')
+    const pkg = JSON.parse(raw)
+    const cur = pkg.dependencies && pkg.dependencies['dsh-plugin-teamflow']
+    const want = `file:${ROOT.split('\\').join('/')}`
+    if (cur && cur !== want) {
+      pkg.dependencies['dsh-plugin-teamflow'] = want
+      // 保留原格式缩进（profile 的 package.json 是 2 空格）
+      writeFileSync(profilePkgPath, JSON.stringify(pkg, null, 2) + '\n')
+      console.log(`🔧 profile 依赖声明已校正：${cur} → ${want}`)
+      console.log('   （请在 profile 目录跑一次 pnpm install，让 lockfile 与 node_modules 跟上；否则下次 install 仍会打回旧版）')
+    }
+  }
+} catch (e) {
+  console.log(`⚠ 校正 profile 依赖声明失败（不影响本次同步，但下次 install 可能打回旧版）：${e.message}`)
 }
 
 /* ── 4) 生效提示：检测运行中的 web（改 host 侧必须重启进程才加载新 lib） ── */

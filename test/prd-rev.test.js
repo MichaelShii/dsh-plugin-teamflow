@@ -86,5 +86,29 @@ console.log('── 6) 行数预算不被版本行打破（确认单 ≤40 行�
 eq(r2.split('\n').length <= 40, true, `第 2 版仍 ≤40 行（实际 ${r2.split('\n').length}）`)
 eq(r2hint.split('\n').length <= 40, true, `第 ${PRD_REV_HINT} 版仍 ≤40 行（实际 ${r2hint.split('\n').length}）`)
 
+console.log('── 确认单清单化：序号 + 事实/主观双标签（2026-10-18）──')
+{
+  // 为什么：用户要改某条时会说「第 1 条改成 GBK」⇒ 没有序号就对不上号；
+  // 事实项不打标 ⇒ 用户无法分辨「哪些已按缺省定了、不用管」，只能逐条读完。
+  const { buildConfirmSheet, renderConfirmSheet } = await import('../host/core/confirm.ts')
+  const sheet = buildConfirmSheet({
+    summary: '测试摘要',
+    acIndex: { 'AC-1': '能跑' },
+    openQuestions: [
+      { q: '编码默认按什么处理？', why: '错误编码会静默丢字', changes: '需引入 iconv', default: 'UTF-8', kind: 'fact' },
+      { q: '命令名叫什么？', why: '影响调用习惯', changes: '改 bin 字段', default: 'readme-toc', kind: 'taste' },
+    ],
+    prdRev: 2,
+  })
+  const text = renderConfirmSheet(sheet, 'zh')
+  eq(text.includes('1. ［事实项］编码默认按什么处理？'), true, '第 1 条带序号 + 事实标签')
+  eq(text.includes('2. ［主观项］命令名叫什么？'), true, '第 2 条带序号 + 主观标签')
+  eq(text.includes('（缺省：UTF-8）'), true, '缺省值可见（用户据此决定要不要改）')
+  eq(text.includes('为什么问：错误编码会静默丢字'), true, '追问理由可见（展开依据不用另开文件）')
+  const textEn = renderConfirmSheet(sheet, 'en')
+  eq(textEn.includes('1. [fact]'), true, 'en 版同样有序号 + fact 标签')
+  eq(textEn.includes('2. [taste]'), true, 'en 版序号 + taste 标签')
+}
+
 console.log(failed === 0 ? '\n✅ prd-rev 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

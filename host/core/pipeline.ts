@@ -14,8 +14,8 @@ import { runAcceptancePhase } from './stages/acceptance.ts'
 export type { DevTaskDef } from './stages/dev.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
-import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv, hasHumanReplySince, lastHumanReplySince, isExplicitApproval, absoluteRunDocs, normalizeSignal } from '../util.ts'
-import type { Blueprint } from '../util.ts'
+import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, artifactFingerprint, detectInstallEnv, hasHumanReplySince, lastHumanReplySince, isExplicitApproval, absoluteRunDocs, normalizeSignal } from '../util.ts'
+import type { Blueprint, BlueprintRepairDiag } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { RETRY_LIMIT, PHASE_ORDER, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, DEV_MAX_CONCURRENCY, DEV_DEFAULT_CONCURRENCY } from '../constants.ts'
 import { persistJournal, loadJournalById, dshHome } from '../../store.ts'
@@ -954,6 +954,12 @@ export async function executePipeline(
         instruction,
         signal: normalizeSignal(signal),
         diag,
+        // **产物探针**（2026-10-26 真机 `tf-mvovb2gb-her9mv` 实锤）：redo 的实际形态是
+        // 「改 PRD.md + 写状态文件，聊天末条只给一段小结」⇒ 让 prd-revise 看得见「产物被改写过」：
+        // ① 产物变更算**进展**（child 正在写文件，不能当成死了 —— 那次 redo 实跑 377s，
+        //    固定 300s 墙钟让它在完工前 77s 放弃、白等 5 分钟、还让两份 PRD 并行跑 77s）；
+        // ② 回合结束但回复无正文时，可按「文件即产物」判完成。
+        probe: () => artifactFingerprint(journal, 'PRD.md'),
         onWait: () => { /* 超时由返回值表达，这里不额外刷日志 */ },
       })
       if (!out) {
@@ -966,7 +972,15 @@ export async function executePipeline(
         journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, key, { base: String(diag.base), end: String(diag.end), secs }) })
         return null
       }
-      const shown = stripStateBlock(out.text)
+      // **交付物以文件为准**（文件即产物）：回复没正文、但产物被改写过 ⇒ 用 PRD.md 顶上。
+      // 真机 redo 形态：child 写 PRD.md + 状态文件，聊天末条只有 776 字「更新小结」。
+      const fileText = out.artifactChanged ? artifactText(journal, 'PRD.md') : null
+      const shown = (out.text && out.text.trim()) ? stripStateBlock(out.text) : (fileText || '')
+      if (!shown) {
+        // 既无回复正文、又读不到产物 ⇒ 仍算失败（**绝不返回空串**：空串会把 PRD 写空）⇒ 回落重跑
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.reviseNoDeliverable', { secs: String(Math.round((diag.waitedMs || 0) / 1000)) }) })
+        return null
+      }
       // 阶段记录：续跑那一轮也要进 stages（断点定位/汇报/用量都按「每阶段一条」读）。
       // 只在成功后 push —— 失败不留 running 残影。
       const seq = (journal.stages.length ? Math.max(...journal.stages.map((s) => s.seq)) : 0) + 1
@@ -979,7 +993,7 @@ export async function executePipeline(
       journal.agentsStarted += 1
       mergeStageState('prd', out.text, stateBlockRelPath(journal.id, 'prd'))
       timeline['prd'] = shown
-      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.prdRevisedViaChild', { n: String(shown.length) }) })
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, (out.text && out.text.trim()) ? 'log.prdRevisedViaChild' : 'log.prdRevisedViaArtifact', { n: String(shown.length) }) })
       return { text: shown, cancelled: false, skipped: false }
     }
     // patch 档的「单点确认」是机械阶段（核对现状 + 给直改指令，不做架构判断）→ 降档省 token
@@ -993,37 +1007,42 @@ export async function executePipeline(
     // 而 PRD 会被改写多轮（每轮一次续跑或重跑）。只写「这一轮」⇒ 前面几轮的 token 凭空消失 ⇒
     // 与 dsh 子代理面板（全程累计）对不上（真机 tf-mvcoqg9e）。⇒ 每一轮都把历史累计并进来。
     // 续跑与重跑两条路径在这里同一处理，避免只修一条造成新的口径分叉。
-    try {
-      const rec = (journal.stages || []).filter((s) => phaseKeyOf(s.phase) === 'prd').pop()
-      if (rec && rec.usage) {
+    // **只在 PRD 真的跑过时累加**（2026-10-19 真机 tf-mve3fwma）：批准后的 resume 会**复用** PRD 产物
+    // （`runSimpleStage` 返回 `skipped:true`），那不是新的一轮 —— 累加会让首版被算两次。
+    // 上一版靠「重复护栏」拦住（本轮值恰好等于累计），但那是兜底，不是设计。
+    if (!prdStage.skipped) {
+      try {
+        const rec = (journal.stages || []).filter((s) => phaseKeyOf(s.phase) === 'prd').pop()
+        if (rec && rec.usage) {
         // 先拷贝「本轮」再相加：`rec.usage` 可能与 `prdUsageAcc` 同源（见 redo 块的注释），
         // 直接 `addUsage(acc, rec.usage)` 在同对象时会翻倍。
-        const round = { ...rec.usage }
-        const acc = journal.prdUsageAcc
-        // **重复护栏**（2026-10-18 真机 tf-mvdh065z 仍是 2 倍时加）：若「本轮」与「已有累计」逐项完全相同，
-        // 说明拿到的其实是累计值（不是本轮增量）—— 再相加必然翻倍。宁可这一轮不加，也不能让总数错。
-        const dup = !!acc && round.input === acc.input && round.cacheRead === acc.cacheRead
+          const round = { ...rec.usage }
+          const acc = journal.prdUsageAcc
+          // **重复护栏**（2026-10-18 真机 tf-mvdh065z 仍是 2 倍时加）：若「本轮」与「已有累计」逐项完全相同，
+          // 说明拿到的其实是累计值（不是本轮增量）—— 再相加必然翻倍。宁可这一轮不加，也不能让总数错。
+          const dup = !!acc && round.input === acc.input && round.cacheRead === acc.cacheRead
           && round.output === acc.output && round.calls === acc.calls
-        if (dup) {
-          rec.usage = acc
-          journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.usageAccumDup', {
-            round: `${round.input}/${round.cacheRead}/${round.output}/${round.calls}`,
-          }) })
-        } else {
-          journal.prdUsageAcc = addUsage(acc, round)
-          rec.usage = journal.prdUsageAcc
-          // **逐轮留痕**：本轮多少、累计后多少 —— 没有这条，「为什么总数是 2 倍」只能靠猜
-          // （本地 mock 复现不出来，只有真机有）。
-          journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.usageAccum', {
-            round: `${round.input}/${round.cacheRead}/${round.output}/${round.calls}`,
-            acc: `${journal.prdUsageAcc.input}/${journal.prdUsageAcc.cacheRead}/${journal.prdUsageAcc.output}/${journal.prdUsageAcc.calls}`,
-          }) })
-        }
-      } else if (rec && journal.prdUsageAcc) {
+          if (dup) {
+            rec.usage = acc
+            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.usageAccumDup', {
+              round: `${round.input}/${round.cacheRead}/${round.output}/${round.calls}`,
+            }) })
+          } else {
+            journal.prdUsageAcc = addUsage(acc, round)
+            rec.usage = journal.prdUsageAcc
+            // **逐轮留痕**：本轮多少、累计后多少 —— 没有这条，「为什么总数是 2 倍」只能靠猜
+            // （本地 mock 复现不出来，只有真机有）。
+            journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.usageAccum', {
+              round: `${round.input}/${round.cacheRead}/${round.output}/${round.calls}`,
+              acc: `${journal.prdUsageAcc.input}/${journal.prdUsageAcc.cacheRead}/${journal.prdUsageAcc.output}/${journal.prdUsageAcc.calls}`,
+            }) })
+          }
+        } else if (rec && journal.prdUsageAcc) {
         // 本轮没有用量数据（mock/投影缺失）⇒ 至少把已有累计挂在节点上，不能显示成空
-        rec.usage = journal.prdUsageAcc
-      }
-    } catch (e) { /* 计量失败不阻断流水线 */ }
+          rec.usage = journal.prdUsageAcc
+        }
+      } catch (e) { /* 计量失败不阻断流水线 */ }
+    }
     // **PRD 版本自增**（2026-10-17，issue #11）：只有**真正产出**了 PRD 才算一版 ——
     // `runSimpleStage` 在 resume 复用存档产物时返回 `skipped:true`（PRD 没变，版本不动）。
     // 为什么必须在这里而不是 `mergeStageState` 里：那条通道依赖模型写出 state 块
@@ -1186,7 +1205,9 @@ export async function executePipeline(
       // 原文落档路径（② 分支解析失败时填）—— 末尾统一发**一条** warn，避免与 `sawMark` 兜底重复
       let archivedPath = ''
       // ① 回复正文（旧主通道；也是文件通道失效时的回落）
-      let bd = extractBlueprint(tech)
+      // `bdDiag`：三条通道共用一个诊断出口——「非法转义被自动修复过」必须可见（2026-10-26 实锤）。
+      const bdDiag: BlueprintRepairDiag = {}
+      let bd = extractBlueprint(tech, null, bdDiag)
       // ② **独立文件**（2026-10-09 新主通道，与 state 块同构）：`logs/teamflow/<runId>/blueprint.json`。
       //    纯中转 —— 原文**无条件落档**到 `$DSH_HOME` 供人工复查，项目内那份随后读完即删，
       //    所以项目内的停留窗口从「整个 run」缩到「几秒」，可续跑终态（不做归档）也不再残留。
@@ -1201,7 +1222,7 @@ export async function executePipeline(
           const archived = saveBlueprintArchive(String(journal.workspace || 'default'), journal.id, rawBp)
           if (archived) journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintArchived', { path: archived }) })
           if (!bdUsable(bd)) {
-            const fromChannel = blueprintFromText(rawBp)
+            const fromChannel = blueprintFromText(rawBp, null, bdDiag)
             if (bdUsable(fromChannel)) {
               bd = fromChannel
               journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintFromChannel') })
@@ -1225,13 +1246,19 @@ export async function executePipeline(
           if (techFile && existsSync(techFile)) {
             const raw = readFileSync(techFile, 'utf8')
             if (hasBlueprintMark(raw)) sawMark = true
-            const fromFile = extractBlueprint(raw)
+            const fromFile = extractBlueprint(raw, null, bdDiag)
             if (bdUsable(fromFile)) {
               bd = fromFile
               journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintFromFile') })
             }
           }
         } catch (e) { /* 回退失败走既有告警 */ }
+      }
+      // 蓝图 JSON 里出现过**非法转义**（模型把正则原样写进 spec/api，如 `/\.md$/i`）⇒ 已自动加倍修复。
+      // 结果是对的（拆卡保住），但**契约违约必须可见**——否则 prompt 的写法问题会长期隐身
+      // （2026-10-26 实锤 tf-mvp5tdie-ma36fk：整份 6.2KB 蓝图被 JSON.parse 拒绝 ⇒ dev 退化单任务 87 calls）。
+      if (bdDiag.repairedEscapes) {
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.blueprintRepairedEscapes') })
       }
       if (bdUsable(bd)) {
         try {

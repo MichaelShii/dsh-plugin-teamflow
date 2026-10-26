@@ -118,6 +118,10 @@ for (const t of [
   'Error: invalid arguments: "queries" must be an array',
   'invalid arguments: "queries" must be an array',
   'invalid arguments: "max_results" must be a number',
+  // 宿主权限升级层的参数配套校验（实锤 tf-mvjd3k2w-hpd3qa，2026-10-22：dev T3 + QA 修复各中一次
+  // ⇒ 判成 env-unavailable ⇒ 停止自动重试、流水线停、用户手工 resume 两次才跑完）
+  'Error: invalid escalation: justification is only valid together with sandbox_permissions',
+  'invalid escalation: justification is only valid together with sandbox_permissions',
 ]) ok(isToolArgFailure(t), `识别参数类：${t}`)
 for (const t of [
   'ENOENT: no such file or directory, open ...',
@@ -129,6 +133,9 @@ for (const t of [
   // 反例：含「must be」但不属参数解析层（不得被前缀之外的宽松匹配吞掉）
   'SetNamedSecurityInfoW failed (Win32 5): ACL provision failed',
   'tool result too large: must be truncated by caller',
+  // 反例：同样是 `invalid …` 前缀，但属于会话/环境态（不该被「参数类」吞掉，否则真故障会被无限重试）
+  'invalid session: not authenticated',
+  'invalid state: sandbox is not provisioned',
 ]) ok(!isToolArgFailure(t), `不吞环境类：${t}`)
 
 rmSync(home, { recursive: true, force: true })

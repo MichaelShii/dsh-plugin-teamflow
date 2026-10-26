@@ -1439,9 +1439,16 @@ export async function apply(ctx) {
     schedule: (run, ms) => setTimeout(run, ms),
     cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
   })
+  // **传 getter 而不是「取出来的值」**（2026-10-26 实锤 tf-mvp015bq-vy7vgk）：挂载那一刻
+  // `getSnapshot()` 可能还没就绪、甚至抛错（`shared.tsx` 的 `localeTag` 自己就
+  // `catch { /* 服务未就绪 */ }`）。传值会把「空」固化进那一轮；getter 让上报器**每次重试
+  // 重新取**，就绪后自动推上去 —— 否则宿主永久停在 en 兜底（整轮产物英文 + 中英混排）。
+  const readLocale = (): unknown => {
+    try { return ctx.locale.getSnapshot().active } catch (e) { return null }
+  }
   ctx.effect(() => {
-    localePusher.send(ctx.locale.getSnapshot().active)
-    const off = ctx.locale.subscribe(() => localePusher.send(ctx.locale.getSnapshot().active))
+    localePusher.send(readLocale)
+    const off = ctx.locale.subscribe(() => localePusher.send(readLocale))
     return () => { off(); localePusher.dispose() }
   }, 'teamflow: host locale push')
   // 右侧栏打开（产物预览 / run 详情共用）：地址（dsh-resource://…）由 host 生成，这里只交给右侧栏。

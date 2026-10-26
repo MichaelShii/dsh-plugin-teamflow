@@ -53,11 +53,12 @@ function countFilesBounded(dir: string, cap = 1000): number {
 }
 import { startPipeline, resumeRun, selfModulePath, cliOnPath } from './core/pipeline.ts'
 import { cancelRun } from './core/agent/context.ts'
-import { MODE_REGISTRY, PIPELINE_MODES, MODE_RANK, normalizeMode, runTriage, guardrailUpgrade, triageCacheKey, triageCacheGet, triageCachePut, triageCacheMarkPending, triageCacheSettle, type TriageVerdict } from './core/triage.ts'
+import { MODE_REGISTRY, PIPELINE_MODES, MODE_RANK, normalizeMode, runTriage, guardrailUpgrade, triageCacheKey, triageCacheGet, triageCacheAdoptPending, triageCachePut, triageCacheMarkPending, triageCacheSettle, type TriageVerdict } from './core/triage.ts'
 import { t, modeDesc } from './locales.ts'
 import { setSettingsPort, noteClientLocale, ambientLocale } from './core/locale.ts'
 import { noteClarifyAsked, noteTriageFallback } from './core/clarify-log.ts'
 import { checkForUpdate, skipVersion, updateCacheFile, upgradeGate, classifyInstallSource } from './core/update-check.ts'
+import { registerBrainstormSkill, brainstormSkillState } from './core/skill.ts'
 
 /* BacklogStore / storeFor 见 core/domain/backlog.ts（数据层与状态机）。 */
 
@@ -104,7 +105,18 @@ async function clarificationPreflight(
   // 有效性由 `pendingDecision` 状态决定（"还在等用户回答同一个问题"），**不看时间**——实测用户隔 55 分钟才点选。
   // 调用方在返回 needs-decision/needs-clarification 时置"待决策"、在建 run 成功后 `triageCacheSettle`。
   const cacheKey = triageCacheKey(requirement, options.requirementSupplement)
-  const cached = triageCacheGet(cacheKey)
+  let cached = triageCacheGet(cacheKey)
+  if (!cached) {
+    // **待决策放宽命中**（2026-10-26 真机 tf-mvotyc03-0vhbo3）：首次 start 跑完分诊 → 返回
+    // needs-decision（改动存档）→ 用户点选后重调时模型**重写了 supplement**（1152→1214 字符）
+    // ⇒ 键变 ⇒ 又起一个分诊子代理（白花一次完整模型调用 + 20s）。
+    // 「待决策」的语义是「用户还没回答同一个问题」，与 supplement 措辞无关 ⇒ 只看 requirement。
+    // 真改了需求仍会 miss（该重跑就重跑）；澄清前/后的复用约束只作用于非待决策条目，不受影响。
+    cached = triageCacheAdoptPending(cacheKey)
+    if (cached) {
+      try { console.error(`[teamflow] ${t(locale, 'diag.triageCacheAdopt')}`) } catch (e) { /* 诊断失败不影响功能 */ }
+    }
+  }
   let verdict: TriageVerdict | null = cached
   let error = ''
   if (verdict) {
@@ -561,7 +573,7 @@ function registerTools(ctx) {
       }
       const sc = workspaceScopeOf(exec && exec.agent)
       const arr = runsFor(sc.projectKey).slice(0, 10).map((j) => ({ id: j.id, status: j.status, startedAt: j.startedAt, endedAt: j.endedAt, agentsStarted: j.agentsStarted, stageCount: j.stages.length, incompleteStages: (j.stages || []).some((x) => x.status !== 'done'), requirement: clip(j.requirement, 60) }))
-      return { runs: arr, workspace: sc }
+      return { runs: arr, workspace: sc, skills: { brainstorm: brainstormSkillState() } }
     },
   })
 
@@ -839,6 +851,20 @@ export class TeamflowService extends TypertRemoteService {
         const v = settings && typeof settings.get === 'function' ? settings.get('locale') : null
         return v && v.preference
       })
+    })
+    // 可选能力：Skill 注册表 —— 注册 `/teamflow-brainstorm`（**只许用户调用**，模型不可自触发）。
+    // 服务缺失 / 名字被占（宿主对 reserved、同层 duplicate 会 throw）⇒ 返回 false 降级，
+    // 插件照常加载（与本类目其余可选能力同款：缺失即降级，不阻塞）。
+    ctx.inject(['skills'], (skillCtx) => {
+      const regOk = registerBrainstormSkill(skillCtx.get('skills'))
+      const st = brainstormSkillState()
+      const log = skillCtx.logger
+      // 可观测：注册失败是静默降级 ⇒ 必须留痕（否则用户看到「/ 里没有它」时，分不清是
+      // 「没注册成功」还是「注册了但没显示在用户命令目录」——这两种的修法完全不同）。
+      if (log) {
+        if (regOk) log.info('teamflow: skill /' + st.name + ' registered (user-invoked only)')
+        else log.warn('teamflow: skill /' + st.name + ' NOT registered: ' + String(st.error))
+      }
     })
     loadActiveTeams() // 重启后恢复会话→团队映射（UI 状态与启动通道一致）
     // 断点续跑基座：加载磁盘 journal；running/pending 残留 → 标记 interrupted
