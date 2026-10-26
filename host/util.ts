@@ -1277,6 +1277,41 @@ export function parseOutOfScope(text: unknown, limit = 20): OutOfScopeFinding[] 
   return out
 }
 
+export interface PinnedConstant { name: string; value: string }
+
+/** 从文本里抽「钉死的数值常量」：`[static] final <type> NAME = <数字>` 或 `NAME = <数字>`（大写名）。
+ *  TECHNICAL 里通常以代码块或表格形式给出这些值；dev 一旦改了它们，等于**悄悄改设计口径**。 */
+export function parsePinnedConstants(text: unknown): PinnedConstant[] {
+  const s = String(text === null || text === undefined ? '' : text)
+  const out: PinnedConstant[] = []
+  const seen = new Set<string>()
+  const re = /(?:static\s+final\s+\w+\s+)?\b([A-Z][A-Z0-9_]{2,})[`*|\s]*=\s*(-?\d+(?:\.\d+)?)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(s)) !== null) {
+    const name = m[1]
+    if (seen.has(name)) continue
+    seen.add(name)
+    out.push({ name, value: m[2] })
+  }
+  return out
+}
+
+/** 比对「文档钉死值」与「代码现值」。只报**两边都有、值不同**的项（代码里没有的不算，
+ *  文档里没有的不算 —— 那是新常量，不是改口径）。 */
+export function diffPinnedConstants(
+  pinned: PinnedConstant[],
+  actual: PinnedConstant[],
+): Array<{ name: string; expected: string; actual: string }> {
+  const now = new Map(actual.map((c) => [c.name, c.value]))
+  const out: Array<{ name: string; expected: string; actual: string }> = []
+  for (const p of pinned) {
+    const a = now.get(p.name)
+    if (a === undefined) continue
+    if (String(a) !== String(p.value)) out.push({ name: p.name, expected: p.value, actual: a })
+  }
+  return out
+}
+
 export function isToolArgFailure(text: unknown): boolean {
   return TOOL_ARG_FAILURE.test(String(text || ''))
 }

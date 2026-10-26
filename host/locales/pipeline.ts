@@ -61,6 +61,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'dev.depBlocked': '未执行：其所依赖的前序任务未通过（已跳过，避免拿半成品往下做；处理后可从「开发」续跑）',
     'dev.outOfScopeTask': '开发 · 越界发现收口（专属文件，末尾串行）',
     'log.devOutOfScope': '检测到 {n} 条越界发现（涉及 {files} 个不属于本任务的文件）→ 追加一条收口任务，独占这些文件在本轮末尾执行',
+    'log.pinnedConstChanged': '⚠ 技术方案钉死的常量被改动：{name} 应为 {expected}，代码里是 {actual}',
+    'err.pinnedConst': '开发阶段改动了技术方案钉死的 {n} 个常量（等于悄悄改口径）⇒ 已停止，需人工确认：要么恢复常量，要么走文档变更流程改 PRD/TECHNICAL，然后 teamflow_resume',
 
     /* ── 流水线日志（journal.logs 固定句式） ─────────────────── */
     'log.idSep': '、',
@@ -552,6 +554,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'dev.depBlocked': 'Not executed: its upstream dependency did not pass (skipped so it does not build on a half-done state; resume from Development after handling)',
     'dev.outOfScopeTask': 'Dev · out-of-scope findings (owned files, serial at the end)',
     'log.devOutOfScope': 'Found {n} out-of-scope finding(s) across {files} file(s) this task does not own → appended one follow-up task that owns those files and runs at the end of this round',
+    'log.pinnedConstChanged': '⚠ a constant pinned by the technical design was changed: {name} should be {expected}, the code has {actual}',
+    'err.pinnedConst': 'Development changed {n} constant(s) pinned by the technical design (silently redefining the spec) → stopped for human confirmation: either restore the constants or change PRD/TECHNICAL through the document-change process, then teamflow_resume',
 
     /* ── 流水线日志 ────────────────────────────────────────── */
     'log.idSep': ', ',

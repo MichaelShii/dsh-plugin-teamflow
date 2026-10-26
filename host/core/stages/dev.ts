@@ -6,12 +6,15 @@
  * 因此除一处机械替换（`return` → 返回 `{ cancelled: true }` 的语义等价改写，上一轮已完成）外
  * 不存在任何语义差异；缩进也保持原样，便于与原 commit 逐行比对。
  */
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import { advanceTask, storeFor, noteTaskStageUsage, noteTaskAssign, createSubtask, completeSubtask, noteSubtaskUsage } from '../domain/backlog.ts'
 import { withRetry } from '../agent/runner.ts'
 import { devPrompt } from '../../prompts/index.ts'
 import {
   clip, snippet, buildRetryDiagnostic, runPool, devTaskStatuses, devTaskIdAt, backfillDevTaskIds,
   mergeFileOverlaps, concurrentWriteConflicts, planDevWaves, parseOutOfScope,
+  parsePinnedConstants, diffPinnedConstants,
 } from '../../util.ts'
 import { phaseKeyOf, PHASE_ORDER } from '../../constants.ts'
 import { persistJournal } from '../../../store.ts'
@@ -360,6 +363,48 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
           ...(devResults || []),
           { title: fixTask.title, dtId: fixTask.ids[0], failed: !fixOk, output: fixText || '' },
         ]
+      }
+    }
+  }
+  /* ── 常量守卫（2026-10-27）：技术方案里钉死的数值常量，本轮代码改了就必须停 ──
+   * 实锤 tf-mvpjqs87-14qdxa 的 QA 修复轮：PRD §3.1 表格写「日主 +10、总权 22」，TECHNICAL §47 写
+   * `DAY_MASTER_SELF = 10`；修复轮把它改成 **4 / 16**，连"断言该常量"的测试一起改成断言 4，
+   * 然后自辩「仍在 PRD §3.1 日主固定值档内」——五档确实"全可达"了，但**基准被换掉**。
+   * 这条是**客观可判定**的，不需要模型自觉：文档里以 `<NAME> = <数字>` 出现的常量，与本轮
+   * touched 过的文件里同名常量比对，值不同即停。改口径是人的事（PRD 注明要"走文档变更流程"）。
+   * 范围克制：只查本轮 touched 的文件、单个文件 400KB 上限、最多 40 个，读不到就跳过（不因此阻断）。
+   */
+  {
+    const pinned = parsePinnedConstants(tech)
+    const touchedRels = [...new Set((devTouchEntries || []).flatMap((e) => e.files))]
+    const baseDir = journal.workspacePath || root
+    if (pinned.length && touchedRels.length && baseDir) {
+      const actual: Array<{ name: string; value: string }> = []
+      let scanned = 0
+      for (const relRaw of touchedRels) {
+        if (scanned >= 40) break
+        try {
+          const rel = String(relRaw || '').replace(/^[\\/]+/, '')
+          if (!rel) continue
+          const abs = join(baseDir, rel)
+          if (!existsSync(abs)) continue
+          const st = statSync(abs)
+          if (!st.isFile() || st.size > 400_000) continue
+          actual.push(...parsePinnedConstants(readFileSync(abs, 'utf8')))
+          scanned += 1
+        } catch (e) { /* 读不到就跳过：守卫宁可漏，不该因权限/编码把整条流水线挂住 */ }
+      }
+      const drift = diffPinnedConstants(pinned, actual)
+      if (drift.length) {
+        for (const d of drift) {
+          journal.logs.push({
+            t: Date.now(), level: 'error',
+            message: t(locale, 'log.pinnedConstChanged', { name: d.name, expected: d.expected, actual: d.actual }),
+          })
+        }
+        advanceTask(journal, 'needs-human', null, t(locale, 'event.devFail'), { by: 'dev' })
+        persistJournal(journal)
+        throw new Error(t(locale, 'err.pinnedConst', { n: drift.length }))
       }
     }
   }
