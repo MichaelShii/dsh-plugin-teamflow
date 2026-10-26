@@ -1454,5 +1454,45 @@ console.log('── 12) 无 supplement 的 resume = 整版放行 ⇒ 要求显�
 
   ok(indexSrc.includes("ctx.inject(['skills'],"), 'skill：index 走 ctx.inject([\'skills\'],…) 注册（服务缺失插件照常加载）')
 }
+/* ── 供应链加固（2026-10-26）────────────────────────────────────────────────
+ * 为什么锁：CI 里的 action 用 `@v5` 这种**可重指向的标签**时，任何人拿到那个 action 仓库
+ * 的写权限就能改我们的 CI（CI 里有 checkout + pnpm install 的权限面）。钉 SHA 是唯一
+ * 不可变的引用方式，而 SHA 不会自己往前走 ⇒ 必须同时有 dependabot 负责升级，两者是一对。
+ * 一旦有人把 `@<sha>` 改回 `@v5`（或删掉 dependabot.yml），这条会红。
+ *
+ * 顺带锁 deploy.mjs 不用 shell：字符串进 shell 是注入面，且经 shell 会重新引入引号/空格
+ * 路径的坑。实现要用 `execFileSync` + argv（不能 `execFileSync('npx', …)`——CVE-2024-27980
+ * 之后 Windows 上 .cmd shim 不经 shell 执行会被拒，得用 process.execPath 跑目标脚本）。
+ */
+{
+  const wfDir = join(here, '..', '.github', 'workflows')
+  const shaUse = /^\s*-?\s*uses:\s*(\S+)/
+  const pinned = /@[0-9a-f]{40}$/
+  let usesCount = 0
+  for (const f of readdirSync(wfDir)) {
+    if (!f.endsWith('.yml') && !f.endsWith('.yaml')) continue
+    for (const line of readFileSync(join(wfDir, f), 'utf8').split('\n')) {
+      const m = line.match(shaUse)
+      if (!m) continue
+      const ref = m[1].trim().replace(/\s+#.*$/, '')
+      // 忽略非 action 的本地路径/容器引用
+      if (ref.startsWith('./') || ref.startsWith('docker://')) continue
+      usesCount++
+      ok(pinned.test(ref), `ci：${f} 的 ${ref} 钉在 commit SHA（标签可被重指向）`)
+    }
+  }
+  ok(usesCount > 0, 'ci：至少扫到一个 uses 条目（否则这条门禁是空转）')
+
+  const depPath = join(here, '..', '.github', 'dependabot.yml')
+  ok(existsSync(depPath), 'ci：dependabot.yml 存在（钉 SHA 后必须有人负责升级）')
+  const dep = existsSync(depPath) ? readFileSync(depPath, 'utf8') : ''
+  ok(/package-ecosystem:\s*github-actions/.test(dep), 'ci：dependabot 覆盖 github-actions')
+  ok(/package-ecosystem:\s*npm/.test(dep), 'ci：dependabot 覆盖 npm')
+
+  const deploySrc = readFileSync(join(here, '..', 'deploy.mjs'), 'utf8')
+  ok(!/\bexecSync\b/.test(deploySrc), 'deploy：不使用 execSync（字符串进 shell）')
+  ok(/\bexecFileSync\b/.test(deploySrc), 'deploy：走 execFileSync + argv')
+  ok(/process\.execPath/.test(deploySrc), 'deploy：用 process.execPath 跑脚本（绕开 .cmd shim）')
+}
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)
