@@ -18,7 +18,10 @@
  * - **失败才重排**：抛错 / promise reject / `ok === false` ⇒ 按固定间隔重试；
  * - **有界**：最多 `maxAttempts` 次（无界重试 = 定时器泄漏）；
  * - **语言变化重置**：新的 `send()` 清掉待发定时器并从第 1 次重新计；
- * - **dispose 后彻底安静**：清定时器，回调即使被外部触发也不再发。
+ * - **dispose 后彻底安静**：清定时器，回调即使被外部触发也不再发；
+ * - **值没就绪也算「失败」**（2026-10-26）：取到空/非法值 ⇒ 排重试（getter 每次**重新取**），
+ *   绝不静默放弃 —— 旧实现把「值还没就绪」当「无事可做」直接 return，于是挂载瞬间
+ *   `getSnapshot()` 为空时**一次都不推**，宿主永久停在 en 兜底（整轮产物英文 + 中英混排）。
  */
 export const LOCALE_PUSH_RETRY_MS = 2000
 export const LOCALE_PUSH_MAX_ATTEMPTS = 8
@@ -42,8 +45,13 @@ export interface LocalePushDeps {
 }
 
 export interface LocalePusher {
-  /** 上报一次语言：重置计数与待发定时器（语言变化走这条）。 */
-  send: (locale: unknown) => void
+  /**
+   * 上报一次语言：重置计数与待发定时器（语言变化走这条）。
+   *
+   * `locale` 可以是**值**，也可以是 **getter** —— getter 会在每次尝试时**重新取**，
+   * 用于「挂载瞬间语言服务还没就绪」的情形；取到空/非法时排重试而不是放弃。
+   */
+  send: (locale: unknown | (() => unknown)) => void
   /** 卸载：清掉待发定时器并让后续回调失效。 */
   dispose: () => void
 }
@@ -63,16 +71,21 @@ export function createLocalePusher(deps: LocalePushDeps): LocalePusher {
     timer = null
   }
 
-  const send = (locale: unknown): void => {
+  /** 当前轮的语言来源：**值或 getter**（getter 在每次尝试时重新取 —— 挂载瞬间可能还没就绪）。 */
+  let source: unknown = null
+  const readSource = (): unknown => {
+    try { return typeof source === 'function' ? (source as () => unknown)() : source } catch (e) { return null }
+  }
+  const send = (input: unknown): void => {
     if (!alive) return
     generation += 1
     attempts = 0
     clear()
-    if (typeof locale !== 'string' || !locale) return
-    attempt(locale, generation)
+    source = input
+    attempt(generation)
   }
 
-  function attempt(locale: string, gen: number): void {
+  function attempt(gen: number): void {
     attempts += 1
     const retry = (): void => {
       if (!alive || gen !== generation) return // 期间又被 send 过 ⇒ 那一轮负责，本轮回调作废
@@ -84,9 +97,16 @@ export function createLocalePusher(deps: LocalePushDeps): LocalePusher {
         // 而 dispose 或切语言之后任何一次补发都是错的（测试 ⑧ 实测：只在排期时判 ⇒ dispose 后仍会发）。
         if (!alive || gen !== generation) return
         if (!shouldRetryLocalePush(attempts, maxAttempts)) return
-        attempt(locale, gen)
+        attempt(gen)
       }, retryMs)
     }
+    const locale = readSource()
+    // **空/非法 ≠ 「无事可做」**（2026-10-26 真机 `tf-mvp015bq-vy7vgk`）：挂载那一刻
+    // `ctx.locale.getSnapshot()` 可能还没就绪（`shared.tsx` 的 `localeTag` 自己就写着
+    // `catch { /* 服务未就绪 */ }`）。旧实现这里直接 `return` ⇒ **一次都不推、也不重试**
+    // ⇒ 宿主永久停在 en 兜底（整轮产物与日志英文 + 团队名/子代理 label 英文，而宿主 UI 是中文）。
+    // 现在：值没就绪就排重试，重试时**重新取**（getter），就绪后自然推上去。
+    if (typeof locale !== 'string' || !locale) { retry(); return }
     try {
       const r = deps.push(locale) as { ok?: unknown; then?: unknown } | undefined
       if (r && typeof r.then === 'function') { (r as Promise<unknown>).then(() => { }, retry); return }

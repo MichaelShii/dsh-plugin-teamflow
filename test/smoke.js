@@ -1266,8 +1266,10 @@ ok(/const localePusher = createLocalePusher\(\{[\s\S]{0,300}?push: \(loc\) => te
 ok(/return \(\) => \{ off\(\); localePusher\.dispose\(\) \}/.test(clientSrc),
   'client：卸载时 dispose（清待发定时器 —— 不泄漏）')
 // 世代/存活判据必须覆盖**两处**：只在「排期」判 ⇒ dispose 后已排的定时器照样会发（locale 测试 ⑧ 实测）
+// ⚠️ `attempt(gen)`（不是 `attempt(locale, gen)`）：locale 现在由 `readSource()` 每次尝试时**重新取**
+//    —— 挂载瞬间语言服务未就绪时取到空值，重试要能拿到后来就绪的真实语言（2026-10-26 实锤）。
 ok((pushSrc.match(/gen !== generation/g) || []).length >= 2 &&
-  /if \(!alive \|\| gen !== generation\) return[\s\S]{0,120}?attempt\(locale, gen\)/.test(pushSrc),
+  /if \(!alive \|\| gen !== generation\) return[\s\S]{0,120}?attempt\(gen\)/.test(pushSrc),
   'locale-push：触发时再判一次存活/世代（防「dispose 后补发」与「切语言旧轮回调」）')
 ok((pushSrc.match(/shouldRetryLocalePush\(attempts, maxAttempts\)/g) || []).length >= 1 &&
   /export function shouldRetryLocalePush/.test(pushSrc),

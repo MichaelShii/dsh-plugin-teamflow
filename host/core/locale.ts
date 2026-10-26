@@ -23,11 +23,27 @@ import { FALLBACK_LOCALE, parseLocale, resolveLocale, type HostLocale } from '..
 /** 客户端推送的语言（最近一次，内存单槽）。 */
 let clientPushed: HostLocale | null = null
 
-/** 客户端推送语言：可解析即写入，非法即清空（非法值不保留旧值——避免「推了个 fr，host 还在用上次的 en」）。 */
+/**
+ * 客户端推送语言。**三态语义**（2026-10-26 修，真机 `tf-mvp015bq-vy7vgk`）：
+ * - **合法值**（zh/en）⇒ 写入，返回 true；
+ * - **空 / 缺失**（'' / null / undefined）⇒ **保留旧值**，返回 false。
+ *   这不是「用户切到了别的语言」，而是「**还没取到语言**」（挂载瞬间 `getSnapshot()` 可能为空，
+ *   见 `client/index.tsx` 的 readLocale）。旧实现把它当非法**清空**，一次坏推送就能抹掉之前
+ *   好的 zh ⇒ 宿主永久停在 en 兜底（整轮产物英文 + 中英混排）。
+ * - **非空但不支持**（如 'fr'）⇒ 清空，返回 false（保持原有语义：避免「推了个 fr，host
+ *   还在用上次的 en」，让解析链降到宿主设置 / en）。
+ */
 export function noteClientLocale(v: unknown): boolean {
   const parsed = parseLocale(v)
-  clientPushed = parsed
-  return parsed !== null
+  if (parsed) { clientPushed = parsed; return true }
+  if (typeof v !== 'string' || !v.trim()) return false // 空/缺失 ⇒ 保留旧值（不是语言变化）
+  clientPushed = null // 真实但不支持的语言 ⇒ 清空
+  return false
+}
+
+/** 显式清空客户端推送槽（测试/运维重置用；生产路径走 `noteClientLocale` 的三态语义）。 */
+export function resetClientLocale(): void {
+  clientPushed = null
 }
 
 /** 当前客户端推送值（未推送/已清空 → null）。 */
