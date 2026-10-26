@@ -1520,5 +1520,25 @@ console.log('── 12) 无 supplement 的 resume = 整版放行 ⇒ 要求显�
   ok(/dependency-name:\s*'typescript'/.test(depText), 'ci：dependabot 忽略 typescript 大版本（TS7 勿用）')
   ok(/dependency-name:\s*'@types\/react'/.test(depText), 'ci：dependabot 忽略 @types/react 大版本（须与 peer react 同 major）')
 }
+/* ── start 拒绝路径的返回形状（2026-10-27）─────────────────────────────
+ * 事故：`teamflow_start` 在「本会话已暂停」和「未选团队」两条**拒绝路径**上返回
+ * `{ runId: null, status, message }`，而 output schema 把 runId 声明成 `string`
+ * （且 additionalProperties:false）⇒ 宿主输出校验按类型判，`null` 整条拒回，模型看到的是
+ * `invalid output: "value.runId" must be a string` —— 被读成"工具内部异常/插件有缺陷"，
+ * 而真实原因是「没选团队」。连续两次重试都同一个错（用户实锤截图）。
+ *
+ * 判据：**schema 里声明了类型，就不能给它 null**（省略字段 ≠ 给 null：required 里没有它）。
+ * 这条锁的不是"某行代码"，是这个形状不许回来。
+ */
+{
+  // 只看代码、不看**整行注释**：这条事故的说明注释里就写着那个坏形状，不剥注释会把
+  // 「解释这个 bug」误判成「又犯这个 bug」。（不用正则剥注释：写正则容易反斜杠加倍，
+  // 而且会把字符串里的 // 一起切掉。）
+  const indexCode = indexSrc.split('\n').map((l) => (l.trim().startsWith('//') ? '' : l)).join('\n')
+  ok(!indexCode.includes('runId: null') && !indexCode.includes('runId:null'), 'start：拒绝路径不得返回 runId:null（schema 声明 string，宿主会整条拒回）')
+  ok(/status: 'paused',\s*message:/.test(indexSrc), 'start：paused 分支仍带 status+message（别为了消错把整条返回删掉）')
+  ok(/status: 'no-team',\s*message:/.test(indexSrc), 'start：no-team 分支仍带 status+message')
+}
+
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

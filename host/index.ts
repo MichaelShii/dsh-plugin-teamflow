@@ -301,14 +301,19 @@ function registerTools(ctx) {
       // 暂停检查：会话级暂停时拒绝启动
       const sessionId = parent.session && parent.session.id
       if (sessionId && pausedSessions.has(String(sessionId))) {
-        return { runId: null, status: 'paused', message: t(ambientLocale(), 'tool.start.paused') }
+        // ⚠️ 不返回 `runId: null`：output schema 把 runId 声明成 string（且 additionalProperties:false），
+        // **声明了就不能给 null** —— 宿主输出校验按类型判，`{runId:null}` 会整条拒回成
+        // `invalid output: "value.runId" must be a string`，模型看到的是"工具内部异常"，
+        // 而真实原因是「本会话已暂停」。省略该字段即可（required 里没有它，render 走 `!value.runId`）。
+        return { status: 'paused', message: t(ambientLocale(), 'tool.start.paused') }
       }
       // 团队检查：必须先通过 UI "+" 按钮选择团队，否则拒绝
       const teamId = (args && typeof args.teamId === 'string' && args.teamId.trim())
         || (sessionId && activeTeams.get(String(sessionId)))
         || null
       if (!teamId) {
-        return { runId: null, status: 'no-team', message: t(ambientLocale(), 'tool.start.noTeam') }
+        // 同上：省略 runId，不要给 null（详见前面 paused 分支的注释）。
+        return { status: 'no-team', message: t(ambientLocale(), 'tool.start.noTeam') }
       }
       // 需求意图预检（ADR-2026-08-28）：疑问/建议/反馈句式（「是不是应该」「要不要」）→ 更像反馈而非明确
       // 开发需求——不启动，返回确认请求由主线程 Agent 先向用户确认（实锤：用户反馈「是不是应该加个 Toast」
