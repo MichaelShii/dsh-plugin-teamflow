@@ -1420,7 +1420,11 @@ function repairBlueprintJson(raw: string): string | null {
   return null
 }
 
-export function extractBlueprint(text: string | null | undefined, locale?: HostLocale | null): Blueprint | null {
+export function extractBlueprint(
+  text: string | null | undefined,
+  locale?: HostLocale | null,
+  diag?: BlueprintRepairDiag,
+): Blueprint | null {
   const s = String(text || '')
   const i = s.indexOf(bdOpen)
   const j = s.indexOf(bdClose)
@@ -1431,7 +1435,7 @@ export function extractBlueprint(text: string | null | undefined, locale?: HostL
   const start = i + bdOpen.length + (lead ? lead[0].length : 0)
   if (j <= start) return null
   const raw = s.slice(start, j).trim()
-  const parsed = parseBlueprintJson(raw)
+  const parsed = parseBlueprintJson(raw, diag)
   if (!parsed) return null
   return toBlueprint(parsed, locale)
 }
@@ -1468,15 +1472,88 @@ function closeTruncated(raw: string): string | null {
 }
 
 /** `JSON.parse` ＋ 两种畸形抢救：**末尾截断**（`closeTruncated`）→ **提前闭合**（`repairBlueprintJson`）。非对象 ⇒ null。 */
-function parseBlueprintJson(raw: string): BlueprintShape | null {
+/** 蓝图抢救的诊断出口（「修过」这件事必须可见，否则契约违约会长期静默）。 */
+export interface BlueprintRepairDiag {
+  /** 非法 JSON 转义（如 `\.` / `\[`）被自动加倍修复过 */
+  repairedEscapes?: boolean
+}
+
+/**
+ * 修复 JSON **字符串内的非法转义**（2026-10-26 真机 `tf-mvp5tdie-ma36fk` 实锤）。
+ *
+ * 由来：模型把正则**原样**写进蓝图的 `spec` / `api` 字段（`/\.md$/i`、`/\[\[[^\[\]]+?\]\]/`），
+ * 而 JSON 只允许 `\" \\ \/ \b \f \n \r \t \uXXXX` ⇒ `JSON.parse` 抛
+ * 「Bad escaped character in JSON at position 4634」⇒ **6.2KB 蓝图（6 模块 / 7 任务）整份丢弃**
+ * ⇒ dev 退化为单任务整体开发（实测该轮 dev 87 calls / 4.8M cacheRead，原本可拆 7 卡）。
+ *
+ * 为什么**可以**确定性地加倍（客观判据，不猜内容）：非法转义在 JSON 里没有第二种解释，
+ * 作者只可能想写一个**字面反斜杠**；加倍是唯一不改变语义的修法（MEMORY §2：不依赖模型自律）。
+ * 同时修**裸控制字符**（字符串内的裸换行/制表符）—— 同一类病（直接粘贴多行文本），JSON 里只允许转义形式。
+ *
+ * 只在**字符串内部**动手（`"` 状态机）：字符串外的反斜杠在合法 JSON 里不存在。
+ * 没有可修之处 ⇒ 返回 `null`（调用方据此区分「修过」与「本来就没问题」）。
+ */
+export function repairJsonEscapes(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string' || !raw) return null
+  let out = ''
+  let inStr = false
+  let changed = false
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i]
+    if (!inStr) {
+      out += c
+      if (c === '"') inStr = true
+      continue
+    }
+    if (c === '"') { inStr = false; out += c; continue }
+    if (c === '\\') {
+      const n = raw[i + 1]
+      if (n === undefined) { out += '\\\\'; changed = true; continue }
+      const okSimple = '"\\/bfnrt'.indexOf(n) >= 0
+      const okUnicode = n === 'u' && /^[0-9a-fA-F]{4}$/.test(raw.slice(i + 2, i + 6))
+      if (okSimple) { out += '\\' + n; i += 1; continue }
+      if (okUnicode) { out += '\\u'; i += 1; continue }
+      // 非法转义（`\.` `\[` `\d` `\s` `\w` …）⇒ 当作字面反斜杠加倍
+      out += '\\\\' + n
+      i += 1
+      changed = true
+      continue
+    }
+    const code = c.charCodeAt(0)
+    if (code < 0x20) {
+      changed = true
+      out += c === '\n' ? '\\n' : c === '\r' ? '\\r' : c === '\t' ? '\\t' : '\\u' + code.toString(16).padStart(4, '0')
+      continue
+    }
+    out += c
+  }
+  return changed ? out : null
+}
+
+function parseBlueprintJson(raw: string, diag?: BlueprintRepairDiag): BlueprintShape | null {
   let parsed: unknown = null
-  try { parsed = JSON.parse(raw) } catch (e) {
-    // 两种形态互不覆盖，都试一次：先补闭合（本批实锤的那类），再删提前闭合（历史那类）。
-    for (const cand of [closeTruncated(raw), repairBlueprintJson(raw)]) {
-      if (!cand) continue
-      try { parsed = JSON.parse(cand); break } catch (e2) { parsed = null }
+  let repairedEscapes = false
+  const tryParse = (cand: string | null): boolean => {
+    if (typeof cand !== 'string' || !cand) return false
+    try { parsed = JSON.parse(cand); return true } catch (e) { parsed = null; return false }
+  }
+  if (!tryParse(raw)) {
+    // 三种病互不覆盖，挨个试：①末尾截断（补闭合）②非法转义（2026-10-26 那类）
+    // ③顶层值提前闭合（历史那类）；**两种同时犯**时先补闭合或先修转义各试一遍。
+    const esc = repairJsonEscapes(raw)
+    const closed = closeTruncated(raw)
+    const candidates: Array<{ text: string | null; esc: boolean }> = [
+      { text: closed, esc: false },
+      { text: esc, esc: true },
+      { text: closed ? repairJsonEscapes(closed) : null, esc: true },
+      { text: repairBlueprintJson(raw), esc: false },
+      { text: esc ? closeTruncated(esc) : null, esc: true },
+    ]
+    for (const c of candidates) {
+      if (tryParse(c.text)) { repairedEscapes = c.esc; break }
     }
   }
+  if (diag) diag.repairedEscapes = repairedEscapes
   return parsed && typeof parsed === 'object' ? (parsed as BlueprintShape) : null
 }
 
@@ -1486,14 +1563,18 @@ function parseBlueprintJson(raw: string): BlueprintShape | null {
  * 契约要求文件里是**纯 JSON**（无标记），但模型可能顺手把 `<!-- blueprint -->` 标记也写进去
  * ⇒ 两种都吃：先按标记块提取（带 repair 抢救），失败再直接 parse 整份内容。
  */
-export function blueprintFromText(raw: string | null | undefined, locale?: HostLocale | null): Blueprint | null {
+export function blueprintFromText(
+  raw: string | null | undefined,
+  locale?: HostLocale | null,
+  diag?: BlueprintRepairDiag,
+): Blueprint | null {
   const s = String(raw == null ? '' : raw).trim()
   if (!s) return null
   if (s.indexOf('<!--') >= 0) {
-    const byMark = extractBlueprint(s, locale)
+    const byMark = extractBlueprint(s, locale, diag)
     if (byMark) return byMark
   }
-  const parsed = parseBlueprintJson(s)
+  const parsed = parseBlueprintJson(s, diag)
   return parsed ? toBlueprint(parsed, locale) : null
 }
 

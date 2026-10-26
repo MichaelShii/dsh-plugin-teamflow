@@ -15,7 +15,7 @@ export type { DevTaskDef } from './stages/dev.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
 import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, artifactFingerprint, detectInstallEnv, hasHumanReplySince, lastHumanReplySince, isExplicitApproval, absoluteRunDocs, normalizeSignal } from '../util.ts'
-import type { Blueprint } from '../util.ts'
+import type { Blueprint, BlueprintRepairDiag } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { RETRY_LIMIT, PHASE_ORDER, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, DEV_MAX_CONCURRENCY, DEV_DEFAULT_CONCURRENCY } from '../constants.ts'
 import { persistJournal, loadJournalById, dshHome } from '../../store.ts'
@@ -1205,7 +1205,9 @@ export async function executePipeline(
       // 原文落档路径（② 分支解析失败时填）—— 末尾统一发**一条** warn，避免与 `sawMark` 兜底重复
       let archivedPath = ''
       // ① 回复正文（旧主通道；也是文件通道失效时的回落）
-      let bd = extractBlueprint(tech)
+      // `bdDiag`：三条通道共用一个诊断出口——「非法转义被自动修复过」必须可见（2026-10-26 实锤）。
+      const bdDiag: BlueprintRepairDiag = {}
+      let bd = extractBlueprint(tech, null, bdDiag)
       // ② **独立文件**（2026-10-09 新主通道，与 state 块同构）：`logs/teamflow/<runId>/blueprint.json`。
       //    纯中转 —— 原文**无条件落档**到 `$DSH_HOME` 供人工复查，项目内那份随后读完即删，
       //    所以项目内的停留窗口从「整个 run」缩到「几秒」，可续跑终态（不做归档）也不再残留。
@@ -1220,7 +1222,7 @@ export async function executePipeline(
           const archived = saveBlueprintArchive(String(journal.workspace || 'default'), journal.id, rawBp)
           if (archived) journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintArchived', { path: archived }) })
           if (!bdUsable(bd)) {
-            const fromChannel = blueprintFromText(rawBp)
+            const fromChannel = blueprintFromText(rawBp, null, bdDiag)
             if (bdUsable(fromChannel)) {
               bd = fromChannel
               journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintFromChannel') })
@@ -1244,13 +1246,19 @@ export async function executePipeline(
           if (techFile && existsSync(techFile)) {
             const raw = readFileSync(techFile, 'utf8')
             if (hasBlueprintMark(raw)) sawMark = true
-            const fromFile = extractBlueprint(raw)
+            const fromFile = extractBlueprint(raw, null, bdDiag)
             if (bdUsable(fromFile)) {
               bd = fromFile
               journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.blueprintFromFile') })
             }
           }
         } catch (e) { /* 回退失败走既有告警 */ }
+      }
+      // 蓝图 JSON 里出现过**非法转义**（模型把正则原样写进 spec/api，如 `/\.md$/i`）⇒ 已自动加倍修复。
+      // 结果是对的（拆卡保住），但**契约违约必须可见**——否则 prompt 的写法问题会长期隐身
+      // （2026-10-26 实锤 tf-mvp5tdie-ma36fk：整份 6.2KB 蓝图被 JSON.parse 拒绝 ⇒ dev 退化单任务 87 calls）。
+      if (bdDiag.repairedEscapes) {
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.blueprintRepairedEscapes') })
       }
       if (bdUsable(bd)) {
         try {

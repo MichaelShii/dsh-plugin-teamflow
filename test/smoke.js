@@ -314,7 +314,7 @@ ok(!/次后仍无产出，需人工介入`/.test(pipelineSrc), 'pipeline：不�
 ok(/Engineering actions carried verbatim/.test(promptsSrc) && /git actions from the PRD/.test(promptsSrc), 'prompts：PRD 承接工程指令 + tech 蓝图传递 git 动作')
 ok(/Engineering action execution/.test(promptsSrc) && /execute the action BEFORE writing code/.test(promptsSrc), 'prompts：dev 先执行 git 动作再写码')
 ok(/repairBlueprintJson/.test(utilSrc), 'util：蓝图 JSON 提前闭合抢救（防静默回退整体开发）')
-ok(/const fromFile = extractBlueprint\(raw\)/.test(pipelineSrc) && /bdUsable\(fromFile\)/.test(pipelineSrc), 'pipeline：蓝图提取回退任务夹 TECHNICAL.md，且回退结果**过实质校验**才采用（模型写进文档而非回复输出时 M2 拆卡不退化，实锤 r13 单任务整体开发）')
+ok(/const fromFile = extractBlueprint\(raw, null, bdDiag\)/.test(pipelineSrc) && /bdUsable\(fromFile\)/.test(pipelineSrc), 'pipeline：蓝图提取回退任务夹 TECHNICAL.md，且回退结果**过实质校验**才采用（模型写进文档而非回复输出时 M2 拆卡不退化，实锤 r13 单任务整体开发）')
 ok(/token 观测/.test(guardSrc) && /重复 read|验证脚本重复执行/.test(hostSrc) && /observeToolCalls/.test(guardSrc), 'guard：token 观测信号（重复读/验证循环只记 warning 不中止）')
 ok(/蓝图块解析失败/.test(hostSrc) && /devAssign: \(mainTask && mainTask\.devAssign\) \|\| null/.test(backlogSrc), 'pipeline/backlog：蓝图解析失败告警 + 子卡继承 devAssign')
 
