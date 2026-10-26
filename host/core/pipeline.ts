@@ -14,7 +14,7 @@ import { runAcceptancePhase } from './stages/acceptance.ts'
 export type { DevTaskDef } from './stages/dev.ts'
 import { deliverCompletion } from './report.ts'
 import { prdPrompt, designPrompt, scaffoldPrompt, techPrompt, architectPrompt, techChangePrompt, patchConfirmPrompt } from '../prompts/index.ts'
-import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, detectInstallEnv, hasHumanReplySince, lastHumanReplySince, isExplicitApproval, absoluteRunDocs, normalizeSignal } from '../util.ts'
+import { clip, normalizeRoot, normalizeTasks, sanitizeSnapOptions, extractBlueprint, blueprintFromText, extractVerificationEvidence, runFolderName, deriveBranchSlug, mergeGitignore, extractAssumptionsSection, extractHostResearchSection, devTaskStatuses, backfillDevTaskIds, artifactText, artifactFingerprint, detectInstallEnv, hasHumanReplySince, lastHumanReplySince, isExplicitApproval, absoluteRunDocs, normalizeSignal } from '../util.ts'
 import type { Blueprint } from '../util.ts'
 import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { RETRY_LIMIT, PHASE_ORDER, phaseKeyOf, resolveStages, FRESH_TOKEN_BUDGET, MECHANICAL_STAGE_EFFORT, DEV_MAX_CONCURRENCY, DEV_DEFAULT_CONCURRENCY } from '../constants.ts'
@@ -954,6 +954,12 @@ export async function executePipeline(
         instruction,
         signal: normalizeSignal(signal),
         diag,
+        // **产物探针**（2026-10-26 真机 `tf-mvovb2gb-her9mv` 实锤）：redo 的实际形态是
+        // 「改 PRD.md + 写状态文件，聊天末条只给一段小结」⇒ 让 prd-revise 看得见「产物被改写过」：
+        // ① 产物变更算**进展**（child 正在写文件，不能当成死了 —— 那次 redo 实跑 377s，
+        //    固定 300s 墙钟让它在完工前 77s 放弃、白等 5 分钟、还让两份 PRD 并行跑 77s）；
+        // ② 回合结束但回复无正文时，可按「文件即产物」判完成。
+        probe: () => artifactFingerprint(journal, 'PRD.md'),
         onWait: () => { /* 超时由返回值表达，这里不额外刷日志 */ },
       })
       if (!out) {
@@ -966,7 +972,15 @@ export async function executePipeline(
         journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, key, { base: String(diag.base), end: String(diag.end), secs }) })
         return null
       }
-      const shown = stripStateBlock(out.text)
+      // **交付物以文件为准**（文件即产物）：回复没正文、但产物被改写过 ⇒ 用 PRD.md 顶上。
+      // 真机 redo 形态：child 写 PRD.md + 状态文件，聊天末条只有 776 字「更新小结」。
+      const fileText = out.artifactChanged ? artifactText(journal, 'PRD.md') : null
+      const shown = (out.text && out.text.trim()) ? stripStateBlock(out.text) : (fileText || '')
+      if (!shown) {
+        // 既无回复正文、又读不到产物 ⇒ 仍算失败（**绝不返回空串**：空串会把 PRD 写空）⇒ 回落重跑
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.reviseNoDeliverable', { secs: String(Math.round((diag.waitedMs || 0) / 1000)) }) })
+        return null
+      }
       // 阶段记录：续跑那一轮也要进 stages（断点定位/汇报/用量都按「每阶段一条」读）。
       // 只在成功后 push —— 失败不留 running 残影。
       const seq = (journal.stages.length ? Math.max(...journal.stages.map((s) => s.seq)) : 0) + 1
@@ -979,7 +993,7 @@ export async function executePipeline(
       journal.agentsStarted += 1
       mergeStageState('prd', out.text, stateBlockRelPath(journal.id, 'prd'))
       timeline['prd'] = shown
-      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.prdRevisedViaChild', { n: String(shown.length) }) })
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, (out.text && out.text.trim()) ? 'log.prdRevisedViaChild' : 'log.prdRevisedViaArtifact', { n: String(shown.length) }) })
       return { text: shown, cancelled: false, skipped: false }
     }
     // patch 档的「单点确认」是机械阶段（核对现状 + 给直改指令，不做架构判断）→ 降档省 token

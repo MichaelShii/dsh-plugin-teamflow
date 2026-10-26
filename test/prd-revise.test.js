@@ -11,7 +11,7 @@
  * ② **结束判据** —— 必须等到 `turn/end`，否则会把第一轮的旧 assistant 文本当第二轮结果。
  * ③ **失败必须回落** —— 超时/空文本/投递失败一律返回 null，绝不返回空串（空串会让 PRD 被写空）。
  */
-import { assistantTextOf, lastAssistantText, sumRevisionUsage, canReviseViaChild, revisePrdViaChild, REVISE_WAIT_MS } from '../host/core/prd-revise.ts'
+import { assistantTextOf, lastAssistantText, sumRevisionUsage, canReviseViaChild, revisePrdViaChild, REVISE_WAIT_MS, REVISE_IDLE_MS } from '../host/core/prd-revise.ts'
 
 let failed = 0
 const eq = (a, b, m) => {
@@ -136,7 +136,8 @@ console.log('── 6) 失败必须回落（返回 null，绝不返回空串）�
 }
 
 console.log('── 7) 默认等待预算 ──')
-eq(REVISE_WAIT_MS, 300000, '默认 300s（真机 tf-mvcl5m8t 实测：改一轮 PRD 约 2 分钟，180s 会误超时 ⇒ 提到 5 分钟）')
+eq(REVISE_WAIT_MS, 600000, '默认 600s **绝对天花板**（真机 tf-mvovb2gb-her9mv：redo 实跑 377s ⇒ 300s 墙钟会在完工前 77s 放弃、白等 5 分钟、还让两份 PRD 并行跑 77s）')
+eq(REVISE_IDLE_MS, 240000, '默认 idle 阈值 240s（真机 redo 的**最大事件间隔是 174s** ⇒ 阈值必须大于它，否则把「正在写」误判成「死了」）')
 
 console.log('── 8) 时间锚点：补加载历史时不能重复计（2026-10-18 真机 tf-mvdixrhs）──')
 {
@@ -167,6 +168,91 @@ console.log('── 8) 时间锚点：补加载历史时不能重复计（2026-1
   ]
   const u2 = sumRevisionUsage(noTime, { since: t0, index: 1 })
   eq(u2 && u2.input, 7, '无 time 的事件回落下标锚点（不会全放行）')
+}
+
+console.log('── 9) 等待策略：idle 判据 + 「文件即产物」（2026-10-26 真机 tf-mvovb2gb-her9mv）──')
+console.log('   背景：那次 redo 实跑 377s（8 次 edit + 全文重写 + 状态文件更新 + present），')
+console.log('   固定 300s 墙钟 ⇒ 插件在它完工前 77s 放弃 ⇒ 白等 5 分钟、丢弃已完成的改写、')
+console.log('   还让两份 PRD 并行跑了 77s。修法：放弃判据改「无进展」（idle），天花板抬高；')
+console.log('   并且「回合结束但回复无正文 + 产物被改写」按文件即产物判完成。')
+{
+  // A：死 child（事件零增长）⇒ 在 idle 阈值内就放手，**不等天花板**
+  {
+    const host = {
+      subagents: { sendMessage: async () => 'm' },
+      sessionQuery: { observeSession: async () => ({ events: [userEv('a'), asstEv('旧')] }) },
+    }
+    const t0 = Date.now()
+    const out = await revisePrdViaChild({ ...host, parent: {}, childId: 'c', instruction: 'x', signal: AbortSignal.timeout(9000), waitMs: 5000, idleMs: 200, pollMs: 20 })
+    eq(out, null, 'A 死 child → null（回落重跑）')
+    const spent = Date.now() - t0
+    ok(spent < 1500, 'A 在 idle 阈值内就放手（不等 5s 天花板），实测 ' + spent + 'ms')
+  }
+
+  // B：慢 child（事件持续增长）⇒ 活到 turn/end 为止，不被 idle 误杀
+  {
+    const t0 = Date.now()
+    const host = {
+      subagents: { sendMessage: async () => 'm' },
+      sessionQuery: { observeSession: async () => {
+        const el = Date.now() - t0
+        const n = Math.floor(el / 60) + 1
+        const evs = []
+        for (let i = 0; i < n; i++) evs.push({ type: 'step/start', time: t0 + 1000 + i })
+        if (el > 450) evs.push({ type: 'turn/end', time: t0 + 2000, data: {} }, { type: 'assistant/message', time: t0 + 2001, data: { message: { content: [{ type: 'text', text: '新 PRD' }] } } })
+        return { events: evs }
+      } },
+    }
+    const t1 = Date.now()
+    const out = await revisePrdViaChild({ ...host, parent: {}, childId: 'c', instruction: 'x', signal: AbortSignal.timeout(9000), waitMs: 5000, idleMs: 300, pollMs: 20 })
+    ok(out !== null, 'B 慢 child（事件持续增长）→ 不被 idle 误杀，等到 turn/end')
+    eq(out && out.text, '新 PRD', 'B 取到第二轮文本')
+    const spent = Date.now() - t1
+    ok(spent > 300, 'B 实耗 ' + spent + 'ms > idle 阈值（证明「idle」不是墙钟：有进展就一直等）')
+  }
+
+  // C：回合结束 + 回复无正文 + 产物被改写 ⇒ 判完成（文件即产物）
+  {
+    let fp = 'fp1'
+    const t0 = Date.now()
+    const host = {
+      subagents: { sendMessage: async () => { fp = 'fp2'; return 'm' } },
+      sessionQuery: { observeSession: async () => ({ events: [{ type: 'step/start', time: t0 + 1000 }, { type: 'turn/end', time: t0 + 2000, data: {} }] }) },
+    }
+    const out = await revisePrdViaChild({ ...host, parent: {}, childId: 'c', instruction: 'x', signal: AbortSignal.timeout(3000), waitMs: 1000, idleMs: 500, pollMs: 20, probe: () => fp })
+    ok(out !== null, 'C 回合结束 + 产物被改写 + 回复无正文 → 判完成（不再白白回落重跑一遍）')
+    eq(out && out.text, '', 'C 聊天正文为空（交付物是文件，不是聊天正文）')
+    eq(out && out.artifactChanged, true, 'C artifactChanged=true')
+  }
+
+  // D：回合结束 + 回复无正文 + 产物**没变** ⇒ 仍回落 null（不拿旧产物冒充交付）
+  {
+    const t0 = Date.now()
+    const host = {
+      subagents: { sendMessage: async () => 'm' },
+      sessionQuery: { observeSession: async () => ({ events: [{ type: 'step/start', time: t0 + 1000 }, { type: 'turn/end', time: t0 + 2000, data: {} }] }) },
+    }
+    const out = await revisePrdViaChild({ ...host, parent: {}, childId: 'c', instruction: 'x', signal: AbortSignal.timeout(3000), waitMs: 1000, idleMs: 500, pollMs: 20, probe: () => 'fp1' })
+    eq(out, null, 'D 产物没变 → 仍回落 null（宁可不认，也不拿上一版冒充）')
+  }
+
+  // E：产物变更本身算「进展」⇒ 只有文件在动、没有新事件时也不该被判死
+  {
+    const t0 = Date.now()
+    const host = {
+      subagents: { sendMessage: async () => 'm' },
+      sessionQuery: { observeSession: async () => {
+        const el = Date.now() - t0
+        const evs = [{ type: 'step/start', time: t0 + 1000 }]
+        if (el > 450) evs.push({ type: 'turn/end', time: t0 + 2000, data: {} }, { type: 'assistant/message', time: t0 + 2001, data: { message: { content: [{ type: 'text', text: '新 PRD' }] } } })
+        return { events: evs }
+      } },
+    }
+    // 产物在 ~250ms 后被改写；此后**不再有新事件**，turn/end 迟迟不来
+    const out = await revisePrdViaChild({ ...host, parent: {}, childId: 'c', instruction: 'x', signal: AbortSignal.timeout(9000), waitMs: 5000, idleMs: 300, pollMs: 20, probe: () => (Date.now() - t0 > 250 ? 'fp2' : 'fp1') })
+    ok(out !== null, 'E 产物在动 ⇒ 算进展，不被判死（等到了 turn/end）')
+    eq(out && out.text, '新 PRD', 'E 取到第二轮文本')
+  }
 }
 
 console.log(failed === 0 ? '\n✅ prd-revise 全部通过' : `\n❌ ${failed} 项失败`)

@@ -335,11 +335,13 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.confirmRevised': '确认单：PRD 已被改写（第 {rev} 版）⇒ 上一版批准自动失效，重新等批准',
     // PRD 续跑改写（2026-10-17）：在**原 PRD 子代理的上下文里**改，而不是重跑。
     'log.prdRevisedViaChild': 'PRD 改写走**续跑**：在原 PRD 子代理的上下文里增量修改（{n} 字符，未重新读需求/文档）',
+    'log.prdRevisedViaArtifact': 'PRD 改写走**续跑**：子代理只改了产物文件、回复无正文（PRD.md {n} 字符）⇒ 以文件为交付物',
     // ⚠️ 三种回落原因**必须分开**：真机 tf-mvcl5m8t 等满 3 分钟回落后，合在一起的文案无从定位
     // 是「投递没被接受」「投递后事件零增长（第二轮没启动）」还是「跑了但没结束」。
     'log.reviseNoDeliver': 'PRD 改写**回落为重跑**：向原子代理投递修改要求**被拒绝**（事件 {base} 条，等待 {secs}s）⇒ 重新 spawn',
     'log.reviseNoFire': 'PRD 改写**回落为重跑**：投递后事件**零增长**（{base} → {end}，等待 {secs}s）⇒ 第二轮没有启动（cold resume 未触发 / 子代理会话不可恢复）⇒ 重新 spawn',
     'log.reviseFallback': 'PRD 改写**回落为重跑**：第二轮跑了但没拿到可用文本（事件 {base} → {end}，等待 {secs}s）⇒ 重新 spawn',
+    'log.reviseNoDeliverable': 'PRD 改写**回落为重跑**：回合结束了但既无回复正文、又读不到产物文件（等待 {secs}s）⇒ 重新 spawn',
     'log.reviseNoChild': 'PRD 改写**没有走续跑**：找不到产出当前 PRD 的子代理 id（可能是老 run / 阶段记录已被摘掉）⇒ 回落为重跑',
     'log.reviseNoHost': 'PRD 改写**没有走续跑**：宿主缺少 sendMessage 或 sessionQuery 能力 ⇒ 回落为重跑（插件照常工作，只是没有增量改写）',
     // 逐轮用量留痕（in/cacheRead/out/calls）：排查「总数翻倍」时唯一能分辨「本轮被算两次」vs「本轮值本身就是累计」的证据
@@ -804,9 +806,11 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.confirmAbort': 'PRD confirm sheet (ADR-0011): PRD finished → **paused for approval** ({ac} AC(s) / {as} assumption line(s)). No later stage has started',
     'log.confirmRevised': 'Confirm sheet: the PRD was revised (version {rev}) ⇒ the previous approval is void and a new approval is required',
     'log.prdRevisedViaChild': 'PRD revised via **continuation**: edited inside the original PRD child\'s context ({n} chars, no re-read of the requirement or docs)',
+    'log.prdRevisedViaArtifact': 'PRD revised via **continuation**: the subagent only changed the artifact file and its reply carried no body (PRD.md {n} chars) => the file is the deliverable',
     'log.reviseNoDeliver': 'PRD revision **fell back to a fresh run**: delivering the change to the original child was **rejected** ({base} events, waited {secs}s) => spawning a new child',
     'log.reviseNoFire': 'PRD revision **fell back to a fresh run**: **no new events** after delivery ({base} -> {end}, waited {secs}s) => the second turn never started (cold resume did not fire / child session unrecoverable) => spawning a new child',
     'log.reviseFallback': 'PRD revision **fell back to a fresh run**: the second turn ran but produced no usable text ({base} -> {end} events, waited {secs}s) => spawning a new child',
+    'log.reviseNoDeliverable': 'PRD revision **fell back to a fresh run**: the turn ended but there was neither reply text nor a readable artifact file (waited {secs}s) => spawning a new child',
     'log.reviseNoChild': 'PRD revision did **not** use continuation: no child id for the current PRD (old run / stage record already dropped) ⇒ falling back to a fresh run',
     'log.reviseNoHost': 'PRD revision did **not** use continuation: host lacks sendMessage or sessionQuery ⇒ falling back to a fresh run (the plugin still works, just without incremental revision)',
     'log.usageAccum': 'PRD usage accumulated: this round in/cr/out/calls = {round} ⇒ total {acc}',
