@@ -1493,6 +1493,32 @@ console.log('── 12) 无 supplement 的 resume = 整版放行 ⇒ 要求显�
   ok(!/\bexecSync\b/.test(deploySrc), 'deploy：不使用 execSync（字符串进 shell）')
   ok(/\bexecFileSync\b/.test(deploySrc), 'deploy：走 execFileSync + argv')
   ok(/process\.execPath/.test(deploySrc), 'deploy：用 process.execPath 跑脚本（绕开 .cmd shim）')
+
+  /* ── typecheck 接线（2026-10-27）────────────────────────────────────────
+   * 为什么锁：build 走 tsdown（只剥类型）、test 跑 .ts 源（也只剥类型）⇒ 这两条路都不查类型。
+   * 实锤：dependabot 的 typescript 6→7、@types/react 18→19 两个 PR，CI 全绿，而它们恰恰是
+   * 类型层面的破坏。
+   * 为什么锁在 deploy 而不在 ci：`tsc --noEmit` 需要 `@deepseek-ai/dsh-*` 的类型声明，那些包
+   * 不在 registry（tsconfig paths 指向本机 profile）⇒ CI 里必是 TS2307。它的正确位置是
+   * 「有宿主包的机器上、部署前必经」，也就是 deploy.mjs。
+   */
+  const pkgJson = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'))
+  ok(typeof pkgJson.scripts?.typecheck === 'string', 'ci：package.json 有 typecheck 脚本')
+  ok(/TSC_CLI/.test(deploySrc) && /'--noEmit'/.test(deploySrc), 'deploy：测试段跑 tsc --noEmit（类型这一路的唯一门禁）')
+  const ciYmlNoTc = readFileSync(join(here, '..', '.github', 'workflows', 'ci.yml'), 'utf8')
+  ok(!/run:\s*pnpm typecheck/.test(ciYmlNoTc), 'ci：工作流**不**跑 pnpm typecheck（CI 没有宿主包，跑了必假红）')
+
+  /* ── dependabot 的分组/忽略规则（2026-10-27）──────────────────────────
+   * 两者都是「配置写错时不会报错、只会静默做错事」的形态：
+   * ① 分组漏了 update-types ⇒ major 被贴成小更新（危险动作被当无害标签）；
+   * ② 该忽略的大版本没忽略 ⇒ 每月重复提一个我们明确不跟的 PR。
+   */
+  const depText = readFileSync(depPath, 'utf8')
+  const groupBlocks = depText.split(/groups:/).slice(1)
+  ok(groupBlocks.length >= 2, 'ci：dependabot 的两个生态都配了分组')
+  ok(groupBlocks.every((b) => /update-types:\s*\[[^\]]*'minor'[^\]]*'patch'/.test(b.split(/ignore:/)[0])), 'ci：每个分组都限了 minor/patch（major 不许混进「小更新」）')
+  ok(/dependency-name:\s*'typescript'/.test(depText), 'ci：dependabot 忽略 typescript 大版本（TS7 勿用）')
+  ok(/dependency-name:\s*'@types\/react'/.test(depText), 'ci：dependabot 忽略 @types/react 大版本（须与 peer react 同 major）')
 }
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)
