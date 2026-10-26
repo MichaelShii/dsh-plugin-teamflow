@@ -1,0 +1,36 @@
+# 依赖更新（2026-10-26 引入）
+#
+# 为什么需要它：ci.yml 里的 action 一律钉 commit SHA，SHA 不会自己往前走 ——
+# 没有自动更新就等于把供应链停在引入那天，安全修复收不到。两者是一对，不能只做一半。
+#
+# 策略：一周一次、分组、限量。目的不是"最新"，是"别停"+"别淹没人"。
+
+version: 2
+updates:
+  # GitHub Actions：只改 SHA + 行尾的 `# vX.Y.Z` 注释。
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: 'chore(ci)'
+    groups:
+      actions:
+        patterns: ['*']
+
+  # npm 依赖：devDependencies 为主（本插件运行时依赖宿主提供的服务）。
+  # 一律走 minor/patch 分组，major 单独来 —— major 需要人读 changelog，不能混在批量里。
+  - package-ecosystem: npm
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'chore(deps)'
+    groups:
+      minor-and-patch:
+        patterns: ['*']
+        update-types: ['minor', 'patch']
