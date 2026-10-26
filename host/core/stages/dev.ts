@@ -113,6 +113,9 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
     } else if (plan.merged > 0) {
       journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devOverlapMerged', { n: defs.length, m: plan.groups.length - (missing ? 1 : 0) }) })
     }
+    if (plan.cycleMerged > 0) {
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devPlanCycleSerialized', { n: plan.cycleMerged }) })
+    }
     if (plan.dropped > 0) {
       journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.devPlanCycle', { n: plan.dropped }) })
     }

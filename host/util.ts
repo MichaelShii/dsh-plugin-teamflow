@@ -1721,23 +1721,83 @@ export interface DevPlan {
   groups: DevPlanGroup[]
   missingBoundary: string[]
   deps: Array<{ from: number; to: number; via: string }>
-  /** 因会成环而被丢弃的依赖边数（reads 按软依赖处理；0 = 声明无矛盾） */
+  /** 因会成环而被丢弃的依赖边数（**只应出现在兜底分支**：正常路径改为串行化，见 cycleMerged） */
   dropped: number
+  /** 因依赖成环而改成串行链的处数（0 = 声明无矛盾） */
+  cycleMerged: number
   /** 因 write∩write 被吸收掉的任务数（= 合并损失的任务粒度）= 已知边界任务数 − 写互斥组数 */
   merged: number
 }
 export function planDevWaves(
   defs: Array<{ id: string; title: string; spec?: string; files?: string[]; reads?: string[]; dependsOn?: string[] }>,
 ): DevPlan {
+  /* ── 成环 ⇒ 串行化，**不丢边**（2026-10-27 tf-mvpjqs87-14qdxa 实锤）───────────────
+   * 旧行为：`reads` 被当软依赖，插入时若会成环就**丢弃这条边**（只 warn）。后果是硬伤：
+   * 读者与写者进了同一波 ⇒ 读者读到写者改之前的状态，而两个任务都会报「完成」。
+   * 实锤：T1 改 `YongShen.java` 的计权语义，T2 读 `YongShen.java` 且 T1 又读 T2 的
+   * `LiuNian.java` —— 双向 reads ⇒ 丢边 ⇒ 同波 ⇒ T2 按旧计权写 golden，3 个用例一落地就是红的，
+   * 但 T2 报完成、T1 只在 summary 里写「T2 文件有 3 个失败用例，我未改」。
+   * 现在：成环的两个组**并成一条串行链**（组内串行是既有语义），宁可少一路并发，也不让
+   * 「读到旧状态」成为设计保证会发生的事。环很大时逐轮吸收，仍不行则全并成一条链（正确性优先）。
+   */
   const list = Array.isArray(defs) ? defs : []
-  const blank: DevPlan = { waves: [], groups: [], missingBoundary: [], deps: [], dropped: 0, merged: 0 }
-  if (!list.length) return blank
+  const forced: string[][] = []
+  let cycleCount = 0
+  let lastPlan: DevPlan | null = null
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const r = planDevWavesPass(list, forced)
+    lastPlan = r.plan
+    if (!r.cycles.length) { r.plan.cycleMerged = cycleCount; return r.plan }
+    for (const ids of r.cycles) if (ids.length > 1) { forced.push(ids); cycleCount += 1 }
+  }
+  // 兜底：5 轮仍成环（理论上不该发生）⇒ 全部并成一条串行链
+  const all = list.filter((t) => Array.isArray(t.files) && t.files.length > 0).map((t) => t.id)
+  if (all.length > 1) {
+    const r = planDevWavesPass(list, [all])
+    if (!r.cycles.length) { r.plan.cycleMerged = cycleCount + 1; return r.plan }
+  }
+  if (lastPlan) lastPlan.cycleMerged = cycleCount
+  return lastPlan as DevPlan
+}
+
+/** 把「必须串行」的任务集合落实为**同一组**（组内串行是既有语义，不需要新的执行语义）。 */
+function forceMergeGroups<T extends { ids: string[]; title: string; spec?: string; files: string[] }>(
+  groups: T[],
+  forced: string[][],
+): T[] {
+  let out = groups.map((g) => ({ ...g, ids: [...g.ids], files: [...g.files] }))
+  for (const set of forced) {
+    const hit = out.map((g, i) => (g.ids.some((id) => set.includes(id)) ? i : -1)).filter((i) => i >= 0)
+    if (hit.length < 2) continue
+    const base = out[hit[0]]
+    for (const i of hit.slice(1)) {
+      const g = out[i]
+      for (const id of g.ids) if (!base.ids.includes(id)) base.ids.push(id)
+      for (const f of g.files) if (!base.files.includes(f)) base.files.push(f)
+      base.title = `${base.title} + ${g.title}`
+      base.spec = [base.spec, g.spec].filter(Boolean).join('；')
+      ;(out as Array<T | null>)[i] = null
+    }
+    out = (out as Array<T | null>).filter((g): g is T => g !== null)
+  }
+  return out
+}
+
+/** 单轮规划（可能成环）。`cycles` 里每项是「必须串行」的 id 集合；非空 ⇒ 调用方合并后重算。 */
+function planDevWavesPass(
+  list: Array<{ id: string; title: string; spec?: string; files?: string[]; reads?: string[]; dependsOn?: string[] }>,
+  forcedMerge: string[][],
+): { plan: DevPlan; cycles: string[][] } {
+  const blank: DevPlan = { waves: [], groups: [], missingBoundary: [], deps: [], dropped: 0, merged: 0, cycleMerged: 0 }
+  if (!list.length) return { plan: blank, cycles: [] }
   const declared = (t) => Array.isArray(t.files) && t.files.length > 0
   const known = list.filter(declared)
   const unknown = list.filter((t) => !declared(t))
 
-  /** ① 写互斥：仍然靠合并（`mergeFileOverlaps` 的不变量 = 组内串行、组间 files 不相交）。 */
-  const writeGroups = known.length ? mergeFileOverlaps(known) : []
+  /** ① 写互斥：仍然靠合并（`mergeFileOverlaps` 的不变量 = 组内串行、组间 files 不相交）。
+   *  成环被迫串行的组在这里一并并掉（`forceMergeGroups`）。 */
+  const rawGroups = known.length ? mergeFileOverlaps(known) : []
+  const writeGroups = forcedMerge.length ? forceMergeGroups(rawGroups, forcedMerge) : rawGroups
   const byId = new Map(list.map((t) => [t.id, t]))
   const groupOfTask = new Map()
   writeGroups.forEach((g, i) => { for (const id of g.ids) groupOfTask.set(id, i) })
@@ -1782,6 +1842,8 @@ export function planDevWaves(
     }
   })
   const deps: Array<{ from: number; to: number; via: string }> = []
+  /** 成环被迫串行的 id 集合（上层据此合并重算）。 */
+  const cycles: string[][] = []
   const seen = new Set()
   const adj = groups.map(() => [] as number[])
   let dropped = 0
@@ -1801,7 +1863,13 @@ export function planDevWaves(
     if (from < 0 || to < 0 || from === to) return // 同组 ⇒ 已由「合并成同一子节点」解决，无需排序
     const key = from + '>' + to
     if (seen.has(key)) return
-    if (reaches(to, from)) { dropped += 1; return } // 会成环 ⇒ 丢这条边（软依赖可丢，流水线不能挂）
+    if (reaches(to, from)) {
+      // 会成环：这条边**不能插**（图必须保持无环），但也不再「丢掉算了」——
+      // 记下两端组的 id，由上层并成一条串行链后重算（见 planDevWaves 头注释）。
+      dropped += 1
+      cycles.push([...groups[from].ids, ...groups[to].ids])
+      return
+    }
     seen.add(key)
     adj[from].push(to)
     deps.push({ from, to, via })
@@ -1851,12 +1919,16 @@ export function planDevWaves(
     g.after = g.after.map((a) => remap[a]).filter((x) => x !== undefined && x >= 0)
   }
   return {
-    waves,
-    groups: flat,
-    missingBoundary: unknown.map((t) => t.id),
-    deps: deps.map((d) => ({ from: remap[d.from], to: remap[d.to], via: d.via })),
-    dropped,
-    merged: known.length - writeGroups.length,
+    plan: {
+      waves,
+      groups: flat,
+      missingBoundary: unknown.map((t) => t.id),
+      deps: deps.map((d) => ({ from: remap[d.from], to: remap[d.to], via: d.via })),
+      dropped,
+      merged: known.length - writeGroups.length,
+      cycleMerged: 0,
+    },
+    cycles,
   }
 }
 
