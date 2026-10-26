@@ -59,6 +59,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'dev.failedPlaceholder': '开发失败（Agent 未产出结果）',
     'dev.blueprintTask': '开发任务',
     'dev.depBlocked': '未执行：其所依赖的前序任务未通过（已跳过，避免拿半成品往下做；处理后可从「开发」续跑）',
+    'dev.outOfScopeTask': '开发 · 越界发现收口（专属文件，末尾串行）',
+    'log.devOutOfScope': '检测到 {n} 条越界发现（涉及 {files} 个不属于本任务的文件）→ 追加一条收口任务，独占这些文件在本轮末尾执行',
 
     /* ── 流水线日志（journal.logs 固定句式） ─────────────────── */
     'log.idSep': '、',
@@ -548,6 +550,8 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'dev.failedPlaceholder': 'Development failed (the agent produced no result)',
     'dev.blueprintTask': 'Dev task',
     'dev.depBlocked': 'Not executed: its upstream dependency did not pass (skipped so it does not build on a half-done state; resume from Development after handling)',
+    'dev.outOfScopeTask': 'Dev · out-of-scope findings (owned files, serial at the end)',
+    'log.devOutOfScope': 'Found {n} out-of-scope finding(s) across {files} file(s) this task does not own → appended one follow-up task that owns those files and runs at the end of this round',
 
     /* ── 流水线日志 ────────────────────────────────────────── */
     'log.idSep': ', ',

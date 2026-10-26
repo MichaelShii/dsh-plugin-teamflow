@@ -1229,6 +1229,54 @@ const TOOL_ARG_FAILURE = new RegExp([
 ].join('|'), 'i')
 
 /** 是否属于「模型参数传错」（换个参数即可继续）—— 据此**不计入**环境不可用指纹。 */
+/* ── 越界发现（2026-10-27）：dev 任务按契约不许改别人的文件，但"发现了没人接手"会一路滑到 QA ──
+ * 实锤 tf-mvpjqs87-14qdxa：T1 发现 T2 文件里 3 个失败用例并定位到行，只写进自由文本 summary；
+ * 最后由「交付自检」重新跑全量测试才发现（多一次全量构建，且依赖它覆盖到）。
+ * 契约：越界发现必须写进结构化块，host 解析后生成一条**独占这些文件**的收口任务（见 stages/dev.ts）。
+ *
+ * 格式（唯一真相在这条注释与 devPrompt 的说明里）：
+ *   [OUT-OF-SCOPE]
+ *   - src/a/B.java:123 — 现象/证据 — 建议动作
+ *   - src/c/D.java — 现象
+ *   [/OUT-OF-SCOPE]
+ * 解析是**宽容的**：破折号可用 —/–/-，行首列表符可省略，行号可省；但块标记必须存在——
+ * 没有块就等于没有声明（不做"从自由文本里猜"的事，那正是要消灭的形态）。
+ */
+export interface OutOfScopeFinding {
+  file: string
+  line: number | null
+  note: string
+}
+
+/** 解析 dev 回复里的 `[OUT-OF-SCOPE]` 块（最多 `limit` 条；无块 ⇒ 空数组）。 */
+export function parseOutOfScope(text: unknown, limit = 20): OutOfScopeFinding[] {
+  const s = String(text === null || text === undefined ? '' : text)
+  const open = s.search(/\[OUT-OF-SCOPE\]/i)
+  if (open < 0) return []
+  const rest = s.slice(open + '[OUT-OF-SCOPE]'.length)
+  const close = rest.search(/\[\/OUT-OF-SCOPE\]/i)
+  const body = close >= 0 ? rest.slice(0, close) : rest
+  const out: OutOfScopeFinding[] = []
+  for (const rawLine of body.split('\n')) {
+    if (out.length >= limit) break
+    const line = rawLine.trim()
+    if (!line) continue
+    const item = line.replace(/^[-*•]\s*/, '')
+    if (!item) continue
+    if (/^\[\/?OUT-OF-SCOPE\]/i.test(item)) continue
+    // 头（路径[:行号]）与说明之间：— / – / " - "
+    const cut = item.search(/\s+[—–]\s+|\s+-\s+/)
+    const head = (cut >= 0 ? item.slice(0, cut) : item).trim()
+    const note = cut >= 0 ? item.slice(cut).replace(/^\s*[—–-]\s*/, '').trim() : ''
+    const m = head.match(/^(.*?)(?::(\d+))?$/)
+    const file = (m && m[1] ? m[1] : head).trim()
+    if (!file || /^\[\/?OUT-OF-SCOPE/i.test(file)) continue
+    if (file.length < 3) continue
+    out.push({ file, line: m && m[2] ? Number(m[2]) : null, note: note.slice(0, 300) })
+  }
+  return out
+}
+
 export function isToolArgFailure(text: unknown): boolean {
   return TOOL_ARG_FAILURE.test(String(text || ''))
 }

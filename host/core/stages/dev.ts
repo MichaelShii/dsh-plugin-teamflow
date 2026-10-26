@@ -11,7 +11,7 @@ import { withRetry } from '../agent/runner.ts'
 import { devPrompt } from '../../prompts/index.ts'
 import {
   clip, snippet, buildRetryDiagnostic, runPool, devTaskStatuses, devTaskIdAt, backfillDevTaskIds,
-  mergeFileOverlaps, concurrentWriteConflicts, planDevWaves,
+  mergeFileOverlaps, concurrentWriteConflicts, planDevWaves, parseOutOfScope,
 } from '../../util.ts'
 import { phaseKeyOf, PHASE_ORDER } from '../../constants.ts'
 import { persistJournal } from '../../../store.ts'
@@ -318,6 +318,50 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
     noteTaskStageUsage(journal)
     const devStages = journal.stages.filter((s) => phaseKeyOf(s.phase) === 'dev')
     noteTaskAssign(journal, 'dev', devStages.map((s) => (s.childId || '').slice(0, 8)).filter(Boolean).join(',') || t(locale, 'role.devTeam'))
+  }
+  /* ── 越界发现收口（2026-10-27）：把 `[OUT-OF-SCOPE]` 变成一条**独占这些文件**的收口任务 ──
+   * 为什么必须有：dev 任务按契约不许改别人的文件（并发写会静默丢失），但"发现了没人接手"
+   * 会让缺陷一路滑到下游。实锤 tf-mvpjqs87-14qdxa：T1 发现 T2 文件里 3 个失败用例并定位到行，
+   * 只能写进自由文本 summary；最后由「交付自检」**重新跑全量测试**才发现（多一次全量构建，
+   * 且依赖它恰好覆盖到）。信息早就有了，缺的是通道。
+   * 边界（防止无限追加）：① 每个 dev 阶段只加 **一轮**（按 stage label 判重，resume 不会重复加）；
+   * ② 收口任务自己再报越界不再递归 —— 它已经是"最后一把"。
+   */
+  {
+    const fixTitle = t(locale, 'dev.outOfScopeTask')
+    const alreadyRan = (journal.stages || []).some((s) => s.label === fixTitle)
+    if (!alreadyRan && !journal.cancelled) {
+      const seenKeys = new Set()
+      const findings: Array<{ file: string; line: number | null; note: string }> = []
+      for (const r of devResults || []) {
+        if (!r || !r.output) continue
+        for (const f of parseOutOfScope(r.output)) {
+          const key = `${f.file}:${f.line || ''}`
+          if (seenKeys.has(key)) continue
+          seenKeys.add(key)
+          findings.push(f)
+        }
+      }
+      if (findings.length) {
+        const files = [...new Set(findings.map((f) => f.file))]
+        const spec = findings.map((f) => `- ${f.file}${f.line ? `:${f.line}` : ''} — ${f.note || '(无说明)'}`).join('\n')
+        const fixTask = { title: fixTitle, spec, files, ids: ['dt-out-of-scope'] }
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.devOutOfScope', { n: findings.length, files: files.length }) })
+        const sub = createSubtask(journal, fixTask.title, fixTask.spec, fixTask.ids[0])
+        if (sub) { completeSubtask(journal, sub.id, false, null, null); const live = storeFor(scopeKey).find('task', sub.id); if (live) { live.status = 'running'; live.startedAt = Date.now(); storeFor(scopeKey).persist(); persistJournal(journal) } }
+        const fixR = await withRetry(journal, parent, fixTask.title, 'dev', devPrompt(fixTask, tech, prd, design, root, journal.id, state), signal, fixTask.title, null, fixTask.ids)
+        const fixText = stageTextOf(fixR)
+        const fixOk = !!fixR.text
+        if (sub) {
+          completeSubtask(journal, sub.id, !fixOk, fixText ? snippet(fixText, 1000) : null, null)
+          if (fixR.stage) noteSubtaskUsage(journal, sub.id, fixR.stage)
+        }
+        devResults = [
+          ...(devResults || []),
+          { title: fixTask.title, dtId: fixTask.ids[0], failed: !fixOk, output: fixText || '' },
+        ]
+      }
+    }
   }
   /* ── 开发收口：取消检查 + 提测门禁（**两个分支共用**，不可只写在其中之一） ──
      * 2026-09-16 实测（resume 后中断，dev 全部「已中止」却直接起了 QA 子代理）：这两个判断原先只写在
