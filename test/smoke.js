@@ -1540,5 +1540,19 @@ console.log('── 12) 无 supplement 的 resume = 整版放行 ⇒ 要求显�
   ok(/status: 'no-team',\s*message:/.test(indexSrc), 'start：no-team 分支仍带 status+message')
 }
 
+/* ── 护栏：自愈后必须撤销「环境不可用」标记（2026-10-27 tf-mvpjqs87-14qdxa）──
+ * 事故：edit 的 `old_string was not found` 失败 2 次（判 WARN），而模型 1~3 秒内 read→edit
+ * 就自愈了，之后又成功十余次；runner 仍按 warn 时落下的 `stage.envUnavailable` 判死，
+ * 整条 run failed（那个任务其实能做完了）。
+ * 这里锁的是「撤销」这个动作与它的可见性。行为级测试做不了：guard.ts 在模块顶部 import 了
+ * 宿主包，node 侧加载不到（tsconfig paths 只在 tsc 生效）。所以真实检验靠真机 resume，
+ * 本断言只防"这行被悄悄删掉"。
+ */
+{
+  const guardSrc = readFileSync(join(here, '..', 'host', 'core', 'agent', 'guard.ts'), 'utf8')
+  ok(guardSrc.includes('stage.envUnavailable = undefined'), 'guard：成功调用后撤销 env-unavailable 标记（否则自愈会被判死）')
+  ok(guardSrc.includes("'guard.envRecovered'"), 'guard：撤销时留日志（不静默）')
+}
+
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

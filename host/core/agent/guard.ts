@@ -437,7 +437,24 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
       }
       if (e.type !== 'tool/result') continue
       // 成功调用 = 会话仍在产出（进展豁免的依据）
-      if (!isToolErrorResult(e.data)) { lastSuccessAt = Date.now(); continue }
+      if (!isToolErrorResult(e.data)) {
+        lastSuccessAt = Date.now()
+        // 自愈即撤销（2026-10-27 tf-mvpjqs87-14qdxa 实锤）：warn 时落下的 `stage.envUnavailable`
+        // 是**证据**不是**判决**，而 runner 在回合结束时只看它有没有值 ⇒ 只要模型之后成功了，
+        // 这条标记就必须撤掉，否则「自己修好了」会被判成「环境坏了、别再重试」。
+        // 实锤：edit 的 `old_string was not found` 失败 2 次（18:27:27 / 18:27:52），两次都在
+        // 1–3 秒内 read→edit 成功自愈，之后又连续成功十余次；护栏仍在 18:28:03 记下标记，
+        // 18:28:13 判 env-unavailable，整条 run failed。
+        // 判据：真「环境不可用」的形态是**后续调用不可能成功**；既然成功过，工具层就是好的。
+        if (stage.envUnavailable) {
+          const detail = String(stage.envUnavailable)
+          stage.envUnavailable = undefined
+          try {
+            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.envRecovered', { label, tool: String(detail.split(':')[0] || 'tool'), detail: clip(detail, 160) }) })
+          } catch (err) { /* ignore */ }
+        }
+        continue
+      }
       const text = toolResultText(e.data)
       // 可自愈的防护门禁失败不进环境指纹（见 util.isFsSelfHealFailure 注释）：read 一次即愈，
       // 与「工作区坏了」语义相反。两类各记一次（去重），文件门禁类另附一次补救提醒。
