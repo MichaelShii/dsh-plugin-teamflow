@@ -7,14 +7,26 @@
  *   node deploy.mjs --sync   — 仅同步（跳过构建与测试，复用现有 lib/）
  *   node deploy.mjs --no-test— 构建 → 同步（跳过测试）
  *
- * 构建直接用 npx tsdown（client + host 两个 config），不走 pnpm 脚本，
+ * 构建直接用 tsdown 的 CLI 入口（client + host 两个 config），不走 pnpm 脚本，
  * 从而避开 pnpm 11 的 verifyDepsBeforeRun 把 @deepseek-ai/dsh-* 私有
  * peerDeps 拉到 registry 404 的问题。
+ *
+ * ⚠️ 2026-10-26：进程调用一律 `execFileSync`（不经 shell），理由两条——
+ *   ① 字符串进 shell 是注入面（虽然当前调用点全是源码里的字面量，但没必要留着这个形状）；
+ *   ② 经 shell 会重新引入引号/空格路径的坑，而这里唯一需要的就是「跑一个已知的程序」。
+ *   实现细节：**不能** `execFileSync('npx', …)` —— CVE-2024-27980 之后，Node 在 Windows 上
+ *   拒绝不经 shell 执行 `.cmd`/`.bat`（npx/pnpm 都是 shim）⇒ 必须绕开 shim，直接用
+ *   `process.execPath` 跑目标脚本（tsdown 的 CLI 就是 `tsdown/run` 这个 ESM 入口）。
  */
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { copyFileSync, mkdirSync, existsSync, readdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, dirname, relative } from 'node:path'
 import { homedir } from 'node:os'
+
+const requireHere = createRequire(import.meta.url)
+/** tsdown 的 CLI 入口（`exports["./run"] = ./dist/run.mjs`）。用它而不是 node_modules/.bin/tsdown。 */
+const TSDOWN_CLI = requireHere.resolve('tsdown/run')
 
 const ROOT = import.meta.dirname ?? process.cwd()
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -87,12 +99,17 @@ if (!existsSync(PROFILE)) {
 const skipBuild = process.argv.includes('--sync')
 const skipTest = skipBuild || process.argv.includes('--no-test')
 
-function sh(cmd) {
-  console.log(`▶ ${cmd}`)
+/**
+ * 跑一个 node 脚本（argv 数组，不经 shell）。
+ * @param {string} label 控制台显示的一行
+ * @param {string[]} args 传给 node 的参数（第一个是要执行的脚本）
+ */
+function nodeRun(label, args) {
+  console.log(`▶ ${label}`)
   try {
-    execSync(cmd, { stdio: 'inherit', cwd: ROOT })
+    execFileSync(process.execPath, args, { stdio: 'inherit', cwd: ROOT })
   } catch (e) {
-    console.error(`\n✗ 命令失败（exit ${e.status}）：${cmd}`)
+    console.error(`\n✗ 命令失败（exit ${e.status}）：${label}`)
   }
 }
 
@@ -105,8 +122,8 @@ if (skipBuild) {
   console.log('⏭ 跳过构建（--sync）。\n')
 } else {
   console.log('1/3 📦 构建 client + host ...\n')
-  sh('npx tsdown')
-  sh('npx tsdown -c tsdown.host.config.ts')
+  nodeRun('tsdown', [TSDOWN_CLI])
+  nodeRun('tsdown -c tsdown.host.config.ts', [TSDOWN_CLI, '-c', 'tsdown.host.config.ts'])
   console.log('')
 }
 
@@ -115,8 +132,8 @@ if (skipTest) {
   console.log('⏭ 跳过测试。\n')
 } else {
   console.log('2/3 🧪 运行测试 ...\n')
-  sh('node test/smoke.js')
-  sh('node test/journal.test.js')
+  nodeRun('node test/smoke.js', ['test/smoke.js'])
+  nodeRun('node test/journal.test.js', ['test/journal.test.js'])
   console.log('')
 }
 
@@ -236,18 +253,14 @@ try {
 
 /* ── 4) 生效提示：检测运行中的 web（改 host 侧必须重启进程才加载新 lib） ── */
 try {
-  const out = execSync('netstat -ano | findstr :3080', { encoding: 'utf8', windowsHide: true })
-  const listen = out.split('\n').find((l) => l.includes('LISTENING'))
+  // 原来走 `netstat -ano | findstr :3080`（shell 管道）。改成直接跑 netstat、在 JS 里筛：
+  // 同样的结果，少一个外部依赖（findstr），也不再给 shell 递字符串。
+  const out = execFileSync('netstat', ['-ano'], { encoding: 'utf8', windowsHide: true })
+  const listen = out.split('\n').find((l) => l.includes(':3080') && l.includes('LISTENING'))
   if (listen) {
     const parts = listen.trim().split(/\s+/)
     const pid = parts[parts.length - 1]
     let msg = `⚠ 检测到 web 正在运行（端口 3080，PID=${pid || '?'}）`
-    if (pid && /^\d+$/.test(pid)) {
-      try {
-        const st = execSync(`powershell -NoProfile -Command "(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).StartTime.ToString('yyyy-MM-dd HH:mm:ss')"`, { encoding: 'utf8', windowsHide: true }).trim()
-        if (st) msg += `（进程启动于 ${st}）`
-      } catch (e) { /* 拿不到启动时间可忽略 */ }
-    }
     msg += '——新 host 由该进程加载；不重启则仍跑旧逻辑。'
     console.log(msg)
   }

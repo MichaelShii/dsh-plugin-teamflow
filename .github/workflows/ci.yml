@@ -19,13 +19,15 @@ jobs:
     steps:
       # action 一律用 v5：v4 的 action runtime 是 node20（GitHub 已弃用，会被强制切到 node24 并告警），
       # v5 起改用 node24（实测：checkout/setup-node/pnpm-action-setup 的 v4 = node20，v5 = node24）。
-      - uses: actions/checkout@v5
+      # 且一律**钉到 commit SHA**（标签可被重指向 ⇒ 可变依赖进了我们的 CI 权限面）。
+      # 后面 `# vX.Y.Z` 是给人读的版本锚点；升级由 dependabot 提 PR（它同时改 SHA 与这行注释）。
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
           version: 11
 
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
