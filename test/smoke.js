@@ -1554,5 +1554,16 @@ console.log('── 12) 无 supplement 的 resume = 整版放行 ⇒ 要求显�
   ok(guardSrc.includes("'guard.envRecovered'"), 'guard：撤销时留日志（不静默）')
 }
 
+{
+  // 日志与事实相反（2026-10-27 实锤）：`log.qaBlocked` 原写「产品验收跳过」，但 E 方案之后超限**仍会**
+  // 以已知问题模式跑一次只读验收。两条日志相隔 10ms 且互相矛盾，用户直接问「为啥看不到产品验收」。
+  // 这里只锁这一句事实性文案（内容断言能做的不多，但至少不许把"跳过"写回去）。
+  const pipeLocale = readFileSync(join(here, '..', 'host', 'locales', 'pipeline.ts'), 'utf8')
+  // 只看**文案行**，不看注释：上面那条注释里就写着这个坏短语（解释 bug 不该被判成 bug）。
+  const pipeCopy = pipeLocale.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+  ok(!/产品验收跳过/.test(pipeCopy), 'qa 超限日志不得声称「产品验收跳过」（实际仍跑只读验收）')
+  ok(/已知问题/.test(pipeLocale), 'qa 超限日志须说明随后会以已知问题模式跑只读验收')
+}
+
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

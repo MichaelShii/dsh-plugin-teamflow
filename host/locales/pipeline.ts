@@ -136,7 +136,9 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.qaReworkBudgetReset': '轮次已累计 {used} 轮（跨 resume 保持）→ 本次为人工续跑，追加第 {n}/{limit} 次轮次预算，从第 1 轮重新计',
     'log.qaPassReverify': 'QA 复验通过（第 {n} 轮修复后），无阻断缺陷',
     'log.qaPass': 'QA 未发现 P0/P1/P2 阻断缺陷',
-    'log.qaBlocked': 'QA 阶段打回超限结束：产品验收跳过，需求需人工介入',
+    // ⚠️ 别再写「产品验收跳过」：E 方案（2026-09-15）之后超限**仍会**以已知问题模式跑一次只读验收，
+    // 旧文案与事实相反（实测 2026-10-27 两条日志相隔 10ms 且互相矛盾，用户直接问「为啥看不到产品验收」）。
+    'log.qaBlocked': 'QA 阶段打回超限结束：需求转人工；接下来仍以「已知问题」模式跑一次**只读**产品验收（产出 ACCEPTANCE.md 与未闭环清单，结论强制为「需人工裁定」）',
     'log.patchDone': 'patch 档交付完成：单 agent 直改 + 自测即收口（无独立 QA/验收）',
     'log.accNoFile': '验收子代理回复成功但 {file}未落盘/为空——单轨契约（文件即产物）未兑现，需人工介入',
     'log.accNoVerdict': 'ACCEPTANCE.md 缺少「验收结论：」行（字面量模板未兑现）——不自动判通过，需人工确认结论',
@@ -629,7 +631,7 @@ export const PIPELINE_DICT: Record<'zh' | 'en', Record<string, string>> = {
     'log.qaReworkBudgetReset': '{used} round(s) already used (persisted across resume) → this is a human-initiated resume, granting budget {n}/{limit} and counting from round 1 again',
     'log.qaPassReverify': 'QA re-verification passed (after fix round {n}), no blocking defects',
     'log.qaPass': 'QA found no P0/P1/P2 blocking defects',
-    'log.qaBlocked': 'QA rework limit exceeded: product acceptance skipped, the requirement needs human intervention',
+    'log.qaBlocked': 'QA rework limit exceeded: the requirement needs human intervention; a **read-only** acceptance run still follows in known-issues mode (produces ACCEPTANCE.md plus the open-blockers list, and its conclusion is forced to "needs human decision")',
     'log.patchDone': 'patch delivery complete: single agent edits directly + self-test closes it out (no separate QA/acceptance)',
     'log.accNoFile': 'Acceptance subagent replied successfully but {file}was not written or is empty — the single-track contract (file is the artifact) is not honored; human intervention required',
     'log.accNoVerdict': 'ACCEPTANCE.md has no acceptance verdict line (literal template not honored) — not auto-passed, human confirmation required',
