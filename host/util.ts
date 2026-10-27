@@ -1331,6 +1331,20 @@ export function planQaRoundStart(
   return { round: used, resumes: grants, reset: false, used }
 }
 
+/** 长命令告警判定（纯函数，2026-10-28）：在飞调用超过阈值且还没报过 ⇒ 该告警。
+ *  单独抽出来是为了可测边界——护栏本体在轮询闭包里，没法在 node 侧加载（它 import 宿主包）。 */
+export function longCallDue(
+  startedAt: unknown,
+  now: number,
+  thresholdMs: number,
+  alreadyWarned: boolean,
+): boolean {
+  if (alreadyWarned) return false
+  const t = Number(startedAt)
+  if (!Number.isFinite(t) || t <= 0) return false
+  return now - t >= thresholdMs
+}
+
 export function isToolArgFailure(text: unknown): boolean {
   return TOOL_ARG_FAILURE.test(String(text || ''))
 }

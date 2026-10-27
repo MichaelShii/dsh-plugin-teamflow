@@ -90,6 +90,12 @@ export const GUARD_REPEAT_LIMIT = 12
 export const GUARD_WINDOW_SIZE = 400
 /** 挂死判定：连续这么久没有任何新会话事件（provider 挂起/静默死亡）→ stalled（走预算门转人工）。 */
 export const GUARD_SILENCE_MS = 10 * 60_000
+/** **单条命令长时告警**（2026-10-28）：一条工具调用连续跑这么久还没返回就 warn 一次。
+ *  为什么必须远小于 `GUARD_SILENCE_MS`：实锤 tf-mvpjqs87-14qdxa，QA 把 10 个 Java 探针串在一条命令里，
+ *  第 10 个卡死 ⇒ 命令跑满工具上限 600s 被杀，之后又转后台 job 轮询 14 分钟，**全阶段 34/42 分钟都耗在等它**。
+ *  而 `GUARD_SILENCE_MS` 也是 600s ⇒ 护栏要到命令返回后才可能判定，"长命令执行期间"是结构性盲区。
+ *  warn-only：长命令本身可以是合法的（大构建、e2e），我们只负责把它变得**可见**。 */
+export const GUARD_LONG_CALL_MS = 2 * 60_000
 /** 空转判定：会话仍在产出事件但连续这么久没有任何工具调用（纯推理打转/改写式循环）→ stalled。要求已见过至少一次工具调用。 */
 export const GUARD_NO_TOOL_MS = 15 * 60_000
 /**
