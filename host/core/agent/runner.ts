@@ -5,11 +5,12 @@
 import { runtime, providerName, trackInFlight, untrackInFlight, liveChildAgentOf } from './context.ts'
 import { accumulateSessionUsage, freshTokensOf, effectiveFreshBudget } from './metering.ts'
 import { startStageGuard } from './guard.ts'
-import { clip, extractText, blockShape, captureArtifactBaseline, emptyTurnDocVerdict, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs, stageDocText } from '../../util.ts'
+import { clip, extractText, blockShape, captureArtifactBaseline, emptyTurnDocVerdict, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, shouldContinueChild, classifyExternalFailure, externalBackoffMs, stageDocText } from '../../util.ts'
 import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../../constants.ts'
 import { t, type HostLocale } from '../../locales.ts'
 import { runLocaleOf } from '../locale.ts'
 import { stripStateBlock } from '../domain/state.ts'
+import { canReviseViaChild, revisePrdViaChild } from '../prd-revise.ts'
 import type { Journal, ParentAgentLike, SubagentRunLike, SubagentStarters, UsageBuckets } from '../../types.ts'
 import type { JournalStage } from '../../../store.ts'
 
@@ -426,12 +427,81 @@ export async function withRetry(
   let externalAttempts = 0
   // 重试诊断包与重试日志同样随 run 语言（诊断包是喂回子代理的注入文本）
   const locale = runLocaleOf(journal)
+  /* ── 重试复用同一个子代理（2026-10-28）───────────────────────────────────
+   * 为什么：重试原本每次 `runAgent` 新起一个 child —— 新 child 对上一轮**一无所知**，只能从零重读
+   * PRD / TECHNICAL / 源码。实测 tf-mvpjqs87-14qdxa：单阶段 dev 184 次调用烧 18.4M token、
+   * 修复轮 96~150 次调用烧 6.5~15M，绝大部分是"重读同样的上下文"。而同一 child 续跑是可行的：
+   * PRD 改写已真机验过（同一 child 连改 3 版、零新 spawn，见 prd-revise.ts 头注释）。
+   * 安全阀：任何一步拿不到（无 childId / 宿主不支持 / 投递失败 / 超时 / 没拿到正文）⇒ **回落新起**，
+   * 并落一条可见 warn（"为什么又新起了"不能是黑盒）。绝不"假装成功"。
+   */
+  async function tryContinueInChild(stage: JournalStage, instruction: string): Promise<{ text: string; usage?: UsageBuckets } | null> {
+    const childId = String(stage.childId || '')
+    if (!childId) return null
+    if (!canReviseViaChild({ subagents: runtime.subagents, sessionQuery: runtime.sessionQuery, childId })) return null
+    const diag = { base: 0, end: 0, waitedMs: 0, delivered: false }
+    const out = await revisePrdViaChild({
+      subagents: runtime.subagents,
+      sessionQuery: runtime.sessionQuery,
+      parent,
+      childId,
+      instruction,
+      signal: normalizeSignal(signal),
+      // 比 PRD 改写更保守：重试本来就有 RETRY_LIMIT 兜底，太久不如早点回落去新起
+      idleMs: 120_000,
+      waitMs: 420_000,
+      diag,
+    }).catch(() => null)
+    if (!out || !String(out.text || '').trim()) {
+      journal.logs.push({
+        t: Date.now(), level: 'warn',
+        message: t(locale, 'diag.continueFallback', {
+          label: stage.label || label, delivered: diag.delivered ? 'yes' : 'no', sec: Math.round((Number(diag.waitedMs) || 0) / 1000),
+        }),
+      })
+      return null
+    }
+    return { text: out.text, usage: out.usage as UsageBuckets | undefined }
+  }
+
   for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
     attempts = attempt
     const labelNow = attempt > 1 ? t(locale, 'dev.taskRetry', { label, n: attempt }) : label
     // 重试诊断包：原样重试=盲试（子代理不知道上次为什么失败，重试即碰运气）。
     // 诊断源现成：stage.summary（含拒绝词命中点/过短/stopReason 细节）+ guardReason + 失败产出尾部。
     const promptNow = attempt > 1 && lastStage ? prompt + buildRetryDiagnostic(attempt, lastStage, locale) : prompt
+    // 重试优先**在同一子代理里继续**（它还记得上一轮写过什么、试过什么）；拿不到再新起。
+    if (lastStage && shouldContinueChild(attempt, lastStage.childId)) {
+      const cont = await tryContinueInChild(lastStage, buildRetryDiagnostic(attempt, lastStage, locale))
+      if (cont) {
+        const u = (cont.usage || {}) as UsageBuckets
+        const prev = lastStage.usage || ({} as UsageBuckets)
+        lastStage.usage = {
+          input: (Number(prev.input) || 0) + (Number(u.input) || 0),
+          cacheRead: (Number(prev.cacheRead) || 0) + (Number(u.cacheRead) || 0),
+          cacheWrite: (Number(prev.cacheWrite) || 0) + (Number(u.cacheWrite) || 0),
+          output: (Number(prev.output) || 0) + (Number(u.output) || 0),
+          calls: (Number(prev.calls) || 0) + (Number(u.calls) || 0),
+        }
+        // 同一个 child 继续 ⇒ 不新增 stage（卡片不重复），把本轮记为同一次尝试的续跑
+        lastStage.status = 'done'
+        lastStage.outcome = 'completed'
+        lastStage.endedAt = Date.now()
+        freshTokens += freshTokensOf(u)
+        usageAcc = {
+          input: usageAcc.input + (Number(u.input) || 0),
+          cacheRead: usageAcc.cacheRead + (Number(u.cacheRead) || 0),
+          cacheWrite: usageAcc.cacheWrite + (Number(u.cacheWrite) || 0),
+          output: usageAcc.output + (Number(u.output) || 0),
+          calls: usageAcc.calls + (Number(u.calls) || 0),
+        }
+        journal.logs.push({
+          t: Date.now(), level: 'info',
+          message: t(locale, 'log.continueChild', { label: lastStage.label || label, attempt, tokens: freshTokensOf(u) }),
+        })
+        return { text: cont.text, attempts, freshTokens, stage: lastStage }
+      }
+    }
     // ⚠️ 并发安全（并行 dev 子任务共享同一 journal.stages）：必须在调用前记录长度——
     // runAgent 同步 push 本次尝试的 stage（第一个 await 前），期间其他任务的 runAgent
     // 可能已 push 新 stage；用 length-1 取 stage 会错位（证据块/重试诊断/usage 累计全串）。

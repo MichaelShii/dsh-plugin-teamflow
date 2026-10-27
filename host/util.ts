@@ -1345,6 +1345,15 @@ export function longCallDue(
   return now - t >= thresholdMs
 }
 
+/** 重试时是否**在原子代理里继续**（而不是新起一个）。纯函数，便于锁住两条边界：
+ *  ① 第一次尝试绝不"继续"（那时还没有上一轮）；② 没有 childId 就无从来处继续。
+ *  宿主能力（sendMessage/observeSession）由调用方另行判定，这里只管"该不该试"。 */
+export function shouldContinueChild(attempt: unknown, childId: unknown): boolean {
+  const a = Number(attempt)
+  if (!Number.isFinite(a) || a <= 1) return false
+  return typeof childId === 'string' && childId.trim().length > 0
+}
+
 export function isToolArgFailure(text: unknown): boolean {
   return TOOL_ARG_FAILURE.test(String(text || ''))
 }
