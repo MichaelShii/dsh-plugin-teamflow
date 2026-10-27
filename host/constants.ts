@@ -6,6 +6,9 @@
 export const RETRY_LIMIT = 2
 /** QA→开发→复验 打回闭环的最大轮数（QA 发现缺陷 → 打回开发修复 → 复验；超过则需人工介入，防无限循环）。 */
 export const QA_REWORK_LIMIT = 2
+/** 人工 resume 可追加的「轮次预算」次数上限（2026-10-27）：轮次改为跨 resume 累计后，人修完再续跑会立刻
+ *  撞上限；人工介入算一次进展，给一次新预算合理，但必须有限，否则又变回无限循环。 */
+export const QA_MANUAL_BUDGET = 2
 /**
  * 单次 withRetry 调用的**新增** token 熔断预算（2026-09-11 口径修正）。
  *

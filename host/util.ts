@@ -1312,6 +1312,25 @@ export function diffPinnedConstants(
   return out
 }
 
+/** QA 打回轮次的**起点决策**（纯函数，2026-10-27）。
+ *  背景：轮次原本是阶段内局部变量，中断+resume 归零 ⇒ `QA_REWORK_LIMIT` 的有界闭环在续跑后失效
+ *  （实测 tf-mvpjqs87-14qdxa：同 run 打到第 3 轮，日志与界面上都还写着「第 1 轮」）。
+ *  规则：累计值落盘后按已用轮次继续；**只有人工 resume** 才追加一次预算（人工介入算一次进展），
+ *  且追加次数有上限 `manualBudget`——否则上限又形同虚设。 */
+export function planQaRoundStart(
+  persisted: { round?: unknown; resumes?: unknown } | null | undefined,
+  isHumanResume: boolean,
+  limit: number,
+  manualBudget: number,
+): { round: number; resumes: number; reset: boolean; used: number } {
+  const used = Math.max(0, Number(persisted && persisted.round) || 0)
+  const grants = Math.max(0, Number(persisted && persisted.resumes) || 0)
+  if (used > limit && isHumanResume && grants < manualBudget) {
+    return { round: 0, resumes: grants + 1, reset: true, used }
+  }
+  return { round: used, resumes: grants, reset: false, used }
+}
+
 export function isToolArgFailure(text: unknown): boolean {
   return TOOL_ARG_FAILURE.test(String(text || ''))
 }

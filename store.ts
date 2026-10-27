@@ -125,6 +125,16 @@ export interface JournalRecord {
    * （检测命令优先：QA 每轮重编号，缺陷 id 跨轮不可比，见 util.defectFingerprint）。
    */
   qaRounds?: Array<Record<string, unknown>> | null
+  /** QA 打回轮次（2026-10-27，**跨 resume 累计**）：原实现用阶段内的局部变量计数，中断+resume 就清零
+   *  ⇒ 有界闭环（ADR-0007，QA_REWORK_LIMIT）在续跑后失效。实测 run tf-mvpjqs87-14qdxa：取消后 resume，
+   *  QA 又按「第 1 轮」重新开始打回，同一 run 打到第 3 轮才被人看见。落盘后 resume 读回继续累加。 */
+  qaReworkRound?: number
+  /** 人工 resume 追加的轮次预算次数（每次 resume 追加 1 轮；上限见 qa.ts 的 QA_MANUAL_BUDGET）。
+   *  为什么需要：轮次累计后，人修完再 resume 会立刻撞上限；人工介入本身就是一次进展，给一次新预算合理，
+   *  但**必须有限**，否则又变成无限循环。 */
+  qaReworkResumes?: number
+  /** 历次修复轮摘要（复验 prompt 用，跨 resume 保持）：否则新 QA 不知道上一轮改了什么，只能重查。 */
+  qaFixSummaries?: string[] | null
   /** **宿主契约调研**（2026-09-18 用户实锤）：交付物要被**非 dsh 宿主**（openclaw/hermes/pi…）加载时，
    *  dsh 的插件契约一条都不适用 → PRD 必须含「宿主契约调研」段（硬门禁）。`hostResearch=true` 标记
    *  「本 run 需要该段」，`hostContract` 存摘出的核实结论（人可读留痕）。 */
@@ -376,6 +386,11 @@ export function serializeJournal(journal: JournalRecord): JournalRecord {
       output: clip(s.output || s.summary || '', STAGE_OUTPUT_CLIP),
       verifyEvidence: s.verifyEvidence ? clip(s.verifyEvidence, 8000) : null,
     })),
+    qaReworkRound: Number(journal.qaReworkRound || 0) || 0,
+    qaReworkResumes: Number(journal.qaReworkResumes || 0) || 0,
+    qaFixSummaries: Array.isArray(journal.qaFixSummaries)
+      ? journal.qaFixSummaries.slice(-6).map((s) => clip(String(s || ''), 3000))
+      : [],
     logs: (journal.logs || []).slice(-300).map((l) => ({ t: l.t, level: l.level, message: clip(l.message, 500) })),
     // D 埋点（2026-09-15）：逐轮 QA 阻断集合（稳定身份 = 检测命令优先）。留最近 12 轮、每轮最多 20 条缺陷。
     qaRounds: (journal.qaRounds || []).slice(-12).map((r) => ({
