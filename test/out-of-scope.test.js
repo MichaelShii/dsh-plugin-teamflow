@@ -50,6 +50,24 @@ ok(parseOutOfScope(many).length === 20, '默认上限 20 条（防一条回复�
 ok(parseOutOfScope('[OUT-OF-SCOPE]\n- y.ts — 缺闭标记也能解析').length === 1, '缺闭标记（回复被截断）⇒ 解析到末尾')
 ok(!parseOutOfScope('[OUT-OF-SCOPE]\n- z.ts\n[/OUT-OF-SCOPE]').some((f) => /OUT-OF-SCOPE/.test(f.file)), '块标记不进结果')
 
+console.log('── 6) 真机事故：**没写闭标记**，后面紧跟验证证据与状态块 ──')
+// 原文摘自 tf-mvsdwtjp-s51sz9（同一段回复的尾部），此处只保留结构特征
+const realSpill = `实现完成。
+[OUT-OF-SCOPE]
+- src/test/java/com/yigui/web/ — 无 JUnit 覆盖 web 层 AUQ resume/ask 分支
+- 备注：T6 的 5 个测试文件本轮并发写入，最终 450/450 绿。
+[Verification evidence]
+- cmd: \`mvn -o -B compile\` → exit 0
+- 状态文件已写入 \`logs/teamflow/tf-mvsdwtjp-s51sz9/state/dev-dt-5.json\`
+[STATE]
+{"touched":["src/test/java/com/yigui/web/AskTest.java"]}`
+const spill = parseOutOfScope(realSpill)
+ok(spill.length === 1, `只解析出 1 条真发现（实际 ${spill.length} 条：${JSON.stringify(spill.map((x) => x.file))}）`)
+ok(spill[0].file === 'src/test/java/com/yigui/web/', '真发现保留（目录路径也算路径）')
+ok(!spill.some((f) => /cmd:|状态文件|Verification|备注/.test(f.file)), '验证证据 / 状态行 / 备注不再被当成发现')
+ok(parseOutOfScope('[OUT-OF-SCOPE]\n- pom.xml — 门禁被改').length === 1, '裸文件名（pom.xml）仍能报')
+ok(parseOutOfScope('[OUT-OF-SCOPE]\n- 发现。\n- cmd: run it').length === 0, '明显不是路径的行直接丢弃')
+
 console.log('── 5) 接线（契约三处必须同时在）──')
 const devSrc = readFileSync(join(here, '..', 'host', 'core', 'stages', 'dev.ts'), 'utf8')
 const promptSrc = readFileSync(join(here, '..', 'host', 'prompts', 'index.ts'), 'utf8')

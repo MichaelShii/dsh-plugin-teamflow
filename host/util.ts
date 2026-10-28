@@ -1248,6 +1248,17 @@ export interface OutOfScopeFinding {
   note: string
 }
 
+/** 越界发现里的"文件"必须像路径：含分隔符且无空白，或裸文件名（`pom.xml`）。
+ *  纯函数、单独可测——它是挡住"把正文当成发现"的最后一道闸。 */
+export function looksLikePath(file: unknown): boolean {
+  const s = String(file === null || file === undefined ? '' : file).trim()
+  if (!s || s.length > 240) return false
+  if (/\s/.test(s)) return false
+  if (/[：:;,，。、（）()「」【】]/.test(s) && !/^[A-Za-z]:[\\/]/.test(s)) return false
+  if (/[/\\]/.test(s)) return true
+  return /^[\w.-]+\.\w{1,8}$/.test(s)
+}
+
 /** 解析 dev 回复里的 `[OUT-OF-SCOPE]` 块（最多 `limit` 条；无块 ⇒ 空数组）。 */
 export function parseOutOfScope(text: unknown, limit = 20): OutOfScopeFinding[] {
   const s = String(text === null || text === undefined ? '' : text)
@@ -1261,6 +1272,11 @@ export function parseOutOfScope(text: unknown, limit = 20): OutOfScopeFinding[] 
     if (out.length >= limit) break
     const line = rawLine.trim()
     if (!line) continue
+    // ⚠️ 模型经常**忘写闭标记**（实锤 tf-mvsdwtjp-s51sz9：只写了开标记，紧跟其后的是
+    // `[Verification evidence]` 与状态块）。原实现「没有闭标记就吃到回复结尾」⇒ 把验证证据、
+    // 状态行的每一行都当成"越界发现"，9 条里 8 条是垃圾，收口任务被喂了 1.12M token 的废任务。
+    // 边界规则：遇到下一个**段标题行**（`[XXX]`）就停 —— 越界块永远在自己那一段里。
+    if (/^\[[A-Z][A-Z0-9 _·.-]*\]/.test(line)) break
     const item = line.replace(/^[-*•]\s*/, '')
     if (!item) continue
     if (/^\[\/?OUT-OF-SCOPE\]/i.test(item)) continue
@@ -1272,6 +1288,10 @@ export function parseOutOfScope(text: unknown, limit = 20): OutOfScopeFinding[] 
     const file = (m && m[1] ? m[1] : head).trim()
     if (!file || /^\[\/?OUT-OF-SCOPE/i.test(file)) continue
     if (file.length < 3) continue
+    // 路径形状校验（同一事故的第二道闸）：只有"像路径"的才收 —— 要么含分隔符且无空白，
+    // 要么是裸文件名（`pom.xml` 这种也该能报）。这一条挡掉 `发现。` / `cmd: ...` /
+    // `状态文件已写入 ...` / `备注：...` 这些被吞进来的正文行。
+    if (!looksLikePath(file)) continue
     out.push({ file, line: m && m[2] ? Number(m[2]) : null, note: note.slice(0, 300) })
   }
   return out
