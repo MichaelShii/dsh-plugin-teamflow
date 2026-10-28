@@ -205,7 +205,10 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
           const taskLabel = attempted
             ? t(locale, 'dev.taskRerun', { title: task.title })
             : t(locale, 'dev.task', { title: task.title })
-          const devR = await withRetry(journal, parent, taskLabel, 'dev', resumePrompt, signal, task.title, null, task.ids)
+          // 中断后补跑：优先在**同一个子代理里继续**（它记得上一轮改到哪、试过什么）。
+          // 拿不到（宿主不支持 / 投递失败 / 超时 / 空正文）⇒ withRetry 内部回落为新起，行为不变。
+          const prevChildId = prevStage && prevStage.childId ? String(prevStage.childId) : null
+          const devR = await withRetry(journal, parent, taskLabel, 'dev', resumePrompt, signal, task.title, null, task.ids, prevChildId)
           const rerunText = stageTextOf(devR)
           trackDevTouched(task.title, t0, Date.now(), rerunText)
           noteVerifyEvidence(devR.stage, rerunText)

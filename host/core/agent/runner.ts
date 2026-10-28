@@ -416,6 +416,9 @@ export async function withRetry(
   taskKey?: string | null,
   effortHint?: string | null,
   taskIds?: string[] | null,
+  /** 中断后 resume：**上一轮那个任务的 childId**（≠ 重试的 lastStage.childId）——有了它，attempt=1
+   *  也能在原 child 里继续：中断不等于失败，新起一个只会让它从零重读一遍同样的上下文。 */
+  resumeChildId?: string | null,
 ): Promise<{ text: string | null; attempts: number; freshTokens: number; stage: JournalStage | null }> {
   let attempts = 0
   let freshTokens = 0
@@ -471,8 +474,12 @@ export async function withRetry(
     // 诊断源现成：stage.summary（含拒绝词命中点/过短/stopReason 细节）+ guardReason + 失败产出尾部。
     const promptNow = attempt > 1 && lastStage ? prompt + buildRetryDiagnostic(attempt, lastStage, locale) : prompt
     // 重试优先**在同一子代理里继续**（它还记得上一轮写过什么、试过什么）；拿不到再新起。
-    if (lastStage && shouldContinueChild(attempt, lastStage.childId)) {
-      const cont = await tryContinueInChild(lastStage, buildRetryDiagnostic(attempt, lastStage, locale))
+    const continueId = (lastStage && String(lastStage.childId || '').trim()) || String(resumeChildId || '').trim()
+    if (shouldContinueChild(attempt, lastStage ? lastStage.childId : null, resumeChildId)) {
+      const instr = resumeChildId
+        ? t(locale, 'diag.continueResume') + (lastStage ? `\n${buildRetryDiagnostic(attempt, lastStage, locale)}` : '')
+        : buildRetryDiagnostic(attempt, lastStage, locale)
+      const cont = await tryContinueInChild(lastStage || ({ childId: continueId, label } as JournalStage), instr)
       if (cont) {
         const u = (cont.usage || {}) as UsageBuckets
         const prev = lastStage.usage || ({} as UsageBuckets)

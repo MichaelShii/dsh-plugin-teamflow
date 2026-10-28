@@ -1368,10 +1368,17 @@ export function longCallDue(
 /** 重试时是否**在原子代理里继续**（而不是新起一个）。纯函数，便于锁住两条边界：
  *  ① 第一次尝试绝不"继续"（那时还没有上一轮）；② 没有 childId 就无从来处继续。
  *  宿主能力（sendMessage/observeSession）由调用方另行判定，这里只管"该不该试"。 */
-export function shouldContinueChild(attempt: unknown, childId: unknown): boolean {
+export function shouldContinueChild(attempt: unknown, childId: unknown, resumeChildId?: unknown): boolean {
+  // 两条来源：① 重试时上一轮 stage 的 childId；② 中断后 resume 时从上一个 stage 找回的 childId。
+  const own = typeof childId === 'string' ? childId.trim() : ''
+  const fromResume = typeof resumeChildId === 'string' ? resumeChildId.trim() : ''
+  const id = own || fromResume
+  if (!id) return false
   const a = Number(attempt)
-  if (!Number.isFinite(a) || a <= 1) return false
-  return typeof childId === 'string' && childId.trim().length > 0
+  if (!Number.isFinite(a)) return false
+  // ② 让 **attempt=1** 也能继续：中断后补跑对每个任务都是第一次尝试，但它不是"新任务"
+  if (fromResume) return a >= 1
+  return a > 1
 }
 
 export function isToolArgFailure(text: unknown): boolean {

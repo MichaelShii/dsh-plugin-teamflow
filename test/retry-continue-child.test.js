@@ -32,15 +32,28 @@ ok(shouldContinueChild(2, null) === false && shouldContinueChild(2, undefined) =
 ok(shouldContinueChild('x', 'child-abc') === false, 'attempt 非数字 ⇒ 不继续（脏数据不炸）')
 ok(shouldContinueChild(0, 'child-abc') === false, 'attempt=0 ⇒ 不继续')
 
+console.log('── 1b) 中断后 resume：attempt=1 也要能继续 ──')
+// 中断 ≠ 失败：resume 时对每个未完成任务都是 attempt=1，但它不是"新任务"。
+// 实测 tf-mvsgetmy-ldop5j（2026-10-29）：dev 阶段被人工中断，resume 后全部新起子代理、
+// 从零重读 PRD/TECHNICAL/源码 —— 因为原来的 shouldContinueChild 要求 attempt>1，resume 永远不触发。
+ok(shouldContinueChild(1, null, 'child-abc') === true, 'resume 带 childId ⇒ attempt=1 也继续')
+ok(shouldContinueChild(2, null, 'child-abc') === true, 'resume 且 attempt=2 ⇒ 继续')
+ok(shouldContinueChild(1, null, '') === false, 'resume 但 childId 为空 ⇒ 不继续')
+ok(shouldContinueChild(1, null, null) === false, '无 childId 也无 resumeChildId ⇒ 不继续')
+ok(shouldContinueChild(1, 'child-old', 'child-resume') === true, '两路都有 ⇒ 继续（重试来源优先，但不影响结论）')
+
 console.log('── 2) 接线 ──')
 const runnerSrc = readFileSync(join(here, '..', 'host', 'core', 'agent', 'runner.ts'), 'utf8')
 ok(/tryContinueInChild/.test(runnerSrc), 'withRetry 里有"继续同一子代理"的实现')
 ok(/canReviseViaChild/.test(runnerSrc), '先探测宿主能力（不支持就直接新起，不做无用等待）')
-ok(/shouldContinueChild\(attempt, lastStage\.childId\)/.test(runnerSrc), '用纯函数判定，不用临时条件')
+ok(/shouldContinueChild\(attempt, lastStage \? lastStage\.childId : null, resumeChildId\)/.test(runnerSrc), '用纯函数判定，不用临时条件')
 ok(/diag\.continueFallback/.test(runnerSrc), '回落时必须留可见日志（"为什么又新起了"不能是黑盒）')
 // 假装成功是最坏的结局：拿不到正文必须回落，而不是拿上一轮的旧文本交差
 ok(/if \(!out \|\| !String\(out\.text \|\| ''\)\.trim\(\)\)/.test(runnerSrc), '拿不到正文 ⇒ 回落新起（绝不假装成功）')
 ok(/'log\.continueChild'/.test(runnerSrc), '成功续跑时留痕（本次新增多少 token 可见）')
+const devSrc = readFileSync(join(here, '..', 'host', 'core', 'stages', 'dev.ts'), 'utf8')
+ok(/const prevChildId = prevStage && prevStage\.childId/.test(devSrc), 'dev resume 分支把上一轮的 childId 找回来')
+ok(/task\.ids, prevChildId\)/.test(devSrc), 'dev resume 真的把它传给 withRetry（否则等于没接）')
 
 console.log(failed === 0 ? '\n全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)
