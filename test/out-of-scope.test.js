@@ -77,6 +77,11 @@ ok(promptSrc.includes('declare it in the [OUT-OF-SCOPE] block'), 'devPrompt 要�
 ok(devSrc.includes('parseOutOfScope'), 'dev 阶段真的解析它（否则写了白写）')
 ok(devSrc.includes('dt-out-of-scope'), '解析后生成收口任务（独占文件的那一条）')
 ok(devSrc.includes('alreadyRan'), '只加一轮（按 stage label 判重，resume 不重复追加，防无限增长）')
+// 2026-10-29 实锤 tf-mvsgetmy-ldop5j：T8/T10 被中止后，收口任务在同一秒去 spawn ⇒
+// `no subagent provider registered for "null"` 连失败两次，白烧两笔并计入失败任务数。
+// ⚠️ 断言**条件里真的用了它**，不是"文件里出现过这个名字"（声明还在但条件没用 ⇒ 门禁是绿的，
+// 今晚的变异轮就是这么漏过去的）。
+ok(/!alreadyRan && !journal\.cancelled && !devHasFailure/.test(devSrc), 'dev 有失败 ⇒ 不起收口任务（失败态下 spawn 起不来，且提测门禁本就会拦）')
 
 console.log(failed === 0 ? '\n全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

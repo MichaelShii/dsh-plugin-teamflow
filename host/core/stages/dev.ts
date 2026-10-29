@@ -336,7 +336,12 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
   {
     const fixTitle = t(locale, 'dev.outOfScopeTask')
     const alreadyRan = (journal.stages || []).some((s) => s.label === fixTitle)
-    if (!alreadyRan && !journal.cancelled) {
+    // ⚠️ dev 已经有任务失败 ⇒ **不起收口任务**（2026-10-29 实锤 tf-mvsgetmy-ldop5j）：
+    // T8/T10 被外部中止后，同一秒里收口任务去 spawn 直接报 `no subagent provider registered for "null"`，
+    // 连试两次都失败 ⇒ 白烧两次尝试，还把"失败任务数"多算两笔（8/12 里的两笔就是它）。
+    // 逻辑上也不该跑：dev 有失败 ⇒ 提测门禁必然拦下 ⇒ 等人工 resume 时（provider 是好的）再一起收口。
+    const devHasFailure = (devResults || []).some((r) => r && r.failed)
+    if (!alreadyRan && !journal.cancelled && !devHasFailure) {
       const seenKeys = new Set()
       const findings: Array<{ file: string; line: number | null; note: string }> = []
       for (const r of devResults || []) {
