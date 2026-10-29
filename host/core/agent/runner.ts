@@ -5,7 +5,7 @@
 import { runtime, providerName, trackInFlight, untrackInFlight, liveChildAgentOf } from './context.ts'
 import { accumulateSessionUsage, freshTokensOf, effectiveFreshBudget } from './metering.ts'
 import { startStageGuard } from './guard.ts'
-import { clip, extractText, blockShape, captureArtifactBaseline, emptyTurnDocVerdict, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, shouldContinueChild, classifyExternalFailure, externalBackoffMs, stageDocText } from '../../util.ts'
+import { clip, extractText, blockShape, captureArtifactBaseline, emptyTurnDocVerdict, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, shouldContinueChild, shouldRerouteChild, classifyExternalFailure, externalBackoffMs, stageDocText } from '../../util.ts'
 import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../../constants.ts'
 import { t, type HostLocale } from '../../locales.ts'
 import { runLocaleOf } from '../locale.ts'
@@ -495,43 +495,56 @@ export async function withRetry(
     // 重试优先**在同一子代理里继续**（它还记得上一轮写过什么、试过什么）；拿不到再新起。
     const continueId = (lastStage && String(lastStage.childId || '').trim()) || String(resumeChildId || '').trim()
     if (shouldContinueChild(attempt, lastStage ? lastStage.childId : null, resumeChildId)) {
-      const instr = resumeChildId
-        ? t(locale, 'diag.continueResume') + (lastStage ? `\n${buildRetryDiagnostic(attempt, lastStage, locale)}` : '')
-        : buildRetryDiagnostic(attempt, lastStage, locale)
-      const cont = await tryContinueInChild(lastStage || ({ childId: continueId, label } as JournalStage), instr)
-      // **投进去了但没等到正文** ⇒ 原子代理仍在跑（或已写入文件）。绝不回落新起 ——
-      // 两个子代理改同一批文件比失败更糟。按失败收场，让提测门禁拦下转人工。
-      if (cont && cont.kind === 'noText') {
-        return { text: null, attempts, freshTokens, stage: lastStage }
-      }
-      if (cont && cont.kind === 'text') {
-        const u = (cont.usage || {}) as UsageBuckets
-        const prev = lastStage.usage || ({} as UsageBuckets)
-        lastStage.usage = {
-          input: (Number(prev.input) || 0) + (Number(u.input) || 0),
-          cacheRead: (Number(prev.cacheRead) || 0) + (Number(u.cacheRead) || 0),
-          cacheWrite: (Number(prev.cacheWrite) || 0) + (Number(u.cacheWrite) || 0),
-          output: (Number(prev.output) || 0) + (Number(u.output) || 0),
-          calls: (Number(prev.calls) || 0) + (Number(u.calls) || 0),
-        }
-        // 同一个 child 继续 ⇒ 不新增 stage（卡片不重复），把本轮记为同一次尝试的续跑
-        lastStage.status = 'done'
-        lastStage.outcome = 'completed'
-        lastStage.endedAt = Date.now()
-        freshTokens += freshTokensOf(u)
-        usageAcc = {
-          input: usageAcc.input + (Number(u.input) || 0),
-          cacheRead: usageAcc.cacheRead + (Number(u.cacheRead) || 0),
-          cacheWrite: usageAcc.cacheWrite + (Number(u.cacheWrite) || 0),
-          output: usageAcc.output + (Number(u.output) || 0),
-          calls: usageAcc.calls + (Number(u.calls) || 0),
-        }
+      // **改道闸门（2026-10-29，用户拍板）**：旧 child 上一轮因模型不可用（429/无额度/上游故障…）
+      // 失败，且用户已主动切到别的模型 ⇒ 续跑旧 child 仍打老（不可用）模型，纯浪费一次机会；
+      // 放弃续跑、落到下方 runAgent 新起 child（resolveChildRoute 吃新模型）。
+      // 老模型仍可用（或非外部失败）⇒ 保持续跑，不丢旧 child 上下文。
+      const desiredRoute = resolveChildRoute(parent)
+      if (shouldRerouteChild({ journal, childId: continueId, route: desiredRoute })) {
         journal.logs.push({
-          t: Date.now(), level: 'info',
-          message: t(locale, 'log.continueChild', { label: lastStage.label || label, attempt, tokens: freshTokensOf(u) }),
+          t: Date.now(), level: 'warn',
+          message: t(locale, 'diag.rerouteNewChild', { label, model: desiredRoute.model || desiredRoute.provider || '?' }),
         })
-        return { text: cont.text, attempts, freshTokens, stage: lastStage }
-      }
+        // 不续跑 ⇒ 跳过本块，落到下方 runAgent 新起 child（吃新路由）
+      } else {
+        const instr = resumeChildId
+          ? t(locale, 'diag.continueResume') + (lastStage ? `\n${buildRetryDiagnostic(attempt, lastStage, locale)}` : '')
+          : buildRetryDiagnostic(attempt, lastStage, locale)
+        const cont = await tryContinueInChild(lastStage || ({ childId: continueId, label } as JournalStage), instr)
+        // **投进去了但没等到正文** ⇒ 原子代理仍在跑（或已写入文件）。绝不回落新起 ——
+        // 两个子代理改同一批文件比失败更糟。按失败收场，让提测门禁拦下转人工。
+        if (cont && cont.kind === 'noText') {
+          return { text: null, attempts, freshTokens, stage: lastStage }
+        }
+        if (cont && cont.kind === 'text') {
+          const u = (cont.usage || {}) as UsageBuckets
+          const prev = lastStage.usage || ({} as UsageBuckets)
+          lastStage.usage = {
+            input: (Number(prev.input) || 0) + (Number(u.input) || 0),
+            cacheRead: (Number(prev.cacheRead) || 0) + (Number(u.cacheRead) || 0),
+            cacheWrite: (Number(prev.cacheWrite) || 0) + (Number(u.cacheWrite) || 0),
+            output: (Number(prev.output) || 0) + (Number(u.output) || 0),
+            calls: (Number(prev.calls) || 0) + (Number(u.calls) || 0),
+          }
+          // 同一个 child 继续 ⇒ 不新增 stage（卡片不重复），把本轮记为同一次尝试的续跑
+          lastStage.status = 'done'
+          lastStage.outcome = 'completed'
+          lastStage.endedAt = Date.now()
+          freshTokens += freshTokensOf(u)
+          usageAcc = {
+            input: usageAcc.input + (Number(u.input) || 0),
+            cacheRead: usageAcc.cacheRead + (Number(u.cacheRead) || 0),
+            cacheWrite: usageAcc.cacheWrite + (Number(u.cacheWrite) || 0),
+            output: usageAcc.output + (Number(u.output) || 0),
+            calls: usageAcc.calls + (Number(u.calls) || 0),
+          }
+          journal.logs.push({
+            t: Date.now(), level: 'info',
+            message: t(locale, 'log.continueChild', { label: lastStage.label || label, attempt, tokens: freshTokensOf(u) }),
+          })
+          return { text: cont.text, attempts, freshTokens, stage: lastStage }
+        }
+      } // 改道闸门 else 结束
     }
     // ⚠️ 并发安全（并行 dev 子任务共享同一 journal.stages）：必须在调用前记录长度——
     // runAgent 同步 push 本次尝试的 stage（第一个 await 前），期间其他任务的 runAgent

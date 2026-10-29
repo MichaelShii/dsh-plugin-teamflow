@@ -1381,6 +1381,50 @@ export function shouldContinueChild(attempt: unknown, childId: unknown, resumeCh
   return a > 1
 }
 
+/**
+ * 续跑旧 child 时是否应**改道新 child**（放弃续跑、由调用方回落新起）。纯函数，便于锁住两条边界。
+ *
+ * 设计（2026-10-29，用户拍板）：仅在「旧模型真的不可用」且「用户已主动切到别的模型」同时满足时改道。
+ *  - ① 旧 child 上一轮因**模型不可用类外部失败**（429 / 无额度 / 上游 5xx / 超时，outcome==='external'）
+ *    失败 ⇒ 老模型当前不可用；`journal.externalFailure` 是 run 级兜底（耗光退避的中断态）。
+ *  - ② 当前期望路由 `route`（resolveChildRoute）与旧 child 创建时记录的 `model`/`provider` 不一致 ⇒
+ *    用户已主动切换模型。
+ * 只满足①（用户没切模型）：新 child 还是老模型 ⇒ 续跑旧 child 不浪费一次机会、且避免平白重读上下文。
+ * 只满足②（老模型仍可用）：保持续跑，不丢旧 child 已读过的上下文 / 试过的做法。
+ * 两者都缺 ⇒ 不改动现有续跑行为（内容失败、degenerated、aborted 等照旧在原 child 里续跑）。
+ */
+interface RerouteStage {
+  childId?: string | null
+  outcome?: string | null
+  model?: string | null
+  provider?: string | null
+}
+export function shouldRerouteChild(v: {
+  journal?: { stages?: RerouteStage[]; externalFailure?: boolean }
+  childId: string
+  route: { provider?: string | null; model?: string | null }
+}): boolean {
+  const id = typeof v.childId === 'string' ? v.childId.trim() : ''
+  if (!id) return false
+  const stages = Array.isArray(v.journal?.stages)
+    ? (v.journal!.stages as RerouteStage[])
+    : []
+  // 该 child **最后一条** stage（续跑不会新增 stage，故唯一；resume 的中断阶段即它）
+  let rec: { outcome?: string | null; model?: string | null; provider?: string | null } | undefined
+  for (const s of stages) {
+    if (String(s.childId || '') === id) rec = s
+  }
+  if (!rec) return false
+  const externalFailed = rec.outcome === 'external' || v.journal?.externalFailure === true
+  if (!externalFailed) return false
+  const recProvider = rec.provider ?? null
+  const recModel = rec.model ?? null
+  const desiredProvider = v.route.provider ?? null
+  const desiredModel = v.route.model ?? null
+  const drifted = recProvider !== desiredProvider || recModel !== desiredModel
+  return drifted
+}
+
 export function isToolArgFailure(text: unknown): boolean {
   return TOOL_ARG_FAILURE.test(String(text || ''))
 }
