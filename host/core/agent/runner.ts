@@ -435,10 +435,16 @@ export async function withRetry(
    * PRD / TECHNICAL / 源码。实测 tf-mvpjqs87-14qdxa：单阶段 dev 184 次调用烧 18.4M token、
    * 修复轮 96~150 次调用烧 6.5~15M，绝大部分是"重读同样的上下文"。而同一 child 续跑是可行的：
    * PRD 改写已真机验过（同一 child 连改 3 版、零新 spawn，见 prd-revise.ts 头注释）。
-   * 安全阀：任何一步拿不到（无 childId / 宿主不支持 / 投递失败 / 超时 / 没拿到正文）⇒ **回落新起**，
-   * 并落一条可见 warn（"为什么又新起了"不能是黑盒）。绝不"假装成功"。
+   * 安全阀（2026-10-29 收紧）：
+   *  - 没投进去（无 childId / 宿主不支持 / sendMessage 抛错）⇒ 回落新起，落可见 warn；
+   *  - **投进去了但没等到正文 ⇒ 绝不回落新起**。实锤：child 在跑长命令（mvn/探针）期间事件冻结，
+   *    idle 判据误判"不动了" ⇒ 我们放弃并新起 ⇒ **两个子代理改同一批文件**（old child 还在继续）。
+   *    此时唯一安全的选择是把本次按失败收场（提测门禁会拦下，转人工），宁可浪费这一轮。
    */
-  async function tryContinueInChild(stage: JournalStage, instruction: string): Promise<{ text: string; usage?: UsageBuckets } | null> {
+  async function tryContinueInChild(
+    stage: JournalStage,
+    instruction: string,
+  ): Promise<{ kind: 'text'; text: string; usage?: UsageBuckets } | { kind: 'noText' } | null> {
     const childId = String(stage.childId || '')
     if (!childId) return null
     if (!canReviseViaChild({ subagents: runtime.subagents, sessionQuery: runtime.sessionQuery, childId })) return null
@@ -450,21 +456,34 @@ export async function withRetry(
       childId,
       instruction,
       signal: normalizeSignal(signal),
-      // 比 PRD 改写更保守：重试本来就有 RETRY_LIMIT 兜底，太久不如早点回落去新起
-      idleMs: 120_000,
-      waitMs: 420_000,
+      // 长命令（构建/测试/探针）期间事件会冻结几分钟 ⇒ idle 给足；上限也放宽 ——
+      // 反正「投进去了」之后回落新起是禁手（两个 agent 改同一批文件），久等是更便宜的选项。
+      idleMs: 300_000,
+      waitMs: 1_500_000,
       diag,
     }).catch(() => null)
-    if (!out || !String(out.text || '').trim()) {
+    if (out && String(out.text || '').trim()) {
+      return { kind: 'text', text: out.text, usage: out.usage as UsageBuckets | undefined }
+    }
+    if (diag.delivered) {
+      // **投进去了**：old child 仍在跑（或已把改动写进文件）。此刻回落新起 = 两个 agent 并发改同一批文件
+      // ⇒ 唯一安全的动作是按失败收场（不新起），转人工。
       journal.logs.push({
-        t: Date.now(), level: 'warn',
-        message: t(locale, 'diag.continueFallback', {
-          label: stage.label || label, delivered: diag.delivered ? 'yes' : 'no', sec: Math.round((Number(diag.waitedMs) || 0) / 1000),
+        t: Date.now(), level: 'error',
+        message: t(locale, 'diag.continueNoText', {
+          label: stage.label || label, sec: Math.round((Number(diag.waitedMs) || 0) / 1000),
         }),
       })
-      return null
+      return { kind: 'noText' }
     }
-    return { text: out.text, usage: out.usage as UsageBuckets | undefined }
+    // 没投进去 ⇒ 回落新起是安全的，落可见 warn
+    journal.logs.push({
+      t: Date.now(), level: 'warn',
+      message: t(locale, 'diag.continueFallback', {
+        label: stage.label || label, delivered: 'no', sec: Math.round((Number(diag.waitedMs) || 0) / 1000),
+      }),
+    })
+    return null
   }
 
   for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
@@ -480,7 +499,12 @@ export async function withRetry(
         ? t(locale, 'diag.continueResume') + (lastStage ? `\n${buildRetryDiagnostic(attempt, lastStage, locale)}` : '')
         : buildRetryDiagnostic(attempt, lastStage, locale)
       const cont = await tryContinueInChild(lastStage || ({ childId: continueId, label } as JournalStage), instr)
-      if (cont) {
+      // **投进去了但没等到正文** ⇒ 原子代理仍在跑（或已写入文件）。绝不回落新起 ——
+      // 两个子代理改同一批文件比失败更糟。按失败收场，让提测门禁拦下转人工。
+      if (cont && cont.kind === 'noText') {
+        return { text: null, attempts, freshTokens, stage: lastStage }
+      }
+      if (cont && cont.kind === 'text') {
         const u = (cont.usage || {}) as UsageBuckets
         const prev = lastStage.usage || ({} as UsageBuckets)
         lastStage.usage = {

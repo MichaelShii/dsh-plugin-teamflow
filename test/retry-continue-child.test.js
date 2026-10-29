@@ -48,9 +48,15 @@ ok(/tryContinueInChild/.test(runnerSrc), 'withRetry 里有"继续同一子代理
 ok(/canReviseViaChild/.test(runnerSrc), '先探测宿主能力（不支持就直接新起，不做无用等待）')
 ok(/shouldContinueChild\(attempt, lastStage \? lastStage\.childId : null, resumeChildId\)/.test(runnerSrc), '用纯函数判定，不用临时条件')
 ok(/diag\.continueFallback/.test(runnerSrc), '回落时必须留可见日志（"为什么又新起了"不能是黑盒）')
-// 假装成功是最坏的结局：拿不到正文必须回落，而不是拿上一轮的旧文本交差
-ok(/if \(!out \|\| !String\(out\.text \|\| ''\)\.trim\(\)\)/.test(runnerSrc), '拿不到正文 ⇒ 回落新起（绝不假装成功）')
+// 绝不假装成功：**没投进去**（宿主不支持 / sendMessage 抛错）⇒ 回落新起，但空文本不算"没投进去"
+ok(/if \(!out \|\| !String\(out\.text \|\| ''\)\.trim\(\)\)/.test(runnerSrc) === false && /String\(out\.text \|\| ''\)\.trim\(\)/.test(runnerSrc), '正文为空不再当作"没投进去"（空正文 + 已投递 ⇒ 走 noText，不回落）')
 ok(/'log\.continueChild'/.test(runnerSrc), '成功续跑时留痕（本次新增多少 token 可见）')
+// 2026-10-29 实锤（tf-mvsgetmy-ldop5j）：指令投进了原 child（子会话里有 2 条注入记录），但 child 在跑
+// 长命令 ⇒ 事件冻结 ⇒ idle 判据误判 ⇒ 旧实现回落新起 ⇒ **两个子代理改同一批文件**。
+// 判据：**投递成功 ⇒ 永不回落新起**；宁可按失败收场转人工。
+ok(/kind === 'noText'/.test(runnerSrc) && /kind: 'noText'/.test(runnerSrc), '投了但没等到正文 ⇒ 按失败收场（绝不回落新起）')
+ok(!/delivered: diag\.delivered \? 'yes' : 'no'/.test(runnerSrc), '回落 warn 只允许出现在「没投进去」的分支（delivered 恒为 no）')
+ok(/idleMs: 300_000/.test(runnerSrc), 'idle 给足 5 分钟（长命令期间事件冻结，120s 会误判）')
 const devSrc = readFileSync(join(here, '..', 'host', 'core', 'stages', 'dev.ts'), 'utf8')
 ok(/const prevChildId = prevStage && prevStage\.childId/.test(devSrc), 'dev resume 分支把上一轮的 childId 找回来')
 ok(/task\.ids, prevChildId\)/.test(devSrc), 'dev resume 真的把它传给 withRetry（否则等于没接）')
