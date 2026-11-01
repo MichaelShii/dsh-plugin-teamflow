@@ -568,9 +568,10 @@ ok(/"version": "0\.3\.2"/.test(pkgSrc), 'package.json：版本 0.3.2（release-v
 // **同 tuple** 的比较器 —— 这正是旧区间必须写成并集的原因（下限 0.1.7-alpha.1 的 tuple 与 0.2.0-rc.x
 // 不同 ⇒ `>=0.1.7-alpha.1 <0.3.0` 对 `0.2.0-rc.x` 判 fail）。语义矩阵见 README「版本锚定」小节。
 // 2026-10-15（issue #20）：下限整体抬到 `0.2.1-alpha.2`（宿主删除 `subagents.start` 的首个版本），
-// 与当前宿主同一 tuple ⇒ 单区间即可，不再需要并集。实测（default 与 includePrerelease 结果一致）：
-//   alpha.1=false / alpha.2~alpha.4=true / 0.2.0-rc.2=false / 0.1.7-alpha.1=false / 0.2.1=true
-ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.2\.1-alpha\.2 <0\.3\.0"/.test(pkgSrc), 'package.json：engines.dsh 下限 = 0.2.1-alpha.2（宿主删除 subagents.start 的首个版本；更旧的宿主上本插件会被 host 列为 skippedBundles 并说明原因）')
+// 与当前宿主同一 tuple ⇒ 单区间即可，不再需要并集。
+// 2026-11-01：下限再抬到 `0.2.1-rc.5`（发布线最新 rc），上界仍 `<0.3.0`。实测（includePrerelease）：
+//   rc.4=false / rc.5=true / 0.2.1=true / 0.2.2-alpha.2=true / 0.3.0=false ⇒ 当前区间放行 rc.5 及之后的 0.2.x。
+ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.2\.1-rc\.5 <0\.3\.0"/.test(pkgSrc), 'package.json：engines.dsh 下限 = 0.2.1-rc.5（发布线最新 rc；更旧的宿主上本插件会被 host 列为 skippedBundles 并说明原因）')
 // 手工枚举的清单必须配门禁（同型教训：journal 字段 / execOptions / loadState / triageRecordOf）。
 // deploy.mjs FILES 与上面的 CORE_FILES 都是手写清单，领域化拆分后两者都漂移过——实测 FILES 漏了
 // guard/products/runlogs/state/teams 五个（profile 副本里那份源码因此永久陈旧），CORE_FILES 漏了 sanity。
