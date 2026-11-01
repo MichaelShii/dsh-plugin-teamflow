@@ -552,7 +552,7 @@ ok(/!verdict\.ok && text && stop === 'completed'/.test(runnerSrc), 'runner：**�
 ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
-ok(/"version": "0\.3\.2"/.test(pkgSrc), 'package.json：版本 0.3.2（release-v0.3.2 开发线）')
+ok(/"version": "0\.3\.3"/.test(pkgSrc), 'package.json：版本 0.3.3（release-v0.3.3 开发线）')
 // 安装期钩子白名单：只有 prepare 可以在消费者安装时**不**运行。
 // 实锤（2026-10-03 用户实锤）：v0.2.5 的 `postinstall: lefthook install` 在**消费者从 registry 安装**时也会跑，
 // 而 lefthook 是 devDependency（tarball 里不存在）⇒ `npm error 'lefthook' 不是内部或外部命令` ⇒ **整个安装失败**。
@@ -568,9 +568,10 @@ ok(/"version": "0\.3\.2"/.test(pkgSrc), 'package.json：版本 0.3.2（release-v
 // **同 tuple** 的比较器 —— 这正是旧区间必须写成并集的原因（下限 0.1.7-alpha.1 的 tuple 与 0.2.0-rc.x
 // 不同 ⇒ `>=0.1.7-alpha.1 <0.3.0` 对 `0.2.0-rc.x` 判 fail）。语义矩阵见 README「版本锚定」小节。
 // 2026-10-15（issue #20）：下限整体抬到 `0.2.1-alpha.2`（宿主删除 `subagents.start` 的首个版本），
-// 与当前宿主同一 tuple ⇒ 单区间即可，不再需要并集。实测（default 与 includePrerelease 结果一致）：
-//   alpha.1=false / alpha.2~alpha.4=true / 0.2.0-rc.2=false / 0.1.7-alpha.1=false / 0.2.1=true
-ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.2\.1-alpha\.2 <0\.3\.0"/.test(pkgSrc), 'package.json：engines.dsh 下限 = 0.2.1-alpha.2（宿主删除 subagents.start 的首个版本；更旧的宿主上本插件会被 host 列为 skippedBundles 并说明原因）')
+// 与当前宿主同一 tuple ⇒ 单区间即可，不再需要并集。
+// 2026-11-01：下限再抬到 `0.2.1-rc.5`（发布线最新 rc），上界仍 `<0.3.0`。实测（includePrerelease）：
+//   rc.4=false / rc.5=true / 0.2.1=true / 0.2.2-alpha.2=true / 0.3.0=false ⇒ 当前区间放行 rc.5 及之后的 0.2.x。
+ok(/"manifestVersion": 1/.test(pkgSrc) && /"dsh": ">=0\.2\.1-rc\.5 <0\.3\.0"/.test(pkgSrc), 'package.json：engines.dsh 下限 = 0.2.1-rc.5（发布线最新 rc；更旧的宿主上本插件会被 host 列为 skippedBundles 并说明原因）')
 // 手工枚举的清单必须配门禁（同型教训：journal 字段 / execOptions / loadState / triageRecordOf）。
 // deploy.mjs FILES 与上面的 CORE_FILES 都是手写清单，领域化拆分后两者都漂移过——实测 FILES 漏了
 // guard/products/runlogs/state/teams 五个（profile 副本里那份源码因此永久陈旧），CORE_FILES 漏了 sanity。
@@ -1520,5 +1521,50 @@ console.log('── 12) 无 supplement 的 resume = 整版放行 ⇒ 要求显�
   ok(/dependency-name:\s*'typescript'/.test(depText), 'ci：dependabot 忽略 typescript 大版本（TS7 勿用）')
   ok(/dependency-name:\s*'@types\/react'/.test(depText), 'ci：dependabot 忽略 @types/react 大版本（须与 peer react 同 major）')
 }
+/* ── start 拒绝路径的返回形状（2026-10-27）─────────────────────────────
+ * 事故：`teamflow_start` 在「本会话已暂停」和「未选团队」两条**拒绝路径**上返回
+ * `{ runId: null, status, message }`，而 output schema 把 runId 声明成 `string`
+ * （且 additionalProperties:false）⇒ 宿主输出校验按类型判，`null` 整条拒回，模型看到的是
+ * `invalid output: "value.runId" must be a string` —— 被读成"工具内部异常/插件有缺陷"，
+ * 而真实原因是「没选团队」。连续两次重试都同一个错（用户实锤截图）。
+ *
+ * 判据：**schema 里声明了类型，就不能给它 null**（省略字段 ≠ 给 null：required 里没有它）。
+ * 这条锁的不是"某行代码"，是这个形状不许回来。
+ */
+{
+  // 只看代码、不看**整行注释**：这条事故的说明注释里就写着那个坏形状，不剥注释会把
+  // 「解释这个 bug」误判成「又犯这个 bug」。（不用正则剥注释：写正则容易反斜杠加倍，
+  // 而且会把字符串里的 // 一起切掉。）
+  const indexCode = indexSrc.split('\n').map((l) => (l.trim().startsWith('//') ? '' : l)).join('\n')
+  ok(!indexCode.includes('runId: null') && !indexCode.includes('runId:null'), 'start：拒绝路径不得返回 runId:null（schema 声明 string，宿主会整条拒回）')
+  ok(/status: 'paused',\s*message:/.test(indexSrc), 'start：paused 分支仍带 status+message（别为了消错把整条返回删掉）')
+  ok(/status: 'no-team',\s*message:/.test(indexSrc), 'start：no-team 分支仍带 status+message')
+}
+
+/* ── 护栏：自愈后必须撤销「环境不可用」标记（2026-10-27 tf-mvpjqs87-14qdxa）──
+ * 事故：edit 的 `old_string was not found` 失败 2 次（判 WARN），而模型 1~3 秒内 read→edit
+ * 就自愈了，之后又成功十余次；runner 仍按 warn 时落下的 `stage.envUnavailable` 判死，
+ * 整条 run failed（那个任务其实能做完了）。
+ * 这里锁的是「撤销」这个动作与它的可见性。行为级测试做不了：guard.ts 在模块顶部 import 了
+ * 宿主包，node 侧加载不到（tsconfig paths 只在 tsc 生效）。所以真实检验靠真机 resume，
+ * 本断言只防"这行被悄悄删掉"。
+ */
+{
+  const guardSrc = readFileSync(join(here, '..', 'host', 'core', 'agent', 'guard.ts'), 'utf8')
+  ok(guardSrc.includes('stage.envUnavailable = undefined'), 'guard：成功调用后撤销 env-unavailable 标记（否则自愈会被判死）')
+  ok(guardSrc.includes("'guard.envRecovered'"), 'guard：撤销时留日志（不静默）')
+}
+
+{
+  // 日志与事实相反（2026-10-27 实锤）：`log.qaBlocked` 原写「产品验收跳过」，但 E 方案之后超限**仍会**
+  // 以已知问题模式跑一次只读验收。两条日志相隔 10ms 且互相矛盾，用户直接问「为啥看不到产品验收」。
+  // 这里只锁这一句事实性文案（内容断言能做的不多，但至少不许把"跳过"写回去）。
+  const pipeLocale = readFileSync(join(here, '..', 'host', 'locales', 'pipeline.ts'), 'utf8')
+  // 只看**文案行**，不看注释：上面那条注释里就写着这个坏短语（解释 bug 不该被判成 bug）。
+  const pipeCopy = pipeLocale.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+  ok(!/产品验收跳过/.test(pipeCopy), 'qa 超限日志不得声称「产品验收跳过」（实际仍跑只读验收）')
+  ok(/已知问题/.test(pipeLocale), 'qa 超限日志须说明随后会以已知问题模式跑只读验收')
+}
+
 console.log(failed === 0 ? '\n✅ smoke 全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)

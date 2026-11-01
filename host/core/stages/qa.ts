@@ -9,8 +9,8 @@
 import { advanceTask, storeFor, parseDefectRows, syncQaDefects, verifyReqBugs, noteTaskStageUsage, noteTaskAssign, hasOpenBlockingBugs } from '../domain/backlog.ts'
 import { withRetry, resolveChildRoute } from '../agent/runner.ts'
 import { qaPrompt, qaFixPrompt } from '../../prompts/index.ts'
-import { snippet, clip, artifactText, freshArtifactText, qaRoundEntry as buildQaRoundEntry, scanDeliverableFiles, assessQaVerificationEvidence, fsRootOf, DELIVERABLE_FILE_LIMIT } from '../../util.ts'
-import { QA_REWORK_LIMIT, phaseKeyOf, FIX_GATE_PATTERN } from '../../constants.ts'
+import { snippet, clip, artifactText, freshArtifactText, qaRoundEntry as buildQaRoundEntry, scanDeliverableFiles, assessQaVerificationEvidence, fsRootOf, planQaRoundStart, DELIVERABLE_FILE_LIMIT } from '../../util.ts'
+import { QA_REWORK_LIMIT, QA_MANUAL_BUDGET, phaseKeyOf, FIX_GATE_PATTERN } from '../../constants.ts'
 import { persistJournal } from '../../../store.ts'
 import { currentModelSupportsVision } from '../agent/context.ts'
 import { captureLoadCheck } from '../workspace/browser-probe.ts'
@@ -135,9 +135,27 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
     const store = storeFor(scopeKey)
     const qaStageChildren = () => journal.stages.filter((s) => phaseKeyOf(s.phase) === 'qa').map((s) => (s.childId || '').slice(0, 8)).filter(Boolean).join(',') || t(locale, 'role.qaTeam')
     // QA → 开发修复 → 复验 打回闭环：QA 发现 P0-P2 缺陷则打回开发确认/修复，干净才进验收；超 QA_REWORK_LIMIT 轮需人工。
+    /* 打回轮次**跨 resume 累计**（2026-10-27）：原实现是局部 `let round = 0`，中断+resume 就归零
+     * ⇒ ADR-0007 的「有界闭环」在续跑后失效。实测 tf-mvpjqs87-14qdxa：取消→resume 后 QA 又从
+     * 「第 1 轮」开始打回，同一 run 打到第 3 轮，而没人看得出来（日志与图上都是"第 1 轮"）。
+     * 规则：累计值落盘；人工 resume 每次追加 1 轮预算（人工介入算一次进展），但最多 QA_MANUAL_BUDGET 次。 */
     let round = 0
     let qaClean = false
-    const devFixRounds = []
+    const devFixRounds: string[] = Array.isArray(journal.qaFixSummaries) ? [...journal.qaFixSummaries] : []
+    {
+      const start = planQaRoundStart(
+        { round: journal.qaReworkRound, resumes: journal.qaReworkResumes },
+        !!resume, QA_REWORK_LIMIT, QA_MANUAL_BUDGET,
+      )
+      round = start.round
+      journal.qaReworkResumes = start.resumes
+      if (start.reset) journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.qaReworkBudgetReset', { used: start.used, n: start.resumes, limit: QA_MANUAL_BUDGET }) })
+    }
+    const persistRework = () => {
+      journal.qaReworkRound = round
+      persistJournal(journal)
+    }
+    persistRework()
     const qaDevSummary = () => {
       const src = JSON.stringify(timeline.dev)
       return devFixRounds.length ? `${src}\n${t(locale, 'ctx.qaFixSummary')}\n${devFixRounds.join('\n---\n')}` : src
@@ -145,6 +163,7 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
     let defects = []
     do {
       round += 1
+      persistRework()
       const isReverify = round > 1
       const label = isReverify ? t(locale, 'dev.qaReverify', { n: round - 1 }) : t(locale, 'dev.qaTest')
       // C 方案（2026-09-15）：复验轮必须在 prompt 里显式说明——复用上一轮探针（就在 logs/teamflow/<runId>/scripts/）
@@ -232,6 +251,8 @@ export async function runQaPhase(ctx: PipelineCtx): Promise<{ cancelled: boolean
       noteVerifyEvidence(fixR.stage, stageTextOf(fixR))
       if (!fixR.text) { advanceTask(journal, 'needs-human', null, t(locale, 'event.qaFixFail'), { by: 'qa' }); throw stageFailError(t(locale, 'dev.qaFixStage'), fixR) }
       devFixRounds.push(snippet(fixR.text, 3000))
+      journal.qaFixSummaries = devFixRounds.slice(-6)
+      persistRework()
       // A 方案（2026-09-15）观测：P0–P2 修复要求「类别门禁 + 命中数 before→after」进证据块。
       // policy 级（host 无法证明门禁真的存在），但**没写就是可见的**——warn 留痕供人工/复验核对。
       const fixGate = FIX_GATE_PATTERN.test(String(stageTextOf(fixR) || ''))

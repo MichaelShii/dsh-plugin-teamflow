@@ -6,12 +6,15 @@
  * 因此除一处机械替换（`return` → 返回 `{ cancelled: true }` 的语义等价改写，上一轮已完成）外
  * 不存在任何语义差异；缩进也保持原样，便于与原 commit 逐行比对。
  */
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 import { advanceTask, storeFor, noteTaskStageUsage, noteTaskAssign, createSubtask, completeSubtask, noteSubtaskUsage } from '../domain/backlog.ts'
 import { withRetry } from '../agent/runner.ts'
 import { devPrompt } from '../../prompts/index.ts'
 import {
   clip, snippet, buildRetryDiagnostic, runPool, devTaskStatuses, devTaskIdAt, backfillDevTaskIds,
-  mergeFileOverlaps, concurrentWriteConflicts, planDevWaves,
+  mergeFileOverlaps, concurrentWriteConflicts, planDevWaves, parseOutOfScope,
+  parsePinnedConstants, diffPinnedConstants,
 } from '../../util.ts'
 import { phaseKeyOf, PHASE_ORDER } from '../../constants.ts'
 import { persistJournal } from '../../../store.ts'
@@ -113,6 +116,9 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
     } else if (plan.merged > 0) {
       journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devOverlapMerged', { n: defs.length, m: plan.groups.length - (missing ? 1 : 0) }) })
     }
+    if (plan.cycleMerged > 0) {
+      journal.logs.push({ t: Date.now(), level: 'info', message: t(locale, 'log.devPlanCycleSerialized', { n: plan.cycleMerged }) })
+    }
     if (plan.dropped > 0) {
       journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.devPlanCycle', { n: plan.dropped }) })
     }
@@ -199,7 +205,10 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
           const taskLabel = attempted
             ? t(locale, 'dev.taskRerun', { title: task.title })
             : t(locale, 'dev.task', { title: task.title })
-          const devR = await withRetry(journal, parent, taskLabel, 'dev', resumePrompt, signal, task.title, null, task.ids)
+          // 中断后补跑：优先在**同一个子代理里继续**（它记得上一轮改到哪、试过什么）。
+          // 拿不到（宿主不支持 / 投递失败 / 超时 / 空正文）⇒ withRetry 内部回落为新起，行为不变。
+          const prevChildId = prevStage && prevStage.childId ? String(prevStage.childId) : null
+          const devR = await withRetry(journal, parent, taskLabel, 'dev', resumePrompt, signal, task.title, null, task.ids, prevChildId)
           const rerunText = stageTextOf(devR)
           trackDevTouched(task.title, t0, Date.now(), rerunText)
           noteVerifyEvidence(devR.stage, rerunText)
@@ -315,6 +324,97 @@ export async function runDevPhase(ctx: PipelineCtx): Promise<{ cancelled: boolea
     noteTaskStageUsage(journal)
     const devStages = journal.stages.filter((s) => phaseKeyOf(s.phase) === 'dev')
     noteTaskAssign(journal, 'dev', devStages.map((s) => (s.childId || '').slice(0, 8)).filter(Boolean).join(',') || t(locale, 'role.devTeam'))
+  }
+  /* ── 越界发现收口（2026-10-27）：把 `[OUT-OF-SCOPE]` 变成一条**独占这些文件**的收口任务 ──
+   * 为什么必须有：dev 任务按契约不许改别人的文件（并发写会静默丢失），但"发现了没人接手"
+   * 会让缺陷一路滑到下游。实锤 tf-mvpjqs87-14qdxa：T1 发现 T2 文件里 3 个失败用例并定位到行，
+   * 只能写进自由文本 summary；最后由「交付自检」**重新跑全量测试**才发现（多一次全量构建，
+   * 且依赖它恰好覆盖到）。信息早就有了，缺的是通道。
+   * 边界（防止无限追加）：① 每个 dev 阶段只加 **一轮**（按 stage label 判重，resume 不会重复加）；
+   * ② 收口任务自己再报越界不再递归 —— 它已经是"最后一把"。
+   */
+  {
+    const fixTitle = t(locale, 'dev.outOfScopeTask')
+    const alreadyRan = (journal.stages || []).some((s) => s.label === fixTitle)
+    // ⚠️ dev 已经有任务失败 ⇒ **不起收口任务**（2026-10-29 实锤 tf-mvsgetmy-ldop5j）：
+    // T8/T10 被外部中止后，同一秒里收口任务去 spawn 直接报 `no subagent provider registered for "null"`，
+    // 连试两次都失败 ⇒ 白烧两次尝试，还把"失败任务数"多算两笔（8/12 里的两笔就是它）。
+    // 逻辑上也不该跑：dev 有失败 ⇒ 提测门禁必然拦下 ⇒ 等人工 resume 时（provider 是好的）再一起收口。
+    const devHasFailure = (devResults || []).some((r) => r && r.failed)
+    if (!alreadyRan && !journal.cancelled && !devHasFailure) {
+      const seenKeys = new Set()
+      const findings: Array<{ file: string; line: number | null; note: string }> = []
+      for (const r of devResults || []) {
+        if (!r || !r.output) continue
+        for (const f of parseOutOfScope(r.output)) {
+          const key = `${f.file}:${f.line || ''}`
+          if (seenKeys.has(key)) continue
+          seenKeys.add(key)
+          findings.push(f)
+        }
+      }
+      if (findings.length) {
+        const files = [...new Set(findings.map((f) => f.file))]
+        const spec = findings.map((f) => `- ${f.file}${f.line ? `:${f.line}` : ''} — ${f.note || '(无说明)'}`).join('\n')
+        const fixTask = { title: fixTitle, spec, files, ids: ['dt-out-of-scope'] }
+        journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.devOutOfScope', { n: findings.length, files: files.length }) })
+        const sub = createSubtask(journal, fixTask.title, fixTask.spec, fixTask.ids[0])
+        if (sub) { completeSubtask(journal, sub.id, false, null, null); const live = storeFor(scopeKey).find('task', sub.id); if (live) { live.status = 'running'; live.startedAt = Date.now(); storeFor(scopeKey).persist(); persistJournal(journal) } }
+        const fixR = await withRetry(journal, parent, fixTask.title, 'dev', devPrompt(fixTask, tech, prd, design, root, journal.id, state), signal, fixTask.title, null, fixTask.ids)
+        const fixText = stageTextOf(fixR)
+        const fixOk = !!fixR.text
+        if (sub) {
+          completeSubtask(journal, sub.id, !fixOk, fixText ? snippet(fixText, 1000) : null, null)
+          if (fixR.stage) noteSubtaskUsage(journal, sub.id, fixR.stage)
+        }
+        devResults = [
+          ...(devResults || []),
+          { title: fixTask.title, dtId: fixTask.ids[0], failed: !fixOk, output: fixText || '' },
+        ]
+      }
+    }
+  }
+  /* ── 常量守卫（2026-10-27）：技术方案里钉死的数值常量，本轮代码改了就必须停 ──
+   * 实锤 tf-mvpjqs87-14qdxa 的 QA 修复轮：PRD §3.1 表格写「日主 +10、总权 22」，TECHNICAL §47 写
+   * `DAY_MASTER_SELF = 10`；修复轮把它改成 **4 / 16**，连"断言该常量"的测试一起改成断言 4，
+   * 然后自辩「仍在 PRD §3.1 日主固定值档内」——五档确实"全可达"了，但**基准被换掉**。
+   * 这条是**客观可判定**的，不需要模型自觉：文档里以 `<NAME> = <数字>` 出现的常量，与本轮
+   * touched 过的文件里同名常量比对，值不同即停。改口径是人的事（PRD 注明要"走文档变更流程"）。
+   * 范围克制：只查本轮 touched 的文件、单个文件 400KB 上限、最多 40 个，读不到就跳过（不因此阻断）。
+   */
+  {
+    const pinned = parsePinnedConstants(tech)
+    const touchedRels = [...new Set((devTouchEntries || []).flatMap((e) => e.files))]
+    const baseDir = journal.workspacePath || root
+    if (pinned.length && touchedRels.length && baseDir) {
+      const actual: Array<{ name: string; value: string }> = []
+      let scanned = 0
+      for (const relRaw of touchedRels) {
+        if (scanned >= 40) break
+        try {
+          const rel = String(relRaw || '').replace(/^[\\/]+/, '')
+          if (!rel) continue
+          const abs = join(baseDir, rel)
+          if (!existsSync(abs)) continue
+          const st = statSync(abs)
+          if (!st.isFile() || st.size > 400_000) continue
+          actual.push(...parsePinnedConstants(readFileSync(abs, 'utf8')))
+          scanned += 1
+        } catch (e) { /* 读不到就跳过：守卫宁可漏，不该因权限/编码把整条流水线挂住 */ }
+      }
+      const drift = diffPinnedConstants(pinned, actual)
+      if (drift.length) {
+        for (const d of drift) {
+          journal.logs.push({
+            t: Date.now(), level: 'error',
+            message: t(locale, 'log.pinnedConstChanged', { name: d.name, expected: d.expected, actual: d.actual }),
+          })
+        }
+        advanceTask(journal, 'needs-human', null, t(locale, 'event.devFail'), { by: 'dev' })
+        persistJournal(journal)
+        throw new Error(t(locale, 'err.pinnedConst', { n: drift.length }))
+      }
+    }
   }
   /* ── 开发收口：取消检查 + 提测门禁（**两个分支共用**，不可只写在其中之一） ──
      * 2026-09-16 实测（resume 后中断，dev 全部「已中止」却直接起了 QA 子代理）：这两个判断原先只写在

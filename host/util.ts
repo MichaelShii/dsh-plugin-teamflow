@@ -1229,6 +1229,202 @@ const TOOL_ARG_FAILURE = new RegExp([
 ].join('|'), 'i')
 
 /** 是否属于「模型参数传错」（换个参数即可继续）—— 据此**不计入**环境不可用指纹。 */
+/* ── 越界发现（2026-10-27）：dev 任务按契约不许改别人的文件，但"发现了没人接手"会一路滑到 QA ──
+ * 实锤 tf-mvpjqs87-14qdxa：T1 发现 T2 文件里 3 个失败用例并定位到行，只写进自由文本 summary；
+ * 最后由「交付自检」重新跑全量测试才发现（多一次全量构建，且依赖它覆盖到）。
+ * 契约：越界发现必须写进结构化块，host 解析后生成一条**独占这些文件**的收口任务（见 stages/dev.ts）。
+ *
+ * 格式（唯一真相在这条注释与 devPrompt 的说明里）：
+ *   [OUT-OF-SCOPE]
+ *   - src/a/B.java:123 — 现象/证据 — 建议动作
+ *   - src/c/D.java — 现象
+ *   [/OUT-OF-SCOPE]
+ * 解析是**宽容的**：破折号可用 —/–/-，行首列表符可省略，行号可省；但块标记必须存在——
+ * 没有块就等于没有声明（不做"从自由文本里猜"的事，那正是要消灭的形态）。
+ */
+export interface OutOfScopeFinding {
+  file: string
+  line: number | null
+  note: string
+}
+
+/** 越界发现里的"文件"必须像路径：含分隔符且无空白，或裸文件名（`pom.xml`）。
+ *  纯函数、单独可测——它是挡住"把正文当成发现"的最后一道闸。 */
+export function looksLikePath(file: unknown): boolean {
+  const s = String(file === null || file === undefined ? '' : file).trim()
+  if (!s || s.length > 240) return false
+  if (/\s/.test(s)) return false
+  if (/[：:;,，。、（）()「」【】]/.test(s) && !/^[A-Za-z]:[\\/]/.test(s)) return false
+  if (/[/\\]/.test(s)) return true
+  return /^[\w.-]+\.\w{1,8}$/.test(s)
+}
+
+/** 解析 dev 回复里的 `[OUT-OF-SCOPE]` 块（最多 `limit` 条；无块 ⇒ 空数组）。 */
+export function parseOutOfScope(text: unknown, limit = 20): OutOfScopeFinding[] {
+  const s = String(text === null || text === undefined ? '' : text)
+  const open = s.search(/\[OUT-OF-SCOPE\]/i)
+  if (open < 0) return []
+  const rest = s.slice(open + '[OUT-OF-SCOPE]'.length)
+  const close = rest.search(/\[\/OUT-OF-SCOPE\]/i)
+  const body = close >= 0 ? rest.slice(0, close) : rest
+  const out: OutOfScopeFinding[] = []
+  for (const rawLine of body.split('\n')) {
+    if (out.length >= limit) break
+    const line = rawLine.trim()
+    if (!line) continue
+    // ⚠️ 模型经常**忘写闭标记**（实锤 tf-mvsdwtjp-s51sz9：只写了开标记，紧跟其后的是
+    // `[Verification evidence]` 与状态块）。原实现「没有闭标记就吃到回复结尾」⇒ 把验证证据、
+    // 状态行的每一行都当成"越界发现"，9 条里 8 条是垃圾，收口任务被喂了 1.12M token 的废任务。
+    // 边界规则：遇到下一个**段标题行**（`[XXX]`）就停 —— 越界块永远在自己那一段里。
+    if (/^\[[A-Z][A-Z0-9 _·.-]*\]/.test(line)) break
+    const item = line.replace(/^[-*•]\s*/, '')
+    if (!item) continue
+    if (/^\[\/?OUT-OF-SCOPE\]/i.test(item)) continue
+    // 头（路径[:行号]）与说明之间：— / – / " - "
+    const cut = item.search(/\s+[—–]\s+|\s+-\s+/)
+    const head = (cut >= 0 ? item.slice(0, cut) : item).trim()
+    const note = cut >= 0 ? item.slice(cut).replace(/^\s*[—–-]\s*/, '').trim() : ''
+    const m = head.match(/^(.*?)(?::(\d+))?$/)
+    const file = (m && m[1] ? m[1] : head).trim()
+    if (!file || /^\[\/?OUT-OF-SCOPE/i.test(file)) continue
+    if (file.length < 3) continue
+    // 路径形状校验（同一事故的第二道闸）：只有"像路径"的才收 —— 要么含分隔符且无空白，
+    // 要么是裸文件名（`pom.xml` 这种也该能报）。这一条挡掉 `发现。` / `cmd: ...` /
+    // `状态文件已写入 ...` / `备注：...` 这些被吞进来的正文行。
+    if (!looksLikePath(file)) continue
+    out.push({ file, line: m && m[2] ? Number(m[2]) : null, note: note.slice(0, 300) })
+  }
+  return out
+}
+
+export interface PinnedConstant { name: string; value: string }
+
+/** 从文本里抽「钉死的数值常量」：`[static] final <type> NAME = <数字>` 或 `NAME = <数字>`（大写名）。
+ *  TECHNICAL 里通常以代码块或表格形式给出这些值；dev 一旦改了它们，等于**悄悄改设计口径**。 */
+export function parsePinnedConstants(text: unknown): PinnedConstant[] {
+  const s = String(text === null || text === undefined ? '' : text)
+  const out: PinnedConstant[] = []
+  const seen = new Set<string>()
+  const re = /(?:static\s+final\s+\w+\s+)?\b([A-Z][A-Z0-9_]{2,})[`*|\s]*=\s*(-?\d+(?:\.\d+)?)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(s)) !== null) {
+    const name = m[1]
+    if (seen.has(name)) continue
+    seen.add(name)
+    out.push({ name, value: m[2] })
+  }
+  return out
+}
+
+/** 比对「文档钉死值」与「代码现值」。只报**两边都有、值不同**的项（代码里没有的不算，
+ *  文档里没有的不算 —— 那是新常量，不是改口径）。 */
+export function diffPinnedConstants(
+  pinned: PinnedConstant[],
+  actual: PinnedConstant[],
+): Array<{ name: string; expected: string; actual: string }> {
+  const now = new Map(actual.map((c) => [c.name, c.value]))
+  const out: Array<{ name: string; expected: string; actual: string }> = []
+  for (const p of pinned) {
+    const a = now.get(p.name)
+    if (a === undefined) continue
+    if (String(a) !== String(p.value)) out.push({ name: p.name, expected: p.value, actual: a })
+  }
+  return out
+}
+
+/** QA 打回轮次的**起点决策**（纯函数，2026-10-27）。
+ *  背景：轮次原本是阶段内局部变量，中断+resume 归零 ⇒ `QA_REWORK_LIMIT` 的有界闭环在续跑后失效
+ *  （实测 tf-mvpjqs87-14qdxa：同 run 打到第 3 轮，日志与界面上都还写着「第 1 轮」）。
+ *  规则：累计值落盘后按已用轮次继续；**只有人工 resume** 才追加一次预算（人工介入算一次进展），
+ *  且追加次数有上限 `manualBudget`——否则上限又形同虚设。 */
+export function planQaRoundStart(
+  persisted: { round?: unknown; resumes?: unknown } | null | undefined,
+  isHumanResume: boolean,
+  limit: number,
+  manualBudget: number,
+): { round: number; resumes: number; reset: boolean; used: number } {
+  const used = Math.max(0, Number(persisted && persisted.round) || 0)
+  const grants = Math.max(0, Number(persisted && persisted.resumes) || 0)
+  if (used > limit && isHumanResume && grants < manualBudget) {
+    return { round: 0, resumes: grants + 1, reset: true, used }
+  }
+  return { round: used, resumes: grants, reset: false, used }
+}
+
+/** 长命令告警判定（纯函数，2026-10-28）：在飞调用超过阈值且还没报过 ⇒ 该告警。
+ *  单独抽出来是为了可测边界——护栏本体在轮询闭包里，没法在 node 侧加载（它 import 宿主包）。 */
+export function longCallDue(
+  startedAt: unknown,
+  now: number,
+  thresholdMs: number,
+  alreadyWarned: boolean,
+): boolean {
+  if (alreadyWarned) return false
+  const t = Number(startedAt)
+  if (!Number.isFinite(t) || t <= 0) return false
+  return now - t >= thresholdMs
+}
+
+/** 重试时是否**在原子代理里继续**（而不是新起一个）。纯函数，便于锁住两条边界：
+ *  ① 第一次尝试绝不"继续"（那时还没有上一轮）；② 没有 childId 就无从来处继续。
+ *  宿主能力（sendMessage/observeSession）由调用方另行判定，这里只管"该不该试"。 */
+export function shouldContinueChild(attempt: unknown, childId: unknown, resumeChildId?: unknown): boolean {
+  // 两条来源：① 重试时上一轮 stage 的 childId；② 中断后 resume 时从上一个 stage 找回的 childId。
+  const own = typeof childId === 'string' ? childId.trim() : ''
+  const fromResume = typeof resumeChildId === 'string' ? resumeChildId.trim() : ''
+  const id = own || fromResume
+  if (!id) return false
+  const a = Number(attempt)
+  if (!Number.isFinite(a)) return false
+  // ② 让 **attempt=1** 也能继续：中断后补跑对每个任务都是第一次尝试，但它不是"新任务"
+  if (fromResume) return a >= 1
+  return a > 1
+}
+
+/**
+ * 续跑旧 child 时是否应**改道新 child**（放弃续跑、由调用方回落新起）。纯函数，便于锁住两条边界。
+ *
+ * 设计（2026-10-29，用户拍板）：仅在「旧模型真的不可用」且「用户已主动切到别的模型」同时满足时改道。
+ *  - ① 旧 child 上一轮因**模型不可用类外部失败**（429 / 无额度 / 上游 5xx / 超时，outcome==='external'）
+ *    失败 ⇒ 老模型当前不可用；`journal.externalFailure` 是 run 级兜底（耗光退避的中断态）。
+ *  - ② 当前期望路由 `route`（resolveChildRoute）与旧 child 创建时记录的 `model`/`provider` 不一致 ⇒
+ *    用户已主动切换模型。
+ * 只满足①（用户没切模型）：新 child 还是老模型 ⇒ 续跑旧 child 不浪费一次机会、且避免平白重读上下文。
+ * 只满足②（老模型仍可用）：保持续跑，不丢旧 child 已读过的上下文 / 试过的做法。
+ * 两者都缺 ⇒ 不改动现有续跑行为（内容失败、degenerated、aborted 等照旧在原 child 里续跑）。
+ */
+interface RerouteStage {
+  childId?: string | null
+  outcome?: string | null
+  model?: string | null
+  provider?: string | null
+}
+export function shouldRerouteChild(v: {
+  journal?: { stages?: RerouteStage[]; externalFailure?: boolean }
+  childId: string
+  route: { provider?: string | null; model?: string | null }
+}): boolean {
+  const id = typeof v.childId === 'string' ? v.childId.trim() : ''
+  if (!id) return false
+  const stages = Array.isArray(v.journal?.stages)
+    ? (v.journal!.stages as RerouteStage[])
+    : []
+  // 该 child **最后一条** stage（续跑不会新增 stage，故唯一；resume 的中断阶段即它）
+  let rec: { outcome?: string | null; model?: string | null; provider?: string | null } | undefined
+  for (const s of stages) {
+    if (String(s.childId || '') === id) rec = s
+  }
+  if (!rec) return false
+  const externalFailed = rec.outcome === 'external' || v.journal?.externalFailure === true
+  if (!externalFailed) return false
+  const recProvider = rec.provider ?? null
+  const recModel = rec.model ?? null
+  const desiredProvider = v.route.provider ?? null
+  const desiredModel = v.route.model ?? null
+  const drifted = recProvider !== desiredProvider || recModel !== desiredModel
+  return drifted
+}
+
 export function isToolArgFailure(text: unknown): boolean {
   return TOOL_ARG_FAILURE.test(String(text || ''))
 }
@@ -1721,23 +1917,83 @@ export interface DevPlan {
   groups: DevPlanGroup[]
   missingBoundary: string[]
   deps: Array<{ from: number; to: number; via: string }>
-  /** 因会成环而被丢弃的依赖边数（reads 按软依赖处理；0 = 声明无矛盾） */
+  /** 因会成环而被丢弃的依赖边数（**只应出现在兜底分支**：正常路径改为串行化，见 cycleMerged） */
   dropped: number
+  /** 因依赖成环而改成串行链的处数（0 = 声明无矛盾） */
+  cycleMerged: number
   /** 因 write∩write 被吸收掉的任务数（= 合并损失的任务粒度）= 已知边界任务数 − 写互斥组数 */
   merged: number
 }
 export function planDevWaves(
   defs: Array<{ id: string; title: string; spec?: string; files?: string[]; reads?: string[]; dependsOn?: string[] }>,
 ): DevPlan {
+  /* ── 成环 ⇒ 串行化，**不丢边**（2026-10-27 tf-mvpjqs87-14qdxa 实锤）───────────────
+   * 旧行为：`reads` 被当软依赖，插入时若会成环就**丢弃这条边**（只 warn）。后果是硬伤：
+   * 读者与写者进了同一波 ⇒ 读者读到写者改之前的状态，而两个任务都会报「完成」。
+   * 实锤：T1 改 `YongShen.java` 的计权语义，T2 读 `YongShen.java` 且 T1 又读 T2 的
+   * `LiuNian.java` —— 双向 reads ⇒ 丢边 ⇒ 同波 ⇒ T2 按旧计权写 golden，3 个用例一落地就是红的，
+   * 但 T2 报完成、T1 只在 summary 里写「T2 文件有 3 个失败用例，我未改」。
+   * 现在：成环的两个组**并成一条串行链**（组内串行是既有语义），宁可少一路并发，也不让
+   * 「读到旧状态」成为设计保证会发生的事。环很大时逐轮吸收，仍不行则全并成一条链（正确性优先）。
+   */
   const list = Array.isArray(defs) ? defs : []
-  const blank: DevPlan = { waves: [], groups: [], missingBoundary: [], deps: [], dropped: 0, merged: 0 }
-  if (!list.length) return blank
+  const forced: string[][] = []
+  let cycleCount = 0
+  let lastPlan: DevPlan | null = null
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const r = planDevWavesPass(list, forced)
+    lastPlan = r.plan
+    if (!r.cycles.length) { r.plan.cycleMerged = cycleCount; return r.plan }
+    for (const ids of r.cycles) if (ids.length > 1) { forced.push(ids); cycleCount += 1 }
+  }
+  // 兜底：5 轮仍成环（理论上不该发生）⇒ 全部并成一条串行链
+  const all = list.filter((t) => Array.isArray(t.files) && t.files.length > 0).map((t) => t.id)
+  if (all.length > 1) {
+    const r = planDevWavesPass(list, [all])
+    if (!r.cycles.length) { r.plan.cycleMerged = cycleCount + 1; return r.plan }
+  }
+  if (lastPlan) lastPlan.cycleMerged = cycleCount
+  return lastPlan as DevPlan
+}
+
+/** 把「必须串行」的任务集合落实为**同一组**（组内串行是既有语义，不需要新的执行语义）。 */
+function forceMergeGroups<T extends { ids: string[]; title: string; spec?: string; files: string[] }>(
+  groups: T[],
+  forced: string[][],
+): T[] {
+  let out = groups.map((g) => ({ ...g, ids: [...g.ids], files: [...g.files] }))
+  for (const set of forced) {
+    const hit = out.map((g, i) => (g.ids.some((id) => set.includes(id)) ? i : -1)).filter((i) => i >= 0)
+    if (hit.length < 2) continue
+    const base = out[hit[0]]
+    for (const i of hit.slice(1)) {
+      const g = out[i]
+      for (const id of g.ids) if (!base.ids.includes(id)) base.ids.push(id)
+      for (const f of g.files) if (!base.files.includes(f)) base.files.push(f)
+      base.title = `${base.title} + ${g.title}`
+      base.spec = [base.spec, g.spec].filter(Boolean).join('；')
+      ;(out as Array<T | null>)[i] = null
+    }
+    out = (out as Array<T | null>).filter((g): g is T => g !== null)
+  }
+  return out
+}
+
+/** 单轮规划（可能成环）。`cycles` 里每项是「必须串行」的 id 集合；非空 ⇒ 调用方合并后重算。 */
+function planDevWavesPass(
+  list: Array<{ id: string; title: string; spec?: string; files?: string[]; reads?: string[]; dependsOn?: string[] }>,
+  forcedMerge: string[][],
+): { plan: DevPlan; cycles: string[][] } {
+  const blank: DevPlan = { waves: [], groups: [], missingBoundary: [], deps: [], dropped: 0, merged: 0, cycleMerged: 0 }
+  if (!list.length) return { plan: blank, cycles: [] }
   const declared = (t) => Array.isArray(t.files) && t.files.length > 0
   const known = list.filter(declared)
   const unknown = list.filter((t) => !declared(t))
 
-  /** ① 写互斥：仍然靠合并（`mergeFileOverlaps` 的不变量 = 组内串行、组间 files 不相交）。 */
-  const writeGroups = known.length ? mergeFileOverlaps(known) : []
+  /** ① 写互斥：仍然靠合并（`mergeFileOverlaps` 的不变量 = 组内串行、组间 files 不相交）。
+   *  成环被迫串行的组在这里一并并掉（`forceMergeGroups`）。 */
+  const rawGroups = known.length ? mergeFileOverlaps(known) : []
+  const writeGroups = forcedMerge.length ? forceMergeGroups(rawGroups, forcedMerge) : rawGroups
   const byId = new Map(list.map((t) => [t.id, t]))
   const groupOfTask = new Map()
   writeGroups.forEach((g, i) => { for (const id of g.ids) groupOfTask.set(id, i) })
@@ -1782,6 +2038,8 @@ export function planDevWaves(
     }
   })
   const deps: Array<{ from: number; to: number; via: string }> = []
+  /** 成环被迫串行的 id 集合（上层据此合并重算）。 */
+  const cycles: string[][] = []
   const seen = new Set()
   const adj = groups.map(() => [] as number[])
   let dropped = 0
@@ -1801,7 +2059,13 @@ export function planDevWaves(
     if (from < 0 || to < 0 || from === to) return // 同组 ⇒ 已由「合并成同一子节点」解决，无需排序
     const key = from + '>' + to
     if (seen.has(key)) return
-    if (reaches(to, from)) { dropped += 1; return } // 会成环 ⇒ 丢这条边（软依赖可丢，流水线不能挂）
+    if (reaches(to, from)) {
+      // 会成环：这条边**不能插**（图必须保持无环），但也不再「丢掉算了」——
+      // 记下两端组的 id，由上层并成一条串行链后重算（见 planDevWaves 头注释）。
+      dropped += 1
+      cycles.push([...groups[from].ids, ...groups[to].ids])
+      return
+    }
     seen.add(key)
     adj[from].push(to)
     deps.push({ from, to, via })
@@ -1851,12 +2115,16 @@ export function planDevWaves(
     g.after = g.after.map((a) => remap[a]).filter((x) => x !== undefined && x >= 0)
   }
   return {
-    waves,
-    groups: flat,
-    missingBoundary: unknown.map((t) => t.id),
-    deps: deps.map((d) => ({ from: remap[d.from], to: remap[d.to], via: d.via })),
-    dropped,
-    merged: known.length - writeGroups.length,
+    plan: {
+      waves,
+      groups: flat,
+      missingBoundary: unknown.map((t) => t.id),
+      deps: deps.map((d) => ({ from: remap[d.from], to: remap[d.to], via: d.via })),
+      dropped,
+      merged: known.length - writeGroups.length,
+      cycleMerged: 0,
+    },
+    cycles,
   }
 }
 

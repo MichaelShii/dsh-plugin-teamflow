@@ -959,5 +959,15 @@ assertContract({
   ],
 })
 
+assertContract({
+  id: 'QA-COMMAND-DISCIPLINE', level: 'policy', targets: 'qaPrompt',
+  intent: 'QA 跑命令时必须一条一检查、带超时、常驻进程探测后立即终止 —— 否则一条挂住的命令会吞掉整轮验证',
+  include: [
+    /\[Command discipline · mandatory · one command = one check\]/,
+    /Never chain N checks into one command/,
+    /terminate it immediately/,
+  ],
+})
+
 console.log(failed === 0 ? '\n✅ prompt-contract 全部通过' : `\n❌ prompt-contract ${failed} 项契约失败`)
 process.exit(failed === 0 ? 0 : 1)

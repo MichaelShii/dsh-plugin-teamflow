@@ -200,8 +200,8 @@ const checkWaves = (plan, nTasks, label) => {
 }
 
 // 10a) Run 3 的形状回归（精简版）：4 个已知边界 + 1 个未知（提交任务）。
-// 注意真实 r3 蓝图里 T2 与 T3 **互相** reads 对方的 owns（真环）⇒ 按声明顺序丢一条边（T3 reads pkg），
-// 波次不会是理想的 4+1，而是 1+2+1+1 —— 诚实的结果：未知写集不再拖累已知任务，但 reads 交叉仍会排序。
+// 注意真实 r3 蓝图里 T2 与 T3 **互相** reads 对方的 owns（真环）。2026-10-27 起：成环不再丢边，
+// 而是把两端并成一条**串行链**（同组）⇒ 波次 1+2+1，T2/T3 同一子代理按顺序做完。
 const r3 = planDevWaves([
   { id: 'dt-1', title: 'T1', files: ['/.gitignore'], reads: ['/package.json'] },
   { id: 'dt-2', title: 'T2', files: ['/package.json', '/README.md'], reads: ['/bin/dupcheck.mjs', '/src/hash.mjs'] },
@@ -209,9 +209,10 @@ const r3 = planDevWaves([
   { id: 'dt-4', title: 'T4', files: ['/scripts/verify.mjs'], reads: ['/bin/dupcheck.mjs'] },
   { id: 'dt-5', title: 'T5 提交', files: [], reads: ['/.gitignore'] },
 ])
-ok(r3.waves.length === 4, `Run3 形状：4 波（实际 ${r3.waves.length}）`)
-ok(r3.waves.map((w) => w.length).join('+') === '1+2+1+1', `Run3 形状：波次路数 1+2+1+1（实际 ${r3.waves.map((w) => w.length).join('+')}）——T2/T4 并行、未知写集独占末波`)
-ok(r3.dropped === 1, `T2↔T3 互相 reads ⇒ 恰好丢 1 条边（实际 ${r3.dropped}）`)
+ok(r3.waves.length === 3, `Run3 形状：3 波（实际 ${r3.waves.length}）`)
+ok(r3.waves.map((w) => w.length).join('+') === '1+2+1', `Run3 形状：波次路数 1+2+1（实际 ${r3.waves.map((w) => w.length).join('+')}）——T2/T3 成环并成串行链、未知写集独占末波`)
+ok(r3.dropped === 0 && r3.cycleMerged === 1, `T2↔T3 互相 reads ⇒ 串行化 1 处、零丢边（实际 cycleMerged=${r3.cycleMerged} dropped=${r3.dropped}）`)
+ok(r3.groups.some((g) => g.ids.join(',') === 'dt-2,dt-3'), 'T2 与 T3 被并入同一组（串行执行，读者不会与写者同波）')
 ok(r3.missingBoundary.length === 1 && r3.missingBoundary[0] === 'dt-5', '未声明 files 的任务 id 被记录（日志口径用）')
 ok(r3.groups[r3.groups.length - 1].ids.length === 1 && r3.groups[r3.groups.length - 1].files.length === 0, '未知写集组在扁平顺序的末尾')
 checkWaves(r3, 5, 'Run3 形状')
@@ -250,14 +251,16 @@ const byFile = planDevWaves([
 ])
 ok(byFile.waves.length === 2, 'dependsOn 按对方的 owns 文件生效（模块级蓝图常写文件路径）')
 
-// 10f) 环：互相 reads 对方的 owns ⇒ 不抛错，**按声明顺序丢弃会成环的边**（软依赖），其余照常排序
+// 10f) 环：互相 reads 对方的 owns（= tf-mvpjqs87-14qdxa 的真实形状 T1↔T2）⇒ **并成串行链**，
+//      不丢边、不同波。旧实现丢一条边 ⇒ 读者与写者同波 ⇒ 读到旧状态、两边都报完成（实锤 3 个用例落地即红）。
 const cyc = planDevWaves([
   { id: 'dt-1', title: 'A', files: ['/a'], reads: ['/b'] },
   { id: 'dt-2', title: 'B', files: ['/b'], reads: ['/a'] },
 ])
-ok(cyc.dropped === 1, `环处理：恰好丢弃 1 条边（实际 ${cyc.dropped}）——不抛错、不全串行`)
-ok(cyc.waves.length === 2 && cyc.waves[0][0].ids[0] === 'dt-2' && cyc.waves[1][0].ids[0] === 'dt-1', '保留先声明的边（B→A），A 排到 B 之后')
-checkWaves(cyc, 2, '环')
+ok(cyc.dropped === 0, `环处理：零丢边（实际 ${cyc.dropped}）——丢边会让读者与写者同波`)
+ok(cyc.cycleMerged === 1 && cyc.groups.length === 1 && cyc.groups[0].ids.join(',') === 'dt-1,dt-2', `环处理：两组合成一条串行链（实际 groups=${cyc.groups.length} ids=${JSON.stringify(cyc.groups.map((g) => g.ids))}）`)
+ok(cyc.waves.length === 1 && cyc.waves[0].length === 1, '环处理：单波单组（组内按任务顺序串行执行）')
+ok(cyc.groups[0].files.length === 2, '串行链的写集是并集（组内串行，不存在并发写冲突）')
 
 // 10g) write∩write 仍合并（分波不接管这件事）+ merged 计数
 const wr = planDevWaves([

@@ -32,8 +32,8 @@
  * /token|context|limit/ 正则；只有 'degenerated' 享受干净重试豁免（runner.withRetry）。
  */
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import { GUARD_ENV_PROGRESS_GRACE_MS, GUARD_NO_TOOL_MS, GUARD_POLL_MS, GUARD_REPEAT_LIMIT, GUARD_SILENCE_MS, GUARD_TOOL_FAIL_ABORT, GUARD_TOOL_FAIL_WARN, GUARD_WINDOW_SIZE } from '../../constants.ts'
-import { clip, isFsSelfHealFailure, isToolArgFailure, isToolErrorResult, isToolScopeFailure, toolFailureAction, toolFailureSignature, toolResultText } from '../../util.ts'
+import { GUARD_ENV_PROGRESS_GRACE_MS, GUARD_LONG_CALL_MS, GUARD_NO_TOOL_MS, GUARD_POLL_MS, GUARD_REPEAT_LIMIT, GUARD_SILENCE_MS, GUARD_TOOL_FAIL_ABORT, GUARD_TOOL_FAIL_WARN, GUARD_WINDOW_SIZE } from '../../constants.ts'
+import { clip, isFsSelfHealFailure, isToolArgFailure, isToolErrorResult, isToolScopeFailure, longCallDue, toolFailureAction, toolFailureSignature, toolResultText } from '../../util.ts'
 import { t, type HostLocale } from '../../locales.ts'
 import { runtime } from './context.ts'
 import { runLocaleOf } from '../locale.ts'
@@ -248,6 +248,41 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
     try { void Promise.resolve(run.dispose()).catch(() => {}) } catch (e) { /* ignore */ }
   }
 
+  /* ── 长命令可见化（2026-10-28）────────────────────────────────────────────
+   * 事故 tf-mvpjqs87-14qdxa：QA 把 10 个 Java 探针串进一条 pwsh，第 10 个卡死 ⇒ 命令跑满 600s 被工具
+   * 上限杀掉，前 9 个探针的成果一起作废；转后台 job 后又轮询 14 分钟，整个阶段 34/42 分钟耗在等它。
+   * 而护栏原来的阈值 `GUARD_SILENCE_MS` 也是 600s ⇒ **长命令执行期间是结构性盲区**（事件冻结，看起来
+   * 像"在干活"或"刚返回"）。这里只做一件事：让它**可见**。不中止——长构建/大 e2e 是合法形态。
+   */
+  const inFlightCalls = new Map<string, { name: string; t: number }>()
+  const longCallWarned = new Set<string>()
+  function noteInFlight(events: unknown[]) {
+    for (const ev of events) {
+      const e = ev as { type?: string; time?: unknown; data?: unknown } | null
+      if (!e) continue
+      if (e.type === 'tool/call' || e.type === 'tool-call') {
+        const d = e.data as { callId?: unknown; name?: unknown } | null
+        if (d && typeof d.callId === 'string') {
+          inFlightCalls.set(d.callId, { name: String(d.name || 'tool'), t: Number(e.time) || Date.now() })
+        }
+        continue
+      }
+      if (e.type !== 'tool/result') continue
+      const id = ((e.data as { message?: { toolCallId?: unknown } } | null) || {}).message?.toolCallId
+      if (typeof id === 'string') inFlightCalls.delete(id)
+    }
+  }
+  function warnLongCalls() {
+    const now = Date.now()
+    for (const [id, v] of inFlightCalls) {
+      if (!longCallDue(v.t, now, GUARD_LONG_CALL_MS, longCallWarned.has(id))) continue
+      longCallWarned.add(id)
+      const sec = Math.round((now - v.t) / 1000)
+      try { journal.logs.push({ t: now, level: 'warn', message: t(locale, 'guard.longCall', { label, tool: v.name, sec }) }) } catch (e) { /* ignore */ }
+      injectReminder(run, `[ENV GUARD · reminder] ${t(locale, 'guard.reminderLongCall', { tool: v.name, sec })}`, locale)
+    }
+  }
+
   const timer = setInterval(() => {
     if (fired || journal.cancelled) return
     try {
@@ -307,9 +342,13 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
         observeToolCalls(newEvents)
         // 环境不可用检测（2026-09-23）：失败的 tool/result 增量归因 + 计数（达阈值会 fire）
         observeToolFailures(newEvents)
+        // 在飞调用登记（长命令告警的输入；结果到达即注销）
+        noteInFlight(newEvents)
         if (fired) return
         processed = events.length
       }
+      // 长命令告警：**每次轮询都查**（不依赖新事件——长命令执行期间恰恰没有新事件）
+      warnLongCalls()
 
       // 工具活动信号（空转检测 C 依赖）：每次轮询扫描最近 200 条事件；同时提取变更类写操作
       // （edit/write/create/patch 等——复读状态判定依赖：有过写操作 = 会话有产出能力）
@@ -437,7 +476,24 @@ export function startStageGuard(opts: StageGuardTarget): () => void {
       }
       if (e.type !== 'tool/result') continue
       // 成功调用 = 会话仍在产出（进展豁免的依据）
-      if (!isToolErrorResult(e.data)) { lastSuccessAt = Date.now(); continue }
+      if (!isToolErrorResult(e.data)) {
+        lastSuccessAt = Date.now()
+        // 自愈即撤销（2026-10-27 tf-mvpjqs87-14qdxa 实锤）：warn 时落下的 `stage.envUnavailable`
+        // 是**证据**不是**判决**，而 runner 在回合结束时只看它有没有值 ⇒ 只要模型之后成功了，
+        // 这条标记就必须撤掉，否则「自己修好了」会被判成「环境坏了、别再重试」。
+        // 实锤：edit 的 `old_string was not found` 失败 2 次（18:27:27 / 18:27:52），两次都在
+        // 1–3 秒内 read→edit 成功自愈，之后又连续成功十余次；护栏仍在 18:28:03 记下标记，
+        // 18:28:13 判 env-unavailable，整条 run failed。
+        // 判据：真「环境不可用」的形态是**后续调用不可能成功**；既然成功过，工具层就是好的。
+        if (stage.envUnavailable) {
+          const detail = String(stage.envUnavailable)
+          stage.envUnavailable = undefined
+          try {
+            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'guard.envRecovered', { label, tool: String(detail.split(':')[0] || 'tool'), detail: clip(detail, 160) }) })
+          } catch (err) { /* ignore */ }
+        }
+        continue
+      }
       const text = toolResultText(e.data)
       // 可自愈的防护门禁失败不进环境指纹（见 util.isFsSelfHealFailure 注释）：read 一次即愈，
       // 与「工作区坏了」语义相反。两类各记一次（去重），文件门禁类另附一次补救提醒。

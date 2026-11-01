@@ -5,11 +5,12 @@
 import { runtime, providerName, trackInFlight, untrackInFlight, liveChildAgentOf } from './context.ts'
 import { accumulateSessionUsage, freshTokensOf, effectiveFreshBudget } from './metering.ts'
 import { startStageGuard } from './guard.ts'
-import { clip, extractText, blockShape, captureArtifactBaseline, emptyTurnDocVerdict, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, classifyExternalFailure, externalBackoffMs, stageDocText } from '../../util.ts'
+import { clip, extractText, blockShape, captureArtifactBaseline, emptyTurnDocVerdict, normalizeSignal, judgeDeliverable, isUnretryable, handoffBrief, buildRetryDiagnostic, shouldContinueChild, shouldRerouteChild, classifyExternalFailure, externalBackoffMs, stageDocText } from '../../util.ts'
 import { RETRY_LIMIT, FRESH_TOKEN_BUDGET } from '../../constants.ts'
 import { t, type HostLocale } from '../../locales.ts'
 import { runLocaleOf } from '../locale.ts'
 import { stripStateBlock } from '../domain/state.ts'
+import { canReviseViaChild, revisePrdViaChild } from '../prd-revise.ts'
 import type { Journal, ParentAgentLike, SubagentRunLike, SubagentStarters, UsageBuckets } from '../../types.ts'
 import type { JournalStage } from '../../../store.ts'
 
@@ -65,20 +66,51 @@ async function resolveStageEffort(
 }
 
 /**
- * 解析父 agent 当前生效的模型路由（provider/model）。
+ * 解析父 agent 当前生效的模型路由（provider/model），给子代理用。
  *
  * 背景：子代理默认继承 `parent.options`（创建时快照），主线程在 UI 切换模型后
  * `parent.options` 不会更新，导致子代理仍打旧 provider（如已停的代理端口）。
  *
- * 三级回退，取「当前生效」而非「创建快照」：
- * 1. parent.session.requestHeader()?.config —— 主线程最近一次请求实际生效的路由（含切换后）
- * 2. runtime.agentDefaultModel?.currentSelection() —— 全局默认模型当前选择（切换即更新，可选注入）
- * 3. parent.options —— 创建快照（兜底）
+ * 四级回退，取「当前生效」而非「创建快照」：
+ * 0. parent.session 的最新一条 `model/selection` 事件 —— 用户 UI 切模型即时 append 的「待生效选择」，
+ *    是「本 session 下一次请求真正会用的路由」。这是切换后唯一**即时**反映新模型的来源。
+ * 1. parent.session.requestHeader()?.config —— 主线程最近一次**实际请求**生效的路由。
+ *    ⚠️ 仅在父 agent 实际发请求后才刷新；切模型后它是陈旧快照（直到父 agent 下次发请求）。
+ * 2. runtime.agentDefaultModel?.currentSelection() —— 全局默认模型当前选择（切换即更新，可选注入）。
+ * 3. parent.options —— 创建快照（兜底）。
+ *
+ * 实证（run tf-mvsgetmy-ldop5j，2026-10-29）：原来只有后三级 ⇒ 切模型后 L1(requestHeader) 陈旧，
+ * 改道闸门把「期望路由」算成旧模型 ⇒ 与旧 child 记录比对判「无漂移」⇒ 闸门从不打开、子代理永远吃旧模型。
+ * 加优先级 0 后，切模型即时反映到子代理路由。
  */
 export function resolveChildRoute(parent: ParentAgentLike): { provider?: string; model?: string; maxTokens?: number } {
   const out: { provider?: string; model?: string; maxTokens?: number } = {}
+
+  // 0. 父 session 待生效选择（model/selection 事件）：用户 UI 切模型即时 append，是「本 session
+  //    下一次请求真正会用的路由」。requestHeader（下方 L1）仅在父 agent 实际发请求后刷新，切模型后
+  //    是陈旧快照——优先取待生效选择，否则子代理永远继承旧模型（实证 run tf-mvsgetmy-ldop5j）。
   try {
-    // 1. 最近生效路由（request header config）
+    const sess = (parent as {
+      session?: { snapshotEvents?: () => Array<{ type?: unknown; data?: { provider?: unknown; model?: unknown } }> | undefined }
+    }).session
+    const events = sess && typeof sess.snapshotEvents === 'function' ? sess.snapshotEvents() : undefined
+    if (Array.isArray(events)) {
+      for (let i = events.length - 1; i >= 0; i--) {
+        const ev = events[i] as { type?: unknown; data?: { provider?: unknown; model?: unknown } }
+        if (ev && ev.type === 'model/selection' && ev.data) {
+          const sp = ev.data.provider, sm = ev.data.model
+          if (typeof sp === 'string' && sp) {
+            out.provider = sp
+            if (typeof sm === 'string' && sm) out.model = sm
+          }
+          break
+        }
+      }
+    }
+  } catch (e) { /* 回退下一级 */ }
+
+  if (!out.provider) {
+    // 1. 最近生效路由（request header config，父 agent 上次实际请求；切模型后陈旧，故降到此处）
     const session = (parent as {
       session?: { requestHeader?: () => { config?: { provider?: string; model?: string; maxTokens?: number } } | undefined }
     }).session
@@ -89,7 +121,15 @@ export function resolveChildRoute(parent: ParentAgentLike): { provider?: string;
       if (typeof cfg.model === 'string' && cfg.model) out.model = cfg.model
       if (typeof cfg.maxTokens === 'number') out.maxTokens = cfg.maxTokens
     }
-  } catch (e) { /* 回退下一级 */ }
+  } else {
+    // maxTokens：model/selection 不携带，从 requestHeader 补回，避免降级丢失上限
+    try {
+      const sess = (parent as { session?: { requestHeader?: () => { config?: { maxTokens?: number } } | undefined } }).session
+      const h = sess && typeof sess.requestHeader === 'function' ? sess.requestHeader() : undefined
+      const mt = h && h.config && h.config.maxTokens
+      if (typeof mt === 'number') out.maxTokens = mt
+    } catch (e) { /* ignore */ }
+  }
   if (!out.provider) {
     // 2. 全局默认模型当前选择（切换即更新）
     const defaultModel = runtime.agentDefaultModel as {
@@ -116,6 +156,25 @@ export function resolveChildRoute(parent: ParentAgentLike): { provider?: string;
     }
   }
   return out
+}
+
+/**
+ * 续跑「投进去了但没拿到正文」（noText）时收尾 stage：明确 failed + 落**真实**结束时刻。
+ *
+ * 为什么单独抽出来：旧实现在 noText 分支直接 return、完全不动 stage ⇒ 复用 resume 前的旧 stage，
+ * `endedAt` 停在**首次运行**（真机 tf-mvsgetmy-ldop5j T9：卡片显示 6m3s，实际 child 已活 6.5 小时、
+ * 单 turn 90 分钟还在跑），UI 时间严重失真、看起来像「6 分钟就死的弃子」。
+ *
+ * 纯函数便于锁行为（test/dev-continue-timeout.test.js）：`null` 安全；有 stage 就改这两项并返回。
+ */
+export function finalizeNoTextStage<T extends { status?: string | null; endedAt?: number | null } | null | undefined>(
+  stage: T,
+  now: number,
+): T {
+  if (!stage) return stage
+  stage.status = 'failed'
+  stage.endedAt = now
+  return stage
 }
 
 /**
@@ -415,6 +474,9 @@ export async function withRetry(
   taskKey?: string | null,
   effortHint?: string | null,
   taskIds?: string[] | null,
+  /** 中断后 resume：**上一轮那个任务的 childId**（≠ 重试的 lastStage.childId）——有了它，attempt=1
+   *  也能在原 child 里继续：中断不等于失败，新起一个只会让它从零重读一遍同样的上下文。 */
+  resumeChildId?: string | null,
 ): Promise<{ text: string | null; attempts: number; freshTokens: number; stage: JournalStage | null }> {
   let attempts = 0
   let freshTokens = 0
@@ -426,12 +488,134 @@ export async function withRetry(
   let externalAttempts = 0
   // 重试诊断包与重试日志同样随 run 语言（诊断包是喂回子代理的注入文本）
   const locale = runLocaleOf(journal)
+  /* ── 重试复用同一个子代理（2026-10-28）───────────────────────────────────
+   * 为什么：重试原本每次 `runAgent` 新起一个 child —— 新 child 对上一轮**一无所知**，只能从零重读
+   * PRD / TECHNICAL / 源码。实测 tf-mvpjqs87-14qdxa：单阶段 dev 184 次调用烧 18.4M token、
+   * 修复轮 96~150 次调用烧 6.5~15M，绝大部分是"重读同样的上下文"。而同一 child 续跑是可行的：
+   * PRD 改写已真机验过（同一 child 连改 3 版、零新 spawn，见 prd-revise.ts 头注释）。
+   * 安全阀（2026-10-29 收紧）：
+   *  - 没投进去（无 childId / 宿主不支持 / sendMessage 抛错）⇒ 回落新起，落可见 warn；
+   *  - **投进去了但没等到正文 ⇒ 绝不回落新起**。实锤：child 在跑长命令（mvn/探针）期间事件冻结，
+   *    idle 判据误判"不动了" ⇒ 我们放弃并新起 ⇒ **两个子代理改同一批文件**（old child 还在继续）。
+   *    此时唯一安全的选择是把本次按失败收场（提测门禁会拦下，转人工），宁可浪费这一轮。
+   */
+  async function tryContinueInChild(
+    stage: JournalStage,
+    instruction: string,
+  ): Promise<{ kind: 'text'; text: string; usage?: UsageBuckets } | { kind: 'noText' } | null> {
+    const childId = String(stage.childId || '')
+    if (!childId) return null
+    if (!canReviseViaChild({ subagents: runtime.subagents, sessionQuery: runtime.sessionQuery, childId })) return null
+    const diag = { base: 0, end: 0, waitedMs: 0, delivered: false }
+    const out = await revisePrdViaChild({
+      subagents: runtime.subagents,
+      sessionQuery: runtime.sessionQuery,
+      parent,
+      childId,
+      instruction,
+      signal: normalizeSignal(signal),
+      // 长命令（构建/测试/探针）期间事件会冻结几分钟 ⇒ idle 给足；上限也放宽 ——
+      // 反正「投进去了」之后回落新起是禁手（两个 agent 改同一批文件），久等是更便宜的选项。
+      // ⚠️ 2026-10-29 真机 tf-mvsgetmy-ldop5j T9 实证：resume 复活的 child 单 turn 正常跑了
+      // 90 分钟、160+ 步（写 4 个测试文件 + 反复 mvn），旧 waitMs=25 分钟墙钟到顶 → 判 noText
+      // 失败，但 child 其实一直在干活、最终把 FortuneTwoTurnStreamTest 等全跑绿。
+      // ⇒ idle 抬到 10 分钟：盖住 `job_output wait=300s` 的空窗（等 5 分钟 mvn 不该被误判「不动」）；
+      //   waitMs 抬到 2 小时：给正常长任务足够窗口。真卡死仍由 idle（10 分钟无进展）兜底放弃，
+      //   不会无限等；有进展就一直等（revisePrdViaChild 的 idle 判据保证这点）。
+      idleMs: 600_000,
+      waitMs: 7_200_000,
+      diag,
+    }).catch(() => null)
+    if (out && String(out.text || '').trim()) {
+      return { kind: 'text', text: out.text, usage: out.usage as UsageBuckets | undefined }
+    }
+    if (diag.delivered) {
+      // **投进去了**：old child 仍在跑（或已把改动写进文件）。此刻回落新起 = 两个 agent 并发改同一批文件
+      // ⇒ 唯一安全的动作是按失败收场（不新起），转人工。
+      journal.logs.push({
+        t: Date.now(), level: 'error',
+        message: t(locale, 'diag.continueNoText', {
+          label: stage.label || label, sec: Math.round((Number(diag.waitedMs) || 0) / 1000),
+        }),
+      })
+      return { kind: 'noText' }
+    }
+    // 没投进去 ⇒ 回落新起是安全的，落可见 warn
+    journal.logs.push({
+      t: Date.now(), level: 'warn',
+      message: t(locale, 'diag.continueFallback', {
+        label: stage.label || label, delivered: 'no', sec: Math.round((Number(diag.waitedMs) || 0) / 1000),
+      }),
+    })
+    return null
+  }
+
   for (let attempt = 1; attempt <= RETRY_LIMIT; attempt++) {
     attempts = attempt
     const labelNow = attempt > 1 ? t(locale, 'dev.taskRetry', { label, n: attempt }) : label
     // 重试诊断包：原样重试=盲试（子代理不知道上次为什么失败，重试即碰运气）。
     // 诊断源现成：stage.summary（含拒绝词命中点/过短/stopReason 细节）+ guardReason + 失败产出尾部。
     const promptNow = attempt > 1 && lastStage ? prompt + buildRetryDiagnostic(attempt, lastStage, locale) : prompt
+    // 重试优先**在同一子代理里继续**（它还记得上一轮写过什么、试过什么）；拿不到再新起。
+    const continueId = (lastStage && String(lastStage.childId || '').trim()) || String(resumeChildId || '').trim()
+    if (shouldContinueChild(attempt, lastStage ? lastStage.childId : null, resumeChildId)) {
+      // **改道闸门（2026-10-29，用户拍板）**：旧 child 上一轮因模型不可用（429/无额度/上游故障…）
+      // 失败，且用户已主动切到别的模型 ⇒ 续跑旧 child 仍打老（不可用）模型，纯浪费一次机会；
+      // 放弃续跑、落到下方 runAgent 新起 child（resolveChildRoute 吃新模型）。
+      // 老模型仍可用（或非外部失败）⇒ 保持续跑，不丢旧 child 上下文。
+      const desiredRoute = resolveChildRoute(parent)
+      if (shouldRerouteChild({ journal, childId: continueId, route: desiredRoute })) {
+        journal.logs.push({
+          t: Date.now(), level: 'warn',
+          message: t(locale, 'diag.rerouteNewChild', { label, model: desiredRoute.model || desiredRoute.provider || '?' }),
+        })
+        // 不续跑 ⇒ 跳过本块，落到下方 runAgent 新起 child（吃新路由）
+      } else {
+        const instr = resumeChildId
+          ? t(locale, 'diag.continueResume') + (lastStage ? `\n${buildRetryDiagnostic(attempt, lastStage, locale)}` : '')
+          : buildRetryDiagnostic(attempt, lastStage, locale)
+        const cont = await tryContinueInChild(lastStage || ({ childId: continueId, label } as JournalStage), instr)
+        // **投进去了但没等到正文** ⇒ 原子代理仍在跑（或已写入文件）。绝不回落新起 ——
+        // 两个子代理改同一批文件比失败更糟。按失败收场，让提测门禁拦下转人工。
+        if (cont && cont.kind === 'noText') {
+          // ⚠️ 2026-10-29 真机 tf-mvsgetmy-ldop5j T9 实证：续跑没拿到正文时旧实现**直接 return、
+          // 完全不动 stage**，导致复用 resume 前的旧 stage ⇒ endedAt 停在首次运行（卡片显示 6m3s，
+          // 而 child 实际已活了 6.5 小时、单 turn 90 分钟还在跑），UI 时间严重失真、看起来像"6 分钟
+          // 就死的弃子"。此处落真实结束时刻 + 明确 failed，让卡片显示的是「这一轮什么时候真失败」，
+          // 而不是首次尝试的陈旧时长。
+          finalizeNoTextStage(lastStage, Date.now())
+          return { text: null, attempts, freshTokens, stage: lastStage }
+        }
+        if (cont && cont.kind === 'text') {
+          const u = (cont.usage || {}) as UsageBuckets
+          const prev = lastStage.usage || ({} as UsageBuckets)
+          lastStage.usage = {
+            input: (Number(prev.input) || 0) + (Number(u.input) || 0),
+            cacheRead: (Number(prev.cacheRead) || 0) + (Number(u.cacheRead) || 0),
+            cacheWrite: (Number(prev.cacheWrite) || 0) + (Number(u.cacheWrite) || 0),
+            output: (Number(prev.output) || 0) + (Number(u.output) || 0),
+            calls: (Number(prev.calls) || 0) + (Number(u.calls) || 0),
+          }
+          // 同一个 child 继续 ⇒ 不新增 stage（卡片不重复），把本轮记为同一次尝试的续跑
+          lastStage.status = 'done'
+          lastStage.outcome = 'completed'
+          lastStage.endedAt = Date.now()
+          freshTokens += freshTokensOf(u)
+          usageAcc = {
+            input: usageAcc.input + (Number(u.input) || 0),
+            cacheRead: usageAcc.cacheRead + (Number(u.cacheRead) || 0),
+            cacheWrite: usageAcc.cacheWrite + (Number(u.cacheWrite) || 0),
+            output: usageAcc.output + (Number(u.output) || 0),
+            calls: usageAcc.calls + (Number(u.calls) || 0),
+          }
+          journal.logs.push({
+            t: Date.now(), level: 'info',
+            message: t(locale, 'log.continueChild', { label: lastStage.label || label, attempt, tokens: freshTokensOf(u) }),
+          })
+          return { text: cont.text, attempts, freshTokens, stage: lastStage }
+        }
+      } // 改道闸门 else 结束
+    }
     // ⚠️ 并发安全（并行 dev 子任务共享同一 journal.stages）：必须在调用前记录长度——
     // runAgent 同步 push 本次尝试的 stage（第一个 await 前），期间其他任务的 runAgent
     // 可能已 push 新 stage；用 length-1 取 stage 会错位（证据块/重试诊断/usage 累计全串）。
