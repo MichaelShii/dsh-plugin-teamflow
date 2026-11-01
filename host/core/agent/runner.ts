@@ -159,6 +159,25 @@ export function resolveChildRoute(parent: ParentAgentLike): { provider?: string;
 }
 
 /**
+ * 续跑「投进去了但没拿到正文」（noText）时收尾 stage：明确 failed + 落**真实**结束时刻。
+ *
+ * 为什么单独抽出来：旧实现在 noText 分支直接 return、完全不动 stage ⇒ 复用 resume 前的旧 stage，
+ * `endedAt` 停在**首次运行**（真机 tf-mvsgetmy-ldop5j T9：卡片显示 6m3s，实际 child 已活 6.5 小时、
+ * 单 turn 90 分钟还在跑），UI 时间严重失真、看起来像「6 分钟就死的弃子」。
+ *
+ * 纯函数便于锁行为（test/dev-continue-timeout.test.js）：`null` 安全；有 stage 就改这两项并返回。
+ */
+export function finalizeNoTextStage<T extends { status?: string | null; endedAt?: number | null } | null | undefined>(
+  stage: T,
+  now: number,
+): T {
+  if (!stage) return stage
+  stage.status = 'failed'
+  stage.endedAt = now
+  return stage
+}
+
+/**
  * 计量为空时的**可见化**（2026-10-16 实锤 run tf-mv9o5fkk-orjou4）。
  *
  * `accumulateSessionUsage` 返回 null 本身是**设计上的降级路径**（投影未挂载/子会话确实无 usage），
@@ -497,8 +516,14 @@ export async function withRetry(
       signal: normalizeSignal(signal),
       // 长命令（构建/测试/探针）期间事件会冻结几分钟 ⇒ idle 给足；上限也放宽 ——
       // 反正「投进去了」之后回落新起是禁手（两个 agent 改同一批文件），久等是更便宜的选项。
-      idleMs: 300_000,
-      waitMs: 1_500_000,
+      // ⚠️ 2026-10-29 真机 tf-mvsgetmy-ldop5j T9 实证：resume 复活的 child 单 turn 正常跑了
+      // 90 分钟、160+ 步（写 4 个测试文件 + 反复 mvn），旧 waitMs=25 分钟墙钟到顶 → 判 noText
+      // 失败，但 child 其实一直在干活、最终把 FortuneTwoTurnStreamTest 等全跑绿。
+      // ⇒ idle 抬到 10 分钟：盖住 `job_output wait=300s` 的空窗（等 5 分钟 mvn 不该被误判「不动」）；
+      //   waitMs 抬到 2 小时：给正常长任务足够窗口。真卡死仍由 idle（10 分钟无进展）兜底放弃，
+      //   不会无限等；有进展就一直等（revisePrdViaChild 的 idle 判据保证这点）。
+      idleMs: 600_000,
+      waitMs: 7_200_000,
       diag,
     }).catch(() => null)
     if (out && String(out.text || '').trim()) {
@@ -553,6 +578,12 @@ export async function withRetry(
         // **投进去了但没等到正文** ⇒ 原子代理仍在跑（或已写入文件）。绝不回落新起 ——
         // 两个子代理改同一批文件比失败更糟。按失败收场，让提测门禁拦下转人工。
         if (cont && cont.kind === 'noText') {
+          // ⚠️ 2026-10-29 真机 tf-mvsgetmy-ldop5j T9 实证：续跑没拿到正文时旧实现**直接 return、
+          // 完全不动 stage**，导致复用 resume 前的旧 stage ⇒ endedAt 停在首次运行（卡片显示 6m3s，
+          // 而 child 实际已活了 6.5 小时、单 turn 90 分钟还在跑），UI 时间严重失真、看起来像"6 分钟
+          // 就死的弃子"。此处落真实结束时刻 + 明确 failed，让卡片显示的是「这一轮什么时候真失败」，
+          // 而不是首次尝试的陈旧时长。
+          finalizeNoTextStage(lastStage, Date.now())
           return { text: null, attempts, freshTokens, stage: lastStage }
         }
         if (cont && cont.kind === 'text') {

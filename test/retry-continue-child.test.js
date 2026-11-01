@@ -56,7 +56,7 @@ ok(/'log\.continueChild'/.test(runnerSrc), '成功续跑时留痕（本次新增
 // 判据：**投递成功 ⇒ 永不回落新起**；宁可按失败收场转人工。
 ok(/kind === 'noText'/.test(runnerSrc) && /kind: 'noText'/.test(runnerSrc), '投了但没等到正文 ⇒ 按失败收场（绝不回落新起）')
 ok(!/delivered: diag\.delivered \? 'yes' : 'no'/.test(runnerSrc), '回落 warn 只允许出现在「没投进去」的分支（delivered 恒为 no）')
-ok(/idleMs: 300_000/.test(runnerSrc), 'idle 给足 5 分钟（长命令期间事件冻结，120s 会误判）')
+ok(/idleMs: 600_000/.test(runnerSrc), 'idle 给足 10 分钟（job_output wait=300s 期间事件冻结，300s 撞边会误判；T9 实证：25 分钟墙钟误杀 90 分钟的正常 turn）')
 const devSrc = readFileSync(join(here, '..', 'host', 'core', 'stages', 'dev.ts'), 'utf8')
 ok(/const prevChildId = prevStage && prevStage\.childId/.test(devSrc), 'dev resume 分支把上一轮的 childId 找回来')
 ok(/task\.ids, prevChildId\)/.test(devSrc), 'dev resume 真的把它传给 withRetry（否则等于没接）')
