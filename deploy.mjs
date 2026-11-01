@@ -57,6 +57,7 @@ const FILES = [
   'host/core/domain/backlog.ts',
   'host/core/agent/metering.ts',
   'host/core/agent/runner.ts',
+  'host/core/agent/route.ts',
   'host/core/agent/guard.ts',
   'host/core/report.ts',
   'host/core/pipeline.ts',

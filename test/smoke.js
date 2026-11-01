@@ -140,7 +140,7 @@ console.log('── 3) host 模块结构 ──')
 const CORE_FILES = [
   'pipeline', 'triage', 'clarify-log', 'confirm', 'prd-revise', 'locale', 'report', 'update-check', 'skill', // core 根：编排门面 + 分诊决策 + 澄清埋点 + PRD 确认单 + PRD 续跑改写 + 语言/汇报横切 + 版本探测
   'stages/dev', 'stages/qa', 'stages/acceptance', // stages/：流水线各阶段的实现
-  'agent/context', 'agent/runner', 'agent/guard', 'agent/metering', // agent/：子代理生命周期
+  'agent/context', 'agent/runner', 'agent/guard', 'agent/route', 'agent/metering', // agent/：子代理生命周期
   'workspace/sanity', 'workspace/runlogs', 'workspace/acl-preflight', 'workspace/products', 'workspace/browser-probe', // workspace/
   'workspace/interface-check', // host 侧接口一致性核对（把 0a 从「要求 QA 核对」补成机器判定）
   'workspace/smoke-check', // host 侧冒烟（把 0a2「有没有跑起来」从模型自律补成机器取证）

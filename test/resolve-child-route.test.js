@@ -15,7 +15,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { resolveChildRoute } from '../host/core/agent/runner.ts'
+import { resolveChildRoute } from '../host/core/agent/route.ts'
 import { runtime } from '../host/core/agent/context.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -121,10 +121,10 @@ ok(mutantDropMaxTokens(scen).maxTokens === undefined && resolveChildRoute(scen).
   '变异②（删 maxTokens 回填）：丢失上限 ⇒ 该变异被杀死')
 
 console.log('── 5) 接线 ──')
-const runnerSrc = readFileSync(join(here, '..', 'host', 'core', 'agent', 'runner.ts'), 'utf8')
-ok(/model\/selection/.test(runnerSrc) && /snapshotEvents/.test(runnerSrc), 'resolveChildRoute 读父 session 的 model/selection 事件（优先级 0 落点）')
-ok(/0\. 父 session 待生效选择/.test(runnerSrc), 'doc 标注优先级 0 为待生效选择')
-ok(/maxTokens：model\/selection 不携带/.test(runnerSrc), '命中优先级 0 时回填 maxTokens')
+const routeSrc = readFileSync(join(here, '..', 'host', 'core', 'agent', 'route.ts'), 'utf8')
+ok(/model\/selection/.test(routeSrc) && /snapshotEvents/.test(routeSrc), 'resolveChildRoute 读父 session 的 model/selection 事件（优先级 0 落点）')
+ok(/0\. 父 session 待生效选择/.test(routeSrc), 'doc 标注优先级 0 为待生效选择')
+ok(/maxTokens：model\/selection 不携带/.test(routeSrc), '命中优先级 0 时回填 maxTokens')
 
 console.log(failed === 0 ? '\n全部通过' : `\n❌ ${failed} 项失败`)
 process.exit(failed === 0 ? 0 : 1)
