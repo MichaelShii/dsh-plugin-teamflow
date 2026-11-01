@@ -13,7 +13,7 @@
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { finalizeNoTextStage } from '../host/core/agent/runner.ts'
+import { finalizeNoTextStage } from '../host/core/agent/route.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 let failed = 0
