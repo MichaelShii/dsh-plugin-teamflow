@@ -22,7 +22,7 @@ jobs:
       # 它同时改 SHA 与这行注释（`smoke.js` 锁「每个 uses 都是 40 位 SHA」，改回标签会红）。
       # 历史注记：v4 及以下的 action runtime 是 node20（GitHub 已弃用，会被强制切到 node24），
       # v5 起是 node24 —— 这条只解释当初为什么不用 v4，不再约束当前版本。
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
         with:
