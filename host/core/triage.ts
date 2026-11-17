@@ -694,14 +694,17 @@ export async function runTriage(
         ? 'Your previous reply contained only a preface (e.g. "Let me output the JSON.") with NO JSON object — that is a failed reply. Reply now with the JSON object ITSELF as the first and only content, starting with {.'
         : ''
       const sig = normalizeSignal(signal)
+      // 宿主 startActivation 形态双兼容（见 runner.ts 同款注释 / 迁移指南 v0.2.1-rc.2/subagent-activation-options）：
+      // rc.2+ 读 spec 顶层 prompt/parent，≤rc.1 读 spec.request.*。两侧都传，各读各认识的键。
+      const taskFields = {
+        prompt: [{ type: 'text', text: TRIAGE_PROMPT(requirement, opts, pre, hint, locale) }],
+        parent,
+      }
       run = await subagents.startActivation({
+        ...taskFields, // 新宿主（≥ rc.2）
         provider: providerName() as string,
         label: t(locale, 'triage.label'),
-        request: {
-          prompt: [{ type: 'text', text: TRIAGE_PROMPT(requirement, opts, pre, hint, locale) }],
-          parent,
-          signal: sig,
-        },
+        request: { ...taskFields, signal: sig }, // 旧宿主（≤ rc.1）
         signal: sig,
         delivery: 'caller',
       })

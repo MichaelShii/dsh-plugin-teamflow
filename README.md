@@ -109,7 +109,7 @@ dsh-plugin-teamflow/
 
 ### 版本锚定（dsh 宿主兼容性）
 
-基线 **dsh v0.2.1-rc.5**（发布线最新 rc），**下限 v0.2.1-rc.5**，上界 `<0.3.0`。
+基线 **dsh v0.2.2-rc.2**（发布线最新 rc），**下限 v0.2.1-rc.5**，上界 `<0.3.0`。
 
 > ⚠️ **订正（2026-10-15，issue #20）—— 下限由 v0.1.7-alpha.1 抬到 v0.2.1-alpha.2，不再向下兼容。**
 > 宿主在 alpha.2 把扁平入口 `subagents.start(name, request)` **整体删除**（提交 `3d852a1cea`，首个含它的
@@ -118,7 +118,17 @@ dsh-plugin-teamflow/
 > 「起得来、第一个阶段就 `TypeError`」——所以从本版起要求 dsh ≥ 0.2.1-alpha.2。
 >
 > ⚠️ **再抬（2026-11-01）—— 下限由 v0.2.1-alpha.2 抬到 v0.2.1-rc.5。** 发布线已推进到 `v0.2.1-rc.5`；
-> 本插件在 rc.5 及之后的 0.2.x（含实测运行的 `0.2.2-alpha.2`）上逐项验证通过。
+> 本插件在 rc.5 及之后的 0.2.x 上逐项验证通过。
+>
+> ⚠️ **基线跟进（2026-11-11，v0.3.4）—— 实装宿主已到 `v0.2.2-rc.1`（当前发布线最新 rc）。** 对 0.2.2-rc.1 做了一次
+> 逐项兼容核对：宿主 API（`subagents.startActivation` / `subagents.start` / `pluginManager.installBundle`）、注册的 7 个
+> 客户端槽位、`uiWorkspace.openSession` 均存在；`pnpm test` 全套（含 `client-host-api` / `interface-check` / `prompt-contract`
+> L1 / `conformance` L2）全绿。**结论：无破坏，`engines.dsh` 区间不变仍需 ≥ 0.2.1-rc.5。**
+>
+> ⚠️ **兼容修复（issue #38，dsh `v0.2.2-rc.2`）—— 两处破坏性子代理 API 变更。**
+> ① 宿主删除了 `ctx.subagents.list()`（迁移指南 `docs/upgrade-guide/v0.2.1-rc.2/subagent-service-methods/` D3：改用 `getProvider(name)`）：本插件 `providerName()` 原靠 `list()` 枚举 ⇒ rc.2+ 恒返回 `null`，报 `No subagent provider available`。已改为 `getProvider` 逐个探测已知候选（`spawn`→`fork`）+ 旧宿主 `list()` 回退。
+> ② `startActivation` 的 `request` 嵌套被移除、字段提升到 spec 顶层（迁移指南 `docs/upgrade-guide/v0.2.1-rc.2/subagent-activation-options/`）：新宿主读顶层 `spec.parent.id`，旧调用把 `parent` 放在 `spec.request` ⇒ 崩 `Cannot read properties of undefined (reading 'id')`。已改为**扁平字段与 `request` 嵌套同时传**（`runner.ts` + `triage.ts` 双兼容 rc.1 与 rc.2+）。
+> `engines.dsh` 区间不变（rc.2/rc.3 均在区间内）。
 
 **`engines.dsh` 声明为单区间** `">=0.2.1-rc.5 <0.3.0"`。此前下限为 `0.2.1-alpha.2`；下限与当前宿主同一 tuple，**单区间即可**（预发布只能匹配**同 tuple** 的比较器，而 0.2.1-rc 与 0.2.2-alpha 同属 `0.2` tuple，`includePrerelease` 下均匹配）。semver 实测矩阵：
 
@@ -128,6 +138,8 @@ dsh-plugin-teamflow/
 | `0.2.1-rc.5` | ✓ true |
 | `0.2.1` | ✓ true |
 | `0.2.2-alpha.2` | ✓ true |
+| `0.2.2-rc.1` | ✓ true |
+| `0.2.2-rc.2` | ✓ true |
 | `0.3.0` | ✗ false |
 
 > ⚠️ **订正（2026-10-15，同上）：本 README 此前写「宿主**不校验** `engines.dsh`」是错的。**

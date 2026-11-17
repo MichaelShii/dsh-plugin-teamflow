@@ -325,7 +325,10 @@ console.log('── 3h-2) 宿主 subagent API 迁移（issue #20：alpha.2 已�
 //      注释里出现裸名是合法的（说明性文字），锁裸名会**假绿**；锁「旧调用的实际写法」才有牙。
 //   ② **入参语义**（行为级）——`delivery`/`provider`/`request.parent` 落在
 //      test/orchestration.test.js 的 `childSpecs`（漏 delivery ⇒ 宿主会给主会话塞完成通知，源码看不出来）。
-const callerCall = /startActivation!?\(\{\s*\n\s*provider: providerName\(\) as string,[\s\S]{0,900}?delivery: 'caller'/
+// 调用形态：`startActivation({ ...taskFields, provider: providerName() as string, ... delivery: 'caller' })`
+// （rc.2 起把 task 字段提到顶层，spread 排在 provider 前 ⇒ 不再锚「provider 紧跟 {」，改为锚「同一调用里
+//  provider 表达式 + delivery: 'caller' 共现」）。
+const callerCall = /startActivation!?\(\{[\s\S]{0,600}?provider: providerName\(\) as string[\s\S]{0,600}?delivery: 'caller'/
 ok(!/\.start\(providerName\(/.test(hostSrc), 'host-pool：旧 `start(providerName(...))` 调用整体清零（漏一处 = 该阶段 TypeError，issue #20 的原始故障形态）')
 ok(callerCall.test(runnerSrc), 'runner：startActivation 调用带 delivery=caller（parent=向主会话投递阶段完成通知，非本插件语义）')
 ok(callerCall.test(triageSrc), 'triage：startActivation 调用带 delivery=caller（分诊结果由本函数自己解析）')
@@ -552,7 +555,7 @@ ok(/!verdict\.ok && text && stop === 'completed'/.test(runnerSrc), 'runner：**�
 ok(/setSessionProjections/.test(contextSrc) && /ctx\.inject\(\['sessionProjections'\]/.test(hostSrc), 'host：sessionProjections 走可选 ctx.inject（服务缺失仍加载，计量自动回退）')
 ok(!/static inject = \[[^\]]*sessionProjections/.test(hostSrc), 'host：static inject 不扩可选依赖（否则最小 profile 直接不加载插件）')
 const pkgSrc = readFileSync(join(here, '../package.json'), 'utf8')
-ok(/"version": "0\.3\.3"/.test(pkgSrc), 'package.json：版本 0.3.3（release-v0.3.3 开发线）')
+ok(/"version": "0\.3\.4"/.test(pkgSrc), 'package.json：版本 0.3.4（release-v0.3.4 开发线）')
 // 安装期钩子白名单：只有 prepare 可以在消费者安装时**不**运行。
 // 实锤（2026-10-03 用户实锤）：v0.2.5 的 `postinstall: lefthook install` 在**消费者从 registry 安装**时也会跑，
 // 而 lefthook 是 devDependency（tarball 里不存在）⇒ `npm error 'lefthook' 不是内部或外部命令` ⇒ **整个安装失败**。

@@ -2,6 +2,50 @@
 
 > 本插件首次公开发布版本为 **v0.1.0**；发布前的内部迭代（v0.3~v0.13）记录于 `AGENTS.md` §5，对外统一归到 v0.1.0。
 
+## [0.3.4] - 2026-11-18
+
+> 主题：**跟随宿主 dsh 0.2.2 线的兼容修复（issue #38）＋ CI 可跑性修复**。本版让插件在 dsh `0.2.2-rc.2` 上能正常起流水线，并让公共 CI 在无宿主私有包的环境下跑通。逐条归属见 `docs/releases/v0.3.4.md` 与 `docs/devlog.md`。
+
+### 🐛 修复：公共 CI 因测试 import `runner.ts` 拉入宿主私有包而红（已提交修复）
+
+- **根因**：`resolve-child-route` / `dev-continue-timeout` 两个测试 import `runner.ts`，而 `runner.ts` 顶层 import 了 `guard.ts` / `util.ts` 的 `@deepseek-ai/dsh-llm`（公共 CI 无此私有包）⇒ `ERR_MODULE_NOT_FOUND`，CI 红（本地有 dsh profile 才绿）。
+- **修复**：纯函数 `resolveChildRoute` / `finalizeNoTextStage` 下沉到 `host/core/agent/route.ts`（只依赖 context/types），`runner.ts` re-export 保持既有 import 面不变；两测试改 import `route.ts`；`deploy.mjs` FILES + smoke CORE_FILES 登记 `route.ts`。
+
+### ⬆️ 升级要点（TL;DR）
+
+- **无 `engines` 变化**：`engines.dsh` 仍为 `>=0.2.1-rc.5 <0.3.0`，**覆盖**当前实装宿主 `0.2.2-rc.1`。无需迁移。
+- 仅在**更低**宿主（< 0.2.1-rc.5）上本插件会被 host 列为 `skippedBundles`（说明原因），其余无变化。
+
+### 🔎 0.2.2-rc.1 兼容核对：无破坏
+
+对实装宿主 `dsh 0.2.2-rc.1`（当前发布线最新 rc）做逐项核对：
+
+- **宿主 API 面**：`subagents.startActivation` / `subagents.start` / `pluginManager.installBundle` 均存在（`subagent/lib`、`boot/plugin-manager/lib` 实读确认）。
+- **客户端槽位**：注册的 7 个槽位（`conversation.view` / `conversation.input.right` / `main` / `sidebar.panellist` / `sidebar.right.pane.tab` / `plugins.detail.actions` / `plugins.detail.badge`）在 0.2.2-rc.1 实装包/构建产物中全部存在；`uiWorkspace.openSession` 存在。
+- **测试**：`pnpm test` 全套（含 `client-host-api` / `interface-check` / `prompt-contract` L1 / `conformance` L2）通行；`pnpm run typecheck` 0 错、`pnpm run lint` 0 警告。
+- **结论**：无破坏，`engines.dsh` 区间维持 `>=0.2.1-rc.5 <0.3.0`。
+
+### 🐛 修复：dsh 0.2.2-rc.2 破坏性子代理 API 变更导致流水线起不来（issue #38）
+
+`dsh 0.2.2-rc.2` 对 subagent 服务做了两处破坏性变更（各有官方迁移指南），本插件两处都中招，表现为**起跑即崩**（PRD 阶段 0 token、childId=null、连续重试后需人工介入）：
+
+**① `ctx.subagents.list()` 被删除**（迁移指南 `docs/upgrade-guide/v0.2.1-rc.2/subagent-service-methods/` D3：改用 `getProvider(name)` 检查已知 provider，不再枚举）。
+
+- 现象：`No subagent provider available (the subagents registry is empty)`。
+- 修复：`providerName()` 改为**优先 `getProvider` 逐个探测已知候选**（`spawn`→`fork`），旧宿主（只有 `list()`）回退枚举。
+
+**② `startActivation` 的 `request` 嵌套被移除、字段提升到 spec 顶层**（迁移指南 `docs/upgrade-guide/v0.2.1-rc.2/subagent-activation-options/`：`prompt`/`parent`/`agentOptions` 等直接挂 `SubagentActivationSpec`）。
+
+- 现象：`Cannot read properties of undefined (reading 'id')`——新宿主读顶层 `spec.parent.id`，而旧调用把 `parent` 放在 `spec.request` 里 ⇒ 顶层 `parent` 为 undefined ⇒ 崩（`triage` 与 `runAgent` 两条 `startActivation` 调用都中招）。
+- 修复：两处调用改为**扁平字段与 `request` 嵌套同时传**（新宿主读顶层、旧宿主读嵌套，多余键被忽略），`runner.ts` + `triage.ts` 双兼容 rc.1 与 rc.2+。
+
+**回归**：新增 `providerName` 8 条断言；`startActivation` 形状新增「顶层 parent 必须存在」断言（防 rc.2 崩溃回归），`request.parent` 断言保留（防旧宿主 UNAUTHORIZED）。
+
+### 📝 文档
+
+- `README.md` / `README.en.md`：基线跟进到 `v0.2.2-rc.2`，semver 矩阵补 `0.2.2-rc.1`/`rc.2` 行；英文版整体对齐中文（修掉 `alpha.4` 陈旧漂移与缺失的 rc.5 抬升记录）；补这两处破坏性变更的说明。
+- `AGENTS.md` §1「当前状态」线号由 v0.2.4 跟进到 v0.3.4 开发线。
+
 ## [0.3.3] - 2026-11-01
 
 > **28 笔提交 / 27 个文件 / +1930 −526 行**（`v0.3.2..HEAD` git 对比生成；不含本版 `CHANGELOG` /
