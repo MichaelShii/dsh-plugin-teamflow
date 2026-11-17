@@ -1161,7 +1161,12 @@ export function isToolErrorResult(data: unknown): boolean {
  * 09-29 / scaffold `tf-mupnk8h0-1otbl2` 10-01）都是「同一文件 write 没先 read」→ warn 后 7s / 55s
  * 即被判死、汇报要求「先修工作区再 resume」，而活本来能做完。
  * 只能用文本判定：工具结果里只有 remediated message，没有 code 字段可读（故两条 code 的文案都列出，
- * 宿主换文案时这里同步）。 */
+ * 宿主换文案时这里同步）。
+ * ⚠️ 前向兼容（2026-11-10，dsh 0.2.2 起）：shipped profile 把 `fs-observation-policy` 默认
+ * `disabled: true`（`dsh-base/cordis.patch.yml`），write/edit/apply_patch 无条件改写 ⇒ 默认
+ * profile 下**不再产生** FS_NOT_OBSERVED / FS_STALE_VERSION。这两条判据保留不删：用户可通过
+ * `disabled: false` 复启用读前守卫，届时判据仍要生效（否则那两例 env-unavailable 误判会回归）。
+ * ⇒ 它们是「守卫被启用时的前向兼容判据」，不是「当前默认生效的保护」；改这里时别因默认未触发而删。 */
 const FS_SELF_HEAL_TEXT = /file has not been read|re-read the file, then retry|file no longer exists|file changed/i
 /** 同族错误的 code 名：remediated message 里通常没有它，但未被 remediate 的路径可能带上（防御性保留）。 */
 const FS_SELF_HEAL_CODE = /FS_STALE_VERSION|FS_NOT_OBSERVED/i

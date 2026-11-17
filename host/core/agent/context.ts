@@ -192,13 +192,43 @@ export function cancelRun(runId: string | null | undefined, source: CancelSource
   return true
 }
 
-/** 可用的子代理 provider 名（优先 spawn）。 */
+/**
+ * TeamFlow 想要的子代理 provider（按优先级）；`spawn` 是宿主默认的本地 spawn 后端
+ * （`subagent-spawn-in-process` 的 `providerName: spawn`），`fork` 是 fork 后端。
+ */
+const PROVIDER_CANDIDATES = ['spawn', 'fork'] as const
+
+/**
+ * 可用的子代理 provider 名（优先 spawn）。
+ *
+ * ⚠️ **dsh 0.2.2-rc.2 起 `ctx.subagents.list()` 被整体删除**（提交 `86d4c75516`，
+ * 官方迁移指南 `docs/upgrade-guide/v0.2.1-rc.2/subagent-service-methods/`：D3「Use `getProvider(name)`
+ * to check known provider names. The service no longer enumerates all registered names」）。
+ * 旧实现靠 `list()` 枚举，在 rc.2+ 上恒返回 null ⇒ `startPipeline` 抛 `run.noProvider`
+ * （issue #38：`No subagent provider available (the subagents registry is empty)`）。
+ *
+ * 修法：**优先 `getProvider(name)` 逐个探测已知候选名**（rc.1 起就有 getProvider，rc.2 只剩它 ⇒ 前后兼容）；
+ * 旧宿主（有 `list()` 无 `getProvider`）回退枚举，行为与旧实现逐字一致。
+ */
 export function providerName(): string | null {
-  const subagents = runtime.subagents as { list?: () => string[] } | undefined
-  if (!subagents || typeof subagents.list !== 'function') return null
-  const names = subagents.list()
-  if (names.indexOf('spawn') !== -1) return 'spawn'
-  return names.length > 0 ? names[0] : null
+  const subagents = runtime.subagents as {
+    getProvider?: (name: string) => unknown
+    list?: () => string[]
+  } | undefined
+  if (!subagents) return null
+  // 新宿主（rc.2+）：按已知候选名探测，命中即用（spawn 优先，见 PROVIDER_CANDIDATES 顺序）
+  if (typeof subagents.getProvider === 'function') {
+    for (const name of PROVIDER_CANDIDATES) {
+      if (subagents.getProvider(name)) return name
+    }
+  }
+  // 旧宿主回退：`list()` 枚举（rc.2 起已不存在，仅在更旧宿主上执行）
+  if (typeof subagents.list === 'function') {
+    const names = subagents.list()
+    if (names.indexOf('spawn') !== -1) return 'spawn'
+    return names.length > 0 ? names[0] : null
+  }
+  return null
 }
 
 /**

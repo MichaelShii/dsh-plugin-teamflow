@@ -171,14 +171,19 @@ async function runScenario(
     const init = spec && spec.request
     const label = String((spec && spec.label) || '')
     // 捕获阶段 prompt（锁「同一 run 内 state 刷新」用：后续阶段的 state slice 必须带上 PRD 写下的东西）
-    const promptText = String(((init && init.prompt && init.prompt[0] && init.prompt[0].text) || ''))
+    // prompt 可能在 request 里（≤rc.1）或 spec 顶层（≥rc.2）——两者都取，见下方 taskFields。
+    const promptBlocks = (init && init.prompt) || (spec && spec.prompt)
+    const promptText = String(((promptBlocks && promptBlocks[0] && promptBlocks[0].text) || ''))
     // 保真记录宿主 API 入参形状（issue #20）：`delivery` 漏传 ⇒ 宿主按 'parent' 处理，会给主会话塞完成通知；
     // `provider` 空 ⇒ 宿主 expectProvider 直接抛。两者都必须在**行为级**被锁住，不能只靠源码正则。
     children.push({
       id: `c-${children.length + 1}`, label, prompt: promptText,
       provider: spec && spec.provider, delivery: spec && spec.delivery,
-      // `request.parent` 是宿主校验「活的父 Agent」的入参（`manager.assertAdmitting`）；顶层 signal 是发布前取消通道。
-      requestParent: init && init.parent, topSignal: spec && spec.signal,
+      // `request.parent` 是 ≤rc.1 宿主校验「活的父 Agent」的入参；顶层 `spec.parent` 是 ≥rc.2 宿主的入参
+      // （迁移指南 v0.2.1-rc.2/subagent-activation-options：parent 提到顶层）。两者都必须有，否则一侧报 UNAUTHORIZED
+      // 或在 rc.2+ 上崩 `Cannot read properties of undefined (reading 'id')`（issue #38）。
+      requestParent: init && init.parent, topParent: spec && spec.parent,
+      topSignal: spec && spec.signal,
     })
     // 按 label 判定阶段并落产物文件（QA 每轮一份报告 → 用轮次索引取语料）
     if (artifacts) {
@@ -306,7 +311,7 @@ async function runScenario(
     // 宿主 API 入参保真（issue #20）：每个阶段子代理的 startActivation spec 形状
     childSpecs: children.map((c) => ({
       provider: c.provider, delivery: c.delivery,
-      hasRequestParent: !!c.requestParent, hasTopSignal: !!c.topSignal,
+      hasRequestParent: !!c.requestParent, hasTopParent: !!c.topParent, hasTopSignal: !!c.topSignal,
       // **真 brand 而非真值**（2026-10-17 issue #20 追评）：伪 signal 也是真值，
       // 但宿主 Node 24 的 `AbortSignal.any([...])` 只认真 AbortSignal ⇒ 必须断 brand。
       signalBrandOk: c.topSignal instanceof AbortSignal,
@@ -981,7 +986,7 @@ console.log('\n[23] 确认单断点带补录续跑 ⇒ 回退重跑 PRD；PRD �
   // PRD 子代理的产出（默认空 = 让 PRD 阶段失败；需要「PRD 真成功」的用例自己换掉）。
   let prdTextNow = ''
   setRuntime({ get: (sid) => (sid === 'sid-redo' ? fakeParent : undefined) }, {
-    // 真实宿主一定有 provider 注册表（providerName 靠 list 取），漏了它 provider 会传成 null（宿主直接抛）
+    // 真实宿主一定有 provider 注册表（providerName 靠 getProvider/list 取），漏了它 provider 会传成 null（宿主直接抛）
     list: () => ['spawn'],
     startActivation: async (spec) => {
       const init = spec && spec.request
@@ -1373,7 +1378,8 @@ console.log('\n[N] 宿主 subagent API 入参形状（startActivation）')
   ok(r.childSpecs.length > 0, `起了子代理（实测 ${r.childSpecs.length} 个）`)
   ok(r.childSpecs.every((s) => s.delivery === 'caller'), '每个阶段都传 delivery=caller（parent=向主会话塞完成通知）')
   ok(r.childSpecs.every((s) => s.provider === 'spawn'), '每个阶段都有非空 provider（空值 ⇒ 宿主 expectProvider 抛）')
-  ok(r.childSpecs.every((s) => s.hasRequestParent), '每个阶段都传 request.parent（宿主 assertAdmitting 校验「活的父 Agent」）')
+  ok(r.childSpecs.every((s) => s.hasRequestParent), '每个阶段都传 request.parent（宿主 assertAdmitting 校验「活的父 Agent」，≤rc.1 形态）')
+  ok(r.childSpecs.every((s) => s.hasTopParent), '每个阶段都传顶层 parent（≥rc.2 宿主读 spec.parent.id，缺则崩 issue #38）')
   ok(r.childSpecs.every((s) => s.hasTopSignal), '每个阶段都传顶层 signal（宿主发布前取消通道；嵌套 request.signal 是发布后通道）')
   ok(r.childSpecs.every((s) => s.signalBrandOk),
     '每个阶段交给宿主的 signal 都是**真 AbortSignal**（伪鸭子对象在 Node 24 的 AbortSignal.any 里抛 signals[N] is not of type AbortSignal——issue #20 追评；本断言在 Node 22 就能判死）')
@@ -1407,6 +1413,23 @@ console.log('\n[O] 活子代理取法与宿主能力预检（纯行为，可单�
   ok(runtime.hasStartActivation() === false, 'hasStartActivation：旧宿主（有 list、无 startActivation）→ false —— issue #20 的原始故障形态')
   setRuntime({}, { list: () => ['spawn'], startActivation: async () => ({}) })
   ok(runtime.hasStartActivation() === true, 'hasStartActivation：alpha.2+ 宿主 → true')
+
+  // issue #38：dsh 0.2.2-rc.2 删除 subagents.list()，providerName 改走 getProvider(name) 探测。
+  // 迁移指南 v0.2.1-rc.2/subagent-service-methods D3：用 getProvider 检查已知 provider 名，不再枚举。
+  setRuntime({}, { getProvider: (n) => (n === 'spawn' ? {} : undefined) })
+  ok(runtime.providerName() === 'spawn', 'providerName：rc.2+（只有 getProvider、无 list）→ 探到 spawn（issue #38 的坑）')
+  setRuntime({}, { getProvider: (n) => (n === 'fork' ? {} : undefined) })
+  ok(runtime.providerName() === 'fork', 'providerName：只剩 fork → 用 fork（spawn 不在时回退下一候选）')
+  setRuntime({}, { getProvider: () => undefined })
+  ok(runtime.providerName() === null, 'providerName：候选全不在 → null（不编造，起跑预检显性失败）')
+  setRuntime({}, { getProvider: (n) => (n === 'spawn' ? {} : undefined), list: () => [] })
+  ok(runtime.providerName() === 'spawn', 'providerName：getProvider 优先于 list（rc.2+ 语义优先）')
+  setRuntime({}, { list: () => ['spawn'] })
+  ok(runtime.providerName() === 'spawn', 'providerName：旧宿主回退（只有 list、无 getProvider）→ spawn（旧行为不变）')
+  setRuntime({}, { list: () => ['acp'] })
+  ok(runtime.providerName() === 'acp', 'providerName：旧宿主回退 → 取 list 首项')
+  setRuntime({}, {})
+  ok(runtime.providerName() === null, 'providerName：无 subagents 服务 → null')
 }
 
 /* ── (k) 上游越界写下游产物 ⇒ 下游不得拿旧文件交差（2026-10-16 实锤 tf-mv9o5fkk-orjou4） ── */

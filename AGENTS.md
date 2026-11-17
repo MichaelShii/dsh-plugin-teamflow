@@ -12,15 +12,19 @@
 - **产品**：`dsh-plugin-teamflow` —— DeepSeek Harness 可分发插件，把「一句话需求 → 多 Agent 团队研发流水线」做成宿主能力。
 - **形态**：host（Cordis service `teamflow`，node 侧）+ client（Web「🏭 团队工作台」tab）+ 模型工具（`teamflow_*`）。
 - **运行环境**：web profile 宿主组合真实 Node 进程；`file:` 安装 + 从 profile 副本加载。
-- **当前状态**（v0.2.4 开发线）：
-  - ✅ **领域化重构完成**：1418 行单文件 → 11 个领域文件（见 §3）
-  - ✅ **token 官方口径计量**（usage = 输入未命中/命中/写缓存/输出/调用数 + 缓存命中率，ADR-0003）
-  - ✅ **lite 模式 / mode 5 档 + 模型驱动 triage**（ADR-0004，`teamflow_triage`）
-  - ✅ **full/medium 阶段集差异执行（ADR-0004 落地）**：`STAGE_POLICY` 五档策略表 + `resolveStages()` 纯函数，pipeline 的 design/scaffold/qa 门控改由表驱动；design/scaffold 全档位按显式 flag 条件化（不吞显式请求），patch 无独立 QA
-  - ✅ **交付判定信号分级 + 熔断新增口径**（`judgeDeliverable`／`freshTokensOf`，见 §5 锚点）+ **doc 阶段产物兜底（回复过短但任务夹文件已落盘仍判交付）+ 熔断预算随缓存能力自适应（无 prompt 缓存的 provider 不再因固定开销撞 200k）**
-  - ✅ **客户端界面中英双语（P1）**：走宿主 `ctx.locale`（词典注册 + slot 声明 `locale` + 名称 thunk），实时跟随宿主语言（host 侧文案/产物语言见下一条）
-  - ✅ **host 侧响应/产物双语（P2）**：语言源链（客户端推送 > settings > `en`）+ run 级快照（`journal.locale`）+ host 词典与词表门禁；判据层只增不改（见 §5 语言层锚点）
-  - ✅ **日志根离开用户项目 + 不制造 dump（B 方案）**：run 期在工作区暂存 → 终态按白名单（检查脚本/笔记/`captures.json`）归档 `$DSH_HOME/teamflow/<workspace>/logs/<runId>/` 并删副本；命令/套件输出不落文件；起跑自愈清扫 + 每工作区保留最近 20 次（见 §5 日志生命周期锚点）
+- **当前状态**（v0.3.4 开发线）：
+  - ✅ **领域化重构**：1418 行单文件 → 11 个领域文件（见 §3）
+  - ✅ **token 官方口径计量**（未命中/命中/写缓存/输出/调用数 + 命中率，ADR-0003）
+  - ✅ **mode 5 档 + 模型驱动 triage + 阶段集差异执行**（ADR-0004，`teamflow_triage`）：`STAGE_POLICY` 表 + `resolveStages()` 驱动 design/scaffold/qa 门控（不吞显式 flag，patch 无独立 QA）
+  - ✅ **认知前置 + 架构落地**（ADR-0006）：M0 sanity / M1 架构蓝图全模式启用 / M2 按蓝图拆任务（`planDevWaves`）/ M3 QA+验收架构核验
+  - ✅ **交付判定 + 熔断口径**：`judgeDeliverable` 三级信号、`freshTokensOf` 排除 cacheRead、预算随缓存能力自适应；交付形态契约（artifact/installable/host → 可测 AC，安装环境运行时探测）
+  - ✅ **QA 打回闭环**（ADR-0007）：P0–P2 打回修复 → 复验 ≤2 轮，超限转「已知问题」只读验收（需人工、不放行合回）
+  - ✅ **任务夹文档制（ADR-0008）+ 输出单轨制**：每需求一个任务夹、`journal.runDocs` 固定身份、QA/验收产物只在任务夹文件
+  - ✅ **需求澄清闸门 + 确认单**（ADR-0010/0011）：启动前预检命中即 `needs-clarification` 不建 run（仅 patch 档豁免）；确认单可回改续跑
+  - ✅ **升级提示 + 一键升级**（ADR-0012）：版本探测（匿名 GET + 24h 缓存 + 跳过此版）+ 三落点 + 仅 registry 装法可一键
+  - ✅ **多团队 + 工作台**：`teams.json` + workspace 隔离 + 单任务轮转 + dev 子卡（`dt-N`）；双入口
+  - ✅ **中英双语**：客户端（`ctx.locale` 实时跟随）+ host 响应/产物（run 快照 `journal.locale`，词典门禁）
+  - ✅ **运行时护栏**：cancel（两段式 `CancelButton` + `dispose()`）；重试护栏 + `env-unavailable` 第五早停；`[Verification evidence]` 证据块；日志 B 方案（暂存→白名单归档 `$DSH_HOME`、留最近 20 次）
 
 ## 2. 文档索引（按职责）
 

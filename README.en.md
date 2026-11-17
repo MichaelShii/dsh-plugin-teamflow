@@ -109,7 +109,7 @@ The whole repo is TS/TSX: **the host must be built** (Node's type stripping does
 
 ### Version anchor (dsh host compatibility)
 
-Baseline **dsh v0.2.1-alpha.4** (preview); **floor v0.2.1-alpha.2**.
+Baseline **dsh v0.2.2-rc.2** (latest published rc); **floor v0.2.1-rc.5**; upper bound `<0.3.0`.
 
 > ⚠️ **Correction (2026-10-15, issue #20) — the floor moved from v0.1.7-alpha.1 to v0.2.1-alpha.2; we no longer support older hosts.**
 > In alpha.2 the host **removed** the flat entry point `subagents.start(name, request)` outright (commit
@@ -118,12 +118,26 @@ Baseline **dsh v0.2.1-alpha.4** (preview); **floor v0.2.1-alpha.2**.
 > `startActivation(spec)`, and its receipt **no longer carries the live Agent handle** (`localAgent`).
 > On an older host the symptom is "it starts, then throws `TypeError` in the very first stage" — hence
 > dsh ≥ 0.2.1-alpha.2 from this version on.
+>
+> ⚠️ **Raised again (2026-11-01): the floor moved from v0.2.1-alpha.2 to v0.2.1-rc.5.** The published line had
+> advanced to `v0.2.1-rc.5`; this plugin is verified item-by-item on rc.5 and every later 0.2.x.
+>
+> ⚠️ **Baseline follow-up (2026-11-11, v0.3.4): the installed host is now `v0.2.2-rc.1` (latest published rc).**
+> A item-by-item compatibility audit against 0.2.2-rc.1 found: host APIs (`subagents.startActivation` /
+> `subagents.start` / `pluginManager.installBundle`), all seven registered client slots, and
+> `uiWorkspace.openSession` are present; full `pnpm test` (including `client-host-api` / `interface-check` /
+> `prompt-contract` L1 / `conformance` L2) is green. **Conclusion: no breakage; `engines.dsh` still requires ≥ 0.2.1-rc.5.**
+>
+> ⚠️ **Compatibility fix (issue #38, dsh `v0.2.2-rc.2`) — two breaking subagent API changes.**
+> ① The host removed `ctx.subagents.list()` (migration guide `docs/upgrade-guide/v0.2.1-rc.2/subagent-service-methods/` D3: use `getProvider(name)`): our `providerName()` enumerated via `list()` ⇒ `null` on rc.2+, failing with `No subagent provider available`. Fixed by probing known candidates via `getProvider` (`spawn`→`fork`) with a `list()` fallback for older hosts.
+> ② `startActivation`'s nested `request` was removed and fields lifted onto the spec top level (migration guide `docs/upgrade-guide/v0.2.1-rc.2/subagent-activation-options/`): the new host reads top-level `spec.parent.id`, but the old call put `parent` in `spec.request` ⇒ crash `Cannot read properties of undefined (reading 'id')`. Fixed by passing **both** flat fields and the nested `request` (`runner.ts` + `triage.ts`, dual-compatible with rc.1 and rc.2+).
+> The `engines.dsh` range is unchanged (rc.2/rc.3 are within it).
 
-`engines.dsh` is now declared as a **single** range, `">=0.2.1-alpha.2 <0.3.0"`. The previous **union** range
+`engines.dsh` is declared as a **single** range, `">=0.2.1-rc.5 <0.3.0"`. The previous **union** range
 `">=0.1.7-alpha.1 <0.3.0 || >=0.2.0-rc.1 <0.3.0"` existed because a prerelease only matches a range carrying a
 prerelease on the same tuple: the old floor (tuple 0.1.7) did not share a tuple with `0.2.0-rc.x`, so a single
-range failed for rc. With the floor at `0.2.1-alpha.2`, floor and host share a tuple, so a single range works
-(measured with semver 7.8.5: `alpha.1`=false / `alpha.2~alpha.4`=true / `0.2.0-rc.2`=false / `0.2.1`=true).
+range failed for rc. With the floor at `0.2.1-rc.5`, floor and host share a tuple, so a single range works
+(measured with semver 7.8.5: `0.2.1-rc.4`=false / `0.2.1-rc.5`=true / `0.2.1`=true / `0.2.2-alpha.2`=true / `0.2.2-rc.1`=true / `0.2.2-rc.2`=true / `0.3.0`=false).
 
 > ⚠️ **Correction (2026-10-15, same as above): this README previously claimed the host "never validates" `engines.dsh`. That was wrong.**
 > `@deepseek-ai/dsh-app-boot` validates it while loading the profile

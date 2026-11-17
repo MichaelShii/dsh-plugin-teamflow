@@ -168,7 +168,10 @@ expect(toolFailureAction(3, 2, 3), 'abort', '生产阈值：3 次 → abort（�
 
 // 可自愈的防护门禁失败分类（issue #15）：文本形状取自宿主 dsh-tool-fs/src/error.ts remediateFsError()
 // —— 两条 gate 错误被换成稳定文案。判错一类的代价 = 把「一次 read 就能修好」误报成「工作区坏了」。
-console.log('── 可自愈的防护门禁失败不进环境指纹（issue #15）──')
+// ⚠️ 前向兼容断言（2026-11-10，dsh 0.2.2 起）：shipped profile 把 fs-observation-policy 默认
+// disabled，这两条错误默认不再产生。此处断言的是「守卫被 disabled:false 复启用时判据仍正确」，
+// 不是「当前默认生效的保护」——不要因默认未触发就删掉这组断言。
+console.log('── 可自愈的防护门禁失败不进环境指纹（issue #15；守卫复启用时的前向兼容）──')
 const gateNotObserved = 'Error: cannot modify "E:/ws/js/render.js": file has not been read — read the file, then retry'
 const gateStale = 'Error: cannot edit "E:/ws/AGENTS.md": file changed since it was read — re-read the file, then retry'
 const gateGone = 'Error: cannot modify "E:/ws/x.js": file no longer exists — re-read the file, then retry'

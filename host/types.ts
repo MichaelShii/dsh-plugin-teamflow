@@ -172,7 +172,12 @@ export interface SubagentStarters {
   startActivation?: (spec: {
     provider: string
     label: string
+    /** dsh ≤ rc.1 形态：任务字段嵌在 `request` 里（新宿主已删除该嵌套，保留仅为旧宿主兼容）。 */
     request: { prompt: unknown; parent: unknown; agentOptions?: unknown; signal: unknown }
+    /** dsh ≥ 0.2.2-rc.2 形态：任务字段提升到 spec 顶层（迁移指南 `v0.2.1-rc.2/subagent-activation-options`）。 */
+    prompt?: unknown
+    parent?: unknown
+    agentOptions?: unknown
     signal: unknown
     /** `'caller'`＝只把结果交给调用方，**不向父会话投递完成通知**。本插件自己编排流水线，
      *  必须用 `'caller'`：`'parent'` 会把每个阶段的完成通知塞进主会话（污染主线程且非本插件语义）。 */

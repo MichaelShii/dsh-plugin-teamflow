@@ -159,15 +159,23 @@ export async function runAgent(
     // `delivery: 'caller'` 是本插件的**必须**选择（不是优化）：`'parent'` 会向父会话投递完成通知，
     // 而父会话就是主线程——流水线的阶段完成由本插件自己汇报，不能让宿主再插一条。
     const sig = normalizeSignal(signal)
+    // ⚠️ **宿主 startActivation 形态迁移（dsh 0.2.2-rc.2 起，迁移指南
+    // `docs/upgrade-guide/v0.2.1-rc.2/subagent-activation-options/`）**：新版把 `prompt`/`parent`/
+    // `agentOptions`/`outputSchema` 等从 `request` 子对象**提升到 spec 顶层**，删除了 `request` 嵌套。
+    // 旧宿主（≤ rc.1）读 `spec.request.parent.id`，新宿主（≥ rc.2）读 `spec.parent.id`——只传一种会在另一侧
+    // 读成 undefined（实锤 tf-mwkw2hq3-lstyxe：新宿主上 `spec.parent.id` 崩 `Cannot read properties of
+    // undefined (reading 'id')`，0 token、childId=null）。
+    // ⇒ **扁平字段与 `request` 嵌套同时传**：各宿主只读自己认识的键，多余字段被忽略，rc.1/rc.2+ 双兼容。
+    const taskFields = {
+      prompt: [{ type: 'text', text: prompt }],
+      parent,
+      ...(agentOptions ? { agentOptions } : {}),
+    }
     const activation = await (runtime.subagents as SubagentStarters).startActivation!({
+      ...taskFields, // 新宿主：字段在顶层
       provider: providerName() as string,
       label,
-      request: {
-        prompt: [{ type: 'text', text: prompt }],
-        parent,
-        ...(agentOptions ? { agentOptions } : {}),
-        signal: sig,
-      },
+      request: { ...taskFields, signal: sig }, // 旧宿主（≤ rc.1）：读 request 嵌套
       signal: sig,
       delivery: 'caller',
     })
