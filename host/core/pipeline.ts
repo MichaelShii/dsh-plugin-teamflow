@@ -1265,6 +1265,15 @@ export async function executePipeline(
           state.__runCtx = state.__runCtx || {}
           state.__runCtx.blueprint = bd.render
           journal.blueprint = { modules: bd.modules, tasks: bd.tasks }
+          // 依赖缺失可观测（issue #19）：蓝图有 ≥2 个任务却**无任一 tasks 标注 reads** ⇒ dev 会全部同波并发、
+          // 顺序不受保证（planDevWaves 无依赖边时=单波）。这是「tech 忘标依赖」的高发形态，warn 让排行看得见
+          // （不在起跑拦截：确证独立的任务全并行是合法的，故只告警）。检测只读 blueprint.tasks 的 reads。
+          const bpTasks = Array.isArray(bd.tasks) ? bd.tasks : []
+          const readsOf = (x: unknown) => (x as { reads?: unknown[] }).reads
+          const anyReads = bpTasks.some((t2) => Array.isArray(readsOf(t2)) && readsOf(t2)!.length > 0)
+          if (bpTasks.length >= 2 && !anyReads) {
+            journal.logs.push({ t: Date.now(), level: 'warn', message: t(locale, 'log.blueprintNoDeps', { n: bpTasks.length }) })
+          }
         } catch (e) { /* 蓝图注入失败不影响 */ }
       } else if (sawMark) {
         // 蓝图标记出现过但没用上（解析失败 / 内容为空）：显式告警（否则静默回退整体开发，并行度丢失难排查）。

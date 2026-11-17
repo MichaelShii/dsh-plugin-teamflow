@@ -1364,6 +1364,31 @@ console.log('\n[25] 蓝图判据：内容为空的块不算成功 —— 要么�
   const k = await runScenario('bp-archived-ok', { options: FULL_OPTS, blueprintViaFile: true })
   ok(k.blueprint && (k.blueprint.tasks || []).length > 0, '成功路径仍照常解析')
   ok(k.logs.some((l) => /蓝图已落档到/.test(l)), '**成功解析也落档**（常态路径不能漏）')
+
+  // (i) issue #19：蓝图有 ≥2 任务却**无任一 tasks 标 reads** ⇒ dev 全同波并发、顺序不受保证 → 必须 warn 可观测
+  const noDepsBp = JSON.stringify({
+    summary: '两任务均无 reads',
+    modules: { m1: { files: ['a.ts'], responsibility: 'A' } },
+    tasks: [
+      { id: 'T1', title: '任务一', files: ['a.ts'], reads: [] },
+      { id: 'T2', title: '任务二', files: ['b.ts'], reads: [] },
+    ],
+  })
+  const nd = await runScenario('bp-no-deps', { options: FULL_OPTS, blueprintViaFile: true, blueprintRaw: noDepsBp })
+  ok(nd.logs.some((l) => l.includes('warn:') && /reads/.test(l) && /同波|parallel wave|顺序/.test(l)),
+    '蓝图多任务全无 reads ⇒ 记「依赖缺失→退化全并发」warn（issue #19 可观测兜底）')
+  // 正例：任务标了 reads ⇒ 不得报该 warn（避免误报打扰）
+  const withDepBp = JSON.stringify({
+    summary: '任务二读任务一产物',
+    modules: { m1: { files: ['a.ts'], responsibility: 'A' } },
+    tasks: [
+      { id: 'T1', title: '任务一', files: ['a.ts'], reads: [] },
+      { id: 'T2', title: '任务二', files: ['b.ts'], reads: ['a.ts'] },
+    ],
+  })
+  const wd = await runScenario('bp-with-deps', { options: FULL_OPTS, blueprintViaFile: true, blueprintRaw: withDepBp })
+  ok(!wd.logs.some((l) => l.includes('warn:') && /reads/.test(l) && /同波|parallel wave|顺序/.test(l)),
+    '任务标了 reads ⇒ 不报依赖缺失 warn（正例不误报）')
 }
 
 /* ── (i) 宿主 API 入参形状（issue #20）：startActivation spec 必须带 provider/delivery/request.parent ── */
